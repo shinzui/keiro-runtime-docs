@@ -1106,11 +1106,34 @@ break the routes, `source`, `getMDXComponents()`, or the build.
 
 ## Progress Log
 
-<!-- Dated entries appended as work proceeds. -->
+- **2026-05-30 — M1 complete (Nix dev shell → pnpm + Node 22).** Swapped
+  `pkgs.bun` for `pkgs.nodejs_22` + `pkgs.pnpm` in `flake.nix`, kept the existing
+  `just`/`oxlint`/`oxfmt`/`typescript` tools, and updated the `shellHook` to echo
+  node/pnpm versions. `nix develop --command bash -c 'node --version && pnpm
+  --version'` prints `v22.22.3` and `pnpm 11.4.0`. Acceptance met.
+
+### Remaining
+
+- [ ] M2 — `package.json` + `pnpm install`.
+- [ ] M3 — fumadocs core wiring (`source.config.ts`, `lib/source.ts`,
+  `mdx-components.tsx`, `next.config.mjs`).
+- [ ] M4 — Tailwind v4 + App Router pages; `tsc --noEmit` clean.
+- [ ] M5 — seed content + dev server renders the shell.
+- [ ] M6 — seams, `.gitignore`, production build.
 
 ## Surprises & Discoveries
 
-<!-- Deviations from expectations. -->
+- **2026-05-30 — The real `flake.nix` differs from the plan's quoted version.**
+  The plan (Milestone 1) quoted a minimal `flake-utils.lib.eachDefaultSystem`
+  shell containing only `bun` + `git`, edited via `mkShell { buildInputs = ... }`.
+  The actual repo flake uses `nativeBuildInputs` and ships `bun`, `just`,
+  `oxlint`, `oxfmt`, and `typescript`, plus a `checks = {}` block and a
+  node_modules-detection `shellHook`. Rather than overwrite the file wholesale,
+  the edit preserved the real structure: only `bun` was replaced with
+  `nodejs_22` + `pnpm`, the other tools (which serve the future CI plan #6) were
+  kept, and the `shellHook` message was updated. Node 22 + pnpm were already
+  present on the host PATH, but the flake now provides them reproducibly
+  (`v22.22.3`, `pnpm 11.4.0`).
 
 ## Outcomes & Retrospective
 

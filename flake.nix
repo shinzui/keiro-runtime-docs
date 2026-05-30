@@ -15,7 +15,8 @@
 
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
-            pkgs.bun
+            pkgs.nodejs_22
+            pkgs.pnpm
             pkgs.just
             pkgs.oxlint
             pkgs.oxfmt
@@ -25,8 +26,12 @@
           shellHook = ''
             export LANG=en_US.UTF-8
 
+            echo "keiro-runtime-docs dev shell"
+            echo "node $(node --version)"
+            echo "pnpm $(pnpm --version)"
+
             if [ ! -d node_modules ]; then
-              echo "Run 'just install' (bun install) to fetch dependencies."
+              echo "Run 'pnpm install' to fetch dependencies."
             fi
           '';
         };
