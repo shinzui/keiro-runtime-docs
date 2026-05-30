@@ -1,5 +1,6 @@
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import type { MDXComponents } from "mdx/types";
+import { Mermaid } from "@/components/mermaid";
 
 // Central MDX-to-React component map. `getMDXComponents` merges fumadocs'
 // defaults with any overrides.
@@ -13,7 +14,9 @@ import type { MDXComponents } from "mdx/types";
 export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
-    // ...Plan C / Plan D components go here...
+    // Plan C — interactive, zoomable Mermaid diagrams (see src/components/mermaid.tsx).
+    Mermaid,
+    // ...Plan D components go here...
     ...components,
   } satisfies MDXComponents;
 }

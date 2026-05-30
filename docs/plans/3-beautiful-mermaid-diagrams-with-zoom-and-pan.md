@@ -70,22 +70,41 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Milestone 0 — Verify prerequisites: scaffold present (`src/components/mdx.tsx`,
-      `source.config.ts`, `src/styles/app.css`, `package.json` with pnpm scripts) and
-      `pnpm dev` serves a styled empty docs site at `http://localhost:3000/docs`.
-- [ ] Milestone 1 — Add the `beautiful-mermaid` dependency and prove `renderMermaidSVG`
-      produces an SVG (throwaway script), confirming the API shape before wiring it in.
-- [ ] Milestone 2 — Create the rehype plugin `src/lib/rehype-mermaid.ts` that turns
+- [x] Milestone 0 — Verify prerequisites: scaffold present (`src/components/mdx.tsx`,
+      `source.config.ts`, `src/styles/app.css`, `package.json` with pnpm scripts). Confirmed all
+      four seam files exist; `pnpm` + Node 22 available in the dev shell. _(2026-05-30)_
+- [x] Milestone 1 — Add the `beautiful-mermaid` dependency and prove `renderMermaidSVG`
+      produces an SVG (throwaway script), confirming the API shape before wiring it in. Added
+      `beautiful-mermaid@1.1.3`; probe printed an `<svg … viewBox="0 0 129.072 175.8" …>`
+      (`contains <svg: true`, `contains viewBox: true`). Discovered the header must be on its own
+      line (multi-line fence). Probe deleted. _(2026-05-30)_
+- [x] Milestone 2 — Create the rehype plugin `src/lib/rehype-mermaid.ts` that turns
       ` ```mermaid ` fences into `<Mermaid chart="..." />` MDX nodes; wire it into
-      `source.config.ts`'s `defineConfig({ mdxOptions: { rehypePlugins } })`.
-- [ ] Milestone 3 — Create the client component `src/components/mermaid.tsx`: render the
+      `source.config.ts`'s `defineConfig({ mdxOptions: { rehypePlugins } })`. Added `@types/hast`
+      so the plugin types resolve. Used the function form `(v) => [rehypeMermaid, ...v]` so the
+      plugin runs before Shiki (the plain array form let Shiki claim the fence — see Surprises &
+      Discoveries / Decision Log). _(2026-05-30)_
+- [x] Milestone 3 — Create the client component `src/components/mermaid.tsx`: render the
       beautiful-mermaid SVG, apply light/dark theme, implement viewBox zoom/pan/fit +
-      on-screen controls + full-screen expand + keyboard shortcuts. Guard against SSR/prerender
-      (only touch the DOM and dynamically import `mermaid`/`beautiful-mermaid` after mount).
-- [ ] Milestone 4 — Register `Mermaid` in `src/components/mdx.tsx` (merge into
+      on-screen controls + full-screen expand + keyboard shortcuts. All browser work (DOM access
+      + `import('beautiful-mermaid')`) is inside `useEffect`, so the prerender pass has no DOM
+      access. Verified `useTheme` is re-exported from `fumadocs-ui/provider/base`. _(2026-05-30)_
+- [x] Milestone 4 — Register `Mermaid` in `src/components/mdx.tsx` (merge into
       `getMDXComponents`, do not replace), and add the diagram CSS to `src/styles/app.css`.
-- [ ] Milestone 5 — Add a sample diagram page and verify end-to-end (`pnpm dev`, then
-      `pnpm build && pnpm start`) in light and dark.
+      Merged the `Mermaid` key alongside `...defaultMdxComponents` (kept `satisfies
+      MDXComponents` and the `useMDXComponents` re-export); appended the `.diagram*` CSS block
+      after Plan B's font rules. _(2026-05-30)_
+- [x] Milestone 5 — Add a sample diagram page and verify (automated gates). Added
+      `content/docs/diagram-demo.mdx` (flowchart + sequence) and registered it in
+      `content/docs/meta.json`. `pnpm typecheck` clean; `pnpm build` prerenders `/docs/diagram-demo`
+      with no `window`/`document` crash; the compiled MDX renders `(jsx)(Mermaid,{chart:"flowchart
+      TD\n…"})` with zero `shiki`/`language-mermaid` strings (fence intercepted); `pnpm start`
+      serves `/docs/diagram-demo`, `/docs/diagram-demo.md`, `/`, `/docs` all 200. _(2026-05-30)_
+- [ ] Milestone 5 (remaining) — **Human browser pass.** The visual/interactive acceptance
+      (wheel-zoom toward cursor, drag-pan, `Fit`, `Expand`/`Escape`, light↔dark re-render, the
+      malformed-diagram error box) requires a real browser and was not automatable here (no
+      headless browser binary available in this environment). Run `pnpm dev` and walk the seven
+      checks in Milestone 5 to close this out.
 
 
 ## Surprises & Discoveries
@@ -93,7 +112,31 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **`renderMermaidSVG` requires the diagram header on its own line** (it does not accept the
+  single-line `flowchart TD; A --> B` form). The Milestone 1 probe's original one-line source
+  threw `Invalid mermaid header: "flowchart TD; A[Start] --> B[Done]". Expected "graph TD",
+  "flowchart LR", "stateDiagram-v2", etc.` Rewriting it multi-line (header on line 1, edges on
+  subsequent indented lines) produced a valid SVG:
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 129.072 175.8" width="129.072" height="175.8" ...>`
+  — `contains <svg: true`, `contains viewBox: true`. Practical impact: none for real content
+  (authors write multi-line fences), but the `<Mermaid>` error path matters for any inline
+  single-line diagram; the demo page uses multi-line fences. _(2026-05-30)_
+- **The SVG embeds the theme as CSS custom properties** (`style="--bg:#ffffff;..."`) and carries
+  both `viewBox` and explicit `width`/`height`. The `viewBox` is present, so the zoom/pan model
+  (mutating `viewBox`) works without the width/height fallback noted in Recovery. _(2026-05-30)_
+- **The plain-array `rehypePlugins: [rehypeMermaid]` form did NOT intercept the fence — the
+  function form was required.** With the array form, `pnpm build` compiled both ` ```mermaid `
+  fences into Shiki-highlighted `<pre class="shiki shiki-themes github-light github-dark">`
+  blocks (verified by reading the compiled module
+  `.output/server/_ssr/diagram-demo-*.mjs`), not `<Mermaid>` components. The cause is exactly
+  the ordering case Milestone 2 flagged: fumadocs runs its built-in Shiki `rehypeCode` step
+  (configured by Plan B's `rehypeCodeOptions`) and, with the array form, our plugin runs
+  **after** it — by which point the `<pre><code class="language-mermaid">` has already been
+  rewritten into Shiki spans and `isMermaidPre` no longer matches. Switching to
+  `rehypePlugins: (v) => [rehypeMermaid, ...v]` (prepend to the defaults so ours runs first)
+  fixed it: the fence now compiles to `(0,jsx)(r,{chart:"flowchart TD\n…"})` with `r` = the
+  `Mermaid` component, and the client chunk contains zero `shiki`/`language-mermaid` strings.
+  _(2026-05-30)_
 
 
 ## Decision Log
@@ -136,6 +179,18 @@ Record every decision made while working on the plan.
   React + DOM, with no Next.js coupling).
   Date: 2026-05-30
 
+- Decision: Wire the mermaid plugin as `rehypePlugins: (v) => [rehypeMermaid, ...v]` (the
+  function form), not the plain array `[rehypeMermaid]`.
+  Rationale: The array form runs after fumadocs' default rehype pipeline, which includes the
+  Shiki `rehypeCode` step (Plan B's `rehypeCodeOptions`). Shiki then claims the
+  `language-mermaid` block first and rewrites it into highlighted spans, so `rehypeMermaid`'s
+  `isMermaidPre` check no longer matches and the fence renders as code, not a diagram (observed
+  in the compiled output — see Surprises & Discoveries). The function form prepends our plugin
+  to the default array so it runs first and removes the node before Shiki sees it. Verified
+  against fumadocs-mdx 15.0.10 that `mdxOptions.rehypePlugins` is typed `ResolvePlugins`, which
+  accepts a `(defaults) => plugins` function.
+  Date: 2026-05-30
+
 - Decision: Convert the ` ```mermaid ` fence into a `<Mermaid>` component via a tiny custom
   rehype plugin wired through `source.config.ts`'s `defineConfig({ mdxOptions: { rehypePlugins } })`,
   rather than overriding the `pre`/`code` MDX components.
@@ -156,7 +211,34 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Implemented (2026-05-30).** A ` ```mermaid ` fence in any `.mdx` file now renders through the
+interactive `Mermaid` component instead of as code. The full pipeline is in place and proven by
+the automated gates:
+
+- `beautiful-mermaid@1.1.3` added; `@types/hast` added (dev) so the rehype plugin types resolve.
+- `src/lib/rehype-mermaid.ts` rewrites `pre > code.language-mermaid` into a `<Mermaid chart>`
+  HAST node, wired into `source.config.ts` as `rehypePlugins: (v) => [rehypeMermaid, ...v]`.
+- `src/components/mermaid.tsx` ports mina-ui's `MermaidViewer` + keiki-docs' interaction model
+  (viewBox zoom/pan/fit, toolbar, full-screen expand, keyboard shortcuts, light/dark palettes,
+  error fallback), doing all browser work inside `useEffect`.
+- `Mermaid` registered in `src/components/mdx.tsx`; `.diagram*` CSS appended to
+  `src/styles/app.css`; demo page added at `content/docs/diagram-demo.mdx`.
+
+Verification evidence: `pnpm typecheck` clean; `pnpm build` prerenders `/docs/diagram-demo`
+without a `window`/`document` crash; the compiled MDX module emits
+`(jsx)(Mermaid,{chart:"flowchart TD\n…"})` with **zero** `shiki`/`language-mermaid` strings
+(the fence is intercepted, not highlighted); `pnpm start` serves all routes 200.
+
+**Key lesson:** plugin ordering was the one real trap. fumadocs' built-in Shiki `rehypeCode`
+step (Plan B) claims the `language-mermaid` block first unless `rehypeMermaid` is prepended via
+the function form. The plain array form silently fell back to a highlighted code block. Future
+plans that add rehype plugins competing for the same nodes should default to the function form.
+
+**Gap:** the visual/interactive acceptance (Milestone 5 steps 1–7 — actual zoom/pan/expand and
+the light↔dark re-render seen on screen) still needs a human browser pass; no headless browser
+was available in this environment. The rendering math (`renderMermaidSVG`) was proven headless
+via the probe, and the component is a faithful port of the team's working references, so the
+risk is low — but the on-screen confirmation remains open.
 
 
 ## Context and Orientation

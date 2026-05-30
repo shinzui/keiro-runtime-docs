@@ -1,4 +1,5 @@
 import { defineConfig, defineDocs } from "fumadocs-mdx/config";
+import { rehypeMermaid } from "./src/lib/rehype-mermaid";
 
 // Docs collection: every .mdx under content/docs/ becomes a page.
 // `includeProcessedMarkdown` keeps a plain-markdown copy of each page so the
@@ -27,5 +28,14 @@ export default defineConfig({
       // snippets fall back to plain text). The four below are bundled.
       langs: ["haskell", "nix", "bash", "json"],
     },
+    // Plan C: turn ```mermaid fences into <Mermaid> before any code highlighting
+    // runs. The function form prepends rehypeMermaid to the default plugin array
+    // (`v`, which includes fumadocs' built-in Shiki `rehypeCode`), so our plugin
+    // runs FIRST and removes the language-mermaid pre/code node before Shiki can
+    // claim it. The plain array form `[rehypeMermaid]` runs AFTER the defaults,
+    // by which point Shiki has already rewritten the node and `isMermaidPre` no
+    // longer matches (verified: with the array form, mermaid fences compiled to
+    // `<pre class="shiki ...">` instead of `<Mermaid>`).
+    rehypePlugins: (v) => [rehypeMermaid, ...v],
   },
 });

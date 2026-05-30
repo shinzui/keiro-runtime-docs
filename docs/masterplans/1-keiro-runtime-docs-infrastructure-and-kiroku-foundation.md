@@ -114,7 +114,7 @@ not *blocked* on them.
 |---|-------|------|-----------|-----------|-------|--------|
 | 1 | Scaffold the fumadocs documentation app | docs/plans/1-scaffold-the-fumadocs-documentation-app.md | — | — | 1 | Complete |
 | 2 | PragmataPro font and Shiki code ligatures | docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md | #1 | — | 2 | Complete |
-| 3 | Beautiful Mermaid diagrams with zoom and pan | docs/plans/3-beautiful-mermaid-diagrams-with-zoom-and-pan.md | #1 | — | 2 | Not Started |
+| 3 | Beautiful Mermaid diagrams with zoom and pan | docs/plans/3-beautiful-mermaid-diagrams-with-zoom-and-pan.md | #1 | — | 2 | Complete |
 | 4 | Documentation information architecture and authoring system | docs/plans/4-documentation-information-architecture-and-authoring-system.md | #1 | #2, #3 | 3 | Not Started |
 | 5 | Kiroku foundation documentation set | docs/plans/5-kiroku-foundation-documentation-set.md | #1, #4 | #2, #3 | 4 | Not Started |
 | 6 | Build quality gates and CI | docs/plans/6-build-quality-gates-and-ci.md | #1 | #2, #3, #4, #5 | 2 | Not Started |
@@ -198,8 +198,9 @@ Next.js `app/` directory.
 
 - [x] #2 — Add PragmataPro `@font-face` declarations from the `/bokuno/fonts` flake input. _(2026-05-30)_
 - [x] #2 — Configure Haskell-aware Shiki with ligature-friendly code blocks. _(2026-05-30)_
-- [ ] #3 — Port mina-ui's MermaidViewer; register the zoomable `Mermaid` component.
-- [ ] #3 — Wire pan/zoom interaction and styling.
+- [x] #3 — Port mina-ui's MermaidViewer; register the zoomable `Mermaid` component. _(2026-05-30)_
+- [x] #3 — Wire pan/zoom interaction and styling. _(2026-05-30; on-screen interactive
+      verification still pending a human browser pass — see Surprises & Discoveries.)_
 - [ ] #6 — Stand up build, lint, typecheck, and link-check gates.
 - [ ] #6 — Wire CI to run the gates on every change.
 
@@ -254,6 +255,28 @@ Discovered during implementation of #1:
 - **The static SPA output makes the deferred host decision easier.** `pnpm build`
   emits a fully static `.output/public`, deployable to any static host with no
   server — well aligned with "deploy host deferred."
+
+Discovered during implementation of #3 (Mermaid):
+
+- **rehype plugin ordering vs. the Shiki seam is load-bearing.** The mermaid
+  fence interceptor (`src/lib/rehype-mermaid.ts`) must run **before** fumadocs'
+  built-in Shiki `rehypeCode` step (configured by #2's `rehypeCodeOptions` in
+  `source.config.ts`). With the plain array form `rehypePlugins: [rehypeMermaid]`
+  the plugin ran *after* Shiki, which had already rewritten the
+  `language-mermaid` block into highlighted spans, so the fence rendered as code
+  instead of a diagram. The fix is the function form
+  `rehypePlugins: (v) => [rehypeMermaid, ...v]` (prepend to defaults). **Bearing
+  on #4 and #5:** any author-facing component that wants to claim a fenced code
+  block (or otherwise compete with the Shiki step) must prepend its rehype
+  plugin the same way. **Bearing on #6 (CI):** a useful build-gate assertion is
+  that the compiled MDX for a mermaid fence contains a `Mermaid` component call
+  and **no** `language-mermaid`/`shiki` strings — a cheap regression check that
+  the ordering has not silently broken.
+- **`beautiful-mermaid@1.1.3` requires the diagram header on its own line** (it
+  rejects the single-line `flowchart TD; A --> B` form). Authoring guidance for
+  #5's diagrams: always write multi-line fences (header on line 1).
+- **`@types/hast` is now a dev dependency** (added by #3 so the rehype plugin's
+  HAST node types resolve under `tsc`). Relevant to #6's typecheck gate.
 
 ## Decision Log
 
