@@ -110,7 +110,7 @@ not *blocked* on them.
 
 | # | Title | Path | Hard Deps | Soft Deps | Phase | Status |
 |---|-------|------|-----------|-----------|-------|--------|
-| 1 | Scaffold the fumadocs documentation app | docs/plans/1-scaffold-the-fumadocs-documentation-app.md | — | — | 1 | In Progress |
+| 1 | Scaffold the fumadocs documentation app | docs/plans/1-scaffold-the-fumadocs-documentation-app.md | — | — | 1 | Complete |
 | 2 | PragmataPro font and Shiki code ligatures | docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md | #1 | — | 2 | Not Started |
 | 3 | Beautiful Mermaid diagrams with zoom and pan | docs/plans/3-beautiful-mermaid-diagrams-with-zoom-and-pan.md | #1 | — | 2 | Not Started |
 | 4 | Documentation information architecture and authoring system | docs/plans/4-documentation-information-architecture-and-authoring-system.md | #1 | #2, #3 | 3 | Not Started |
@@ -183,9 +183,9 @@ the owner's contract).
 
 ### Phase 1 — Scaffold
 
-- [ ] #1 — Copy the shibuya-docs fumadocs skeleton into a single root Next.js app.
-- [ ] #1 — Establish `source.config.ts`, `lib/source.ts`, `mdx-components.tsx`, `app/global.css`.
-- [ ] #1 — Set up pnpm + Node 22 dev shell in `flake.nix`; base `package.json` scripts.
+- [x] #1 — Copy the shibuya-docs fumadocs skeleton into a single root Next.js app. _(2026-05-30)_
+- [x] #1 — Establish `source.config.ts`, `lib/source.ts`, `mdx-components.tsx`, `app/global.css`. _(2026-05-30)_
+- [x] #1 — Set up pnpm + Node 22 dev shell in `flake.nix`; base `package.json` scripts. _(2026-05-30)_
 
 ### Phase 2 — Authoring primitives
 

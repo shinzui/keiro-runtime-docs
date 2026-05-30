@@ -1103,6 +1103,38 @@ break the routes, `source`, `getMDXComponents()`, or the build.
   the final IA and may relocate naming into `meta.json`.
 - **2025-12-09 — Seed exactly one page (`index.mdx`) + one `meta.json`.** Enough
   to prove the app renders MDX; the real content tree is Plan D/E's job.
+- **2026-05-30 — Use the *current* shibuya-docs wiring, not the plan's quoted
+  snippets.** The file contents quoted in this plan were written against an older
+  fumadocs and do not type-check / resolve against the pinned versions
+  (`fumadocs-ui`/`fumadocs-core` 16.6.17, `fumadocs-mdx` 14.2.10, Next 16). Since
+  the plan designates shibuya-docs as the known-good reference, I re-read the
+  live shibuya-docs files and adopted their pattern: `pageSchema`/`metaSchema` in
+  `source.config.ts`, the `fumadocs-mdx:collections/server` virtual module in
+  `lib/source.ts` (with a matching `tsconfig.json` `paths` entry), imports from
+  `fumadocs-ui/layouts/docs/page` and `fumadocs-ui/provider/next`,
+  `source.getPageTree()`, and `generateStaticParams`/`generateMetadata`. Branding
+  and the SEAM comments are the only intentional divergences from shibuya-docs.
+- **2026-05-30 — `fumadocs-ui/provider/next`, not `fumadocs-ui/provider`.** The
+  package's `exports` map only exposes `./provider/*` (a wildcard), so the bare
+  `fumadocs-ui/provider` import in the plan's snippet does not resolve. The
+  client provider for the App Router is `fumadocs-ui/provider/next`.
+- **2026-05-30 — Keep `oxlint` as the `lint` script (not `next lint`).** Next 16
+  removed `next lint`, and the repo + flake already ship `oxlint`/`oxfmt`. Using
+  `oxlint` keeps `pnpm lint` working today and consistent with the family's
+  tooling; Plan #6 (CI) builds its gates on top of these scripts.
+- **2026-05-30 — Add `@types/mdx` as a direct devDependency.** Under pnpm's
+  strict (non-hoisted) `node_modules`, the transitive `@types/mdx` is not
+  resolvable, so `import type { MDXComponents } from "mdx/types"` fails. shibuya
+  declares it directly; pinned here at `2.0.13` to match the store version.
+- **2026-05-30 — Approve native builds via `pnpm-workspace.yaml`.** pnpm 11 no
+  longer reads the `pnpm` field in `package.json` and blocks unapproved build
+  scripts. `esbuild` (used by fumadocs-mdx) and `sharp` (Next image
+  optimization) are approved via `allowBuilds` so installs run their postinstall
+  steps non-interactively.
+- **2026-05-30 — Pin `turbopack.root` in `next.config.mjs`.** A stray
+  `~/pnpm-lock.yaml` outside the repo caused Next/Turbopack to infer the wrong
+  workspace root (warning at build time). Setting `turbopack.root` to the config
+  file's directory pins it and silences the warning.
 
 ## Progress Log
 
@@ -1112,14 +1144,46 @@ break the routes, `source`, `getMDXComponents()`, or the build.
   node/pnpm versions. `nix develop --command bash -c 'node --version && pnpm
   --version'` prints `v22.22.3` and `pnpm 11.4.0`. Acceptance met.
 
-### Remaining
+- **2026-05-30 — M2 complete (`package.json` + install).** Merged the
+  fumadocs deps/scripts into the pre-existing scaffolded `package.json` (kept the
+  repo's `oxlint`/`oxfmt`/`typecheck` scripts, dropped the bun bits). `pnpm
+  install` resolves the pinned versions. Two fixes were needed beyond the plan:
+  added `@types/mdx@2.0.13` as a direct devDependency (pnpm's strict layout does
+  not hoist it, so `mdx/types` would not resolve), and added a
+  `pnpm-workspace.yaml` with `allowBuilds: { esbuild: true, sharp: true }`
+  (pnpm 11 blocks unapproved native build scripts and the `pnpm` field in
+  `package.json` is no longer read). `pnpm ls` shows `next 16.0.1`,
+  `react 19.2.0`, `fumadocs-ui 16.6.17`, `fumadocs-core 16.6.17`,
+  `fumadocs-mdx 14.2.10`.
+- **2026-05-30 — M3 complete (fumadocs core wiring).** Created
+  `source.config.ts`, `lib/source.ts`, `mdx-components.tsx`, `next.config.mjs`.
+  Adapted to the proven shibuya-docs pattern for these exact versions (see
+  Surprises): `source.config.ts` uses `pageSchema`/`metaSchema`; `lib/source.ts`
+  imports the `fumadocs-mdx:collections/server` virtual module. `pnpm
+  fumadocs-mdx` regenerates `.source/` (server/browser/dynamic.ts).
+- **2026-05-30 — M4 complete (Tailwind v4 + App Router; types clean).** Created
+  `tsconfig.json` (with the `fumadocs-mdx:collections/*` path mapping),
+  `postcss.config.mjs`, `app/global.css`, `app/layout.tsx`,
+  `app/layout.config.tsx`, `app/docs/layout.tsx`,
+  `app/docs/[[...slug]]/page.tsx`, `app/(home)/page.tsx`,
+  `app/api/search/route.ts`. `pnpm exec tsc --noEmit` → `TSC_EXIT=0`.
+- **2026-05-30 — M5 complete (seed content + dev server).** Seeded
+  `content/docs/index.mdx` + `content/docs/meta.json`. `pnpm dev` serves
+  `http://localhost:3000/docs` (HTTP 200) rendering the "keiro runtime docs"
+  title, the MDX body ("Welcome to the…", "Getting started"), and all four nav
+  links (kiroku/keiro/keiki/shibuya); `/` (HTTP 200) shows the landing page;
+  `/api/search?query=keiro` returns HTTP 200.
+- **2026-05-30 — M6 complete (seams, .gitignore, production build).** Extended
+  `.gitignore` with `.next`, `.source`, `out`, `next-env.d.ts`. `git
+  check-ignore` confirms `node_modules`, `.next`, `.source`, `next-env.d.ts` are
+  ignored and none are tracked. All five seam files carry a `SEAM` marker. `pnpm
+  build` exits 0 with the route table (`/`, `/api/search`,
+  `/docs/[[...slug]]` → `/docs`). Added `turbopack.root` to `next.config.mjs` to
+  pin the workspace root (a stray `~/pnpm-lock.yaml` was mis-inferred otherwise).
 
-- [ ] M2 — `package.json` + `pnpm install`.
-- [ ] M3 — fumadocs core wiring (`source.config.ts`, `lib/source.ts`,
-  `mdx-components.tsx`, `next.config.mjs`).
-- [ ] M4 — Tailwind v4 + App Router pages; `tsc --noEmit` clean.
-- [ ] M5 — seed content + dev server renders the shell.
-- [ ] M6 — seams, `.gitignore`, production build.
+### Plan complete
+
+All six milestones done and verified inside the Nix dev shell.
 
 ## Surprises & Discoveries
 
@@ -1134,7 +1198,60 @@ break the routes, `source`, `getMDXComponents()`, or the build.
   kept, and the `shellHook` message was updated. Node 22 + pnpm were already
   present on the host PATH, but the flake now provides them reproducibly
   (`v22.22.3`, `pnpm 11.4.0`).
+- **2026-05-30 — The plan's quoted fumadocs file contents are stale for the
+  pinned versions.** This was the largest discovery. The snippets in the
+  Concrete Steps render an older fumadocs API and fail against
+  `fumadocs-ui`/`fumadocs-core` 16.6.17 + `fumadocs-mdx` 14.2.10 + Next 16. The
+  concrete symptoms and their fixes (all adopted from the *current* shibuya-docs
+  reference, which the plan names as the known-good source):
+    - `fumadocs-mdx` 14.2.10 generates `.source/{server,browser,dynamic}.ts`
+      with **no `index.ts`**, so `import { docs } from "@/.source"` does not
+      resolve. The correct import is the virtual module
+      `fumadocs-mdx:collections/server`, mapped in `tsconfig.json` via
+      `"paths": { "fumadocs-mdx:collections/*": [".source/*"] }`.
+    - `page.data.body` / `.toc` / `.full` are only typed when the collection has
+      a schema. Adding `pageSchema`/`metaSchema` (from
+      `fumadocs-core/source/schema`) to `defineDocs` in `source.config.ts` makes
+      the page data fully typed.
+    - The docs page components import from `fumadocs-ui/layouts/docs/page` and
+      the loader exposes `source.getPageTree()` (not `source.pageTree`).
+    - `fumadocs-ui/provider` (bare) is not an exported subpath — only
+      `./provider/*` — so the client provider must be
+      `fumadocs-ui/provider/next`.
+- **2026-05-30 — Pre-existing scaffolding already created several target
+  files.** `package.json` (bun-flavoured, with `oxlint`/`oxfmt`/`@types/bun`),
+  `tsconfig.json` (bun-style), `.oxlintrc.json`, and a placeholder
+  `pnpm-workspace.yaml` already existed from the `seihou` scaffold. They were
+  merged/replaced rather than created from scratch: the bun-specific
+  `tsconfig.json` would have broken the Next build, so it was replaced with the
+  fumadocs version; `package.json` kept its useful oxlint/oxfmt scripts.
+- **2026-05-30 — pnpm install occasionally aborts (signal 6) under the
+  sandbox.** A few `pnpm install` invocations printed `Abort trap: 6` with
+  file-descriptor warnings, yet the install state was correct on the next run.
+  Re-running install (idempotent) converged every time; no special handling was
+  needed beyond a retry.
 
 ## Outcomes & Retrospective
 
-<!-- What shipped, what's left, lessons learned. -->
+- **What shipped.** A single-root Next.js 16 + fumadocs 16.6.17 documentation
+  app at the repo root. `pnpm dev` serves a styled docs shell at
+  `http://localhost:3000/docs` (left sidebar, right-hand TOC, theme toggle,
+  search box, nav title "keiro runtime docs", and kiroku/keiro/keiki/shibuya top
+  links) rendering `content/docs/index.mdx`; `/` shows the landing page; and
+  `/api/search` answers search queries. `pnpm build` produces a clean production
+  build (routes `/`, `/api/search`, `/docs/[[...slug]]` → `/docs`), `pnpm exec
+  tsc --noEmit` is green, and the Nix dev shell reproducibly provides Node 22 +
+  pnpm. Generated artifacts (`node_modules`, `.next`, `.source`,
+  `next-env.d.ts`) are git-ignored; `pnpm-lock.yaml` is committed.
+- **Seams left for downstream plans (all verified present).** Shiki seam in
+  `source.config.ts`; font/ligature seam in `app/global.css`; Mermaid + UI
+  component seams in `mdx-components.tsx`; IA/nav seams in `app/layout.config.tsx`
+  and `lib/source.ts`; content-tree seam at `content/docs/`.
+- **What's left / hand-off notes.** Plan B (Shiki + PragmataPro), Plan C
+  (Mermaid), Plan D (IA + authoring), Plan E (kiroku content), and Plan #6 (CI)
+  build on this. The biggest lesson for them: **treat the live shibuya-docs as
+  the source of truth for fumadocs wiring at these versions, not the snippets
+  embedded in the plans** — the API moved between when the plans were written and
+  these pinned versions. Also note: `@types/mdx` is a direct dep, native builds
+  are approved in `pnpm-workspace.yaml`, the `lint` script is `oxlint` (Next 16
+  has no `next lint`), and `turbopack.root` is pinned in `next.config.mjs`.
