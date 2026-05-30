@@ -115,7 +115,7 @@ not *blocked* on them.
 | 1 | Scaffold the fumadocs documentation app | docs/plans/1-scaffold-the-fumadocs-documentation-app.md | — | — | 1 | Complete |
 | 2 | PragmataPro font and Shiki code ligatures | docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md | #1 | — | 2 | Complete |
 | 3 | Beautiful Mermaid diagrams with zoom and pan | docs/plans/3-beautiful-mermaid-diagrams-with-zoom-and-pan.md | #1 | — | 2 | Complete |
-| 4 | Documentation information architecture and authoring system | docs/plans/4-documentation-information-architecture-and-authoring-system.md | #1 | #2, #3 | 3 | Not Started |
+| 4 | Documentation information architecture and authoring system | docs/plans/4-documentation-information-architecture-and-authoring-system.md | #1 | #2, #3 | 3 | Complete |
 | 5 | Kiroku foundation documentation set | docs/plans/5-kiroku-foundation-documentation-set.md | #1, #4 | #2, #3 | 4 | Not Started |
 | 6 | Build quality gates and CI | docs/plans/6-build-quality-gates-and-ci.md | #1 | #2, #3, #4, #5 | 2 | Not Started |
 
@@ -206,8 +206,8 @@ Next.js `app/` directory.
 
 ### Phase 3 — Information architecture
 
-- [ ] #4 — Define the per-library Diátaxis content tree and `meta.json` ordering.
-- [ ] #4 — Build the authoring system: callouts, code-walkthrough and cookbook components.
+- [x] #4 — Define the per-library Diátaxis content tree and `meta.json` ordering. _(2026-05-30)_
+- [x] #4 — Build the authoring system: callouts, code-walkthrough and cookbook components, eight copy-paste templates, and the contributing/style guide. _(2026-05-30)_
 
 ### Phase 4 — Content
 
@@ -277,6 +277,26 @@ Discovered during implementation of #3 (Mermaid):
   #5's diagrams: always write multi-line fences (header on line 1).
 - **`@types/hast` is now a dev dependency** (added by #3 so the rehype plugin's
   HAST node types resolve under `tsc`). Relevant to #6's typecheck gate.
+
+Discovered during implementation of #4 (IA + authoring):
+
+- **Unquoted MDX frontmatter containing `": "` breaks the build.** A
+  `description:` value with an embedded colon-space parsed as a nested YAML
+  mapping and failed `pnpm build` with `YAMLException: bad indentation`. **For
+  #5:** quote `title`/`description` whenever they may contain `:`, `#`, `[`,
+  etc. **For #6:** a cheap, high-value CI gate is to assert every
+  `content/docs/**/*.mdx` parses its frontmatter.
+- **`meta.json` hides pages from the sidebar but NOT from search.** The
+  `_templates/` library (and any allow-list omission) is correctly absent from
+  the sidebar/nav and prerender crawl, but the fumadocs/Orama `/api/search`
+  index still contains it. **For #6:** if template/search noise is undesirable,
+  add a search-exclusion (a frontmatter flag the search route filters, or move
+  templates out of the indexed collection). Does not affect the IA.
+- **The #2/#3 demo pages are now nav orphans by design.** #4 replaced the root
+  `content/docs/meta.json` with the seven-entry family allow-list, which omits
+  `ligature-check` and `diagram-demo`. The files remain (still resolve via the
+  SPA fallback) but are no longer in the sidebar or prerendered. A future plan
+  may fold them into the kiroku content set or delete them.
 
 ## Decision Log
 

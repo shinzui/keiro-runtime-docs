@@ -83,16 +83,16 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Milestone 1 — Register shared MDX UI components in `src/components/mdx.tsx` (merge into `getMDXComponents`, do not replace) and confirm the site still builds.
-- [ ] Milestone 2 — Create the root `content/docs/meta.json` and the top-level landing `content/docs/index.mdx`.
-- [ ] Milestone 3 — Create `getting-started/` (landing + 4 pages + meta.json).
-- [ ] Milestone 4 — Create the kiroku section skeleton: all Diátaxis + extra folders, each with an `index.mdx` and `meta.json`, plus `faq.mdx`.
-- [ ] Milestone 5 — Create placeholder landings + skeletons for keiro, keiki, shibuya.
-- [ ] Milestone 6 — Create `integrations/` (landing + 3 placeholder pages + meta.json).
-- [ ] Milestone 7 — Create the templates library under `content/docs/_templates/` (one MDX per doc type) and exclude it from navigation.
-- [ ] Milestone 8 — Write the authoring/style/contribution guide page under `getting-started/contributing.mdx`.
-- [ ] Milestone 9 — Add the top-level navigation taxonomy (`links`) to `baseOptions()` in `src/lib/layout.shared.tsx` (now that the target sections exist).
-- [ ] Milestone 10 — Run the full verification (`pnpm build` + `pnpm start` / `pnpm dev` sidebar and nav inspection) and record evidence.
+- [x] Milestone 1 — Register shared MDX UI components in `src/components/mdx.tsx` (merge into `getMDXComponents`, do not replace) and confirm the site still builds. Added the six fumadocs-ui families (Callout, Step/Steps, Tab/Tabs, Card/Cards, Accordion/Accordions, TypeTable) alongside the existing `Mermaid`; kept `...defaultMdxComponents`, the trailing `...components`, the `useMDXComponents` re-export, and the `MDXProvidedComponents` global. _(2026-05-30)_
+- [x] Milestone 2 — Create the root `content/docs/meta.json` and the top-level landing `content/docs/index.mdx`. Root meta is the seven-entry family allow-list (hides `_templates`); landing states both "foundation" framings with a `<Cards>` grid and a mermaid dependency diagram. _(2026-05-30)_
+- [x] Milestone 3 — Create `getting-started/` (landing + 4 pages + meta.json). index, the-keiro-family (with dependency diagram), choosing-a-library, installation, contributing. _(2026-05-30)_
+- [x] Milestone 4 — Create the kiroku section skeleton: all Diátaxis + extra folders, each with an `index.mdx` and `meta.json`, plus `faq.mdx`. Real landing with maturity banner; `how-to/meta.json` titled "How-To Guides". _(2026-05-30)_
+- [x] Milestone 5 — Create placeholder landings + skeletons for keiro, keiki, shibuya. Same seven-section shape; keiki landing emphasizes walkthrough/explanation, shibuya emphasizes reference. _(2026-05-30)_
+- [x] Milestone 6 — Create `integrations/` (landing + 3 placeholder pages + meta.json). _(2026-05-30)_
+- [x] Milestone 7 — Create the templates library under `content/docs/_templates/` (one MDX per doc type) and exclude it from navigation. Eight templates; absent from every `meta.json` `pages`, so 0 nav pages prerendered. _(2026-05-30)_
+- [x] Milestone 8 — Write the authoring/style/contribution guide page under `getting-started/contributing.mdx`. Full guide incl. per-type voice, naming, where-each-type-lives table, code/diagram conventions, and the ordered "how to add a new page" checklist. _(2026-05-30)_
+- [x] Milestone 9 — Add the top-level navigation taxonomy (`links`) to `baseOptions()` in `src/lib/layout.shared.tsx` (now that the target sections exist). Six `{ text, url }` items; all targets resolve, so the prerender crawl succeeds. _(2026-05-30)_
+- [x] Milestone 10 — Run the full verification (`pnpm build` + `pnpm start` sidebar and nav inspection) and record evidence. `pnpm typecheck` clean; `pnpm build` prerenders 86 pages (42 docs HTML) with no errors and no dead-link crawl failures; `pnpm start` serves 12/12 representative routes 200; `_templates` produces 0 nav pages. Visual sidebar/nav ordering confirmation is a light browser pass (see Surprises). _(2026-05-30)_
 
 
 ## Surprises & Discoveries
@@ -100,7 +100,32 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **Unquoted frontmatter `description` containing `": "` breaks the YAML parse.** The
+  first draft of the four `reference/index.mdx` files had
+  `description: Information-oriented facts: the APIs, …`. The colon-space in "facts: the"
+  made js-yaml read it as a nested mapping → `pnpm build` failed with
+  `YAMLException: bad indentation of a mapping entry (2:40)` on all four reference
+  landings. Fix: reword to use an em-dash ("facts —") **and** quote the value. Lesson for
+  #5's authors and #6's CI: frontmatter `title`/`description` should be quoted whenever
+  they may contain `:`, `#`, `[`, or other YAML-significant characters. A cheap CI gate
+  would be to assert every `content/docs/**/*.mdx` parses its frontmatter. _(2026-05-30)_
+- **`_templates/` is hidden from the sidebar but still appears in the search index.**
+  `meta.json` `pages` controls only the sidebar tree; the fumadocs/Orama search collection
+  indexes every `.mdx` in `content/docs/` regardless. Evidence: `_templates` produces 0
+  prerendered nav pages (`find .output/public/docs/_templates -name '*.html'` → 0) yet the
+  prerendered `/api/search` index contains `_templates`. This matches the plan's stated
+  acceptance (sidebar/nav exclusion) and its deliberate choice to keep templates in the
+  collection so the build validates them — but readers searching e.g. "tutorial" could see
+  a template hit. **Known gap / follow-up for #6:** if undesirable, exclude `_templates`
+  from search (e.g. a frontmatter flag the search route filters on, or moving templates out
+  of the indexed collection) — out of scope here since it does not affect the IA. _(2026-05-30)_
+- **The Plan #2/#3 demo pages (`ligature-check.mdx`, `diagram-demo.mdx`) became nav
+  orphans.** They were in the old root `meta.json` `pages`; the new family allow-list does
+  not list them, so they no longer appear in the sidebar and are no longer crawled/prerendered
+  (the prerender list has no `diagram-demo`/`ligature-check`). The files remain in the tree
+  and still resolve via the SPA fallback. Left in place deliberately — they belong to sibling
+  plans (#2/#3) as verification artifacts; deleting them is out of this plan's scope. See the
+  Decision Log. _(2026-05-30)_
 
 
 ## Decision Log
@@ -153,6 +178,24 @@ Record every decision made while working on the plan.
   trailing `...components` override) and never overwrite the file.
   Date: 2026-05-30
 
+- Decision: Leave the Plan #2/#3 demo pages (`content/docs/ligature-check.mdx`,
+  `content/docs/diagram-demo.mdx`) in the tree but **omit them from the new root
+  `meta.json`**, so they drop out of the sidebar and the prerender crawl.
+  Rationale: This plan owns the root `meta.json` and replaces it with the family
+  allow-list. The demo pages are sibling plans' verification artifacts, not part of the
+  product IA; deleting them is out of scope and would erase #2/#3's evidence. Hiding them
+  via the allow-list (the same mechanism that hides `_templates`) keeps the reader-facing
+  IA clean while preserving the files. They still resolve by direct URL via the SPA
+  fallback.
+  Date: 2026-05-30
+
+- Decision: Reword the four `reference/index.mdx` `description` fields to avoid a literal
+  `": "` and quote all frontmatter values that could contain YAML-significant characters.
+  Rationale: An unquoted `description` containing `facts: the` parsed as a nested YAML
+  mapping and failed the build (see Surprises & Discoveries). Quoting + em-dash is the
+  minimal, robust fix and sets the convention for #5's content.
+  Date: 2026-05-30
+
 - Decision: Own the **top-level navigation taxonomy** (kiroku / keiro / keiki / shibuya)
   in `baseOptions()` in `src/lib/layout.shared.tsx`, adding it as the `links` array of
   `BaseLayoutProps`, and add it **last** (Milestone 9) — only after the corresponding
@@ -171,7 +214,31 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Implemented (2026-05-30).** The site now has a complete, navigable, *empty* information
+architecture plus a templates library and a written authoring guide — exactly the purpose.
+
+- **IA tree:** product-first top level (`getting-started/`, `kiroku/`, `keiro/`, `keiki/`,
+  `shibuya/`, `integrations/`) with the seven repeated sections inside each product, every
+  folder carrying an `index.mdx` landing and a `meta.json`. kiroku has a real landing with a
+  maturity banner; keiro/keiki/shibuya have placeholder landings; integrations has a landing +
+  three placeholders.
+- **Authoring system:** six fumadocs-ui component families registered in `src/components/mdx.tsx`
+  (merged with `Mermaid`); eight copy-paste templates under `_templates/` (hidden from nav);
+  a full `getting-started/contributing.mdx` style/contribution guide with the "how to add a
+  new page" checklist.
+- **Navigation:** the top-level `links` taxonomy added to `baseOptions()` last, after every
+  target landing existed, so the static-SPA `crawlLinks` prerender passes cleanly.
+
+**Evidence:** `pnpm typecheck` clean; `pnpm build` prerenders 86 pages (42 docs HTML) with no
+errors and no dead-link failures; `pnpm start` serves 12/12 representative routes 200;
+`_templates` yields 0 nav pages; all 8 templates compile (proving the component registration).
+
+**Gaps / follow-ups (for #6):** (1) templates are excluded from the *sidebar* but still appear
+in the *search* index — add a search-exclusion if undesirable; (2) a frontmatter-parse CI gate
+would have caught the `reference/index.mdx` YAML bug immediately; (3) the visual confirmation of
+sidebar grouping/ordering and the "How-To Guides" label is a light browser pass (the structure
+is proven by the build + meta.json, but on-screen ordering was not automatable here). This plan
+unblocks #5 (kiroku content), which populates the `kiroku/<section>/` seams created here.
 
 
 ## Context and Orientation

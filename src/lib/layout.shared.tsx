@@ -15,5 +15,15 @@ export function baseOptions(): BaseLayoutProps {
       title: appName,
     },
     githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,
+    // Plan D: top-level per-library taxonomy. Added only after every target
+    // landing exists (the static-SPA prerenderer crawls these links).
+    links: [
+      { text: "Getting Started", url: "/docs/getting-started" },
+      { text: "kiroku", url: "/docs/kiroku" },
+      { text: "keiro", url: "/docs/keiro" },
+      { text: "keiki", url: "/docs/keiki" },
+      { text: "shibuya", url: "/docs/shibuya" },
+      { text: "Integrations", url: "/docs/integrations" },
+    ],
   };
 }
