@@ -16,8 +16,8 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 
 ## Purpose / Big Picture
 
-After this change, the unified keiro-runtime documentation site (a fumadocs / Next.js +
-MDX app living in this repo) contains a complete, accurate, navigable documentation set for
+After this change, the unified keiro-runtime documentation site (a fumadocs +
+TanStack Start static-SPA + MDX app living in this repo) contains a complete, accurate, navigable documentation set for
 **kiroku** — the append-only PostgreSQL **event store** that is the persistence foundation
 of the keiro runtime family. A reader who lands on `/docs/kiroku` can:
 
@@ -35,7 +35,9 @@ of the keiro runtime family. A reader who lands on `/docs/kiroku` can:
 - learn the user-land **decider / evolve** pattern that kiroku deliberately does *not*
   ship, presented as an application pattern layered on top of the store.
 
-You can see it working by running the docs dev server (`pnpm dev`) and browsing
+You can see it working by running the docs dev server (`pnpm dev`, i.e. `vite dev`) — or a
+production build with `pnpm build && pnpm start` (the build emits a static SPA under
+`.output/public`) — and browsing
 `http://localhost:3000/docs/kiroku`: the kiroku tree appears in the sidebar with the page
 order defined in `content/docs/kiroku/meta.json`; Haskell snippets render in PragmataPro with
 ligatures (`->`, `=>`, `<-`, `::`, `>>=` shown as glyphs); and at least one `mermaid`
@@ -96,6 +98,19 @@ Record every decision made while working on the plan.
   declaring snippets correct.
   Rationale: Snippet accuracy is an explicit acceptance criterion.
   Date: 2026-05-30
+- Decision: The docs app was re-scaffolded on **TanStack Start (static SPA)** instead of
+  Next.js; this plan's tooling references were updated accordingly. The MDX authoring
+  substance (content, Haskell snippets, frontmatter, Diátaxis mapping, kiroku source-of-truth
+  paths) is framework-agnostic and is unchanged. Only docs-app file/command references move:
+  `mdx-components.tsx` → `src/components/mdx.tsx`, `lib/source.ts` → `src/lib/source.ts`,
+  `app/global.css` → `src/styles/app.css`, `next.config.mjs` → `vite.config.ts`,
+  `next dev`/`next build` → `vite dev`/`vite build` (`pnpm dev`/`pnpm build`); the import
+  alias `@/...` resolves to `./src/...`. Verification now browses the SPA where MDX renders
+  client-side.
+  Rationale: Plan A (the scaffold) is now a TanStack Start static SPA and is already
+  re-implemented and committed; the content plan must reference the real files a contributor
+  will see, while preserving intent and scope.
+  Date: 2026-05-30
 
 
 ## Outcomes & Retrospective
@@ -115,8 +130,12 @@ and the working tree can complete the work.
 
 You are writing MDX content files under `content/docs/kiroku/` in **this** repository
 (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`). The site itself is a **fumadocs**
-documentation app (Next.js 16 + React 19 + MDX, TypeScript, Tailwind v4, built and served
-with **pnpm** on **Node 22**). Content lives under `content/docs/`. Each directory has a
+documentation app (fumadocs-ui 16.9.3 + fumadocs-mdx 15.0.10) built on **TanStack Start as a
+static SPA** (React 19 + MDX, TypeScript, Tailwind v4, bundled with **Vite**), built and
+served with **pnpm** on **Node 22** inside the Nix dev shell (`nix develop`). `pnpm dev` runs
+`vite dev`; `pnpm build` runs `vite build` and emits a static SPA under `.output/public`,
+served by `pnpm start`. MDX is compiled by fumadocs-mdx and rendered client-side in the SPA.
+Content lives under `content/docs/`. Each directory has a
 `meta.json` that controls the sidebar (its `pages` array lists child page slugs / nested
 directory names in display order). A page is an `.mdx` file with YAML frontmatter
 (`title`, `description`) followed by MDX body.
@@ -130,15 +149,18 @@ This plan is **Plan E** in the master plan
 `docs/masterplans/1-keiro-runtime-docs-infrastructure-and-kiroku-foundation.md`.
 
 - **HARD DEP — Plan A** (`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`):
-  scaffolds the fumadocs app. After Plan A, `pnpm dev` serves a styled empty docs site;
-  `source.config.ts`, `lib/source.ts`, `mdx-components.tsx`, `app/global.css`, the layouts,
-  and `content/docs/` with `index.mdx` + `meta.json` all exist. **You cannot build or preview
-  your pages until Plan A is done.**
+  scaffolds the fumadocs app on **TanStack Start (static SPA)** (already re-implemented and
+  committed). After Plan A, `pnpm dev` (`vite dev`) serves a styled empty docs site;
+  `source.config.ts`, `src/lib/source.ts`, `src/components/mdx.tsx`, `src/styles/app.css`,
+  `vite.config.ts`, the route layouts under `src/routes/`, and `content/docs/` with
+  `index.mdx` + `meta.json` all exist. **You cannot build or preview your pages until Plan A
+  is done.**
 - **HARD DEP — Plan D** (`docs/plans/4-documentation-information-architecture-and-authoring-system.md`):
   defines the product-first IA, the location `content/docs/kiroku/`, the per-doc-type page
   **templates** (one per Diátaxis type: Tutorial, How-To Guide, Reference, Explanation, plus
-  Cookbook), the shared MDX components to prefer (fumadocs-ui built-ins: `Callout`, `Steps`,
-  `Tabs`, `Cards`, `TypeTable`), and the authoring/style conventions. **Copy the matching
+  Cookbook), the shared MDX components to prefer (fumadocs-ui 16.9.3 built-ins: `Callout`,
+  `Steps`, `Tabs`, `Cards`, `TypeTable`, registered in `src/components/mdx.tsx`), and the
+  authoring/style conventions. **Copy the matching
   template for each page from Plan D's templates; do not invent a different page shape.**
 - **SOFT DEP — Plan B** (`docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md` —
   confirm exact slug in `docs/plans/`): PragmataPro font + Shiki Haskell highlighting +
@@ -589,8 +611,11 @@ unless stated otherwise. The docs toolchain is **pnpm** on **Node 22**.
 ### M0 — Preconditions
 
 ```bash
-# confirm the scaffold (Plan A) and the IA (Plan D) are present
-test -f source.config.ts && test -f lib/source.ts && echo "Plan A present"
+# enter the Nix dev shell (pnpm + Node 22) first
+nix develop
+
+# confirm the scaffold (Plan A — TanStack Start static SPA) and the IA (Plan D) are present
+test -f source.config.ts && test -f src/lib/source.ts && test -f vite.config.ts && echo "Plan A present"
 test -d content/docs/kiroku && echo "Plan D kiroku dir present" || mkdir -p content/docs/kiroku
 
 # install + verify the empty site builds before you start
@@ -603,7 +628,7 @@ Expected (abridged):
 ```text
 Plan A present
 Plan D kiroku dir present
-✓ Compiled successfully
+✓ built in <N>s
 ```
 
 If `content/docs/kiroku/` does not exist, Plan D has not landed; stop and finish Plan D first
@@ -676,8 +701,9 @@ flowchart LR
 </Cards>
 ````
 
-(Confirm the exact import paths for `Callout`/`Cards` against Plan A's `mdx-components.tsx`;
-if those components are globally registered there, drop the `import` lines.)
+(Confirm the exact `fumadocs-ui` 16.9.3 import paths for `Callout`/`Cards` against Plan A's
+MDX registry `src/components/mdx.tsx`; if those components are globally registered there
+via `getMDXComponents`, drop the `import` lines.)
 
 ### M2 — `content/docs/kiroku/getting-started.mdx` (Tutorial)
 
@@ -1031,15 +1057,19 @@ pnpm dev   # then browse http://localhost:3000/docs/kiroku
 
 Exercise the system and observe specific behaviors:
 
-1. **Section builds.** From the repo root, `pnpm build` exits 0 with the kiroku pages present.
-   Expected tail:
+1. **Section builds.** From the repo root, `pnpm build` (`vite build`) exits 0 with the kiroku
+   pages present; it emits the static SPA under `.output/public`. Run `pnpm typecheck`
+   (`fumadocs-mdx && tsc --noEmit`) too, so the generated `.source/` collection picks up the
+   new pages. Expected tail (abridged):
 
    ```text
-   ✓ Compiled successfully
-   ✓ Generating static pages
+   ✓ built in <N>s
+   .output/public/...
    ```
 
-2. **Renders in the sidebar.** `pnpm dev`, open `http://localhost:3000/docs/kiroku`. The
+2. **Renders in the sidebar.** `pnpm dev` (or `pnpm build && pnpm start`), open
+   `http://localhost:3000/docs/kiroku`. Because this is a static SPA, the page tree and MDX
+   render client-side in the browser. The
    sidebar shows kiroku with children in the `meta.json` order: Getting started, Explanation
    (7 pages), Reference (2), How-To Guides (4), Tutorials (1), Cookbook (1). Every page opens
    without a 404 and shows its frontmatter `title`.
@@ -1112,10 +1142,15 @@ Recovery:
   OpenTelemetry how-to.
 - `shibuya-kiroku-adapter` (`Shibuya.Adapter.Kiroku`) — referenced by the shibuya how-to.
 
-**Tooling / app (TypeScript, the docs site):**
-- fumadocs (`fumadocs-core`, `fumadocs-ui`, `fumadocs-mdx`) — MDX content + sidebar from
-  `meta.json`; built-in components `Callout`, `Steps`, `Tabs`, `Cards`, `TypeTable`.
-- pnpm + Node 22 — `pnpm install`, `pnpm build`, `pnpm dev`.
+**Tooling / app (TypeScript, the docs site — TanStack Start static SPA):**
+- fumadocs (`fumadocs-core` 16.9.3, `fumadocs-ui` 16.9.3, `fumadocs-mdx` 15.0.10) — MDX
+  content + sidebar from `meta.json`; built-in components `Callout`, `Steps`, `Tabs`,
+  `Cards`, `TypeTable`, registered in `src/components/mdx.tsx`. Loader/config in
+  `src/lib/source.ts` and `source.config.ts`.
+- TanStack Start + Vite — `pnpm dev` = `vite dev`; `pnpm build` = `vite build` (static SPA in
+  `.output/public`); `pnpm start` serves it; `pnpm typecheck` = `fumadocs-mdx && tsc --noEmit`.
+- pnpm + Node 22 inside the Nix dev shell (`nix develop`) — `pnpm install`, `pnpm build`,
+  `pnpm dev`.
 
 **Files this plan creates/owns (all under `content/docs/kiroku/`):**
 `index.mdx`, `getting-started.mdx`, `meta.json`; `explanation/{event-sourcing,append-only-log,
@@ -1137,3 +1172,41 @@ integrate-with-shibuya}.mdx` + `how-to-guides/meta.json`;
   step 5), except the explicitly user-land `decide`/`evolve` tutorial.
 - At least one interactive `mermaid` diagram (the append→store→subscribe flow) and
   ligature-bearing Haskell snippets are present (proving Plans C and B once merged).
+
+
+---
+
+## Revision note — Next.js → TanStack Start pivot (2026-05-30)
+
+This plan was originally written assuming the docs app was a fumadocs **Next.js** app. The
+project has since **pivoted to TanStack Start built as a static SPA** (React 19 + Vite +
+fumadocs-ui 16.9.3 / fumadocs-mdx 15.0.10), and Plan A (the scaffold,
+`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`) has already been re-implemented and
+committed on that stack. This revision updates **only the framework-specific mechanics**;
+the authoring substance — the MDX content, Haskell snippets, YAML frontmatter, Diátaxis
+mapping, page set, and all kiroku-repo source-of-truth paths (e.g.
+`kiroku-jitsurei/app/Main.hs`, `kiroku-store/src`) — is unchanged, since it is
+framework-agnostic.
+
+What changed:
+
+- Docs-app file references remapped to the TanStack layout: `mdx-components.tsx` →
+  `src/components/mdx.tsx`; `lib/source.ts` → `src/lib/source.ts`; `app/global.css` →
+  `src/styles/app.css`; `next.config.mjs` → `vite.config.ts`. The import alias `@/...`
+  resolves to `./src/...`. App Router (`app/...`) no longer exists; routing is file-based
+  under `src/routes/`, but this plan authors content under `content/docs/`, which is
+  unchanged.
+- Commands remapped: `next dev`/`pnpm dev` → `vite dev` (`pnpm dev`); `next build`/`pnpm build`
+  → `vite build` (`pnpm build`), which emits a **static SPA in `.output/public`** served by
+  `pnpm start`; `pnpm typecheck` = `fumadocs-mdx && tsc --noEmit`. All commands run from the
+  repo root in the Nix dev shell (`nix develop`, pnpm + Node 22).
+- Verification updated: browse via `pnpm dev` or `pnpm build && pnpm start` at
+  `http://localhost:3000/docs/kiroku`. MDX renders **client-side** in the SPA, so the rendered
+  tree/content appears in the browser. Build-output expectations changed from the Next.js
+  "Compiled successfully / Generating static pages" banner to Vite's `built in <N>s` plus the
+  `.output/public` artifact.
+- Soft deps unchanged in intent: Plan B (`docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md`)
+  supplies the Shiki Haskell highlighter + ligatures via `source.config.ts`; Plan C
+  (`docs/plans/3-beautiful-mermaid-diagrams-with-zoom-pan.md`) supplies interactive Mermaid via
+  the registry in `src/components/mdx.tsx`. `haskell` and `mermaid` fences are authored now and
+  light up once B and C land.

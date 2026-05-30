@@ -21,9 +21,11 @@ shell, ```ts for TypeScript. Never use a bare ``` fence.
 
 The end state is a single, polished documentation website that covers the
 **keiro runtime** — a family of four **Haskell** libraries. The docs *site* is
-a TypeScript / Next.js application built on **fumadocs**; the *code* being
-documented is Haskell. Two languages, one project: the application is TS, the
-subject matter is Haskell.
+a TypeScript application built on **fumadocs** running on **TanStack Start**
+(a Vite-based React full-stack framework) and shipped as a **static SPA**
+(single-page app prerendered to static files); the *code* being documented is
+Haskell. Two languages, one project: the application is TS, the subject matter
+is Haskell.
 
 The four libraries the site will eventually document:
 
@@ -102,9 +104,9 @@ not *blocked* on them.
   Porting kiroku docs without a settled IA and authoring conventions would force
   rework when the structure changes; the content plan hard-depends on the IA.
 - **Multi-app / monorepo split** (separate apps per library or per concern).
-  Rejected. This is a **single root fumadocs app** — one Next.js application
-  with one content tree — matching the sibling fumadocs sites. A monorepo adds
-  coordination overhead with no benefit for one documentation root.
+  Rejected. This is a **single root fumadocs app** — one TanStack Start
+  application with one content tree. A monorepo adds coordination overhead with
+  no benefit for one documentation root.
 
 ## Exec-Plan Registry
 
@@ -171,21 +173,26 @@ These are the files multiple child plans touch. Each has one **owner** (the plan
 that creates and structures it) and **extenders** (plans that add to it under
 the owner's contract).
 
+All paths below reflect the **TanStack Start (static SPA)** layout (see the
+Decision Log): the app lives under `src/` with file-based routing, not a
+Next.js `app/` directory.
+
 | File / System | Owner | Extenders | Contract |
 |---------------|-------|-----------|----------|
-| `source.config.ts` | #1 | #2 | #1 defines the doc collections, frontmatter schema, and MDX/`rehypeCodeOptions` skeleton. #2 extends `rehypeCodeOptions` with the Haskell-aware Shiki config and ligature-friendly transformers without changing the collection schema. |
-| `mdx-components.tsx` | #1 | #3, #4 | #1 establishes the base MDX-to-React component map. #3 registers the client `Mermaid` / zoomable viewer component; #4 registers authoring components (callouts, walkthrough/cookbook wrappers). Additions only — existing mappings stay stable. |
-| `app/global.css` | #1 | #2 | #1 owns global styles and the structure of the stylesheet. #2 adds the PragmataPro `@font-face` declarations (pointing at the `/bokuno/fonts` OTFs) and the code-block font-family/ligature rules. |
-| `content/docs/**` + `meta.json` | #4 (structure) | #5 (populate) | #4 defines the directory layout, `meta.json` navigation ordering, and the per-library Diátaxis skeleton. #5 populates the `kiroku/` subtree with real MDX and fills its `meta.json` entries, conforming to #4's structure. |
-| `package.json` scripts + `flake.nix` | #1 | #6 | #1 establishes the pnpm scripts (dev/build/typecheck) and the Node 22 / pnpm dev shell in `flake.nix`. #6 adds lint, link-check, and CI wiring on top, keeping the existing script names intact. |
+| `source.config.ts` | #1 | #2 | #1 defines the fumadocs-mdx doc collection (`defineDocs`) and the `defineConfig` skeleton. #2 extends `mdxOptions.rehypeCodeOptions` with the Haskell-aware Shiki config and ligature-friendly transformers without changing the collection. (Processed by the `fumadocs-mdx/vite` plugin in `vite.config.ts`.) |
+| `src/components/mdx.tsx` | #1 | #3, #4 | #1 establishes the base MDX-to-React component map (`getMDXComponents`/`useMDXComponents`). #3 registers the client `Mermaid` / zoomable viewer component; #4 registers authoring components (callouts, cards, tabs, walkthrough/cookbook wrappers). Additions only — existing mappings stay stable. Components reach pages via the docs client loader in `src/routes/docs/$.tsx`. |
+| `src/styles/app.css` | #1 | #2 | #1 owns global styles and the stylesheet structure (Tailwind v4 + fumadocs CSS). #2 adds the PragmataPro `@font-face` declarations (pointing at the `/bokuno/fonts` OTFs — TanStack Start/Vite has no `next/font`, so fonts load via CSS `@font-face`) and the `--fd-font-mono` / code-block ligature rules. |
+| `src/lib/layout.shared.tsx` + `src/lib/source.ts` | #1 | #4 | #1 scaffolds `baseOptions()` (site title only) and the fumadocs `loader()`. #4 owns the navigation taxonomy: it adds the per-library top-level `links` (kiroku/keiro/keiki/shibuya) to `baseOptions()` and may extend the loader (icons, page-tree transforms). #1 deliberately omitted the nav links so the SPA prerenderer does not crawl pages that do not exist yet. |
+| `content/docs/**` + `meta.json` | #4 (structure) | #5 (populate) | Framework-agnostic. #4 defines the directory layout, `meta.json` navigation ordering, and the per-library Diátaxis skeleton. #5 populates the `kiroku/` subtree with real MDX and fills its `meta.json` entries, conforming to #4's structure. |
+| `package.json` scripts + `flake.nix` | #1 | #6 | #1 establishes the pnpm scripts (`dev`=`vite dev`, `build`=`vite build` → static `.output/public`, `start`=`serve .output/public`, `typecheck`=`fumadocs-mdx && tsc --noEmit`, plus `lint`=`oxlint`/`format`=`oxfmt`) and the Node 22 / pnpm dev shell in `flake.nix`. #6 adds the lint/format/link-check gates and CI wiring on top, keeping the existing script names intact. |
 
 ## Progress
 
 ### Phase 1 — Scaffold
 
-- [x] #1 — Copy the shibuya-docs fumadocs skeleton into a single root Next.js app. _(2026-05-30)_
-- [x] #1 — Establish `source.config.ts`, `lib/source.ts`, `mdx-components.tsx`, `app/global.css`. _(2026-05-30)_
-- [x] #1 — Set up pnpm + Node 22 dev shell in `flake.nix`; base `package.json` scripts. _(2026-05-30)_
+- [x] #1 — Stand up a single root **TanStack Start** static-SPA fumadocs app (adapted from the fumadocs `tanstack-start-spa` example). _(2026-05-30)_
+- [x] #1 — Establish `source.config.ts`, `vite.config.ts`, `src/lib/source.ts`, `src/components/mdx.tsx`, `src/styles/app.css`, and the `src/routes/` tree. _(2026-05-30)_
+- [x] #1 — Set up pnpm + Node 22 dev shell in `flake.nix`; base `package.json` scripts (`vite dev`/`vite build`/static `serve`). _(2026-05-30)_
 
 ### Phase 2 — Authoring primitives
 
@@ -222,15 +229,52 @@ Research during planning corrected several initial premises:
   system.
 - The three signature customizations (PragmataPro ligatures, Haskell Shiki,
   zoomable Mermaid) are **greenfield** for this site.
-- **shibuya-docs** is the existing **fumadocs precedent** to copy the skeleton
-  from; **mina-ui** is the source of the MermaidViewer.
+- **mina-ui** is the source of the MermaidViewer.
+
+Discovered during implementation of #1:
+
+- **Framework pivot: Next.js → TanStack Start (static SPA).** The plan originally
+  targeted Next.js (copying the shibuya-docs skeleton). After scaffolding on
+  Next.js, the requirement changed to **TanStack Start**. The scaffold was
+  re-implemented as a static SPA using the fumadocs `tanstack-start-spa` example
+  as the reference (replacing shibuya-docs, which is Next.js-based). This changes
+  the file layout (`app/` → `src/routes/` + `src/lib/` + `src/components/`), the
+  build tool (`next build` → `vite build`), and the bundler config
+  (`next.config.mjs` → `vite.config.ts`). All child plans (#2–#6) were updated to
+  match. See the Decision Log.
+- **fumadocs is framework-agnostic.** `fumadocs-core` / `fumadocs-ui` /
+  `fumadocs-mdx` all support TanStack Start (via `fumadocs-ui/provider/tanstack`,
+  the `fumadocs-mdx/vite` plugin, and a client-loader rendering path). The
+  documented capabilities (Shiki seam, MDX component registry, content tree,
+  search) all carry over; only the wiring differs.
+- **`nitro@3.0.260522-beta` (the latest) breaks the Vite dev SSR worker.** With
+  it, `pnpm dev` returns 500s (`Vite environment "ssr" is unavailable`). The
+  prior beta `3.0.260429-beta` works for both `pnpm dev` and the prerendered
+  `pnpm build`, so nitro is pinned there.
+- **The static SPA output makes the deferred host decision easier.** `pnpm build`
+  emits a fully static `.output/public`, deployable to any static host with no
+  server — well aligned with "deploy host deferred."
 
 ## Decision Log
 
-- **2026-05-30 — Single root app, copy shibuya-docs skeleton.** One Next.js +
-  fumadocs application with one content tree. Copying the proven shibuya-docs
-  skeleton avoids re-deriving fumadocs wiring and keeps us consistent with
-  sibling sites.
+- **2026-05-30 — Single root app, copy shibuya-docs skeleton. _(SUPERSEDED — see
+  the TanStack Start decision below.)_** Originally: one Next.js + fumadocs
+  application copying the proven shibuya-docs skeleton.
+- **2026-05-30 — Framework: TanStack Start (static SPA), not Next.js.
+  _(Supersedes the shibuya-docs/Next.js decision above.)_** The requirement
+  changed to use **TanStack Start** instead of Next.js. The app is a single root
+  fumadocs site on TanStack Start (Vite + TanStack Router), built as a **static
+  SPA** (`vite build` prerenders to `.output/public`). The known-good reference
+  is the fumadocs **`tanstack-start-spa`** example (at
+  `/Users/shinzui/Keikaku/fumadocs-project/fumadocs/examples/tanstack-start-spa`),
+  which replaces shibuya-docs as the skeleton source. Rationale for the SPA
+  variant specifically: it emits host-agnostic static files, matching the
+  deferred-host decision. Layout: `src/routes/` (file-based routing),
+  `src/lib/`, `src/components/`, `src/styles/app.css`, `vite.config.ts` — no
+  Next.js `app/` directory.
+- **2026-05-30 — Pin `nitro@3.0.260429-beta`.** The latest nitro
+  (`3.0.260522-beta`) breaks the Vite dev SSR worker (`pnpm dev` → 500s); the
+  prior beta works for both dev and the prerendered build.
 - **2026-05-30 — pnpm + Node 22 (switch from the repo's bun flake).** The
   repo's current `flake.nix` is bun-based; the sibling fumadocs sites use pnpm +
   Node 22. We switch to match them so tooling, lockfiles, and CI are consistent
@@ -243,7 +287,7 @@ Research during planning corrected several initial premises:
   and ligature-friendly transformers.
 - **2026-05-30 — Port mina-ui's MermaidViewer for zoom/pan.** Rather than
   building a diagram viewer from scratch, port the proven MermaidViewer
-  component from mina-ui and register it in `mdx-components.tsx`.
+  component from mina-ui and register it in `src/components/mdx.tsx`.
 - **2026-05-30 — Start content with kiroku.** It is the foundation layer
   everything depends on and already has substantial documentation to port,
   making it the lowest-risk, highest-value first content target.
@@ -255,5 +299,25 @@ Research during planning corrected several initial premises:
 
 ## Outcomes & Retrospective
 
-_To be filled in as phases complete — what shipped, what changed, and what comes
-next (the keiro / keiki / shibuya content master plans)._
+**Phase 1 — Scaffold (#1): complete (2026-05-30).** A single-root fumadocs
+documentation site now exists on **TanStack Start**, shipped as a **static SPA**.
+`pnpm build` prerenders `/`, `/docs`, `/docs/index.md`, and the static
+`/api/search` index into `.output/public`; `pnpm start` serves it (all routes
+200, SPA fallback for unknown paths); `pnpm dev` runs the Vite dev server; and
+`pnpm exec tsc --noEmit` is clean. The Nix dev shell reproducibly provides
+Node 22 + pnpm. All extension seams for #2–#6 are present (Shiki in
+`source.config.ts`, fonts in `src/styles/app.css`, MDX components in
+`src/components/mdx.tsx`, nav/IA in `src/lib/layout.shared.tsx` +
+`src/lib/source.ts`, content tree in `content/docs/`).
+
+The major mid-flight change was the **Next.js → TanStack Start pivot** (recorded
+in the Decision Log and Surprises). The initial scaffold was built on Next.js,
+then re-implemented on TanStack Start when the requirement changed; child plans
+#2–#6 were revised to match. Lesson for the remaining phases: the fumadocs
+`tanstack-start-spa` example is the source of truth for wiring, and the docs page
+renders MDX **client-side** (a SPA client loader), so prerendered HTML is a
+hydration shell — verify rendered content in a browser (or via the static search
+index / raw `.md` route), not by grepping the static HTML.
+
+_Phases 2–4 to be filled in as they complete, then what comes next (the keiro /
+keiki / shibuya content master plans)._

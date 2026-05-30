@@ -17,13 +17,23 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 ## Purpose / Big Picture
 
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is becoming a
-single documentation website built with **fumadocs** — a documentation framework
-that runs on **Next.js** (a React web framework) and renders **MDX** files (Markdown
-files that may also contain React components). The site documents the **keiro
-runtime**, which is not one program but a *family* of four Haskell libraries:
-**kiroku**, **keiro**, **keiki**, and **shibuya** (each is described in the Context
-section below). The website itself is written in TypeScript/React; the *code samples
-inside the docs* are Haskell.
+single documentation website built with **fumadocs** — a documentation framework —
+running on **TanStack Start** (a React full-stack framework, here configured as a
+**static single-page app / SPA**) and built with **Vite** (the bundler/dev server).
+It renders **MDX** files (Markdown files that may also contain React components). The
+site documents the **keiro runtime**, which is not one program but a *family* of four
+Haskell libraries: **kiroku**, **keiro**, **keiki**, and **shibuya** (each is described
+in the Context section below). The website itself is written in TypeScript/React; the
+*code samples inside the docs* are Haskell.
+
+A note on the framework: an earlier draft of this plan assumed **Next.js** (the App
+Router). The project has since **pivoted to TanStack Start as a static SPA**, and the
+scaffold (`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`) is already
+re-implemented and committed on that stack. This plan has been rewritten so that every
+file path and command targets the TanStack Start codebase. The *content* this plan
+produces — the `content/docs/**` tree and the `meta.json` navigation files — is
+framework-agnostic and is unchanged by the pivot; only the two integration seams (the
+MDX component registry and the navigation taxonomy) and the build/run commands change.
 
 Before this plan, the site can render but has no organized place to put documentation
 and no rules for how to write it. **After this plan, the site has a complete, empty
@@ -48,12 +58,17 @@ recipes), **Code Walkthrough** (an ordered tour that reads the real source code)
 **FAQ** (frequently asked questions), and **Theory** (deeper conceptual/mathematical
 essays, which live inside Explanation).
 
-You can **see it working** by running the dev server and opening the docs: the left
-sidebar shows the products (getting-started, kiroku, keiro, keiki, shibuya,
-integrations), each product expands to show the Diátaxis sections, every section has a
-landing page, and a contributor can copy a template file, drop it into the right
-folder, add one line to a `meta.json`, and watch the new page appear in the sidebar
-and build without errors.
+You can **see it working** by running the Vite dev server (`pnpm dev`) — or by building
+the static SPA (`pnpm build`) and serving it (`pnpm start`) — and opening
+`http://localhost:3000/docs` in a browser. MDX is compiled at build time and rendered
+**client-side** (the docs route hydrates and renders the page through
+`useMDXComponents()`). The left sidebar shows the products (getting-started, kiroku,
+keiro, keiki, shibuya, integrations); each product expands to show the Diátaxis
+sections; every section has a landing page; and a contributor can copy a template file,
+drop it into the right folder, add one line to a `meta.json`, and watch the new page
+appear in the sidebar and build without errors. In addition, this plan adds a
+**top-level navigation bar** (the kiroku / keiro / keiki / shibuya taxonomy) that the
+scaffold deliberately left out.
 
 Scope boundary: **only kiroku gets real written content**, and that content is written
 in a separate plan (`docs/plans/5-kiroku-foundation-documentation-set.md`). This plan
@@ -68,15 +83,16 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Milestone 1 — Register shared MDX UI components in `mdx-components.tsx` (merge, do not replace) and confirm the site still builds.
+- [ ] Milestone 1 — Register shared MDX UI components in `src/components/mdx.tsx` (merge into `getMDXComponents`, do not replace) and confirm the site still builds.
 - [ ] Milestone 2 — Create the root `content/docs/meta.json` and the top-level landing `content/docs/index.mdx`.
-- [ ] Milestone 3 — Create `getting-started/` (landing + 3 pages + meta.json).
+- [ ] Milestone 3 — Create `getting-started/` (landing + 4 pages + meta.json).
 - [ ] Milestone 4 — Create the kiroku section skeleton: all Diátaxis + extra folders, each with an `index.mdx` and `meta.json`, plus `faq.mdx`.
 - [ ] Milestone 5 — Create placeholder landings + skeletons for keiro, keiki, shibuya.
 - [ ] Milestone 6 — Create `integrations/` (landing + 3 placeholder pages + meta.json).
 - [ ] Milestone 7 — Create the templates library under `content/docs/_templates/` (one MDX per doc type) and exclude it from navigation.
 - [ ] Milestone 8 — Write the authoring/style/contribution guide page under `getting-started/contributing.mdx`.
-- [ ] Milestone 9 — Run the full verification (build + sidebar inspection) and record evidence.
+- [ ] Milestone 9 — Add the top-level navigation taxonomy (`links`) to `baseOptions()` in `src/lib/layout.shared.tsx` (now that the target sections exist).
+- [ ] Milestone 10 — Run the full verification (`pnpm build` + `pnpm start` / `pnpm dev` sidebar and nav inspection) and record evidence.
 
 
 ## Surprises & Discoveries
@@ -126,6 +142,29 @@ Record every decision made while working on the plan.
   Rationale: Matches every project README and keeps the family voice consistent.
   Date: 2026-05-30
 
+- Decision: Register the shared UI components by **merging into `getMDXComponents` in
+  `src/components/mdx.tsx`** (the TanStack Start MDX registry), not the Next.js
+  `mdx-components.tsx`.
+  Rationale: The project pivoted from Next.js to TanStack Start (static SPA). On this
+  stack the MDX-to-React component map lives in `src/components/mdx.tsx`; the docs route
+  (`src/routes/docs/$.tsx`) renders MDX client-side via the fumadocs client loader and
+  reads the map through `useMDXComponents()`. Registering anywhere else would have no
+  effect. We still merge (preserve `...defaultMdxComponents`, any Mermaid entry, and the
+  trailing `...components` override) and never overwrite the file.
+  Date: 2026-05-30
+
+- Decision: Own the **top-level navigation taxonomy** (kiroku / keiro / keiki / shibuya)
+  in `baseOptions()` in `src/lib/layout.shared.tsx`, adding it as the `links` array of
+  `BaseLayoutProps`, and add it **last** (Milestone 9) — only after the corresponding
+  content sections exist.
+  Rationale: The scaffold deliberately shipped only the site title in `baseOptions()` so
+  the static-SPA prerenderer (Vite `tanstackStart({ spa: { prerender: { crawlLinks:
+  true } } })` in `vite.config.ts`) would not crawl links to pages that do not exist yet
+  and fail the build. Adding the nav links only after the product landing pages exist
+  keeps `crawlLinks` happy. This seam is the TanStack Start equivalent of the Next.js
+  `app/layout.config.tsx`.
+  Date: 2026-05-30
+
 
 ## Outcomes & Retrospective
 
@@ -143,8 +182,9 @@ you need so you can implement this plan from this file alone.
 ### What this repository is
 
 `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` is a Git repository. Work on the
-`master` branch; do not create feature branches. A fumadocs documentation app is
-scaffolded into it by a separate, already-checked-in plan:
+`master` branch; do not create feature branches. A fumadocs documentation app — built
+on **TanStack Start** as a **static SPA** and bundled with **Vite** — is scaffolded
+into it by a separate, already-checked-in plan:
 `docs/plans/1-scaffold-the-fumadocs-documentation-app.md` (referred to below as **the
 scaffold plan**). This current plan has a **hard dependency** on that scaffold plan: it
 must be implemented first, because this plan edits files the scaffold plan creates and
@@ -154,7 +194,7 @@ dependencies** on two other plans: `docs/plans/2-pragmatapro-font-and-shiki-code
 `docs/plans/3-beautiful-mermaid-diagrams-with-zoom-pan.md` (interactive Mermaid
 diagrams). "Soft dependency" means this plan does not require them to function, but
 the templates this plan produces *reference* their features (Haskell code blocks and
-```mermaid fences), and those features only fully render once those plans are done.
+`mermaid` fences), and those features only fully render once those plans are done.
 If they are not yet done, code blocks and diagrams still render with fumadocs'
 defaults — nothing breaks.
 
@@ -170,26 +210,55 @@ defaults — nothing breaks.
     when a reader clicks the folder/section itself).
   - **MDX** — Markdown plus the ability to use React components as if they were HTML
     tags (e.g. `<Callout>...</Callout>`). The set of components available inside MDX is
-    declared in one file, `mdx-components.tsx`.
-- **fumadocs-ui** — a companion package that ships ready-made, styled React components
-  for docs (Callout, Steps, Tabs, Cards, Accordions, TypeTable). We import these and
-  register them so MDX pages can use them.
+    declared in one file. On this TanStack Start stack that file is
+    `src/components/mdx.tsx` (the equivalent of the Next.js `mdx-components.tsx`). It
+    exports `getMDXComponents` / `useMDXComponents`.
+- **fumadocs-ui** — a companion package (version **16.9.3** here) that ships ready-made,
+  styled React components for docs (Callout, Steps, Tabs, Cards, Accordions, TypeTable).
+  We import these and register them so MDX pages can use them.
 - **frontmatter** — the block at the very top of an MDX file delimited by `---` lines.
   It carries metadata; fumadocs reads `title` and `description` from it.
+- **TanStack Start / Vite / static SPA** — TanStack Start is the React framework hosting
+  the app; Vite is its bundler and dev server. The app is configured as a **static SPA**
+  (`vite.config.ts` → `tanstackStart({ spa: { enabled: true, prerender: { enabled: true,
+  crawlLinks: true } } })`): `pnpm build` emits a fully static site under
+  `.output/public` that needs no running server. The dev server is `pnpm dev`; the built
+  site is served with `pnpm start`. MDX pages are compiled at build time and rendered
+  **client-side** by the docs route `src/routes/docs/$.tsx`, which calls
+  `useMDXComponents()` from `src/components/mdx.tsx`.
 
 ### Key files this plan reads or edits (full repository-relative paths)
 
-- `mdx-components.tsx` (repo root) — the MDX component registry. The scaffold plan
-  creates it; this plan **extends** it (adds component registrations). It is *shared*:
-  the scaffold plan owns it, `docs/plans/3-...` adds a `Mermaid` component to it, and
-  this plan adds the fumadocs-ui UI components. **Always merge into the existing
-  exported object; never overwrite it.**
+- `src/components/mdx.tsx` — the MDX component registry (the TanStack Start equivalent of
+  Next.js's `mdx-components.tsx`). It exports `getMDXComponents(components?:
+  MDXComponents)` and re-exports it as `useMDXComponents`. The scaffold plan creates it;
+  this plan **extends** it (adds component registrations). It is *shared*: the scaffold
+  plan owns it, `docs/plans/3-...` adds a `Mermaid` component to it, and this plan adds
+  the fumadocs-ui UI components. **Always merge into the object returned by
+  `getMDXComponents`; never overwrite the file.** The registered components reach pages
+  because the docs route `src/routes/docs/$.tsx` passes `useMDXComponents()` to the MDX
+  renderer.
+- `src/lib/layout.shared.tsx` — the navigation / IA seam. It exports `baseOptions():
+  BaseLayoutProps` (the equivalent of Next.js's `app/layout.config.tsx`). The scaffold
+  ships only `nav.title`; **this plan adds the top-level `links`** (the kiroku / keiro /
+  keiki / shibuya taxonomy). `baseOptions()` is consumed by the docs layout in
+  `src/routes/docs/$.tsx` (passed into `<DocsLayout {...baseOptions()} … />`).
+- `src/lib/source.ts` — the fumadocs `loader()` that turns the content collection into a
+  page tree. This plan does **not** need to change it (the IA is expressed purely by the
+  folder layout and `meta.json` files). It is listed here only as the seam that turns
+  `content/docs/**` into navigation; touch it only if you choose to add per-folder icons
+  via `meta.json` `icon` fields (optional, out of scope).
 - `content/docs/` (repo root) — the content tree. The scaffold plan seeds it with a
   single `index.mdx` and `meta.json`; this plan **replaces those with the full IA** and
-  adds every folder, landing page, `meta.json`, and the templates library.
-- `package.json` (repo root) — defines the commands you run. The scaffold plan creates
-  it with at least `dev` (`next dev`), `build` (`next build`), and a type/MDX check.
-  This plan does not change `package.json`.
+  adds every folder, landing page, `meta.json`, and the templates library. This tree is
+  framework-agnostic and is unaffected by the Next.js → TanStack Start pivot.
+- `package.json` (repo root) — defines the commands you run. On this stack it defines
+  `dev` (`vite dev`), `build` (`vite build`), `start` (`serve .output/public …`),
+  `typecheck` (`fumadocs-mdx && tsc --noEmit`), and `lint` (`oxlint`). This plan does not
+  change `package.json`.
+- `source.config.ts` (repo root) — defines the `docs` collection (`dir:
+  "content/docs"`). Unchanged by this plan; it already points at the tree this plan
+  fills.
 
 ### The four products (so you can write accurate landing copy)
 
@@ -543,6 +612,14 @@ dependencies (`docs/plans/2-...`, `docs/plans/3-...`) are done, the Haskell bloc
 PragmataPro ligatures and the ```mermaid fences become zoomable diagrams; until then
 they render with fumadocs defaults.
 
+**No per-page `import` lines.** Because the UI components are registered **globally** in
+`getMDXComponents` (`src/components/mdx.tsx`, see "Shared MDX UI components" below), MDX
+pages use `<Callout>`, `<Steps>`, `<Cards>`, etc. directly — there is **no** need to
+`import { Callout } from 'fumadocs-ui/components/callout'` at the top of each page (that
+was the Next.js-era habit; the reference TanStack Start example confirms components are
+used without per-page imports). The templates below therefore omit import lines. (Adding
+an explicit import would still work, but it is redundant and we keep templates clean.)
+
 Tutorial — `content/docs/_templates/tutorial.mdx`:
 
 ````mdx
@@ -550,9 +627,6 @@ Tutorial — `content/docs/_templates/tutorial.mdx`:
 title: "[Tutorial title — start with a verb, e.g. Build your first event stream]"
 description: "[One sentence: what the reader will have built by the end.]"
 ---
-
-import { Callout } from 'fumadocs-ui/components/callout';
-import { Step, Steps } from 'fumadocs-ui/components/steps';
 
 [Open with the outcome. In two or three sentences tell a beginner what they will
 build and why it matters — the problem first, then the payoff. Use the second person
@@ -615,8 +689,6 @@ title: "[How to <do the specific task>]"
 description: "[One sentence stating the task this guide accomplishes.]"
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
-
 [State the task and the assumption. A how-to guide is for someone who already knows the
 basics and has a specific goal. One or two sentences, problem-first: "You need to X.
 This guide shows the shortest reliable way."]
@@ -657,9 +729,6 @@ title: "[Name of the API / module / configuration being documented]"
 description: "[One sentence naming what this page is a reference for.]"
 ---
 
-import { TypeTable } from 'fumadocs-ui/components/type-table';
-import { Callout } from 'fumadocs-ui/components/callout';
-
 [One short paragraph stating, factually, what this reference covers. Reference pages are
 dry and complete: no tutorials, no opinions, no "why". Just the facts the reader looks
 up.]
@@ -699,8 +768,6 @@ title: "[Understanding <the concept> — phrase as a topic, not a task]"
 description: "[One sentence naming the idea this page explains.]"
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
-
 [Open with the question the reader is really asking — "why does X work this way?" or
 "how should I think about Y?". Explanation pages build understanding; they do not give
 step-by-step instructions and they do not list every API.]
@@ -733,8 +800,6 @@ title: "[Product] FAQ"
 description: "Answers to frequently asked questions about [product]."
 ---
 
-import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
-
 [One sentence: "Short answers to the questions people ask most about [product]." Keep
 each answer to a few sentences; link out for depth.]
 
@@ -755,8 +820,6 @@ Code Walkthrough — `content/docs/_templates/code-walkthrough.mdx`:
 title: "[NN — Section title]"
 description: "[One sentence: which part of the source this part of the tour covers.]"
 ---
-
-import { Callout } from 'fumadocs-ui/components/callout';
 
 [A code walkthrough is an ordered tour that reads the real source code to teach how the
 library is built. Name pages with a two-digit numeric prefix so they sort
@@ -794,8 +857,6 @@ title: "[Recipe — <the outcome>, e.g. Idempotent append with a supplied event 
 description: "[One sentence: the concrete result this recipe produces.]"
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
-
 [A cookbook recipe is a short, self-contained, copy-paste solution to one common
 problem. Shorter and more focused than a how-to. State the problem in one sentence.]
 
@@ -827,8 +888,6 @@ title: "[Theory — <the formal idea>, e.g. Streams, categories, and the $all lo
 description: "[One sentence naming the formal concept developed here.]"
 ---
 
-import { Callout } from 'fumadocs-ui/components/callout';
-
 [A theory explainer is a deeper conceptual or mathematical essay. It lives in the
 `explanation/` folder (theory IS explanation). Use it for the formal model behind a
 library. Still define every symbol and term.]
@@ -855,11 +914,17 @@ flowchart TB
 ### Shared MDX UI components (which to register, and how)
 
 MDX pages can only use components that are registered in the single file
-`mdx-components.tsx` at the repository root. fumadocs-ui ships a set of ready-made,
-theme-aware components; we register the ones our templates use. Registering means
-importing them and adding them to the object returned by `getMDXComponents`.
+`src/components/mdx.tsx` (the TanStack Start MDX registry; the Next.js equivalent was
+`mdx-components.tsx`). fumadocs-ui ships a set of ready-made, theme-aware components; we
+register the ones our templates use. Registering means importing them and adding them to
+the object returned by `getMDXComponents`. The docs route `src/routes/docs/$.tsx`
+renders MDX client-side and passes this map in via `useMDXComponents()` (re-exported from
+the same file), so a component is usable in any page the moment it appears in the
+returned object.
 
-The components we register, what they are, and where each import comes from:
+The components we register, what they are, and where each import comes from (the
+sub-paths below are verified against the installed **fumadocs-ui 16.9.3** in
+`node_modules/fumadocs-ui/dist/components/`):
 
 - **Callout** — a colored note box (info / warning / error). From
   `fumadocs-ui/components/callout`. Used by almost every template.
@@ -875,31 +940,42 @@ The components we register, what they are, and where each import comes from:
   `fumadocs-ui/components/type-table`.
 
 These import paths are the fumadocs-ui convention (each component has its own
-sub-module under `fumadocs-ui/components/`). If your installed fumadocs-ui version
-exposes a different path, the build error will name the missing module; in that case
-open `node_modules/fumadocs-ui/dist/components/` (or `package.json` of fumadocs-ui)
-to find the exact sub-path and adjust the import. Do not invent paths.
+sub-module under `fumadocs-ui/components/`) and have been confirmed present for the
+installed **16.9.3**: `callout`, `steps`, `tabs`, `card`, `accordion`, and `type-table`
+all exist under `node_modules/fumadocs-ui/dist/components/`, exporting respectively
+`Callout`; `Step`/`Steps`; `Tab`/`Tabs`; `Card`/`Cards`; `Accordion`/`Accordions`; and
+`TypeTable`. If a future fumadocs-ui version exposes a different path, the build error
+(`Cannot find module 'fumadocs-ui/components/…'`) will name the missing module; in that
+case open `node_modules/fumadocs-ui/dist/components/` to find the exact sub-path and
+adjust the import. Do not invent paths.
 
-**Critical integration rule:** `mdx-components.tsx` is shared. The scaffold plan
-created it; `docs/plans/3-...` adds a `Mermaid` entry to it. You must **merge** — add
-your imports and add your components into the existing returned object, preserving
-`...defaultMdxComponents`, any `...components` spread, and any `Mermaid` already
-present. Never replace the file wholesale. The end state should look like this (your
-additions are the fumadocs-ui imports and the six component names in the returned
-object; `Mermaid` may or may not already be present depending on whether
-`docs/plans/3-...` has run):
+**Critical integration rule:** `src/components/mdx.tsx` is shared. The scaffold plan
+created it (its current body returns `{ ...defaultMdxComponents, ...components }` and
+re-exports `getMDXComponents` as `useMDXComponents`); `docs/plans/3-...` adds a `Mermaid`
+entry to it. You must **merge** — add your imports and add your component names into the
+object returned by `getMDXComponents`, preserving `...defaultMdxComponents`, the trailing
+`...components` spread (the per-call override, which must stay last), the
+`useMDXComponents` re-export, the `MDXProvidedComponents` global declaration, and any
+`Mermaid` already present. Never replace the file wholesale.
+
+The scaffold ships this file with explanatory `SEAM (Plan D)` comments and an empty
+`// ...Plan C / Plan D components go here...` slot; replace that slot with the
+registrations. The end state should look like this (your additions are the six
+fumadocs-ui imports and the component names in the returned object; `Mermaid` may or may
+not already be present depending on whether `docs/plans/3-...` has run; keep the
+`useMDXComponents` re-export and the `declare global` block that the scaffold added):
 
 ```tsx
-import defaultMdxComponents from 'fumadocs-ui/mdx';
-import type { MDXComponents } from 'mdx/types';
-import { Callout } from 'fumadocs-ui/components/callout';
-import { Step, Steps } from 'fumadocs-ui/components/steps';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
-import { Card, Cards } from 'fumadocs-ui/components/card';
-import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
-import { TypeTable } from 'fumadocs-ui/components/type-table';
+import defaultMdxComponents from "fumadocs-ui/mdx";
+import type { MDXComponents } from "mdx/types";
+import { Callout } from "fumadocs-ui/components/callout";
+import { Step, Steps } from "fumadocs-ui/components/steps";
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Card, Cards } from "fumadocs-ui/components/card";
+import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
+import { TypeTable } from "fumadocs-ui/components/type-table";
 
-export function getMDXComponents(components?: MDXComponents): MDXComponents {
+export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
     Callout,
@@ -914,7 +990,13 @@ export function getMDXComponents(components?: MDXComponents): MDXComponents {
     TypeTable,
     // Mermaid,  // present only after docs/plans/3-... has been implemented
     ...components,
-  };
+  } satisfies MDXComponents;
+}
+
+export const useMDXComponents = getMDXComponents;
+
+declare global {
+  type MDXProvidedComponents = ReturnType<typeof getMDXComponents>;
 }
 ```
 
@@ -950,6 +1032,57 @@ build a link grid; `Accordion` needs a `title`. These are the fumadocs-ui prop
 conventions; if a prop name differs in your version the build will warn and you can
 correct it against the installed component's types.
 
+### Top-level navigation taxonomy (the `links` seam)
+
+The scaffold's `src/lib/layout.shared.tsx` exports `baseOptions(): BaseLayoutProps` with
+only `nav.title` and `githubUrl`. **This plan adds the top-level navigation bar** — the
+per-library taxonomy — by adding a `links` array to the object `baseOptions()` returns.
+`links` is the `BaseLayoutProps` field (`links?: LinkItemType[]`); the entries we use are
+**main** link items, whose shape is `{ text: ReactNode; url: string; … }` (note the
+field is `url`, not `href`). `baseOptions()` is spread into `<DocsLayout
+{...baseOptions()} … />` in `src/routes/docs/$.tsx`, so adding `links` makes them appear
+in the docs layout's top navigation.
+
+The end state of `src/lib/layout.shared.tsx` (preserve the existing `appName`/`gitConfig`
+import and the `nav`/`githubUrl` fields; add `links`):
+
+```tsx
+import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
+import { appName, gitConfig } from "./shared";
+
+export function baseOptions(): BaseLayoutProps {
+  return {
+    nav: {
+      title: appName,
+    },
+    githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,
+    links: [
+      { text: "Getting Started", url: "/docs/getting-started" },
+      { text: "kiroku", url: "/docs/kiroku" },
+      { text: "keiro", url: "/docs/keiro" },
+      { text: "keiki", url: "/docs/keiki" },
+      { text: "shibuya", url: "/docs/shibuya" },
+      { text: "Integrations", url: "/docs/integrations" },
+    ],
+  };
+}
+```
+
+**Prerender / crawl implication (why this is the last milestone).** The app builds as a
+static SPA with `tanstackStart({ spa: { prerender: { enabled: true, crawlLinks: true } }
+})` in `vite.config.ts`. With `crawlLinks: true`, the prerenderer starts from the pages
+listed in `vite.config.ts` (`/docs`, `/api/search`) and follows links it finds to
+prerender more pages. The scaffold deliberately shipped `baseOptions()` **without**
+`links` so the crawler would not follow nav links to product pages that did not yet
+exist (a dead link would fail or produce empty prerendered HTML). Therefore add the
+`links` array **only after** Milestones 2–6 have created every target landing
+(`/docs/getting-started`, `/docs/kiroku`, `/docs/keiro`, `/docs/keiki`,
+`/docs/shibuya`, `/docs/integrations`). Each `url` above must resolve to a real
+`index.mdx` by the time you add it — which is why this is Milestone 9, after the content
+tree is in place. If a `pnpm build` fails or warns about a link that cannot be crawled,
+the corresponding `content/docs/<segment>/index.mdx` is missing; create it (or remove the
+link) and rebuild.
+
 ### Authoring, style, and contribution guide (content for `getting-started/contributing.mdx`)
 
 Milestone 8 writes a real page (not a placeholder) that encodes the rules below. Put
@@ -976,11 +1109,11 @@ template's frontmatter. The page must cover, in prose with short examples:
   position you want it to appear. If you add a whole new subfolder, add the folder name
   to the *parent* folder's `meta.json` `pages` array too.
 - **Code-block conventions.** Always tag the fence with a language. Haskell samples use
-  ```haskell and must reflect the real API (no invented functions). Other tags in use:
-  ```bash, ```sql, ```json, ```nix, ```text. (The PragmataPro font and Haskell-aware
+  the `haskell` tag and must reflect the real API (no invented functions). Other tags in
+  use: `bash`, `sql`, `json`, `nix`, `text`. (The PragmataPro font and Haskell-aware
   highlighting come from `docs/plans/2-...`; you do not configure them here — just use
   the tags.)
-- **Diagram conventions.** Use a ```mermaid fence for diagrams; keep them small and
+- **Diagram conventions.** Use a `mermaid` fence for diagrams; keep them small and
   labelled. (Interactive zoom/pan rendering comes from `docs/plans/3-...`.)
 - **"How to add a new page" checklist** (put this as an explicit ordered list on the
   page): (1) pick the doc type and copy the matching template from
@@ -1020,16 +1153,19 @@ looks broken. Guidance per landing:
 ### Milestones
 
 **Milestone 1 — Register the shared UI components.** Scope: the single edit to
-`mdx-components.tsx`. At the end, the six fumadocs-ui component families are importable
-inside any MDX page, the file still contains everything the scaffold and any
-Mermaid work added, and the site builds. Commands: from the repo root,
-`pnpm run build` (or `pnpm dev` and load a page). Acceptance: build succeeds; a quick
-test page using `<Callout>` renders without an "unknown component" error.
+`src/components/mdx.tsx`. At the end, the six fumadocs-ui component families are usable
+inside any MDX page, the file still contains everything the scaffold and any Mermaid work
+added (the `...defaultMdxComponents` spread, the trailing `...components` override, the
+`useMDXComponents` re-export, and the `MDXProvidedComponents` global), and the site
+builds. Commands: from the repo root, `pnpm build` (or `pnpm dev` and load a page).
+Acceptance: build succeeds; a page using `<Callout>` renders without an "unknown
+component" error.
 
-**Milestone 2 — Root landing + nav.** Scope: replace the scaffold's seed
+**Milestone 2 — Root landing + sidebar.** Scope: replace the scaffold's seed
 `content/docs/index.mdx` and `content/docs/meta.json` with the family landing page and
-the root `meta.json` from the reference above. At the end the sidebar shows the seven
-top-level entries in order. Acceptance: `pnpm dev`, open `/docs`, see the family
+the root `meta.json` from the reference above. At the end the docs **sidebar** shows the
+seven top-level entries in order. (The top **navigation bar** links come later, in
+Milestone 9.) Acceptance: `pnpm dev`, open `http://localhost:3000/docs`, see the family
 landing and the seven-item sidebar.
 
 **Milestone 3 — getting-started.** Scope: create the `getting-started/` folder with its
@@ -1059,23 +1195,40 @@ and `_templates` is absent from the sidebar.
 "how to add a new page" checklist. Acceptance: the page renders with the checklist and
 the per-type voice rules.
 
-**Milestone 9 — full verification.** Scope: run the build and inspect the sidebar.
-Acceptance: see the Validation section.
+**Milestone 9 — top-level navigation taxonomy.** Scope: add the `links` array to
+`baseOptions()` in `src/lib/layout.shared.tsx` (see "Top-level navigation taxonomy"
+above). This must come after Milestones 2–6 so every `links` target
+(`/docs/getting-started`, `/docs/kiroku`, `/docs/keiro`, `/docs/keiki`,
+`/docs/shibuya`, `/docs/integrations`) resolves to a real `index.mdx` — otherwise the
+static-SPA prerenderer's `crawlLinks` would follow a dead link. Acceptance: `pnpm build`
+succeeds (no dead-link crawl failures); `pnpm start` (or `pnpm dev`), open
+`http://localhost:3000/docs`, and see the six links in the top navigation bar, each
+landing on its product/section.
+
+**Milestone 10 — full verification.** Scope: run the build (static SPA), serve it, and
+inspect both the top navigation and the sidebar. Acceptance: see the Validation section.
 
 
 ## Concrete Steps
 
 All commands run from the repository root
 `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless stated. The package manager
-is **pnpm** and Node is **22** (provided by the repo's Nix dev shell or your system).
+is **pnpm** and Node is **22**, both provided by the repo's **Nix dev shell**. Enter the
+shell first so the toolchain is on `PATH`:
+
+```bash
+nix develop
+```
+
+Run all subsequent `pnpm` commands inside that shell.
 
 1. Confirm the scaffold is present (this plan depends on it). Expect to see the files:
 
    ```bash
-   ls mdx-components.tsx content/docs/index.mdx content/docs/meta.json package.json
+   ls src/components/mdx.tsx src/lib/layout.shared.tsx content/docs/index.mdx content/docs/meta.json package.json
    ```
 
-   Expected: all four paths print with no "No such file" error. If any are missing,
+   Expected: all five paths print with no "No such file" error. If any are missing,
    stop and implement `docs/plans/1-scaffold-the-fumadocs-documentation-app.md` first.
 
 2. Install dependencies if you have not already, then confirm the dev server runs:
@@ -1085,33 +1238,37 @@ is **pnpm** and Node is **22** (provided by the repo's Nix dev shell or your sys
    pnpm dev
    ```
 
-   Expected transcript (abridged):
+   Expected transcript (abridged; exact wording depends on the Vite/TanStack Start
+   versions):
 
    ```text
-   > next dev
-   ▲ Next.js 16.x
-   - Local: http://localhost:3000
-   ✓ Ready
+   > vite dev
+   VITE vX.Y.Z  ready in NNN ms
+   ➜  Local:   http://localhost:3000/
    ```
 
    Open `http://localhost:3000/docs` to see the current (scaffold) state, then stop the
    server with Ctrl-C before editing.
 
-3. **Milestone 1.** Edit `mdx-components.tsx` to add the six fumadocs-ui imports and add
-   their components into the object returned by `getMDXComponents`, preserving
-   `...defaultMdxComponents`, `...components`, and any existing `Mermaid`. Use the
-   end-state shown in the "Shared MDX UI components" subsection above as the target.
+3. **Milestone 1.** Edit `src/components/mdx.tsx` to add the six fumadocs-ui imports and
+   add their components into the object returned by `getMDXComponents`, preserving
+   `...defaultMdxComponents`, the trailing `...components` spread, the `useMDXComponents`
+   re-export, and the `MDXProvidedComponents` global declaration (and any existing
+   `Mermaid`). Use the end-state shown in the "Shared MDX UI components" subsection above
+   as the target.
 
-4. Verify Milestone 1 by building:
+4. Verify Milestone 1 by type-checking and building:
 
    ```bash
-   pnpm run build
+   pnpm run typecheck
+   pnpm build
    ```
 
-   Expected: the build completes with `✓ Compiled successfully` (or equivalent) and no
-   "Cannot find module 'fumadocs-ui/components/…'" error. If you see such an error, the
-   import sub-path differs in your fumadocs-ui version; find the correct path under the
-   installed `fumadocs-ui` package and fix the import (do not guess).
+   Expected: `typecheck` (which runs `fumadocs-mdx && tsc --noEmit`) reports no errors,
+   and `build` (`vite build`) completes and emits the static SPA under `.output/public`,
+   with no "Cannot find module 'fumadocs-ui/components/…'" error. If you see such an
+   error, the import sub-path differs in your fumadocs-ui version; find the correct path
+   under `node_modules/fumadocs-ui/dist/components/` and fix the import (do not guess).
 
 5. **Milestone 2.** Overwrite `content/docs/meta.json` with the root meta.json from the
    reference, and overwrite `content/docs/index.mdx` with the family landing (follow the
@@ -1181,49 +1338,66 @@ is **pnpm** and Node is **22** (provided by the repo's Nix dev shell or your sys
     full authoring/style/contribution guide (from the guide content above), including
     the "how to add a new page" checklist as an explicit ordered list.
 
-12. **Milestone 9.** Build and verify (see Validation):
+12. **Milestone 9.** Now that every product/section landing exists, add the top-level
+    navigation. Edit `src/lib/layout.shared.tsx` and add the `links` array to the object
+    `baseOptions()` returns, using the six entries from the "Top-level navigation
+    taxonomy" subsection above (`{ text, url }` items, `url` pointing at
+    `/docs/<segment>`). Preserve the existing `nav` and `githubUrl` fields and the
+    `appName`/`gitConfig` import.
+
+13. **Milestone 10.** Build the static SPA and verify (see Validation):
 
     ```bash
-    pnpm run build
+    pnpm run typecheck
+    pnpm build
+    pnpm start
     ```
 
 
 ## Validation and Acceptance
 
-The plan succeeds when the empty IA renders correctly and every template builds.
+The plan succeeds when the empty IA renders correctly, the top navigation works, and
+every template builds. Run these inside the Nix dev shell (`nix develop`).
 
-1. **The site builds with the full tree.** From the repo root:
-
-   ```bash
-   pnpm run build
-   ```
-
-   Expected: a successful build with no MDX parse errors and no "unknown component"
-   errors. A template that uses `<Steps>`, `<Callout>`, `<TypeTable>`, etc. compiling is
-   the proof that Milestone 1's registration worked. If the build fails, the error names
-   the offending file and component/import; fix that and re-run. The build is idempotent.
-
-2. **The sidebar shows the correct grouping and order.** Start the dev server and open
-   the docs:
+1. **The static SPA builds with the full tree.** From the repo root:
 
    ```bash
-   pnpm dev
+   pnpm build
    ```
 
-   Then visit `http://localhost:3000/docs` and check:
+   Expected: a successful `vite build` with no MDX parse errors and no "unknown
+   component" errors, emitting the static site under `.output/public`. A template that
+   uses `<Steps>`, `<Callout>`, `<TypeTable>`, etc. compiling is the proof that Milestone
+   1's registration worked. The build also prerenders the crawled pages; a failure here
+   that names a link target means a `links` entry (Milestone 9) points at a missing
+   landing. If the build fails, the error names the offending file and
+   component/import/link; fix that and re-run. The build is idempotent.
 
-   - The top-level sidebar lists, in this order: the home/index page, **Getting
+2. **The navigation and sidebar show the correct grouping and order.** Serve the built
+   SPA (or use the dev server) and open the docs:
+
+   ```bash
+   pnpm start
+   ```
+
+   (`pnpm start` serves `.output/public`; alternatively `pnpm dev` runs the Vite dev
+   server. Either way the page is at `http://localhost:3000/docs`.) Then check:
+
+   - The **top navigation bar** lists the six links added in Milestone 9: **Getting
+     Started**, **kiroku**, **keiro**, **keiki**, **shibuya**, **Integrations**. Each
+     navigates to its `/docs/<segment>` landing.
+   - The **docs sidebar** lists, in this order: the home/index page, **Getting
      Started**, **kiroku**, **keiro**, **keiki**, **shibuya**, **Integrations**.
    - Expanding **kiroku** shows, in order: its landing, **Tutorials**, **How-To
      Guides**, **Reference**, **Explanation**, **Cookbook**, **Code Walkthrough**, and
      **FAQ**. The task-quadrant label reads exactly "How-To Guides" (not "How-To" and
      not "Guides").
    - keiro, keiki, and shibuya each expand to the same seven sections.
-   - **`_templates` does NOT appear anywhere in the sidebar.** This proves the templates
-     are validated by the build but hidden from readers.
+   - **`_templates` does NOT appear anywhere in the sidebar or navigation.** This proves
+     the templates are validated by the build but hidden from readers.
 
 3. **Each section landing opens.** Click each section's landing (e.g. open
-   `/docs/kiroku/tutorials`) and confirm a page renders with its one-sentence
+   `/docs/kiroku/tutorials`) and confirm a page renders client-side with its one-sentence
    description rather than a 404.
 
 4. **Each template builds and renders.** Temporarily copy one template into a real
@@ -1234,8 +1408,8 @@ The plan succeeds when the empty IA renders correctly and every template builds.
    ```
 
    Add `"sample"` to `content/docs/kiroku/tutorials/meta.json` `pages`, run `pnpm dev`,
-   open `/docs/kiroku/tutorials/sample`, and confirm the `<Steps>` and `<Callout>`
-   render. Then delete the copy and revert the `meta.json` line:
+   open `http://localhost:3000/docs/kiroku/tutorials/sample`, and confirm the `<Steps>`
+   and `<Callout>` render. Then delete the copy and revert the `meta.json` line:
 
    ```bash
    rm content/docs/kiroku/tutorials/sample.mdx
@@ -1244,16 +1418,15 @@ The plan succeeds when the empty IA renders correctly and every template builds.
    This is the behavioral proof that the templates are usable and the registration is
    complete. Record the observation in Progress and Outcomes.
 
-5. **Type/MDX check (if the scaffold provides it).** If `package.json` defines a check
-   script (the scaffold plan typically adds `types:check` =
-   `fumadocs-mdx && next typegen && tsc --noEmit`), run it:
+5. **Type / MDX check.** Run the scaffold's check script (defined in `package.json` as
+   `typecheck` = `fumadocs-mdx && tsc --noEmit`):
 
    ```bash
-   pnpm run types:check
+   pnpm run typecheck
    ```
 
-   Expected: no type errors. If the script name differs, inspect `package.json`
-   `scripts` and run the equivalent.
+   Expected: no type errors. (`fumadocs-mdx` regenerates the `.source/` collection from
+   `content/docs/`, then `tsc --noEmit` type-checks the project.)
 
 
 ## Idempotence and Recovery
@@ -1261,15 +1434,20 @@ The plan succeeds when the empty IA renders correctly and every template builds.
 Every step here is additive file creation or a single, well-bounded edit, so the plan is
 safe to run repeatedly. Re-creating a folder that already exists with `mkdir -p` is a
 no-op. Re-writing a `meta.json` or `index.mdx` simply overwrites it with the same
-intended content. The only edit to a shared file is `mdx-components.tsx`; if you run it
-twice, ensure you do not add duplicate import lines or duplicate component keys — if you
-accidentally do, the build error names the duplicate and you remove the extra line. To
-roll back any step, delete the files you created (or `git checkout -- <path>` to restore
-a tracked file). Because nothing here touches application data, a database, or any
-external service, there is no destructive operation to guard against. If the dev server
-shows a stale tree after large changes, stop it and restart `pnpm dev`; if a generated
-fumadocs index seems out of date, delete the generated `.source/` directory (it is
-regenerated on the next build) and rebuild.
+intended content. There are two edits to shared files: `src/components/mdx.tsx` (the MDX
+registry) and `src/lib/layout.shared.tsx` (the `links` nav). For
+`src/components/mdx.tsx`, if you run it twice, ensure you do not add duplicate import
+lines or duplicate component keys — if you accidentally do, the type-check/build error
+names the duplicate and you remove the extra line; always keep the trailing
+`...components` spread last and the `useMDXComponents` re-export. For
+`src/lib/layout.shared.tsx`, re-adding `links` simply overwrites the array. To roll back
+any step, delete the files you created (or `git checkout -- <path>` to restore a tracked
+file). Because nothing here touches application data, a database, or any external
+service, there is no destructive operation to guard against. If the dev server shows a
+stale tree after large changes, stop it and restart `pnpm dev`; if the generated
+fumadocs collection seems out of date, delete the generated `.source/` directory (it is
+regenerated by `fumadocs-mdx` on the next `pnpm install` postinstall, `pnpm run
+typecheck`, or `pnpm build`) and rebuild.
 
 
 ## Interfaces and Dependencies
@@ -1277,18 +1455,32 @@ regenerated on the next build) and rebuild.
 This plan produces and depends on the following contracts. Reference sibling plans only
 by path; do not assume their internal details beyond what is stated here.
 
-- **`mdx-components.tsx`** (repo root) — the MDX component registry. *Contract:* it
-  exports `getMDXComponents(components?: MDXComponents): MDXComponents` which returns an
-  object spreading `...defaultMdxComponents` and `...components` and including the
-  registered components. This file is **shared**: owned/created by
+- **`src/components/mdx.tsx`** — the MDX component registry (TanStack Start equivalent of
+  Next.js's `mdx-components.tsx`). *Contract:* it exports `getMDXComponents(components?:
+  MDXComponents)` which returns an object spreading `...defaultMdxComponents`, then the
+  registered components, then a trailing `...components` override, and re-exports
+  `getMDXComponents` as `useMDXComponents`. The docs route `src/routes/docs/$.tsx` calls
+  `useMDXComponents()` and passes the result to the MDX renderer, so registered
+  components are available to every page. This file is **shared**: owned/created by
   `docs/plans/1-scaffold-the-fumadocs-documentation-app.md`; extended by
   `docs/plans/3-beautiful-mermaid-diagrams-with-zoom-pan.md` (which adds a `Mermaid`
   component for ```mermaid fences); extended by **this plan** (which adds the six
   fumadocs-ui component families). All extenders **merge** into the returned object and
-  preserve each other's additions. At the end of this plan the returned object must
-  include `Callout`, `Step`, `Steps`, `Tab`, `Tabs`, `Card`, `Cards`, `Accordion`,
-  `Accordions`, and `TypeTable`, in addition to whatever the scaffold and Mermaid work
-  contributed.
+  preserve each other's additions (and the trailing `...components` spread). At the end
+  of this plan the returned object must include `Callout`, `Step`, `Steps`, `Tab`,
+  `Tabs`, `Card`, `Cards`, `Accordion`, `Accordions`, and `TypeTable`, in addition to
+  whatever the scaffold and Mermaid work contributed.
+
+- **`src/lib/layout.shared.tsx`** — the navigation / IA seam (TanStack Start equivalent
+  of Next.js's `app/layout.config.tsx`). *Contract:* it exports `baseOptions():
+  BaseLayoutProps`. The scaffold returns only `nav.title` and `githubUrl`; **this plan
+  adds `links: LinkItemType[]`** — the six main link items pointing at
+  `/docs/getting-started`, `/docs/kiroku`, `/docs/keiro`, `/docs/keiki`,
+  `/docs/shibuya`, `/docs/integrations` (each `{ text, url }`, where the field is `url`,
+  not `href`). `baseOptions()` is spread into `<DocsLayout {...baseOptions()} … />` in
+  `src/routes/docs/$.tsx`. Because the build prerenders with `crawlLinks: true`, every
+  `links` `url` must resolve to an existing landing before the links are added (Milestone
+  9, after the content tree exists).
 
 - **`content/docs/**` + `meta.json`** — the content tree and its navigation. *Contract:*
   this plan **structures** the tree (creates every folder, every landing `index.mdx`,
@@ -1308,9 +1500,13 @@ by path; do not assume their internal details beyond what is stated here.
   the "Shared MDX UI components" subsection; if a path differs in the installed version,
   resolve it against the installed package, not from memory.
 
-- **pnpm + Node 22** — the toolchain (provided by the scaffold plan and the repo's Nix
-  dev shell). Commands used here: `pnpm install`, `pnpm dev`, `pnpm run build`, and (if
-  present) `pnpm run types:check`. This plan does not modify `package.json`.
+- **pnpm + Node 22 (Nix dev shell)** — the toolchain, provided by the repo's Nix dev
+  shell (enter with `nix develop`). Commands used here: `pnpm install`, `pnpm dev` (`vite
+  dev`), `pnpm build` (`vite build`, emits the static SPA to `.output/public`), `pnpm
+  start` (`serve .output/public`), and `pnpm run typecheck` (`fumadocs-mdx && tsc
+  --noEmit`). This plan does not modify `package.json`. The build is a **static SPA**
+  (`tanstackStart({ spa: … })` in `vite.config.ts`); there is no Next.js App Router and
+  no `next build`.
 
 - Hard dependency: `docs/plans/1-scaffold-the-fumadocs-documentation-app.md` (must be
   done first). Soft dependencies (features the templates reference but that are not
@@ -1332,3 +1528,36 @@ was preserved unchanged. Why: the master brief
 requires Plan D to deliver a navigable empty IA plus copy-paste templates and a style
 guide so that `docs/plans/5-...` can populate kiroku, and so any contributor can add a
 correct page without inventing structure.
+
+2026-05-30 — **Next.js → TanStack Start (static SPA) pivot rewrite.** The project moved
+off Next.js (App Router) onto **TanStack Start configured as a static SPA**, built with
+**Vite**; the scaffold (`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`) is
+already re-implemented and committed on that stack. This revision rewrote every
+framework-specific mechanic while preserving the plan's intent and scope (the Diátaxis
+information architecture under `content/docs/`, the `meta.json` ordering, the page
+templates, and the authoring/style guide are all unchanged). Key changes:
+  - MDX component registry path: `mdx-components.tsx` → **`src/components/mdx.tsx`**
+    (merge into `getMDXComponents`; preserve `...defaultMdxComponents`, the trailing
+    `...components` override, the `useMDXComponents` re-export, and the
+    `MDXProvidedComponents` global). Verified the six fumadocs-ui sub-paths and exports
+    against installed **fumadocs-ui 16.9.3** (`callout`, `steps`, `tabs`, `card`,
+    `accordion`, `type-table`).
+  - Navigation / IA seam: `app/layout.config.tsx` → **`src/lib/layout.shared.tsx`**, with
+    the top-level taxonomy added as the `links` array of `BaseLayoutProps` (`{ text, url
+    }` main items, `url` not `href`). Added a new **Milestone 9** to add `links` *after*
+    the content tree exists, because the static-SPA prerenderer
+    (`tanstackStart({ spa: { prerender: { crawlLinks: true } } })` in `vite.config.ts`)
+    crawls links — the scaffold intentionally shipped only the title to avoid crawling
+    dead links. The old verification milestone is now Milestone 10.
+  - Commands: `next dev`/`next build` → **`pnpm dev`** (`vite dev`) / **`pnpm build`**
+    (`vite build`, static SPA in `.output/public`) / **`pnpm start`** (serve the built
+    SPA); type check is **`pnpm run typecheck`** (`fumadocs-mdx && tsc --noEmit`), not
+    `next typegen`. All commands run inside the Nix dev shell (`nix develop`).
+  - Rendering note: MDX renders **client-side** via the docs route `src/routes/docs/$.tsx`
+    (fumadocs client loader + `useMDXComponents()`).
+  - Templates: dropped the per-page `import { … } from 'fumadocs-ui/components/…'` lines,
+    since components are registered globally in `getMDXComponents` (matching the reference
+    `examples/tanstack-start-spa`); pages now use `<Callout>`, `<Cards>`, etc. directly.
+  - The `content/docs/**` tree, all `meta.json` files, the eight page templates' bodies,
+    the landing-page guidance, and the authoring/style guide content are framework-
+    agnostic and were left intact. The YAML frontmatter was preserved unchanged.

@@ -17,12 +17,15 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 ## Purpose / Big Picture
 
 This repository, `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`, is a documentation
-website built with **fumadocs** (a documentation framework that runs on **Next.js** — a
-React-based web framework — and renders **MDX**, which is Markdown with embedded React
-components). The documentation describes a family of four Haskell libraries, and those
-docs lean heavily on architecture diagrams (event flows, stream/category relationships,
-projection pipelines). Today, if an author writes a Mermaid diagram in a Markdown fence,
-nothing renders it: the block shows up as raw text.
+website built with **fumadocs** (a documentation framework that renders **MDX**, which is
+Markdown with embedded React components) running on **TanStack Start** — a React full-stack
+framework built on **Vite** and **TanStack Router** — configured here as a **static SPA**
+(single-page app): `pnpm build` prerenders the docs to plain HTML/JS under `.output/public`,
+which is served as static files (no Node server at runtime). The documentation describes a
+family of four Haskell libraries, and those docs lean heavily on architecture diagrams
+(event flows, stream/category relationships, projection pipelines). Today, if an author
+writes a Mermaid diagram in a Markdown fence, nothing renders it: the block shows up as raw
+text.
 
 After this change, an author can write a fenced code block tagged `mermaid` in any `.mdx`
 file and it will render as a polished, on-brand SVG diagram that the reader can
@@ -39,10 +42,12 @@ in its other docs sites (keiki-docs and mina-ui). It exports a function `renderM
 that takes Mermaid source text plus a small theme object and returns a complete SVG string
 with a warm, hand-tuned palette — much nicer than stock Mermaid.
 
-Concretely, you can see it working when, after `pnpm dev`, you open a page containing this
-exact block and the diagram appears with a control bar (`+`, `-`, `Fit`, `Expand`), responds
-to the mouse wheel by zooming toward the cursor, drags to pan, and re-colors itself when you
-toggle the site between light and dark mode:
+Concretely, you can see it working when, after `pnpm dev` (or after `pnpm build && pnpm start`
+for the static build), you open a page containing this exact block and the diagram appears
+with a control bar (`+`, `-`, `Fit`, `Expand`), responds to the mouse wheel by zooming toward
+the cursor, drags to pan, and re-colors itself when you toggle the site between light and dark
+mode. Note: in this SPA the docs page renders MDX in the browser (via a client loader — see
+Context), so the diagram and all of its interactivity run client-side:
 
 ```mermaid
 flowchart TD
@@ -65,20 +70,22 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Milestone 0 — Verify prerequisites: Plan A scaffold present (`mdx-components.tsx`,
-      `source.config.ts`, `app/global.css`, `package.json` with pnpm scripts) and `pnpm dev`
-      serves a styled empty docs site.
+- [ ] Milestone 0 — Verify prerequisites: scaffold present (`src/components/mdx.tsx`,
+      `source.config.ts`, `src/styles/app.css`, `package.json` with pnpm scripts) and
+      `pnpm dev` serves a styled empty docs site at `http://localhost:3000/docs`.
 - [ ] Milestone 1 — Add the `beautiful-mermaid` dependency and prove `renderMermaidSVG`
       produces an SVG (throwaway script), confirming the API shape before wiring it in.
-- [ ] Milestone 2 — Create the rehype plugin `lib/rehype-mermaid.ts` that turns
+- [ ] Milestone 2 — Create the rehype plugin `src/lib/rehype-mermaid.ts` that turns
       ` ```mermaid ` fences into `<Mermaid chart="..." />` MDX nodes; wire it into
-      `source.config.ts`.
-- [ ] Milestone 3 — Create the client component `components/mermaid.tsx` (`'use client'`):
-      render the beautiful-mermaid SVG, apply light/dark theme, implement viewBox
-      zoom/pan/fit + on-screen controls + full-screen expand + keyboard shortcuts.
-- [ ] Milestone 4 — Register `Mermaid` in `mdx-components.tsx` (merge, do not replace),
-      and add the diagram CSS to `app/global.css`.
-- [ ] Milestone 5 — Add a sample diagram page and verify end-to-end in light and dark.
+      `source.config.ts`'s `defineConfig({ mdxOptions: { rehypePlugins } })`.
+- [ ] Milestone 3 — Create the client component `src/components/mermaid.tsx`: render the
+      beautiful-mermaid SVG, apply light/dark theme, implement viewBox zoom/pan/fit +
+      on-screen controls + full-screen expand + keyboard shortcuts. Guard against SSR/prerender
+      (only touch the DOM and dynamically import `mermaid`/`beautiful-mermaid` after mount).
+- [ ] Milestone 4 — Register `Mermaid` in `src/components/mdx.tsx` (merge into
+      `getMDXComponents`, do not replace), and add the diagram CSS to `src/styles/app.css`.
+- [ ] Milestone 5 — Add a sample diagram page and verify end-to-end (`pnpm dev`, then
+      `pnpm build && pnpm start`) in light and dark.
 
 
 ## Surprises & Discoveries
@@ -93,27 +100,54 @@ implementation. Provide concise evidence.
 
 Record every decision made while working on the plan.
 
-- Decision: Render the diagram in the browser (a client component) rather than on the
-  server.
-  Rationale: `beautiful-mermaid` (and the underlying `mermaid`) measure text to lay out
-  nodes, which is most reliable in a real DOM. Client rendering also lets the same component
-  re-render when the user flips light/dark without a server round-trip. We accept that the
-  diagram appears a beat after the page (it shows a "Rendering diagram…" placeholder first).
+- Decision: Render the diagram in the browser rather than on the server, and guard against the
+  prerender pass.
+  Rationale: `beautiful-mermaid` (and the underlying `mermaid`) measure text to lay out nodes,
+  which is only reliable in a real DOM. This site is a static SPA: `pnpm build` runs a
+  prerender pass (TanStack Start `spa.prerender` in `vite.config.ts`) where there is no DOM,
+  and the docs page already streams MDX into the browser through a client loader
+  (`browserCollections.docs.createClientLoader` / `clientLoader.useContent`, see
+  `src/routes/docs/$.tsx`). So the `Mermaid` component must touch the DOM and import
+  `beautiful-mermaid` only inside `useEffect`/after mount, never during render — otherwise the
+  prerender step would throw on missing `window`/`document`. Client rendering also lets the
+  same component re-render when the user flips light/dark without any server round-trip. We
+  accept that the diagram appears a beat after the page (it shows a "Rendering diagram…"
+  placeholder first).
+  Date: 2026-05-30
+
+- Decision: Read the active light/dark theme from `fumadocs-ui/provider/base`'s re-exported
+  `useTheme`, not by importing `next-themes` directly.
+  Rationale: fumadocs' theme provider wraps the app in `next-themes` under the hood, but
+  `next-themes` is only a transitive dependency in this TanStack Start project (it is not in
+  `package.json`); importing it directly is not guaranteed to resolve. fumadocs-ui re-exports
+  `useTheme` from `fumadocs-ui/provider/base` (verified: `export { RootProvider, useTheme }`),
+  and the root layout already mounts `RootProvider` from `fumadocs-ui/provider/tanstack`
+  (`src/routes/__root.tsx`), so importing `useTheme` from `fumadocs-ui/provider/base` returns
+  the live theme without adding a dependency.
   Date: 2026-05-30
 
 - Decision: Implement zoom/pan by mutating the SVG `viewBox` attribute, with no pan/zoom
   library.
   Rationale: The team's existing implementations (keiki-docs vanilla JS, mina-ui React
-  `MermaidViewer`) both do exactly this; it is dependency-free, accessible, and ports cleanly.
+  `MermaidViewer` at
+  `/Users/shinzui/Keikaku/bokuno/mina/mina-ui/src/components/markdown/MarkdownView.tsx`) both
+  do exactly this via the pure helpers `clampViewBox`/`zoomViewBoxAt`; it is dependency-free,
+  accessible, framework-agnostic, and ports cleanly to TanStack Start unchanged (it is plain
+  React + DOM, with no Next.js coupling).
   Date: 2026-05-30
 
 - Decision: Convert the ` ```mermaid ` fence into a `<Mermaid>` component via a tiny custom
-  rehype plugin in `source.config.ts`, rather than overriding the `pre`/`code` MDX components.
+  rehype plugin wired through `source.config.ts`'s `defineConfig({ mdxOptions: { rehypePlugins } })`,
+  rather than overriding the `pre`/`code` MDX components.
   Rationale: A code fence normally reaches MDX as `<pre><code class="language-mermaid">`,
   which fumadocs' own code-block renderer (and Plan B's Shiki config) will try to syntax-
   highlight. Intercepting at the rehype (HTML-AST) stage cleanly removes the fence from the
   Shiki path and replaces it with a first-class component, avoiding any ordering conflict with
-  Plan B.
+  Plan B. This is framework-independent: `source.config.ts` is owned by fumadocs-mdx and is
+  identical between the old Next.js setup and TanStack Start (it is read by the
+  `fumadocs-mdx/vite` plugin in `vite.config.ts`). Verified against fumadocs-mdx 15.0.10 that
+  `mdxOptions.rehypePlugins` accepts both an array and a `(defaults) => plugins` function
+  (`ResolvePlugins`).
   Date: 2026-05-30
 
 
@@ -127,28 +161,48 @@ Compare the result against the original purpose.
 
 ## Context and Orientation
 
-You are working in `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`, a Next.js + fumadocs
-documentation site. Everything in this plan assumes you run commands from that directory.
-The Next.js "App Router" lives at the repository root (`app/`), shared helpers live in
-`lib/`, and Markdown/MDX content lives under `content/docs/`. This layout is the standard
-fumadocs layout.
+You are working in `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`, a TanStack Start +
+fumadocs documentation site (a static SPA built with Vite). Everything in this plan assumes
+you run commands from that directory, inside the project's Nix dev shell (`nix develop`,
+which provides pnpm + Node 22). The app's source lives under `src/`: routes (pages) under
+`src/routes/` (TanStack Router file-based routing — e.g. the docs page is `src/routes/docs/$.tsx`),
+shared helpers under `src/lib/`, components under `src/components/`, and styles under
+`src/styles/`. Markdown/MDX content lives under `content/docs/`. The Vite build pipeline is
+configured in `vite.config.ts` (there is **no** `next.config.mjs`).
 
 Definitions you will need throughout:
 
-- **fumadocs**: a documentation framework for Next.js that compiles `.mdx` files into pages.
-  Its build-time configuration lives in `source.config.ts`; its runtime component registry
-  lives in `mdx-components.tsx`.
+- **TanStack Start (static SPA)**: a React framework on Vite + TanStack Router. Here it is
+  configured (`vite.config.ts`, the `tanstackStart({ spa: { enabled: true, prerender: {...} } })`
+  plugin) to prerender pages to static HTML/JS under `.output/public`. `pnpm dev` runs the Vite
+  dev server (`vite dev`) at `http://localhost:3000`; `pnpm build` (`vite build`) produces the
+  static output; `pnpm start` serves that output (`serve .output/public`).
+- **fumadocs**: a documentation framework that compiles `.mdx` files into pages. Its build-time
+  configuration lives in `source.config.ts` (read by the `fumadocs-mdx/vite` plugin); its
+  runtime component registry lives in `src/components/mdx.tsx`. Installed versions:
+  `fumadocs-core`/`fumadocs-ui` `16.9.3`, `fumadocs-mdx` `15.0.10`.
+- **client loader**: how MDX reaches the page in this SPA. `src/routes/docs/$.tsx` builds a
+  client loader with `browserCollections.docs.createClientLoader(...)` and renders the page's
+  compiled MDX with `clientLoader.useContent(...)`, passing the component map from
+  `useMDXComponents()` (from `src/components/mdx.tsx`). The practical consequence: **MDX, and
+  any `Mermaid` component inside it, renders in the browser.** A registered component therefore
+  runs client-side; it just must not crash the prerender pass (see "client-side rendering"
+  below).
 - **MDX**: Markdown that may contain JSX/React components. A fenced code block written as
   ` ```mermaid ` is, by default, just a code block.
 - **rehype plugin**: a function that transforms the HTML syntax tree (called a "HAST") of a
   document during compilation. fumadocs lets you add rehype plugins under
-  `mdxOptions.rehypePlugins` in `source.config.ts`. We use one to swap `mermaid` code fences
-  for our component. The tree nodes we touch are `unist`/`hast` nodes: an element node looks
-  like `{ type: 'element', tagName: 'pre', properties: {...}, children: [...] }`.
-- **client component**: a React component that runs in the browser. In Next.js you mark a
-  file with the string `'use client'` on its first line. Only client components may use
-  browser APIs and React hooks like `useEffect`/`useRef`. Our diagram is a client component
-  because it measures the DOM and listens to mouse/keyboard events.
+  `mdxOptions.rehypePlugins` in `source.config.ts`'s `defineConfig({...})`. We use one to swap
+  `mermaid` code fences for our component. The tree nodes we touch are `unist`/`hast` nodes: an
+  element node looks like `{ type: 'element', tagName: 'pre', properties: {...}, children: [...] }`.
+- **client-side rendering (no `"use client"`)**: TanStack Start on Vite does **not** use
+  Next.js' `"use client"` directive — that pragma does not exist here and must not be added.
+  Instead, components that need the DOM or browser-only libraries simply do their work inside
+  React effects (`useEffect`) so the code runs only in the browser, after mount. Because the
+  build performs a prerender pass with no DOM, our diagram component must never touch
+  `window`/`document` or import `mermaid`/`beautiful-mermaid` during render — only inside
+  `useEffect`. Our diagram is effectively a browser-only component because it measures the DOM
+  and listens to mouse/keyboard events.
 - **viewBox**: the `<svg viewBox="minX minY width height">` attribute. Reducing width/height
   zooms in; changing minX/minY pans. We never scale the SVG with CSS transforms — we only
   rewrite this attribute.
@@ -156,29 +210,30 @@ Definitions you will need throughout:
   returns an SVG string for Mermaid diagram source `source`, styled by `theme`. The team
   uses version `^1.1.3` in both keiki-docs and mina-ui.
 
-This plan has a HARD DEPENDENCY on Plan A, the scaffold plan, at
-`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`. Plan A creates the files this plan
-extends. If that plan is not yet implemented in the working tree, stop and implement it
-first; without it the files referenced below do not exist. The three files this plan shares
-with sibling plans are:
+This plan has a HARD DEPENDENCY on the scaffold plan at
+`docs/plans/1-scaffold-the-fumadocs-documentation-app.md` (already implemented on TanStack
+Start and committed). The scaffold creates the files this plan extends. If those files are not
+present in the working tree, stop and implement the scaffold plan first. The three files this
+plan shares with sibling plans are:
 
-- `mdx-components.tsx` — the MDX component registry. **Owner: Plan A. Extended by: this plan
-  (Plan C, adds `Mermaid`) and Plan D
+- `src/components/mdx.tsx` — the MDX component registry. **Owner: scaffold. Extended by: this
+  plan (Plan C, adds `Mermaid`) and Plan D
   (`docs/plans/4-documentation-information-architecture-and-authoring-system.md`, adds UI
   components). Merge, never replace.** The contract is described in detail in
-  "Integration contract for `mdx-components.tsx`" below.
-- `source.config.ts` — the fumadocs build config. **Owner: Plan A. Extended by: Plan B
-  (`docs/plans/2-...`, adds Shiki/Haskell highlighting) and this plan (adds the mermaid
-  rehype plugin).** Both additions live under the same `mdxOptions` object and must be
-  merged, not overwritten.
-- `app/global.css` — base + customization CSS. **Owner: Plan A. Extended by: Plan B
+  "Integration contract for `src/components/mdx.tsx`" below.
+- `source.config.ts` — the fumadocs build config. **Owner: scaffold. Extended by: Plan B
+  (`docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md`, adds Shiki/Haskell
+  highlighting) and this plan (adds the mermaid rehype plugin).** Both additions live under the
+  same `defineConfig({ mdxOptions: {...} })` object and must be merged, not overwritten.
+- `src/styles/app.css` — base + customization CSS. **Owner: scaffold. Extended by: Plan B
   (font/ligature CSS) and this plan (diagram CSS).** Append; do not remove sibling rules.
 
-What Plan A leaves for you (the "seam"): Plan A's `mdx-components.tsx` exports a function
-`getMDXComponents(components?: MDXComponents): MDXComponents` that spreads
-`defaultMdxComponents` from `fumadocs-ui/mdx`, then any plan-specific components, then the
-caller's `...components`. Plan A's `source.config.ts` exports `default defineConfig({
-mdxOptions: { /* seam */ } })`. You insert into both seams below.
+What the scaffold leaves for you (the "seam"): `src/components/mdx.tsx` exports a function
+`getMDXComponents(components?: MDXComponents)` (also re-exported as `useMDXComponents`) that
+spreads `defaultMdxComponents` from `fumadocs-ui/mdx`, then any plan-specific components, then
+the caller's `...components` (with a `satisfies MDXComponents` check). `source.config.ts`
+currently exports `export default defineConfig();` with no `mdxOptions` yet — you add the
+`mdxOptions: { rehypePlugins }` object below. You insert into both seams.
 
 
 ## Plan of Work
@@ -186,28 +241,35 @@ mdxOptions: { /* seam */ } })`. You insert into both seams below.
 The work proceeds in five milestones. Each is independently verifiable. Throughout, you
 edit or create exactly these files:
 
-- create `components/mermaid.tsx` (the client component; new file owned by this plan)
-- create `lib/rehype-mermaid.ts` (the fence→component rehype plugin; new file owned by this
+- create `src/components/mermaid.tsx` (the browser-rendered diagram component; new file owned
+  by this plan)
+- create `src/lib/rehype-mermaid.ts` (the fence→component rehype plugin; new file owned by this
   plan)
-- edit `source.config.ts` (merge the rehype plugin into `mdxOptions`)
-- edit `mdx-components.tsx` (merge `Mermaid` into the registry)
-- edit `app/global.css` (append diagram CSS)
+- edit `source.config.ts` (merge the rehype plugin into `defineConfig({ mdxOptions })`)
+- edit `src/components/mdx.tsx` (merge `Mermaid` into the registry)
+- edit `src/styles/app.css` (append diagram CSS)
 - edit `package.json` (add `beautiful-mermaid` dependency)
 - create `content/docs/diagram-demo.mdx` and edit `content/docs/meta.json` (sample page for
   verification; you may delete the page afterward, but keeping it as living documentation is
   fine)
 
 
-### Milestone 0 — Confirm prerequisites (Plan A is in place)
+### Milestone 0 — Confirm prerequisites (the scaffold is in place)
 
 Scope: make sure the scaffold this plan extends exists, so later edits have something to
 attach to. Nothing new is created. At the end you will have confirmed the seam files exist
 and the dev server runs.
 
-Run, from the repo root:
+Enter the Nix dev shell first (it provides pnpm + Node 22 and runs `pnpm install` on entry):
 
 ```bash
-ls mdx-components.tsx source.config.ts app/global.css package.json
+nix develop
+```
+
+Then, from the repo root, confirm the seam files exist:
+
+```bash
+ls src/components/mdx.tsx source.config.ts src/styles/app.css package.json
 ```
 
 You must see all four. Then start the dev server and open the site:
@@ -217,10 +279,10 @@ pnpm install
 pnpm dev
 ```
 
-Acceptance: `pnpm dev` prints a local URL (typically `http://localhost:3000`) and visiting
-`/docs` shows a styled, navigable (if empty) docs site. If `mdx-components.tsx` does not
-exist, implement `docs/plans/1-scaffold-the-fumadocs-documentation-app.md` first and return
-here.
+Acceptance: `pnpm dev` prints a local URL (`http://localhost:3000`, configured via
+`server.port` in `vite.config.ts`) and visiting `http://localhost:3000/docs` shows a styled,
+navigable (if empty) docs site. If `src/components/mdx.tsx` does not exist, implement
+`docs/plans/1-scaffold-the-fumadocs-documentation-app.md` first and return here.
 
 
 ### Milestone 1 — Add `beautiful-mermaid` and verify its API (prototyping)
@@ -240,7 +302,8 @@ pnpm add beautiful-mermaid@^1.1.3
 ```
 
 This adds the dependency to `package.json`. After install, `package.json`'s `dependencies`
-must contain the entry (alongside Plan A's fumadocs entries):
+must contain the entry (alongside the scaffold's existing entries — `@tanstack/react-router`,
+`@tanstack/react-start`, `fumadocs-core`, `fumadocs-mdx`, `fumadocs-ui`, `react`, etc.):
 
 ```json
 {
@@ -250,7 +313,8 @@ must contain the entry (alongside Plan A's fumadocs entries):
 }
 ```
 
-Now prove the API. Create a temporary file `scripts/mermaid-probe.mjs`:
+Now prove the API. Create a temporary file `scripts/mermaid-probe.mjs` (a throwaway Node
+script, run directly with `node` — it is not part of the Vite build):
 
 ```javascript
 import { renderMermaidSVG } from 'beautiful-mermaid';
@@ -324,9 +388,9 @@ Our plugin walks the tree, finds any `pre > code` whose class list includes
 `language-mermaid`, reads the text content, and replaces the whole `pre` node with an element
 whose `tagName` is `Mermaid` and whose `properties.chart` holds the diagram source. fumadocs/
 MDX maps a capitalized element tag name (`Mermaid`) to the component of the same key in the
-registry.
+registry (the map returned by `getMDXComponents`).
 
-Create `lib/rehype-mermaid.ts`:
+Create `src/lib/rehype-mermaid.ts`:
 
 ```typescript
 import type { Root, Element, ElementContent } from 'hast';
@@ -406,41 +470,50 @@ types, add the dev dependency explicitly:
 pnpm add -D @types/hast
 ```
 
-Now wire the plugin into `source.config.ts`. This is the SHARED build-config file (Plan A is
-the owner; Plan B also extends it for Shiki). You must MERGE — keep whatever `mdxOptions`
-already contains and add `rehypePlugins`. Plan A's seam version of the file looks like this
-(reproduced so you can recognize it):
+The import path is relative (`./src/lib/rehype-mermaid`) because `source.config.ts` is read by
+the `fumadocs-mdx/vite` plugin in its own context, where the `@/*` alias is not guaranteed to
+be wired; use a relative import here to be safe.
+
+Now wire the plugin into `source.config.ts`. This is the SHARED build-config file (the scaffold
+is the owner; Plan B also extends it for Shiki). It is read by the `fumadocs-mdx/vite` plugin
+declared in `vite.config.ts` (the `mdx()` call) — it is the same fumadocs-mdx config format the
+old Next.js setup used, so the rehype-plugin mechanics are unchanged. You must MERGE — keep
+whatever `defineDocs`/`defineConfig` already contain and add `mdxOptions.rehypePlugins`. The
+scaffold's current version of the file looks like this (reproduced so you can recognize it):
 
 ```typescript
 import { defineConfig, defineDocs } from 'fumadocs-mdx/config';
-import { metaSchema, pageSchema } from 'fumadocs-core/source/schema';
 
+// Docs collection: every .mdx under content/docs/ becomes a page.
 export const docs = defineDocs({
   dir: 'content/docs',
-  docs: { schema: pageSchema },
-  meta: { schema: metaSchema },
-});
-
-export default defineConfig({
-  mdxOptions: {
-    // SEAM: Plan B adds rehypeCodeOptions here; Plan C adds rehypePlugins here.
+  docs: {
+    postprocess: {
+      includeProcessedMarkdown: true,
+    },
   },
 });
+
+// SEAM (Plan B — Shiki) / Plan C (Mermaid) extend the config below.
+export default defineConfig();
 ```
 
-Edit it so the `mdxOptions` object includes the mermaid plugin. After your edit it must look
-like this (if Plan B has already added `rehypeCodeOptions`, leave that key intact and only
-add the `rehypePlugins` key — do not delete Plan B's work):
+Edit it so `defineConfig` receives `mdxOptions` with the mermaid plugin. After your edit it
+must look like this (if Plan B has already added `mdxOptions.rehypeCodeOptions`, leave that key
+intact and only add the `rehypePlugins` key — do not delete Plan B's work):
 
 ```typescript
 import { defineConfig, defineDocs } from 'fumadocs-mdx/config';
-import { metaSchema, pageSchema } from 'fumadocs-core/source/schema';
-import { rehypeMermaid } from './lib/rehype-mermaid';
+import { rehypeMermaid } from './src/lib/rehype-mermaid';
 
+// Docs collection: every .mdx under content/docs/ becomes a page.
 export const docs = defineDocs({
   dir: 'content/docs',
-  docs: { schema: pageSchema },
-  meta: { schema: metaSchema },
+  docs: {
+    postprocess: {
+      includeProcessedMarkdown: true,
+    },
+  },
 });
 
 export default defineConfig({
@@ -460,8 +533,13 @@ configures via `rehypeCodeOptions`) as part of its default pipeline. Plugins lis
 entirely with a `Mermaid` element, the highlighter no longer sees a `language-mermaid` block
 to process, so the two coexist regardless of relative order. If you observe the highlighter
 still touching mermaid blocks, switch to the alternative form
-`rehypePlugins: (v) => [rehypeMermaid, ...v]` to guarantee our plugin runs first; fumadocs
+`rehypePlugins: (v) => [rehypeMermaid, ...v]` to guarantee our plugin runs first; verified
+against fumadocs-mdx 15.0.10 that `mdxOptions.rehypePlugins` is typed `ResolvePlugins`, which
 accepts either an array or a function that receives and returns the default plugin array.
+
+Note: fumadocs-mdx regenerates the `.source/` directory (the virtual `collections/*` modules)
+from `source.config.ts` on `pnpm dev`/`pnpm build` and via the `postinstall`/`typecheck`
+(`fumadocs-mdx`) script. If your config edit does not seem to take effect, regenerate it.
 
 Acceptance for this milestone is checked together with Milestone 3 (you need the component
 to see anything render). After this edit, `pnpm dev` must still compile without errors (the
@@ -475,34 +553,40 @@ pnpm dev
 and confirm the server starts without a build error referencing `rehype-mermaid`.
 
 
-### Milestone 3 — The interactive `Mermaid` client component
+### Milestone 3 — The interactive `Mermaid` component (browser-rendered)
 
 Scope: build the component that takes the diagram source (the `chart` prop), renders it to an
 SVG with `beautiful-mermaid` using a theme that matches the current light/dark mode, and
 makes it interactive via the `viewBox`. At the end, a `<Mermaid chart="...">` node renders a
-themed, zoomable, pannable, expandable diagram.
+themed, zoomable, pannable, expandable diagram. Since the docs page renders MDX through the
+client loader, this component runs in the browser; the only constraint is that it must not
+touch the DOM or import the renderer during render (so the static prerender pass does not
+crash) — all browser work happens inside `useEffect`.
 
-This is a direct port of mina-ui's `MermaidViewer` (the team's React reference) combined with
-keiki-docs' full interaction model (toolbar `+ - Fit Expand`, wheel-zoom toward cursor,
-pointer-drag pan, double-click fit, `+`/`-`/`0`/`Escape` keys, full-screen overlay). The zoom
-math is the pure-helper version from mina-ui (`clampViewBox`, `zoomViewBoxAt`) so it is easy
-to reason about and could be unit-tested later.
+This is a direct port of mina-ui's `MermaidViewer` (the team's React reference, at
+`/Users/shinzui/Keikaku/bokuno/mina/mina-ui/src/components/markdown/MarkdownView.tsx`)
+combined with keiki-docs' full interaction model (toolbar `+ - Fit Expand`, wheel-zoom toward
+cursor, pointer-drag pan, double-click fit, `+`/`-`/`0`/`Escape` keys, full-screen overlay).
+The zoom math is the pure-helper version from mina-ui (`clampViewBox`, `zoomViewBoxAt`) so it
+is easy to reason about and could be unit-tested later. These helpers are plain React + DOM
+with no framework coupling, so they port to TanStack Start unchanged — no `"use client"`
+directive is needed or used here.
 
 Two theme palettes are defined: a light one (mina-ui's values) and a dark one (net-new, since
 the references only shipped a light diagram theme — see the Decision Log and the
-Surprises section if you tune it). The component reads the active theme from fumadocs' theme
-provider via the `next-themes` hook `useTheme` (fumadocs re-exports `next-themes`; importing
-from `next-themes` directly is the documented approach and avoids coupling to fumadocs
-internals). When the theme changes, the component re-renders the SVG with the matching
-palette.
+Surprises section if you tune it). The component reads the active theme via the `useTheme`
+hook re-exported by `fumadocs-ui/provider/base` (fumadocs wraps the app in `next-themes` under
+the hood; we import `useTheme` from fumadocs rather than from `next-themes` directly because
+`next-themes` is only a transitive dependency in this project and is not in `package.json`).
+The root layout (`src/routes/__root.tsx`) already mounts `RootProvider` from
+`fumadocs-ui/provider/tanstack`, which establishes the theme context. When the theme changes,
+the component re-renders the SVG with the matching palette.
 
-Create `components/mermaid.tsx`:
+Create `src/components/mermaid.tsx`:
 
 ```tsx
-'use client';
-
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useTheme } from 'next-themes';
+import { useTheme } from 'fumadocs-ui/provider/base';
 
 /** A rectangle describing the visible region of an <svg>, i.e. its viewBox. */
 type ViewBoxRect = { x: number; y: number; w: number; h: number };
@@ -829,10 +913,15 @@ export default Mermaid;
 
 Important implementation notes for the reader:
 
-- The component imports `useTheme` from `next-themes`. fumadocs' `RootProvider` (set up by
-  Plan A in `app/layout.tsx`) wraps the app in `next-themes`' provider, so this hook returns
-  the live theme. `resolvedTheme` is the concrete `'light'`/`'dark'` value even when the user
-  selected "system".
+- The component imports `useTheme` from `fumadocs-ui/provider/base` (verified export). fumadocs'
+  `RootProvider` (mounted in `src/routes/__root.tsx` via `fumadocs-ui/provider/tanstack`) wraps
+  the app in `next-themes`' provider, so this hook returns the live theme. `resolvedTheme` is
+  the concrete `'light'`/`'dark'` value even when the user selected "system".
+- All browser work is inside `useEffect`: `await import('beautiful-mermaid')` and every DOM
+  access run only after the component mounts in the browser. During render the component returns
+  only the static figure shell and a "Rendering diagram…" placeholder, so the static prerender
+  pass (`pnpm build`) never executes browser-only code. This is the TanStack Start replacement
+  for Next.js' `"use client"` boundary.
 - `await import('beautiful-mermaid')` (a dynamic import) keeps the diagram renderer out of the
   initial page bundle; it loads only when a diagram is on the page.
 - We re-run `renderMermaidSVG` on theme change (the effect depends on `isDark`), so flipping
@@ -844,14 +933,16 @@ Important implementation notes for the reader:
   malformed diagram never blanks the page.
 
 Acceptance is verified at Milestone 5 (you still need to register the component and add CSS).
-For now, ensure the file type-checks:
+For now, ensure the file type-checks (the project's `typecheck` script first regenerates the
+`.source/` collections, then runs `tsc`):
 
 ```bash
-pnpm exec tsc --noEmit
+pnpm typecheck
 ```
 
-It should report no errors in `components/mermaid.tsx` (errors about `Mermaid` being an
-unknown JSX tag elsewhere are resolved in Milestone 4).
+It should report no errors in `src/components/mermaid.tsx` (errors about `Mermaid` being an
+unknown JSX tag elsewhere are resolved in Milestone 4). If you prefer to run only the compiler,
+`pnpm exec tsc --noEmit` works too.
 
 
 ### Milestone 4 — Register the component and add the diagram CSS
@@ -860,14 +951,16 @@ Scope: make the `<Mermaid>` element produced by the rehype plugin resolve to you
 and give the figure/toolbar/overlay their styles. At the end, a mermaid fence renders a
 styled, interactive diagram.
 
-First, the SHARED registry. This is the integration contract for `mdx-components.tsx`.
+First, the SHARED registry. This is the integration contract for `src/components/mdx.tsx`.
 
-#### Integration contract for `mdx-components.tsx`
+#### Integration contract for `src/components/mdx.tsx`
 
-`mdx-components.tsx` exports one function:
+`src/components/mdx.tsx` exports one function (re-exported as `useMDXComponents`, which is
+what the docs route's client loader calls — see `src/routes/docs/$.tsx`):
 
 ```typescript
 export function getMDXComponents(components?: MDXComponents): MDXComponents;
+export const useMDXComponents = getMDXComponents;
 ```
 
 Every plan that adds components edits the body of this single function. The contract all
@@ -880,46 +973,62 @@ plans follow:
    Steps, Tabs, Cards, TypeTable, etc.) to the same object; your edit and theirs both survive
    because each only adds keys.
 
-Plan A's seam version of the file (no extra components yet) is:
+The scaffold's seam version of the file (no extra components yet) is:
 
 ```tsx
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import type { MDXComponents } from 'mdx/types';
 
-export function getMDXComponents(components?: MDXComponents): MDXComponents {
+export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
-    // SEAM: Plan C adds Mermaid; Plan D adds UI components.
+    // ...Plan C / Plan D components go here...
     ...components,
-  };
+  } satisfies MDXComponents;
+}
+
+export const useMDXComponents = getMDXComponents;
+
+declare global {
+  type MDXProvidedComponents = ReturnType<typeof getMDXComponents>;
 }
 ```
 
 Edit it to import and register `Mermaid`. After your edit (and assuming Plan D has not yet
 added its components — if it has, leave those lines in place and only add the `Mermaid`
-import and key):
+import and key). Keep the `satisfies MDXComponents` check, the `useMDXComponents` re-export,
+and the `declare global` block intact:
 
 ```tsx
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import type { MDXComponents } from 'mdx/types';
 import { Mermaid } from '@/components/mermaid';
 
-export function getMDXComponents(components?: MDXComponents): MDXComponents {
+export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
     Mermaid,
     // Plan D's UI components (Callout, Steps, Tabs, Cards, TypeTable, …) also go here.
     ...components,
-  };
+  } satisfies MDXComponents;
+}
+
+export const useMDXComponents = getMDXComponents;
+
+declare global {
+  type MDXProvidedComponents = ReturnType<typeof getMDXComponents>;
 }
 ```
 
-The `@/` prefix is the path alias Plan A configures in `tsconfig.json` (`"@/*": ["./*"]`), so
-`@/components/mermaid` resolves to `components/mermaid.tsx` at the repo root.
+The `@/` prefix is the path alias configured in `tsconfig.json` (`"@/*": ["./src/*"]`), so
+`@/components/mermaid` resolves to `src/components/mermaid.tsx`.
 
-Second, append the diagram CSS to the SHARED `app/global.css`. Owner is Plan A; Plan B also
-appends here (font/ligature CSS). Add your block at the end; do not remove other rules. This
-CSS is adapted from keiki-docs' `.diagram*` styles, converted to use fumadocs' theme custom
+Second, append the diagram CSS to the SHARED `src/styles/app.css`. Owner is the scaffold; Plan
+B also appends here (the PragmataPro font/ligature CSS — there is an empty seam comment block
+reserved for it). Add your block at the end; do not remove other rules. `src/styles/app.css` is
+imported as a URL into the root document (`src/routes/__root.tsx` does
+`import appCss from "@/styles/app.css?url"` and links it), so anything appended here applies
+site-wide. This CSS is adapted from keiki-docs' `.diagram*` styles, using fumadocs' theme custom
 properties (`--fd-*`) so colors track light/dark automatically:
 
 ```css
@@ -1083,11 +1192,13 @@ sequenceDiagram
 ```
 ````
 
-Register the page in the content tree by adding it to `content/docs/meta.json`. Plan A seeds
-this file; merge your entry into the existing `pages` array (do not drop existing entries):
+Register the page in the content tree by adding it to `content/docs/meta.json`. The scaffold
+seeds this file as `{ "title": "Documentation", "pages": ["index"] }`; merge your entry into
+the existing `pages` array (keep `title` and do not drop existing entries):
 
 ```json
 {
+  "title": "Documentation",
   "pages": ["index", "diagram-demo"]
 }
 ```
@@ -1125,24 +1236,33 @@ Concrete acceptance, restated as a single check a human can confirm: on
 zooms with the wheel, pans by dragging, fits on double-click, expands to full screen, and
 recolors itself when you switch between light and dark mode — in both themes.
 
-Also run the type/build gates to confirm nothing regressed:
+Also run the type/build gates to confirm nothing regressed, then verify against the real
+static build (not just the dev server):
 
 ```bash
-pnpm exec tsc --noEmit
+pnpm typecheck
 pnpm build
+pnpm start
 ```
 
-`tsc --noEmit` must report no errors. `pnpm build` (Next.js production build) must complete
-and statically generate `/docs/diagram-demo`.
+`pnpm typecheck` (`fumadocs-mdx && tsc --noEmit`) must report no errors. `pnpm build`
+(`vite build`) must complete and prerender the SPA into `.output/public`, including
+`/docs/diagram-demo` (the `tanstackStart` plugin in `vite.config.ts` prerenders `/docs` and
+crawls links). `pnpm start` (`serve .output/public`) then serves that static output; open the
+served URL's `/docs/diagram-demo` and confirm the diagram still renders and is interactive when
+loaded from the static build. This is the important SPA check: MDX (and the `Mermaid`
+component) renders in the browser, so a diagram that works under `pnpm dev` must also work when
+served as static files with no Node server.
 
 
 ## Concrete Steps
 
-All commands run from `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`.
+All commands run from `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`, inside the Nix dev
+shell (`nix develop`, which provides pnpm + Node 22).
 
 ```bash
-# 0. Prerequisites
-ls mdx-components.tsx source.config.ts app/global.css package.json
+# 0. Prerequisites (inside `nix develop`)
+ls src/components/mdx.tsx source.config.ts src/styles/app.css package.json
 pnpm install
 
 # 1. Dependency + API probe
@@ -1154,15 +1274,16 @@ rm scripts/mermaid-probe.mjs
 # (only if tsc cannot find hast types)
 pnpm add -D @types/hast
 
-# 2. Create lib/rehype-mermaid.ts and edit source.config.ts (merge rehypePlugins)
-# 3. Create components/mermaid.tsx
-# 4. Edit mdx-components.tsx (add Mermaid) and append diagram CSS to app/global.css
+# 2. Create src/lib/rehype-mermaid.ts and edit source.config.ts (merge mdxOptions.rehypePlugins)
+# 3. Create src/components/mermaid.tsx
+# 4. Edit src/components/mdx.tsx (add Mermaid) and append diagram CSS to src/styles/app.css
 # 5. Create content/docs/diagram-demo.mdx and update content/docs/meta.json
 
 # Verify
-pnpm exec tsc --noEmit                    # expect: no errors
+pnpm typecheck                            # fumadocs-mdx && tsc --noEmit; expect: no errors
 pnpm dev                                  # open http://localhost:3000/docs/diagram-demo
-pnpm build                                # expect: build completes, page generated
+pnpm build                                # vite build; prerenders SPA to .output/public
+pnpm start                                # serve .output/public; re-check the served page
 ```
 
 Expected `pnpm add` transcript (abridged):
@@ -1196,8 +1317,10 @@ The feature is accepted when all of the following hold on
   palette (the "concrete check": the same diagram is visibly light-on-white in light mode and
   light-on-dark in dark mode).
 - A malformed diagram renders a `diagram-error` box rather than blanking the page.
-- `pnpm exec tsc --noEmit` reports no type errors.
-- `pnpm build` completes and statically generates the demo page.
+- `pnpm typecheck` (`fumadocs-mdx && tsc --noEmit`) reports no type errors.
+- `pnpm build` (`vite build`) completes and prerenders the demo page into `.output/public`,
+  and the same behaviors above hold when the static output is served via `pnpm start` (no Node
+  server) — confirming the diagram renders client-side from the static SPA.
 
 These are user-observable behaviors, not internal attributes; each maps to a specific click
 or keystroke described in Milestone 5.
@@ -1207,27 +1330,36 @@ or keystroke described in Milestone 5.
 
 Every step is safe to re-run. `pnpm add beautiful-mermaid@^1.1.3` is idempotent (re-running
 leaves the same version). The edits to the three shared files (`source.config.ts`,
-`mdx-components.tsx`, `app/global.css`) are additive and guarded: before adding the
+`src/components/mdx.tsx`, `src/styles/app.css`) are additive and guarded: before adding the
 `rehypePlugins` entry, the `Mermaid` import/key, or the CSS block, check whether it is
 already present and skip if so, so re-applying the plan does not duplicate lines. The new
-files (`components/mermaid.tsx`, `lib/rehype-mermaid.ts`,
+files (`src/components/mermaid.tsx`, `src/lib/rehype-mermaid.ts`,
 `content/docs/diagram-demo.mdx`) can be overwritten wholesale.
 
 Recovery if something breaks:
 
-- Build error mentioning `rehype-mermaid` or `Mermaid`: confirm `lib/rehype-mermaid.ts`
-  exists and is imported in `source.config.ts`, and that `Mermaid` is imported in
-  `mdx-components.tsx`. fumadocs caches compiled MDX under `.source/`; delete it and rebuild
-  if stale: `rm -rf .source && pnpm dev`.
+- Build error mentioning `rehype-mermaid` or `Mermaid`: confirm `src/lib/rehype-mermaid.ts`
+  exists and is imported (relatively, `./src/lib/rehype-mermaid`) in `source.config.ts`, and
+  that `Mermaid` is imported in `src/components/mdx.tsx`. fumadocs-mdx generates the
+  `collections/*` virtual modules into `.source/`; regenerate them if stale by re-running
+  `pnpm typecheck` (which runs `fumadocs-mdx`) or `rm -rf .source && pnpm dev`. Vite also keeps
+  a cache under `node_modules/.vite`; if a stale build persists, clear it and restart
+  `pnpm dev`.
 - Diagram shows as code text: the rehype plugin did not match; confirm the class check in
-  `isMermaidPre` (the fence must produce `class="language-mermaid"`), and clear `.source/`.
+  `isMermaidPre` (the fence must produce `class="language-mermaid"`), and regenerate `.source/`.
 - Diagram renders but does not zoom/pan: confirm the SVG has a `viewBox` (Milestone 1 probe);
   if `beautiful-mermaid` ever emits an SVG without one, the interaction effects no-op by
   design — record this in Surprises & Discoveries and add a fallback that synthesizes a
   viewBox from `width`/`height`.
-- Theme does not sync: confirm `app/layout.tsx` (Plan A) wraps the app in fumadocs'
-  `RootProvider` so `next-themes` context exists; without it `useTheme` returns `undefined`
-  and the component falls back to the light palette (still functional, just not theme-aware).
+- Theme does not sync: confirm `src/routes/__root.tsx` (scaffold) wraps the app in
+  `RootProvider` from `fumadocs-ui/provider/tanstack` so the `next-themes` context exists;
+  without it `useTheme` (from `fumadocs-ui/provider/base`) returns `undefined`/`resolvedTheme`
+  is unset and the component falls back to the light palette (still functional, just not
+  theme-aware).
+- Build (prerender) error about `window`/`document` is not defined, or `mermaid` failing at
+  build time: a browser-only access leaked into render. Confirm every DOM access and the
+  `import('beautiful-mermaid')` call live inside `useEffect`, never in the render body — the
+  `pnpm build` prerender pass has no DOM.
 
 The new dependency and files are removable with no residue: `pnpm remove beautiful-mermaid`,
 delete the two new source files, revert the three shared-file additions, and delete the demo
@@ -1240,41 +1372,95 @@ Libraries used and why:
 
 - `beautiful-mermaid@^1.1.3` — provides `renderMermaidSVG(source, theme)`, returning a styled
   SVG string. Chosen because the team's other docs sites (keiki-docs, mina-ui) use this exact
-  version and look, giving visual parity. Imported dynamically inside
-  `components/mermaid.tsx`.
-- `next-themes` — provides the `useTheme()` hook to read the live light/dark mode. It is a
-  transitive dependency of `fumadocs-ui` (whose `RootProvider` configures it), so no separate
-  install is required; importing from `next-themes` directly is supported.
+  version and look, giving visual parity. Imported dynamically (inside `useEffect`) in
+  `src/components/mermaid.tsx`.
+- `fumadocs-ui/provider/base` — re-exports the `useTheme()` hook (originally from `next-themes`)
+  to read the live light/dark mode. `next-themes` is only a transitive dependency of
+  `fumadocs-ui` (its `RootProvider`, mounted in `src/routes/__root.tsx`, configures it) and is
+  not in `package.json`, so we import `useTheme` from `fumadocs-ui/provider/base` rather than
+  from `next-themes` directly. No separate install is required.
 - `hast` types (and optionally `@types/hast`) — node types for the rehype plugin. Present via
-  the MDX/rehype toolchain that fumadocs pulls in.
+  the MDX/rehype toolchain that fumadocs pulls in (`@types/hast` is not currently a direct
+  dependency; add it as a dev dependency only if `tsc` cannot resolve the `hast` types).
 
 Files, modules, and the signatures that must exist at the end of each milestone:
 
-- `lib/rehype-mermaid.ts` (Milestone 2) must export
+- `src/lib/rehype-mermaid.ts` (Milestone 2) must export
   `export function rehypeMermaid(): (tree: import('hast').Root) => void` (also exported as
   default). It rewrites `pre > code.language-mermaid` nodes into
   `{ type: 'element', tagName: 'Mermaid', properties: { chart: string }, children: [] }`.
 - `source.config.ts` (Milestone 2) must, in its `defineConfig({ mdxOptions })`, include
   `rehypePlugins: [rehypeMermaid]` (merged alongside any Plan B `rehypeCodeOptions`).
-- `components/mermaid.tsx` (Milestone 3) must export
+- `src/components/mermaid.tsx` (Milestone 3) must export
   `export function Mermaid(props: { chart: string }): JSX.Element` (also default) plus the
   pure helpers `centerOf`, `clampViewBox`, and `zoomViewBoxAt` with the signatures shown in
   the component source. The component must render a themed SVG and support viewBox
-  zoom/pan/fit, full-screen expand, and theme-synced re-render.
-- `mdx-components.tsx` (Milestone 4) must keep the signature
-  `export function getMDXComponents(components?: MDXComponents): MDXComponents` and include
-  `Mermaid` among the returned components, after `...defaultMdxComponents` and before
-  `...components`.
-- `app/global.css` (Milestone 4) must contain the `.diagram*` / `.diagram-backdrop` /
+  zoom/pan/fit, full-screen expand, and theme-synced re-render, doing all browser work inside
+  `useEffect` (no DOM/`beautiful-mermaid` access during render).
+- `src/components/mdx.tsx` (Milestone 4) must keep the signature
+  `export function getMDXComponents(components?: MDXComponents)` (with `satisfies MDXComponents`)
+  and the `useMDXComponents` re-export, and include `Mermaid` among the returned components,
+  after `...defaultMdxComponents` and before `...components`.
+- `src/styles/app.css` (Milestone 4) must contain the `.diagram*` / `.diagram-backdrop` /
   `.diagram-toolbar` / `.diagram-error` rules.
 
-Integration points touched by this plan (described identically to the master brief so other
-plans can reconcile):
+Integration points touched by this plan (described so other plans can reconcile):
 
-- `source.config.ts` — fumadocs-mdx collection + rehype/Shiki. Owner Plan A; extended by Plan
-  B (Shiki/Haskell, `rehypeCodeOptions`) and this plan (Mermaid, `rehypePlugins`). Merge,
+- `source.config.ts` — fumadocs-mdx collection + rehype/Shiki (read by the `fumadocs-mdx/vite`
+  plugin in `vite.config.ts`). Owner scaffold; extended by Plan B (Shiki/Haskell,
+  `rehypeCodeOptions`) and this plan (Mermaid, `rehypePlugins`). Merge, never replace.
+- `src/components/mdx.tsx` — MDX component registry consumed by the docs route's client loader.
+  Owner scaffold; extended by this plan (adds `Mermaid`) and Plan D (adds UI components). Merge,
   never replace.
-- `mdx-components.tsx` — MDX component registry. Owner Plan A; extended by this plan (adds
-  `Mermaid`) and Plan D (adds UI components). Merge, never replace.
-- `app/global.css` — base + customization CSS. Owner Plan A; extended by Plan B (fonts) and
-  this plan (diagrams). Append; never remove sibling rules.
+- `src/styles/app.css` — base + customization CSS, linked from `src/routes/__root.tsx`. Owner
+  scaffold; extended by Plan B (fonts) and this plan (diagrams). Append; never remove sibling
+  rules.
+
+
+## Revision Note — Next.js → TanStack Start pivot (2026-05-30)
+
+This plan was originally written assuming the docs site ran on **Next.js** (App Router). The
+project has since **pivoted to TanStack Start configured as a static SPA** (Vite + TanStack
+Router; `pnpm build` prerenders to `.output/public`, served statically). The scaffold (Plan #1
+at `docs/plans/1-scaffold-the-fumadocs-documentation-app.md`) was re-implemented on TanStack
+Start and committed; this plan was rewritten to match. The feature's **intent and scope are
+unchanged** — port mina-ui's `MermaidViewer`, intercept ` ```mermaid ` fences with a rehype
+plugin, and register a browser-rendered, zoomable/pannable `Mermaid` component. Only
+framework-specific mechanics changed:
+
+- File/command mapping applied throughout: `mdx-components.tsx` → `src/components/mdx.tsx`;
+  `app/global.css` → `src/styles/app.css`; `app/layout.tsx` → `src/routes/__root.tsx`;
+  `lib/rehype-mermaid.ts` → `src/lib/rehype-mermaid.ts`; `components/mermaid.tsx` →
+  `src/components/mermaid.tsx`; `next.config.mjs` → `vite.config.ts`; `next dev` → `vite dev`
+  (`pnpm dev`); `next build` → `vite build` (`pnpm build`, static output in `.output/public`,
+  served via `pnpm start`); import alias `@/...` now resolves to `./src/...`.
+- The MDX registry seam is now `getMDXComponents`/`useMDXComponents` in `src/components/mdx.tsx`
+  (with `satisfies MDXComponents` and the `MDXProvidedComponents` global). The docs page
+  (`src/routes/docs/$.tsx`) renders MDX **in the browser** through a client loader
+  (`browserCollections.docs.createClientLoader` + `clientLoader.useContent`), so any registered
+  `Mermaid` component runs client-side.
+- The `"use client"` directive was removed: it does not exist in TanStack Start/Vite. The
+  component instead does all DOM work and the `import('beautiful-mermaid')` inside `useEffect`,
+  so the static prerender pass (which has no DOM) does not crash.
+- The theme hook now imports `useTheme` from `fumadocs-ui/provider/base` (a verified re-export)
+  instead of `next-themes` directly, because `next-themes` is only a transitive dependency here
+  and is absent from `package.json`. `RootProvider` is mounted via
+  `fumadocs-ui/provider/tanstack` in `src/routes/__root.tsx`.
+- The shared `rehypePlugins` seam moved into `source.config.ts`'s `defineConfig({ mdxOptions:
+  {...} })` (the scaffold ships `export default defineConfig();` with no options yet); the file
+  is read by the `fumadocs-mdx/vite` plugin in `vite.config.ts`. Verified against fumadocs-mdx
+  15.0.10 that `mdxOptions.rehypePlugins` accepts an array or a `(defaults) => plugins` function.
+  The `rehype-mermaid` import in `source.config.ts` is relative (`./src/lib/rehype-mermaid`)
+  rather than aliased.
+- Verification was re-phrased for the static SPA: `pnpm typecheck` (`fumadocs-mdx && tsc
+  --noEmit`), then `pnpm dev`, then `pnpm build` + `pnpm start` to confirm the diagram renders
+  and is interactive from the static output. Commands run inside the Nix dev shell (`nix
+  develop`, pnpm + Node 22).
+- References updated: the scaffold is "Plan #1"
+  (`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`); Plan B (Shiki) is referenced by
+  path (`docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md`).
+
+Unchanged: the `beautiful-mermaid@^1.1.3` dependency and `renderMermaidSVG(source, theme)` API,
+the viewBox-based zoom/pan model and its pure helpers (`centerOf`, `clampViewBox`,
+`zoomViewBoxAt`, confirmed against mina-ui's `MarkdownView.tsx`), the rehype fence-interception
+approach, the light/dark palettes, the diagram CSS, and all user-observable acceptance behaviors.
