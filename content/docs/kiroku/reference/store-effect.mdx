@@ -1,0 +1,142 @@
+---
+title: "The Store effect"
+description: "The Store dynamic effect, every operation's signature, and the interpreters that run it."
+---
+
+`Store` is kiroku's core capability, modelled as an `effectful` **dynamic effect**. Application
+code calls the smart-constructor operations below in `Eff es` with a `Store :> es` constraint;
+an interpreter supplies the actual PostgreSQL-backed behaviour (or a mock, in tests). This page
+lists every operation's exact signature and the shipped interpreters.
+
+## The effect
+
+```haskell
+data Store :: Effect where
+  AppendToStream      :: StreamName -> ExpectedVersion -> [EventData] -> Store m AppendResult
+  AppendMultiStream   :: [(StreamName, ExpectedVersion, [EventData])] -> Store m [AppendResult]
+  ReadStreamForward   :: StreamName -> StreamVersion -> Int32 -> Store m (Vector RecordedEvent)
+  ReadStreamBackward  :: StreamName -> StreamVersion -> Int32 -> Store m (Vector RecordedEvent)
+  ReadAllForward      :: GlobalPosition -> Int32 -> Store m (Vector RecordedEvent)
+  ReadAllBackward     :: GlobalPosition -> Int32 -> Store m (Vector RecordedEvent)
+  ReadCategoryForward :: CategoryName -> GlobalPosition -> Int32 -> Store m (Vector RecordedEvent)
+  GetStream           :: StreamName -> Store m (Maybe StreamInfo)
+  LookupStreamId      :: StreamName -> Store m (Maybe StreamId)
+  LookupStreamNames   :: [StreamId] -> Store m (Map StreamId StreamName)
+  LinkToStream        :: StreamName -> [EventId] -> Store m LinkResult
+  FindEvents          :: EventFilter -> Store m (Vector RecordedEvent)
+  SoftDeleteStream    :: StreamName -> Store m (Maybe StreamId)
+  HardDeleteStream    :: StreamName -> Store m (Maybe StreamId)
+  UndeleteStream      :: StreamName -> Store m (Maybe StreamId)
+  RunTransaction        :: Tx.Transaction a -> Store m a
+  RunTransactionNoRetry :: Tx.Transaction a -> Store m a
+type instance DispatchOf Store = Dynamic
+```
+
+<Callout type="info">
+  The effect is **dynamic** and its sums are **closed** by design, so downstream code can supply
+  a pure in-memory interpreter in tests. The only *shipped* backend is `runStorePool` over
+  `hasql-pool`.
+</Callout>
+
+## Append
+
+```haskell
+appendToStream    :: (HasCallStack, Store :> es) => StreamName -> ExpectedVersion -> [EventData] -> Eff es AppendResult
+appendMultiStream :: (HasCallStack, Store :> es) => [(StreamName, ExpectedVersion, [EventData])] -> Eff es [AppendResult]
+```
+
+`appendToStream` appends a batch to one stream under an `ExpectedVersion` guard; all-or-nothing
+per call, read-your-own-writes on the same handle. `appendMultiStream` appends to several streams
+in one transaction, pre-locking streams in `stream_id` order so it is deadlock-free. Appending to
+`$all` is rejected (`ReservedStreamName`); an empty event list is a caller mistake.
+
+## Read
+
+```haskell
+readStreamForward       :: (Store :> es) => StreamName -> StreamVersion -> Int32 -> Eff es (Vector RecordedEvent)
+readStreamForwardStream :: (Store :> es) => StreamName -> StreamVersion -> Int32 -> Stream (Eff es) RecordedEvent
+readStreamBackward      :: (Store :> es) => StreamName -> StreamVersion -> Int32 -> Eff es (Vector RecordedEvent)
+readAllForward          :: (Store :> es) => GlobalPosition -> Int32 -> Eff es (Vector RecordedEvent)
+readAllBackward         :: (Store :> es) => GlobalPosition -> Int32 -> Eff es (Vector RecordedEvent)
+readCategory            :: (Store :> es) => CategoryName -> GlobalPosition -> Int32 -> Eff es (Vector RecordedEvent)
+```
+
+Cursors are **exclusive**: `StreamVersion 0` / `GlobalPosition 0` read from the start (for
+backward reads, `0` means "after everything"), and the `$all` seed row (position 0) is never
+returned. The final `Int32` is the batch/page size. `readStreamForwardStream` is a Streamly
+constant-memory paging variant (suggested page size 256).
+
+## Stream lookups
+
+```haskell
+getStream         :: (Store :> es) => StreamName -> Eff es (Maybe StreamInfo)
+lookupStreamId    :: (Store :> es) => StreamName -> Eff es (Maybe StreamId)
+lookupStreamNames :: (Store :> es) => [StreamId] -> Eff es (Map StreamId StreamName)
+lookupStreamName  :: (Store :> es) => StreamId   -> Eff es (Maybe StreamName)
+```
+
+`getStream` returns `StreamInfo` (id, name, version, timestamps) or `Nothing` if absent/deleted.
+`lookupStreamNames` is the **batch** inverse used by fan-in reads (see ADR 0001).
+
+## Link
+
+```haskell
+linkToStream :: (Store :> es) => StreamName -> [EventId] -> Eff es LinkResult
+```
+
+Shares existing events into another stream without copying their payload; the linked event keeps
+its original `globalPosition`. `LinkResult` carries no `globalPosition` because linking does not
+advance `$all`.
+
+## Lifecycle
+
+```haskell
+softDeleteStream :: (Store :> es) => StreamName -> Eff es (Maybe StreamId)
+hardDeleteStream :: (Store :> es) => StreamName -> Eff es (Maybe StreamId)
+undeleteStream   :: (Store :> es) => StreamName -> Eff es (Maybe StreamId)
+```
+
+All return `Nothing` when the stream is not found (a no-op) and reject `$all`. `softDeleteStream`
+keeps events in `$all`; `hardDeleteStream` is GUC-gated (`kiroku.enable_hard_deletes`),
+irreversible, and intended for GDPR erasure; `undeleteStream` reverses a soft delete. See
+[the append-only log](/docs/kiroku/explanation/append-only-log).
+
+## Causation / correlation
+
+```haskell
+findCausationDescendants :: (Store :> es) => EventId -> Eff es (Vector RecordedEvent)
+findCausationAncestors   :: (Store :> es) => EventId -> Eff es (Vector RecordedEvent)
+findByCorrelation        :: (Store :> es) => UUID    -> Eff es (Vector RecordedEvent)
+```
+
+Graph walks over the `causation_id` / `correlation_id` columns. The same selection is available
+declaratively through the effect's `FindEvents` op with an `EventFilter`.
+
+## Transactions (escape hatch)
+
+```haskell
+RunTransaction        :: Tx.Transaction a -> Store m a   -- BEGIN/COMMIT with serialization retry
+RunTransactionNoRetry :: Tx.Transaction a -> Store m a   -- exactly-once body, no retry
+```
+
+Run an explicit `hasql` transaction through the store's pool — for example to append events *and*
+update an inline projection table atomically. `RunTransaction` retries on serialization failure;
+`RunTransactionNoRetry` runs the body exactly once.
+
+## Interpreters
+
+```haskell
+runStorePool     :: (IOE :> es, Error StoreError :> es) => KirokuStore -> Eff (Store : es) a -> Eff es a
+runStoreIO       :: KirokuStore -> Eff (Store : Error StoreError : IOE : '[]) a -> IO (Either StoreError a)
+runStoreResource :: KirokuStore -> Eff (Store : es) a -> Eff es a   -- resourcet-scoped
+```
+
+`runStorePool` is the shipped backend over `hasql-pool`, layering the `Store` effect onto an
+existing stack that already provides `IOE` and `Error StoreError`. `runStoreIO` is the
+convenience runner that discharges everything to `IO (Either StoreError a)` — the one used in the
+tutorials. `runStoreResource` is the `resourcet`-scoped variant.
+
+<Callout type="warn">
+  Open the store (and run migrations) **before** interpreting any `Store` effect: interpreters
+  use the pool inside `KirokuStore`, which `withStore` acquires. The store never runs DDL.
+</Callout>

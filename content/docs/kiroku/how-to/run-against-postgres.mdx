@@ -1,0 +1,70 @@
+---
+title: "Run against PostgreSQL"
+description: "Install the schema with kiroku-store-migrate and configure ConnectionSettings."
+---
+
+You need a real PostgreSQL database holding kiroku's schema, and a store configured to use it.
+This guide covers the two steps: migrate the schema, then point `ConnectionSettings` at it.
+
+<Callout type="info">
+  Assumes you have PostgreSQL running and the `kiroku-store-migrations` package available. If you
+  are starting from zero, do the [getting-started tutorial](/docs/kiroku/tutorials/getting-started)
+  first.
+</Callout>
+
+## Goal
+
+A migrated database in a dedicated `kiroku` schema, and a `withStore` that opens a pool against
+it with the connection options your workload needs.
+
+## Steps
+
+1. **Apply (or upgrade) the schema.** kiroku's migrations are forward-only `codd` migrations run
+   by the `kiroku-store-migrate` executable. Configure it with the `CODD_*` environment variables
+   and run it — re-running it is safe and applies only new migrations.
+
+   ```bash
+   export CODD_CONNECTION='dbname=kiroku'
+   export CODD_SCHEMAS=kiroku
+   cabal run kiroku-store-migrate
+   ```
+
+   All objects land in a dedicated **`kiroku` schema** (ADR 0003), leaving `public` free for your
+   application's own tables. The store **never runs DDL on open** — migrating is always a separate,
+   explicit step.
+
+2. **Configure the connection.** Start from `defaultConnectionSettings` and override the fields
+   your deployment needs:
+
+   ```haskell
+   let settings = (defaultConnectionSettings "postgresql://localhost/app")
+                    { poolSize        = 20            -- default 10
+                    , schema          = "kiroku"      -- sets search_path AND the NOTIFY channel
+                    , extraSearchPath = ["public"]    -- so inline projection tables resolve
+                    }
+   withStore settings $ \store -> do
+     -- store is open against the migrated database
+     pure ()
+   ```
+
+   Notable fields: `schema` sets both the `search_path` *and* the `LISTEN/NOTIFY` channel name, so
+   it must match the schema you migrated. `extraSearchPath` adds your application schemas (e.g.
+   `public`) so inline projection tables resolve. `idleInTransactionTimeout` (seconds, default 30)
+   and `statementTimeout` bound long-running statements.
+
+## Verify it worked
+
+After migrating, the `kiroku` schema contains `streams`, `events`, `stream_events`, and
+`subscriptions`:
+
+```bash
+psql 'dbname=kiroku' -c '\dt kiroku.*'
+```
+
+You should see the four core tables. A `withStore` against the same database then opens without
+error and you can append your first event.
+
+## Related
+
+- [Build a projection](/docs/kiroku/how-to/build-a-projection) — consume what you store.
+- [The Store effect](/docs/kiroku/reference/store-effect) — the operations you run against the store.

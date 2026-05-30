@@ -1,0 +1,71 @@
+---
+title: "Build a projection"
+description: "Fold a subscription's events into a durable read model — idempotently."
+---
+
+You have events in the store and you want a queryable **read model** — a current-state table you
+can serve from. A projection subscribes to the relevant events and folds each one into that read
+model. This guide shows the handler shape and the one rule you cannot skip: idempotency.
+
+<Callout type="info">
+  Assumes a configured store and familiarity with subscriptions from the
+  [getting-started tutorial](/docs/kiroku/tutorials/getting-started). For the concepts behind
+  delivery, see [Subscriptions and consumer groups](/docs/kiroku/explanation/subscriptions-and-consumer-groups).
+</Callout>
+
+## Goal
+
+A subscription over a category (or `AllStreams`) whose handler updates a read-model table for
+every event, surviving restarts and duplicate delivery.
+
+## Steps
+
+1. **Subscribe and fold.** Build a config with `defaultSubscriptionConfig`, targeting the category
+   you project. The handler updates the read model and returns `Continue`. You advance **nothing**
+   yourself — kiroku checkpoints per batch.
+
+   ```haskell
+   import Control.Lens ((^.))
+
+   runOrdersProjection :: KirokuStore -> IO ()
+   runOrdersProjection store = do
+     let cfg = defaultSubscriptionConfig (SubscriptionName "orders-readmodel")
+                                         (Category (CategoryName "orders"))
+                                         handler
+         handler evt = do
+           upsertReadModel (evt ^. #eventType) (evt ^. #payload)   -- MUST be idempotent
+           pure Continue
+     withSubscription store cfg $ \h -> h ^. #wait
+   ```
+
+2. **Make the write idempotent.** Because delivery is at-least-once and the checkpoint advances
+   per batch, the same event can be delivered again after a crash. The projection write must be a
+   no-op on replay — use an upsert keyed by something stable (the stream + version, or the event
+   id), not a blind `INSERT` or `count += 1` against external state.
+
+<Callout type="warn">
+  Never advance a cursor by hand and never assume exactly-once. Idempotency is the contract:
+  `upsertReadModel` applied twice to the same event must leave the read model identical to applying
+  it once.
+</Callout>
+
+## Inline projections (optional)
+
+If you need the read-model update to be **atomic** with the append (no eventual-consistency
+window), do both inside one transaction via the effect's `RunTransaction` — append the event and
+write the projection row together, retried on serialization failure. This couples the projection
+to the writer instead of running it as an independent subscriber; reach for it only when the
+atomicity is genuinely required.
+
+## Verify it worked
+
+Start the projection against a store that already has `orders-*` events. It first **catches up**
+(folding all history), then goes **live**. Query your read-model table and confirm it reflects
+every order; append a new order event and confirm the table updates within moments. Kill and
+restart the process — the read model must not double-count.
+
+## Related
+
+- [Integrate with shibuya](/docs/kiroku/how-to/integrate-with-shibuya) — run projections as a
+  managed queue-processing pipeline.
+- [The Store effect](/docs/kiroku/reference/store-effect) — `RunTransaction` for inline projections.

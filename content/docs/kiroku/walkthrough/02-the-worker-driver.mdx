@@ -1,0 +1,96 @@
+---
+title: "02 — The worker driver"
+description: "Reading Worker.hs: how runWorker interprets the FSM, the catch-up and live phases, and per-event delivery."
+---
+
+<Callout type="info">
+  Part of an ordered walkthrough. Previous: [01 — The pure state machine](/docs/kiroku/walkthrough/01-the-state-machine).
+</Callout>
+
+## What this part covers
+
+`kiroku-store/src/Kiroku/Store/Subscription/Worker.hs` — the **impure driver**. Where
+[`Fsm.hs`](/docs/kiroku/walkthrough/01-the-state-machine) decides transitions, `runWorker` performs them: it supplies the
+`Input`s (a batch was fetched, the pool errored, the handler returned a disposition) and carries
+out the resulting `Effect`s (deliver a batch, save the checkpoint, back off, emit an event, halt).
+
+## Two phases
+
+The module header states the loop's shape plainly:
+
+```haskell
+-- src/Kiroku/Store/Subscription/Worker.hs (doc comment, lightly trimmed)
+-- Run the subscription worker loop. Two phases:
+--
+-- Phase 1 (catch-up): queries the database directly until reaching publisherPosition.
+-- Phase 2 (live): for AllStreams, reads from the bounded TBQueue the publisher delivers to;
+--   for Category, re-queries the database whenever the publisher advances (the broadcast
+--   TBQueue is unused for category subscriptions).
+--
+-- Runs until the handler returns 'Stop', the thread is cancelled, or the publisher signals
+-- overflow on the subscriber's status TVar (in which case SubscriptionOverflowed is thrown
+-- and surfaces through Async.waitCatch).
+```
+
+So the same worker first **drains history** straight from PostgreSQL, then — once its cursor
+reaches the publisher's last-published position — flips to **live**. The live source differs by
+target: an `AllStreams` subscription reads pre-broadcast events from the publisher's bounded
+per-subscriber queue; a `Category` (and consumer-group member) subscription bypasses the broadcast
+and re-queries the database with a SQL category filter whenever the publisher advances. That is why
+a highly selective category subscription never has to fetch-and-discard the whole `$all` log.
+
+## Why catch-up reads the database, not the queue
+
+A fresh subscription might be millions of events behind. The in-memory publisher only holds
+*recent* events; it cannot replay all of history. So catch-up goes to the durable source — the
+database — in `batchSize` chunks (default 100) from the checkpoint, and only when it has caught up
+to what the publisher knows does it switch to the cheap live path. The FSM models exactly this:
+`CatchingUp`'s `FetchEmpty` / `CaughtUp` inputs both transition to `Live`.
+
+## The delivery primitive and the checkpoint
+
+The single most important behaviour lives in the per-event delivery path, shared by every live
+strategy so that `AllStreams`, `Category`, and consumer-group members behave identically. For each
+event in a batch it:
+
+1. Applies the worker-side filters **before** calling the handler — `eventTypeFilter` and the
+   opaque `selector` (`shouldDeliver`). A filtered-out event never reaches the handler, is never
+   retried or dead-lettered, **but the checkpoint still advances past it** — the no-stall
+   invariant.
+2. Calls your handler and acts on the returned `SubscriptionResult`: `Continue` keeps going,
+   `Stop` feeds `HandlerStopped` to the FSM, `Retry`/`DeadLetter` drive the bounded
+   retry/dead-letter mechanics (the worker briefly surfaces the `Retrying` state in the observable
+   `TVar` while a redelivery is pending, then restores the driving state).
+3. **Checkpoints per batch, not per event.** When the handler returns `Continue` for every event,
+   the checkpoint is saved at the batch tail; when it returns `Stop`, the checkpoint is saved at
+   that event.
+
+```haskell
+-- The FSM clause that encodes "deliver this batch", from Fsm.hs — the driver's DeliverBatch
+-- effect is exactly this transition's instruction:
+--   CatchingUp: BatchFetched evs -> (CatchingUp (lastPos c evs) 0, [DeliverBatch evs])
+--   Live:       BatchFetched evs -> (Live       (lastPos c evs),   [DeliverBatch evs])
+```
+
+This per-batch checkpoint is the mechanical reason delivery is **at-least-once** and handlers
+**must be idempotent**: a crash after the handler ran but before `Checkpoint` persisted replays the
+batch on the next start.
+
+## Backpressure, reconnect, backoff — all driven by the FSM
+
+The driver does not contain ad-hoc recovery logic; it feeds the right `Input` and obeys the
+returned `Effect`s:
+
+- A full bounded queue under `PauseAndResume` feeds `QueueBackpressured`; the FSM returns
+  `Paused`. When the consumer drains, `QueueDrained` returns `CatchingUp` (re-read from the
+  checkpoint so nothing skipped while paused is lost) plus `EmitResumed`.
+- A live fetch that loses the pool feeds `ConnectionLost`; the FSM returns `Reconnecting` with an
+  incrementing `attempt` and a `Backoff`, then re-catches-up. The driver's
+  `fetchRetryDelayMicros` realises the backoff schedule the FSM's `Backoff n` only *names*.
+
+The split keeps the driver small: its job is I/O plus "ask `step`, then perform the effects".
+
+## Next
+
+[03 — subscribe & lifecycle](/docs/kiroku/walkthrough/03-subscribe-and-lifecycle): how the worker thread is spawned and
+how the handle guarantees cleanup.

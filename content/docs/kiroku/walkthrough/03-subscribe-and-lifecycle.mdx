@@ -1,0 +1,103 @@
+---
+title: "03 — subscribe and the lifecycle handle"
+description: "Reading Subscription.hs: spawning the worker, the cleanup contract, and what wait resolves to."
+---
+
+<Callout type="info">
+  Part of an ordered walkthrough. Previous: [02 — The worker driver](/docs/kiroku/walkthrough/02-the-worker-driver).
+</Callout>
+
+## What this part covers
+
+`kiroku-store/src/Kiroku/Store/Subscription.hs` — the thin, public top of the stack. It validates
+the config, spawns the [worker](/docs/kiroku/walkthrough/02-the-worker-driver) on its own thread, and hands back a
+`SubscriptionHandle` for cancellation and waiting. This is the part your application actually
+calls.
+
+## subscribe, end to end
+
+```haskell
+-- src/Kiroku/Store/Subscription.hs (trimmed)
+subscribe :: (MonadIO m) => KirokuStore -> SubscriptionConfig -> m SubscriptionHandle
+subscribe store config = liftIO $ do
+  -- 1. Fail fast on a misconfigured group, before any thread is spawned.
+  for_ (consumerGroup config) $ \(ConsumerGroup m n) ->
+    when (n < 1 || m < 0 || m >= n) $
+      throwIO (InvalidConsumerGroup m n)
+
+  -- 2. Register with the publisher: a bounded queue + a status TVar + an unsubscribe action.
+  (queue, statusVar, unsubscribe) <-
+    atomically $ Pub.subscribePublisher (store ^. #publisher)
+                                        (queueCapacity config) (overflowPolicy config)
+
+  -- 3. Seed the observable state TVar with the catch-up entry state.
+  stateVar <- newTVarIO (CatchingUp (GlobalPosition 0) 0)
+
+  -- 4. Spawn the worker; `finally unsubscribe` guarantees deregistration on ANY exit.
+  thread <-
+    Async.async
+      ( runWorker (store ^. #pool) queue statusVar stateVar pubPosVar catGenVar
+                  config (store ^. #eventHandler) (store ^. #storeSettings)
+          `finally` unsubscribe )
+
+  -- 5. Hand back the lifecycle handle.
+  pure SubscriptionHandle
+    { cancel       = Async.cancel thread
+    , wait         = Async.waitCatch thread
+    , currentState = readTVarIO stateVar
+    }
+```
+
+Five things happen, in order. Read each:
+
+1. **Eager validation.** A bad `(member, size)` is a *programmer* error, so `subscribe` throws
+   `InvalidConsumerGroup` immediately rather than starting a doomed worker. This is also why
+   `subscribe`'s signature stays non-`Either` — the only failures here are bugs.
+2. **Publisher registration** gives the worker its live source (the bounded `queue`) and a
+   `statusVar` the publisher uses to signal overflow.
+3. **The observable `stateVar`** is seeded with `CatchingUp` so a `currentState` read *before* the
+   worker's first transition still returns something sensible.
+4. **The cleanup contract.** `runWorker ... \`finally\` unsubscribe` means the subscription is
+   removed from the publisher's registry whenever the worker exits — gracefully on `Stop`, by
+   cancellation, or on any exception. Forgetting this would leave a registry entry with no reader,
+   and the publisher would needlessly trip this subscriber's overflow policy on the next batch.
+5. **The handle** exposes exactly three capabilities: `cancel`, `wait`, and `currentState`.
+
+## What `wait` resolves to
+
+`wait = Async.waitCatch thread`, so it returns `Either SomeException ()`. The module documents the
+cases, and they map straight back to the FSM's terminal `Stopped` reasons:
+
+- `Right ()` — the handler returned `Stop`; the worker exited cleanly with the checkpoint saved at
+  that event (`StopHandlerRequested`).
+- `Left AsyncCancelled` — the caller invoked `cancel`; in-flight events replay on the next start
+  (`StopCancelled`).
+- `Left SubscriptionOverflowed` — the publisher dropped this subscription under
+  `DropSubscription` (`StopOverflowed`).
+- `Left e` for any other exception — a handler that threw. Handler exceptions are **not** caught;
+  the worker thread dies and the exception propagates. That is intentional: a throwing handler is
+  signalling the subscription cannot proceed safely.
+
+## Prefer withSubscription
+
+Because forgetting to `cancel` leaks the worker thread for the life of the process, the
+bracket-style wrapper is the recommended entry point:
+
+```haskell
+-- src/Kiroku/Store/Subscription.hs
+withSubscription :: (MonadUnliftIO m) => KirokuStore -> SubscriptionConfig
+                 -> (SubscriptionHandle -> m a) -> m a
+withSubscription store config action = withRunInIO $ \runInIO ->
+  bracket (subscribe store config) cancel (runInIO . action)
+```
+
+It is `bracket (subscribe store config) cancel action`, lifted to any `MonadUnliftIO` so it
+composes with effectful stacks. Reach for the bare `subscribe` only when you already have a
+structured lifecycle of your own (for instance the Streamly bridge).
+
+## The whole tour, in one sentence
+
+A subscription is a **pure state machine** ([`Fsm.hs`](/docs/kiroku/walkthrough/01-the-state-machine)) interpreted by an
+**impure two-phase driver** ([`Worker.hs`](/docs/kiroku/walkthrough/02-the-worker-driver)), spawned and wrapped in a
+**cleanup-guaranteeing lifecycle handle** (`Subscription.hs`) — which is why it is at-least-once,
+resumable, backpressure-safe, and observable, with almost no logic duplicated between the layers.

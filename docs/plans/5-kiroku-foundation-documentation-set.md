@@ -65,16 +65,28 @@ This section must always reflect the actual current state of the work.
 - [x] M3. Explanation pages authored (event sourcing; append-only log; streams & categories;
       `$all` + global order incl. `mermaid` junction diagram; optimistic concurrency;
       subscriptions & consumer groups; causation & correlation). _(2026-05-30)_
-- [ ] M4. Reference seed authored (Store effect ops + core type signatures).
-- [ ] M5. How-to guides authored (run against Postgres; enable OpenTelemetry; build a
-      projection; integrate with shibuya).
-- [ ] M6. Cookbook recipe authored (idempotent append with a supplied EventId).
+- [x] M4. Reference seed authored — `reference/store-effect.mdx` (Store GADT + every op
+      signature + interpreters) and `reference/core-types.mdx` (`<TypeTable>` for `EventData`/
+      `RecordedEvent`, the newtypes, `ExpectedVersion`, and the full `StoreError` catalog read
+      from `Kiroku.Store.Error`). _(2026-05-30)_
+- [x] M5. How-to guides authored under `how-to/` (run against Postgres; enable OpenTelemetry;
+      build a projection; integrate with shibuya). _(2026-05-30)_
+- [x] M6. Cookbook recipe authored at `cookbook/idempotent-append.mdx` (supply `eventId`, treat
+      `DuplicateEvent` as success). _(2026-05-30)_
 - [x] M7. Known-gap tutorial authored at `tutorials/decider-and-evolve.mdx` (user-land
       decider/evolve pattern, with the "kiroku ships no such typeclass" Callout). _(2026-05-30)_
-- [ ] M8. `meta.json` files populated and ordered; section `index.mdx` landings enriched; site
-      builds; sidebar renders; ligatures + mermaid verified; snippets cross-checked.
-- [ ] M9. Subscription **code walkthrough** authored under `walkthrough/` (user request) —
-      ordered tour of `Fsm.hs` pure `step` + `Worker.hs` impure `runWorker`, catch-up→live.
+- [x] M8. All section `meta.json` files populated and ordered; six section `index.mdx` landings
+      enriched with `<Cards>` (removed "coming soon"); `pnpm typecheck` clean; `pnpm build` exits
+      0, prerenders all 28 kiroku pages with **zero** crawler warnings; search index carries the
+      new pages; snippets cross-checked against `kiroku-store/src` (all names present); framing
+      check passed (no `decide`/`evolve` presented as a kiroku API outside the tutorial).
+      Browser-only ligature/mermaid-interactivity checks deferred (see Surprises). _(2026-05-30)_
+- [x] M9. Subscription **code walkthrough** authored under `walkthrough/` (user request) — a
+      four-part ordered tour: `00-start-here` (the pure-FSM/impure-driver design + overview
+      `mermaid`), `01-the-state-machine` (`Fsm.hs` states + `Input`/`Effect` + `step`),
+      `02-the-worker-driver` (`Worker.hs` catch-up→live + per-event delivery + checkpointing),
+      `03-subscribe-and-lifecycle` (`Subscription.hs` `subscribe`/`withSubscription` + cleanup
+      contract). Built directly from the real source. _(2026-05-30)_
 
 
 ## Surprises & Discoveries
@@ -100,6 +112,22 @@ implementation. Provide concise evidence.
     returning `Either`.
   Bearing: content snippets and the reference page use the **real** shapes; the subscription
   walkthrough (M9) is built directly on `Fsm.hs`/`Worker.hs`.
+- **Relative MDX links (`./sibling`) resolve WRONG in the static SPA and trip the prerender
+  crawler.** The multi-part walkthrough first used `[…](./01-the-state-machine)`. From the page
+  `/docs/kiroku/walkthrough/00-start-here`, the browser/crawler resolves `./01-…` relative to the
+  *current* path as if it were a directory, producing
+  `/docs/kiroku/walkthrough/00-start-here/01-the-state-machine` — a nonexistent nested route. The
+  build still exited 0 but emitted `[unhandledRejection] Failed to fetch …` for every such link,
+  and the links would 404 for users. **Fix:** use **absolute** doc paths
+  (`/docs/kiroku/walkthrough/01-the-state-machine`) for all cross-page links. **For #6 (CI):** a
+  cheap, high-value gate is to fail the build (or a link-check) on any `[…](./…)` /  `[…](../…)`
+  relative link in `content/docs/**`, or on any `unhandledRejection`/`Failed to fetch` line in the
+  build log.
+- **Browser-only checks remain deferred** (same as Plan #3's note): ligature *glyph* rendering and
+  mermaid *pan/zoom interactivity* need a human browser pass. Verified programmatically instead:
+  the build prerenders all 28 kiroku pages, `rehypeMermaid` is prepended ahead of Shiki in
+  `source.config.ts`, 3 `mermaid` fences and 18 MDX files with ligature-bearing operators are
+  present, and the fences use the verified multi-line header style.
 
 
 ## Decision Log
@@ -171,7 +199,35 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Complete (2026-05-30).** `content/docs/kiroku/` is now a full Diátaxis documentation set,
+populated within Plan D's structure. A reader landing on `/docs/kiroku` gets the
+store-not-framework framing, an append→store→subscribe diagram, and a `<Cards>` index; from there
+the sidebar carries a getting-started tutorial, the user-land decider/evolve tutorial, seven
+explanation pages (incl. the `$all`/global-order junction diagram), two reference pages, four
+how-to guides, a cookbook recipe, and — beyond the original plan, at the user's request — a
+four-part **subscription code walkthrough** built from the real `Kiroku.Store.Subscription.*`
+source.
+
+What landed vs. the original plan:
+- **Structure.** Conformed to Plan D's actual tree (`tutorials/ how-to/ reference/ explanation/
+  cookbook/ walkthrough/` + `faq.mdx`) rather than the plan's anticipated `how-to-guides/` +
+  root-level tutorials. The page-set substance was unchanged; only paths moved.
+- **API accuracy.** Authored against the real source, which is richer than the plan's §Context
+  transcription (notably the subscription surface). Every API name used is present in
+  `kiroku-store/src` (verified); the deltas are recorded in Surprises & Decision Log.
+- **Added scope.** The subscription walkthrough (M9) was not in the original milestone set; it was
+  requested mid-implementation and slots into Plan D's empty `walkthrough/` section.
+
+Verification: `pnpm typecheck` clean; `pnpm build` exits 0, prerenders all 28 kiroku pages with
+zero crawler warnings; search index includes the new pages; snippet and framing checks pass.
+Deferred (browser-only, same as Plan #3): visual confirmation of PragmataPro ligature glyphs and
+mermaid pan/zoom interactivity.
+
+Lessons for the next content plans (keiro/keiki/shibuya): (1) read the sibling structure plan's
+*actual* output, not just its prose, before authoring; (2) the real Haskell source is
+authoritative over any transcription — cross-check names and shapes; (3) use **absolute** doc
+links, never `./relative` ones, in the SPA; (4) a code walkthrough that reads real source is
+high-value and worth offering per library.
 
 
 ## Context and Orientation

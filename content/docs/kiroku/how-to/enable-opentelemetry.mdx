@@ -1,0 +1,62 @@
+---
+title: "Enable OpenTelemetry"
+description: "Inject W3C trace context on append and turn subscription lifecycle into spans."
+---
+
+You want a distributed trace to span the producer that appended an event and every consumer that
+later processes it. The `kiroku-otel` package provides the two seams: a trace-context injector on
+the **append** path and a span-emitting handler on the **subscription lifecycle**.
+
+<Callout type="info">
+  Assumes you already have an OpenTelemetry `TracerProvider` and exporter configured in your app,
+  and a configured store. This guide wires kiroku into them; it does not set up OpenTelemetry
+  itself.
+</Callout>
+
+## Goal
+
+Events carry W3C `traceparent`/`tracestate` in their metadata, and subscription state transitions
+become OpenTelemetry spans.
+
+## Steps
+
+1. **Inject trace context on append** via the `enrichEvent` hook on `StoreSettings`. It runs on
+   the append path and writes the current span context into each event's metadata.
+
+2. **Emit subscription spans** by installing `subscriptionTraceHandler` as the `eventHandler`.
+
+   ```haskell
+   import Kiroku.Otel.TraceContext (injectTraceContext)
+   import Kiroku.Otel.Subscription (subscriptionTraceHandler)
+
+   withOtel :: Tracer -> SpanContext -> Text -> (KirokuStore -> IO a) -> IO a
+   withOtel tracer spanCtx connStr action = do
+     handler <- subscriptionTraceHandler tracer
+     let base     = defaultConnectionSettings connStr
+         settings = base
+           { eventHandler  = Just handler
+           , storeSettings = (storeSettings base)
+               { enrichEvent = Just (pure . injectTraceContext spanCtx) }
+           }
+     withStore settings action
+   ```
+
+   On the read side, recover the producer's span context with `extractTraceContext ::
+   RecordedEvent -> Maybe SpanContext` (it never throws) and start your consumer span as its child.
+
+<Callout type="warn">
+  Use a **batch** span processor, not a simple/synchronous one. The store's `eventHandler` is
+  called inline on the worker; a synchronous exporter would stall event processing on network I/O.
+</Callout>
+
+## Verify it worked
+
+Append an event inside an active span, then process it from a subscription. In your tracing
+backend you should see the consumer span linked as a child of the producer span — the trace spans
+the append and the projection. The event row's `metadata` JSONB contains a `traceparent`.
+
+## Related
+
+- [Causation and correlation](/docs/kiroku/explanation/causation-and-correlation) — the metadata
+  these traces ride alongside.
+- [Build a projection](/docs/kiroku/how-to/build-a-projection) — where the consumer span starts.

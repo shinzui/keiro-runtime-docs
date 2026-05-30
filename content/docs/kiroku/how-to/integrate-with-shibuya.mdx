@@ -1,0 +1,59 @@
+---
+title: "Integrate with shibuya"
+description: "Bridge a kiroku subscription into shibuya's queue-processing runtime with ack-coupled checkpointing."
+---
+
+You want to process kiroku events through **shibuya**, the keiro family's Broadway-style queue
+runtime — getting batching, backpressure, and rate limiting — while kiroku still owns durable
+checkpointing. The `shibuya-kiroku-adapter` package bridges the two.
+
+<Callout type="info">
+  Assumes you know shibuya's `Adapter` / `QueueProcessor` model and have a configured kiroku store.
+  This guide covers the kiroku side of the bridge.
+</Callout>
+
+## Goal
+
+A kiroku subscription (or consumer group) presented to shibuya as an `Adapter`, where each event's
+processing outcome drives kiroku's checkpoint.
+
+## Steps
+
+1. **Build an adapter** from a store and a config. The adapter starts a kiroku subscription,
+   bridges it through a bounded `TBQueue` via the **ack-coupled** stream, and lifts it into
+   shibuya's effectful stream:
+
+   ```haskell
+   import Shibuya.Adapter.Kiroku (kirokuAdapter, defaultKirokuAdapterConfig)
+
+   buildAdapter :: (IOE :> es) => KirokuStore -> Eff es (Adapter es RecordedEvent)
+   buildAdapter store = kirokuAdapter store defaultKirokuAdapterConfig
+   ```
+
+2. **Let the ack decision drive checkpointing.** Your shibuya handler returns an `AckDecision`,
+   and the adapter translates it into kiroku's per-event disposition:
+
+   | shibuya `AckDecision` | kiroku effect |
+   |---|---|
+   | `AckOk` | advance the checkpoint past this event |
+   | `AckRetry delay` | redeliver this event after `delay` (bounded by the retry policy) |
+   | `AckDeadLetter reason` | record in `kiroku.dead_letters` and advance past it |
+   | `AckHalt` | stop the subscription |
+
+3. **For consumer groups**, turn one `KirokuConsumerGroupConfig` into N named `QueueProcessor`s
+   with `kirokuConsumerGroupProcessors` (starting from `defaultConsumerGroupConfig`); each member
+   is pinned to shibuya's `(PartitionedInOrder, Serial)` policy so per-stream order is preserved
+   across the group.
+
+## Verify it worked
+
+Run the shibuya pipeline against a store with pending events. Events flow through the pipeline;
+returning `AckOk` advances the kiroku checkpoint (restarting resumes after the last acked event),
+and returning `AckRetry`/`AckDeadLetter` exercises kiroku's retry and dead-letter paths
+(inspect `kiroku.dead_letters`).
+
+## Related
+
+- [Subscriptions and consumer groups](/docs/kiroku/explanation/subscriptions-and-consumer-groups)
+  — the semantics the adapter preserves.
+- [The integrations section](/docs/integrations/shibuya-kiroku-adapter) for the cross-library view.

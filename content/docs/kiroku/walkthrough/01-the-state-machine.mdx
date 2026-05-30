@@ -1,0 +1,119 @@
+---
+title: "01 — The pure state machine"
+description: "Reading Fsm.hs: the named states, the Input/Effect alphabet, and the single pure transition function."
+---
+
+<Callout type="info">
+  Part of an ordered walkthrough. If you are new, start at [00 — Start here](/docs/kiroku/walkthrough/00-start-here).
+</Callout>
+
+## What this part covers
+
+The file `kiroku-store/src/Kiroku/Store/Subscription/Fsm.hs` — the **pure** core of a
+subscription. It contains no I/O at all. It defines the states a worker can be in, an alphabet of
+things that can happen (`Input`) and things the driver must do (`Effect`), and one function,
+`step`, that maps `(state, input)` to `(next state, effects)`.
+
+## The states
+
+A worker is, at every instant, in exactly one `SubscriptionState`:
+
+```haskell
+-- src/Kiroku/Store/Subscription/Fsm.hs
+data SubscriptionState
+  = CatchingUp   { cursor :: !GlobalPosition, attempt :: !Int }
+  | Live         { cursor :: !GlobalPosition }
+  | Paused       { cursor :: !GlobalPosition, resumeWhen :: !ResumeCondition }
+  | Reconnecting { cursor :: !GlobalPosition, attempt :: !Int }
+  | Retrying     { cursor :: !GlobalPosition, attempt :: !Int }
+  | Stopped      { reason :: !SubscriptionStopReason }
+  deriving stock (Show)
+```
+
+Every non-terminal state carries the `cursor` — the `GlobalPosition` the worker has reached. The
+two *driving* states are `CatchingUp` (reading history from the database) and `Live` (receiving
+new events). `Paused` is recoverable backpressure, `Reconnecting` recovers a dropped connection,
+and `Retrying` is a *surfaced observability* state (more on that in part 02). `Stopped` is
+terminal and carries *why* it stopped.
+
+## The alphabet: Input and Effect
+
+`Input` is "a thing that just happened"; `Effect` is "a thing the driver must do". Keeping these
+as closed sums is deliberate — it is what lets the compiler enforce completeness:
+
+```haskell
+-- src/Kiroku/Store/Subscription/Fsm.hs
+data Input
+  = BatchFetched !(Vector RecordedEvent)   -- a non-empty batch arrived
+  | FetchEmpty                              -- a fetch returned no rows (catch-up done)
+  | FetchFailed !Pool.UsageError            -- a fetch hit a database error
+  | CaughtUp                                -- cursor reached the publisher position
+  | HandlerStopped !GlobalPosition          -- the handler returned Stop here
+  | QueueOverflowed                         -- bounded queue filled under DropSubscription
+  | QueueBackpressured                      -- bounded queue filled under PauseAndResume
+  | QueueDrained                            -- worker drained the stale queue; ready to recover
+  | ConnectionLost !Pool.UsageError         -- lost the pool while live
+  | Cancelled                               -- the caller cancelled
+  deriving stock (Show)
+
+data Effect
+  = FetchHistory !GlobalPosition            -- read a catch-up batch from this cursor
+  | RunLive                                 -- obtain the next live batch
+  | DeliverBatch !(Vector RecordedEvent)    -- call the handler per event, checkpoint at the tail
+  | Checkpoint !GlobalPosition              -- persist the checkpoint
+  | WaitForDrain | Backoff !Int             -- block / sleep
+  | EmitCaughtUp | EmitPaused | EmitResumed | EmitReconnecting !Int   -- observability events
+  | Halt !SubscriptionStopReason            -- terminal: stop the driver
+  deriving stock (Show)
+```
+
+## The single transition function
+
+Everything above exists to serve one function. `step` is total and pure:
+
+```haskell
+-- src/Kiroku/Store/Subscription/Fsm.hs
+step :: SubscriptionState -> Input -> (SubscriptionState, [Effect])
+step st input = case st of
+  CatchingUp c n -> case input of
+    BatchFetched evs -> (CatchingUp (lastPos c evs) 0, [DeliverBatch evs])
+    FetchEmpty       -> (Live c, [EmitCaughtUp])
+    FetchFailed _    -> (CatchingUp c (n + 1), [Backoff n])     -- backoff, keep cursor
+    CaughtUp         -> (Live c, [EmitCaughtUp])
+    HandlerStopped _ -> (Stopped StopHandlerRequested, [Halt StopHandlerRequested])
+    QueueOverflowed  -> (Stopped StopOverflowed, [Halt StopOverflowed])
+    ConnectionLost _ -> (Reconnecting c 1, [EmitReconnecting 1, Backoff 1])
+    Cancelled        -> (Stopped StopCancelled, [Halt StopCancelled])
+    ...
+  Live c -> case input of
+    BatchFetched evs   -> (Live (lastPos c evs), [DeliverBatch evs])
+    FetchEmpty         -> (Live c, [RunLive])
+    QueueBackpressured -> (Paused c ResumeOnDrain, [EmitPaused])  -- pause, don't drop
+    ConnectionLost _   -> (Reconnecting c 1, [EmitReconnecting 1, Backoff 1])
+    ...
+```
+
+Read two clauses closely:
+
+- In `CatchingUp`, a `BatchFetched` advances the cursor to the batch's last position, **resets the
+  failure counter to 0**, and asks the driver to deliver the batch. A `FetchFailed` instead keeps
+  the cursor where it is and increments `attempt`, returning a `Backoff` — this is the capped
+  exponential backoff, expressed without any timing code in the FSM.
+- In `Live`, a `QueueBackpressured` transitions to `Paused` rather than dropping events — the
+  lossless default backpressure path.
+
+## Why this is worth the indirection
+
+Two payoffs, both called out in the module's own docs:
+
+1. **Compiler-enforced completeness.** `Fsm.hs` is compiled with
+   `-Werror=incomplete-patterns`, and `step` matches `Input` exhaustively within each driving
+   state. When the retry/dead-letter feature added new `Input` constructors, the build *failed*
+   until every relevant clause handled them — no silent fall-through.
+2. **One place to read the state** for observability: the worker mirrors the current state into a
+   `TVar` exposed as `currentState`, so `step` stays the single source of truth for transitions.
+
+## Next
+
+[02 — The worker driver](/docs/kiroku/walkthrough/02-the-worker-driver): how `runWorker` turns these pure transitions
+into real fetches, deliveries, and checkpoints.

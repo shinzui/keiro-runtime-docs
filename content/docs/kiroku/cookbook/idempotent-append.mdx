@@ -1,0 +1,65 @@
+---
+title: "Idempotent append with a supplied event id"
+description: "Make a retried command safe to re-run without double-writing its event."
+---
+
+A cookbook recipe is a short, copy-paste solution to one problem. Here: append an event so that
+retrying the same command does not write it twice.
+
+## Problem
+
+A command may be delivered more than once (a client retry, an at-least-once queue). If each
+delivery blindly appends, you get duplicate events.
+
+## Solution
+
+Supply an explicit `eventId` derived from the command. kiroku enforces event-id uniqueness, so a
+committed retry of the same id surfaces `DuplicateEvent` instead of writing a second event.
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+import Kiroku.Store
+import qualified Data.Aeson as Aeson
+
+-- `eid` is a stable id derived from the command (e.g. a deterministic UUID of the
+-- command key), so every retry of the same command uses the same id.
+idempotentAppend
+  :: KirokuStore -> StreamName -> EventId -> Aeson.Value
+  -> IO (Either StoreError AppendResult)
+idempotentAppend store name eid body =
+  runStoreIO store $
+    appendToStream name AnyVersion
+      [ EventData
+          { eventId       = Just eid          -- supplying the id makes the retry a no-op
+          , eventType     = EventType "OrderPlaced"
+          , payload       = body
+          , metadata      = Nothing
+          , causationId   = Nothing
+          , correlationId = Nothing
+          }
+      ]
+```
+
+Treat a `DuplicateEvent` result as **success** — it means the event is already durably stored:
+
+```haskell
+result <- idempotentAppend store (StreamName "orders-1") eid body
+case result of
+  Right _appended                  -> pure ()   -- written this time
+  Left (DuplicateEvent _)          -> pure ()   -- already written by a prior attempt: success
+  Left err                         -> throwIO err
+```
+
+<Callout type="info">
+  "jitsurei" (実例) is the family's word for a runnable worked example. This recipe is one: it runs
+  as written against an open store.
+</Callout>
+
+## How it works
+
+The store generates a UUIDv7 only when `eventId` is `Nothing`. By passing `Just eid` with an id
+that is stable for a given command, you turn the unique-id constraint into an idempotency key: the
+first attempt writes the event; any later attempt with the same id is rejected with
+`DuplicateEvent`, which you read as "already done". See
+[Optimistic concurrency](/docs/kiroku/explanation/optimistic-concurrency) for how this differs
+from the `ExpectedVersion` guard.
