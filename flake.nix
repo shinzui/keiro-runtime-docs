@@ -3,8 +3,9 @@
 
   inputs.nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
   inputs.flake-utils.url = "github:numtide/flake-utils";
+  inputs.pragmatapro.url = "path:/Users/shinzui/Keikaku/bokuno/fonts";
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, pragmatapro }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -12,6 +13,8 @@
       {
         checks = {
         };
+
+        packages.pragmatapro-fonts = pragmatapro.packages.${system}.pragmataPro;
 
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [

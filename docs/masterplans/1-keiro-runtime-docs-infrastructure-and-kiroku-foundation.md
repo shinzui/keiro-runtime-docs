@@ -113,7 +113,7 @@ not *blocked* on them.
 | # | Title | Path | Hard Deps | Soft Deps | Phase | Status |
 |---|-------|------|-----------|-----------|-------|--------|
 | 1 | Scaffold the fumadocs documentation app | docs/plans/1-scaffold-the-fumadocs-documentation-app.md | — | — | 1 | Complete |
-| 2 | PragmataPro font and Shiki code ligatures | docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md | #1 | — | 2 | Not Started |
+| 2 | PragmataPro font and Shiki code ligatures | docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md | #1 | — | 2 | Complete |
 | 3 | Beautiful Mermaid diagrams with zoom and pan | docs/plans/3-beautiful-mermaid-diagrams-with-zoom-and-pan.md | #1 | — | 2 | Not Started |
 | 4 | Documentation information architecture and authoring system | docs/plans/4-documentation-information-architecture-and-authoring-system.md | #1 | #2, #3 | 3 | Not Started |
 | 5 | Kiroku foundation documentation set | docs/plans/5-kiroku-foundation-documentation-set.md | #1, #4 | #2, #3 | 4 | Not Started |
@@ -196,8 +196,8 @@ Next.js `app/` directory.
 
 ### Phase 2 — Authoring primitives
 
-- [ ] #2 — Add PragmataPro `@font-face` declarations from the `/bokuno/fonts` flake input.
-- [ ] #2 — Configure Haskell-aware Shiki with ligature-friendly code blocks.
+- [x] #2 — Add PragmataPro `@font-face` declarations from the `/bokuno/fonts` flake input. _(2026-05-30)_
+- [x] #2 — Configure Haskell-aware Shiki with ligature-friendly code blocks. _(2026-05-30)_
 - [ ] #3 — Port mina-ui's MermaidViewer; register the zoomable `Mermaid` component.
 - [ ] #3 — Wire pan/zoom interaction and styling.
 - [ ] #6 — Stand up build, lint, typecheck, and link-check gates.

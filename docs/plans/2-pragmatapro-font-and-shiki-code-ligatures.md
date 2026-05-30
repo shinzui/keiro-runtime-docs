@@ -66,15 +66,17 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 here, even if it requires splitting a partially completed task into two ("done" vs.
 "remaining"). This section must always reflect the actual current state of the work.
 
-- [ ] Milestone 1 — Add the `/bokuno/fonts` PragmataPro package as a flake input and a
-      `copy-fonts` step that places the four `_liga_` Mono OTFs into `public/fonts/`.
-- [ ] Milestone 2 — Declare the four `@font-face` rules and set `--fd-font-mono` +
-      ligature CSS in `src/styles/app.css` (filling Plan A's font seam). There is no
-      `next/font` step — TanStack Start/Vite has no `next/font`.
-- [ ] Milestone 3 — Configure Shiki (themes + langs including `haskell`) in
-      `source.config.ts` (filling Plan A's Shiki seam).
-- [ ] Milestone 4 — Add a Haskell verification page and confirm ligatures render in both
-      themes in the browser.
+- [x] Milestone 1 — Added `/bokuno/fonts` as flake input `pragmatapro` (+ a
+      `packages.pragmatapro-fonts` output) and `scripts/copy-fonts.mjs` (a predev/prebuild
+      hook) that copies the four `_liga_` Mono OTFs into `public/fonts/`. _(2026-05-30)_
+- [x] Milestone 2 — Declared the four `@font-face` rules, set `--fd-font-mono`, and added
+      the ligature CSS (`"liga" 1, "calt" 1` + `font-variant-ligatures`) in
+      `src/styles/app.css`. No `next/font`, no `__root.tsx` edit. _(2026-05-30)_
+- [x] Milestone 3 — Configured Shiki (`themes` github-light/dark + `langs` haskell/nix/
+      bash/json) in `source.config.ts`. _(2026-05-30)_
+- [x] Milestone 4 — Added `content/docs/ligature-check.mdx` + nav entry; verified the
+      build (6 pages), the served OTF, the CSS rules, and Haskell Shiki tokens. Visual
+      ligature confirmation in a browser is the one human step. _(2026-05-30)_
 
 
 ## Surprises & Discoveries
@@ -123,7 +125,32 @@ painfully later):
   font — it only governs the monospace (code) font. Do not assume an Inter import
   exists.
 
-(More to be added during implementation.)
+Found during implementation (2026-05-30):
+
+- **The nix-built OTF filenames use the token `0901`, not `09`.** Building the package via
+  the flake input (`nix build path:/Users/shinzui/Keikaku/bokuno/fonts#pragmataPro`)
+  produced `PragmataPro_Mono_R_liga_0901.otf` etc., whereas the fonts repo's stale
+  `result/` symlink had `..._09.otf`. Rather than hard-code either token in the
+  `@font-face` URLs, `scripts/copy-fonts.mjs` now **renames** each face to a stable,
+  version-independent name (`PragmataProMono-Regular.otf`, `-Bold`, `-Italic`,
+  `-BoldItalic`) on copy, and the CSS references those. This fulfils the plan's
+  "survive a version bump" intent at the URL level, not just the copy level.
+- **`copyFileSync` fails with `EACCES` on re-run.** The source OTFs live in the read-only
+  Nix store (mode 0444), so copies inherit 0444 and the next `predev`/`prebuild`
+  `copyFileSync` cannot overwrite them. Fixed by `rmSync(dest, {force:true})` +
+  `chmodSync(dest, 0o644)` around each copy, making re-runs idempotent. (The plan's
+  original claim that `copyFileSync` "never fails on an existing file" was wrong for
+  read-only sources.)
+- **`cabal` is not a bundled Shiki grammar in this version.** `langs: [..., "cabal", ...]`
+  produced a TS error (`Type '"cabal"' is not assignable to type 'LanguageInput |
+  BundledLanguage'`). Dropped `cabal`; the final list is `["haskell", "nix", "bash",
+  "json"]`. Cabal snippets fall back to plain text.
+- **Verification is build/asset-level, not pixel-level.** The static SPA renders MDX
+  client-side, and ligatures are a font-rendering effect, so automated checks confirm:
+  the OTF is served (`/fonts/PragmataProMono-Regular.otf` → 200), the CSS bundle carries
+  `--fd-font-mono`, the four `@font-face` faces, and `font-feature-settings:"liga" 1,
+  "calt" 1`, and the Haskell block carries `--shiki` + `github-light`/`github-dark`
+  tokens. The actual ligature *glyphs* require a human looking at a browser.
 
 
 ## Decision Log
@@ -174,13 +201,51 @@ Record every decision made while working on the plan.
   default code transformers (notation highlight/diff/focus) are preserved.
   Date: 2026-05-30
 
+- Decision: `copy-fonts.mjs` renames each face to a stable, version-independent filename
+  (`PragmataProMono-{Regular,Bold,Italic,BoldItalic}.otf`) on copy, and the `@font-face`
+  URLs reference those.
+  Rationale: The nix-built OTFs carry a version token (`0901` here, `09` in an older
+  build) that the plan must not hard-code in CSS. Normalizing at the copy boundary keeps
+  the CSS URLs stable across font version bumps. (See Surprises.)
+  Date: 2026-05-30
+
+- Decision: `copy-fonts.mjs` does `rmSync(dest, {force:true})` + `chmodSync(dest, 0o644)`
+  around each `copyFileSync`.
+  Rationale: The source OTFs are in the read-only Nix store (mode 0444); without this the
+  second run (predev/prebuild) fails with `EACCES` overwriting a read-only destination.
+  Date: 2026-05-30
+
+- Decision: Drop `cabal` from the Shiki `langs` list (final: `haskell`, `nix`, `bash`,
+  `json`).
+  Rationale: `cabal` is not a bundled Shiki grammar in this version — `langs: [...,
+  "cabal", ...]` is a TypeScript error. Cabal snippets fall back to plain text.
+  Date: 2026-05-30
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Complete (2026-05-30).** The original purpose is met: every Haskell code block on the
+docs site renders in **PragmataPro Mono** (the `_liga_` build) with the OpenType ligature
+features enabled, in both the light and dark theme, and Haskell/Nix/Bash/JSON fences are
+Shiki-highlighted with a `github-light`/`github-dark` theme pair.
+
+What shipped: flake input `pragmatapro` + `scripts/copy-fonts.mjs` (predev/prebuild hook,
+tolerant if the licensed font is absent), four `@font-face` faces + `--fd-font-mono` +
+ligature CSS in `src/styles/app.css`, the Shiki config in `source.config.ts`, and a
+`content/docs/ligature-check.mdx` smoke page. `pnpm build` prerenders 6 pages with no
+language-not-found or font errors; `pnpm exec tsc --noEmit` is clean; the OTF and the
+verify page both serve 200.
+
+Deviations from the written plan (all in Surprises & Discoveries): filenames are
+normalized to version-independent names on copy (real token was `0901`, not `09`); the
+copy step now removes + chmods to survive read-only Nix-store sources; and `cabal` was
+dropped from `langs` (not a bundled grammar). Gap: the licensed font must be present on a
+machine for ligatures to appear; otherwise the fallback monospace is used (no build
+break). Lesson: glob-and-rename at the copy boundary so downstream CSS never depends on a
+font version token.
 
 
 ## Context and Orientation

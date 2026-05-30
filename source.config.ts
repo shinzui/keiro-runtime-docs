@@ -15,16 +15,17 @@ export const docs = defineDocs({
   },
 });
 
-// SEAM (Plan B — Shiki): Plan B extends the config below with the Haskell-aware
-// Shiki highlighter + ligature-friendly transformers, e.g.:
-//
-//   export default defineConfig({
-//     mdxOptions: {
-//       rehypeCodeOptions: {
-//         // custom Shiki highlighter / themes / transformers for ligatures
-//       },
-//     },
-//   });
-//
-// Until then, the default config gives plain (un-ligatured) syntax highlighting.
-export default defineConfig();
+// Plan B: Haskell-aware Shiki. `themes` pins a light/dark pair (fumadocs renders
+// both and CSS shows the right one per theme). `langs` preloads the exact
+// grammars the docs use. We do NOT pass `transformers`, so fumadocs' default
+// code transformers (notation highlight/diff/focus) are preserved.
+export default defineConfig({
+  mdxOptions: {
+    rehypeCodeOptions: {
+      themes: { light: "github-light", dark: "github-dark" },
+      // `cabal` is not a bundled Shiki grammar in this version; omitted (Cabal
+      // snippets fall back to plain text). The four below are bundled.
+      langs: ["haskell", "nix", "bash", "json"],
+    },
+  },
+});
