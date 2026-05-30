@@ -116,7 +116,7 @@ not *blocked* on them.
 | 2 | PragmataPro font and Shiki code ligatures | docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md | #1 | — | 2 | Complete |
 | 3 | Beautiful Mermaid diagrams with zoom and pan | docs/plans/3-beautiful-mermaid-diagrams-with-zoom-and-pan.md | #1 | — | 2 | Complete |
 | 4 | Documentation information architecture and authoring system | docs/plans/4-documentation-information-architecture-and-authoring-system.md | #1 | #2, #3 | 3 | Complete |
-| 5 | Kiroku foundation documentation set | docs/plans/5-kiroku-foundation-documentation-set.md | #1, #4 | #2, #3 | 4 | In Progress |
+| 5 | Kiroku foundation documentation set | docs/plans/5-kiroku-foundation-documentation-set.md | #1, #4 | #2, #3 | 4 | Complete |
 | 6 | Build quality gates and CI | docs/plans/6-build-quality-gates-and-ci.md | #1 | #2, #3, #4, #5 | 2 | Not Started |
 
 ## Dependency Graph
@@ -211,9 +211,15 @@ Next.js `app/` directory.
 
 ### Phase 4 — Content
 
-- [ ] #5 — Port the kiroku Getting Started tutorial and how-to guides to MDX.
-- [ ] #5 — Port the kiroku reference, explanation, and theory docs.
-- [ ] #5 — Convert event-flow diagrams to Mermaid and verify Haskell highlighting.
+- [x] #5 — Port the kiroku Getting Started tutorial and how-to guides to MDX (getting-started
+      tutorial + four how-to guides). _(2026-05-30)_
+- [x] #5 — Port the kiroku reference, explanation, and theory docs (2 reference pages, 7
+      explanation pages, the decider/evolve user-land tutorial, the idempotent-append cookbook,
+      and — by user request — a four-part subscription **code walkthrough**). _(2026-05-30)_
+- [x] #5 — Convert event-flow diagrams to Mermaid (landing append→store→subscribe, the
+      `$all` junction, the walkthrough design diagram) and author ligature-bearing Haskell
+      snippets; build prerenders all 28 kiroku pages cleanly. Browser-only ligature-glyph /
+      mermaid-interactivity confirmation deferred to a human pass. _(2026-05-30)_
 
 ## Surprises & Discoveries
 
@@ -297,6 +303,31 @@ Discovered during implementation of #4 (IA + authoring):
   `ligature-check` and `diagram-demo`. The files remain (still resolve via the
   SPA fallback) but are no longer in the sidebar or prerendered. A future plan
   may fold them into the kiroku content set or delete them.
+
+Discovered during implementation of #5 (kiroku content):
+
+- **#4's actual directory tree differs from #5's anticipated layout — #4 wins.** #4 built each
+  product's Diátaxis subtree as `tutorials/ how-to/ reference/ explanation/ cookbook/ walkthrough/`
+  + a root `faq.mdx` (with placeholder `index.mdx` + `meta.json` per section). #5 had assumed a
+  `how-to-guides/` directory and root-level tutorials. #5 conformed to #4's real structure (the
+  integration-point owner). **Bearing on future content plans (keiro/keiki/shibuya):** author
+  against #4's *actual* output, and note that #4 also provisioned a `walkthrough/` and `faq.mdx`
+  per product that those plans should fill.
+- **Relative MDX links (`./sibling`) break in the static SPA.** They resolve against the current
+  page path as a directory (`/docs/kiroku/walkthrough/00-start-here/01-…`), 404 for users, and
+  emit `[unhandledRejection] Failed to fetch …` from the prerender crawler (build still exits 0).
+  Fix: absolute doc paths. **Bearing on #6 (CI):** a high-value gate is to fail on any
+  `](./…)`/`](../…)` link under `content/docs/**`, or on any `unhandledRejection`/`Failed to
+  fetch` line in the build log.
+- **The real Haskell source is richer than any transcription.** The kiroku subscription API in
+  source (`SubscriptionResult` with `Retry`/`DeadLetter`, `OverflowPolicy` defaulting to
+  `PauseAndResume`, a six-state FSM, monad-polymorphic `subscribe`) exceeded #5's cheat-sheet.
+  Content was authored against source and every name cross-checked against `kiroku-store/src`.
+  **Bearing on #6 (CI) and future content:** snippet-accuracy gates should check names against the
+  library source, and content plans should budget time to read source, not just the porting docs.
+- **Components are globally registered** in `src/components/mdx.tsx` (#1/#4), so MDX pages use
+  `Callout`/`Cards`/`Steps`/`TypeTable`/`Mermaid` **without imports** — the convention all kiroku
+  pages follow.
 
 ## Decision Log
 
