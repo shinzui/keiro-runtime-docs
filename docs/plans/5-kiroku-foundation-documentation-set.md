@@ -55,23 +55,26 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M0. Preconditions verified (Plan A scaffold present; Plan D IA + templates present;
-      `content/docs/kiroku/` directory exists; kiroku source tree readable for cross-checking).
-- [ ] M1. Landing + overview page (`index.mdx`) authored.
-- [ ] M2. Getting-started tutorial authored (migrate → withStore → append → read → subscribe).
-- [ ] M3. Explanation pages authored (event sourcing; append-only log; streams & categories;
-      `$all` + global order; optimistic concurrency; subscriptions & consumer groups;
-      causation & correlation).
+- [x] M0. Preconditions verified — toolchain (Node 22 + pnpm 11) on PATH, `node_modules`
+      present, `content/docs/kiroku/` (and all Plan D Diátaxis subdirs) exist, baseline
+      `pnpm typecheck` clean, kiroku source tree readable for cross-checking. _(2026-05-30)_
+- [x] M1. Landing + overview page (`index.mdx`) authored — "store not framework" callout,
+      append→store→subscribe `mermaid`, `<Cards>` index. _(2026-05-30)_
+- [x] M2. Getting-started tutorial authored at `tutorials/getting-started.mdx`
+      (migrate → withStore → append → read → subscribe). _(2026-05-30)_
+- [x] M3. Explanation pages authored (event sourcing; append-only log; streams & categories;
+      `$all` + global order incl. `mermaid` junction diagram; optimistic concurrency;
+      subscriptions & consumer groups; causation & correlation). _(2026-05-30)_
 - [ ] M4. Reference seed authored (Store effect ops + core type signatures).
 - [ ] M5. How-to guides authored (run against Postgres; enable OpenTelemetry; build a
       projection; integrate with shibuya).
 - [ ] M6. Cookbook recipe authored (idempotent append with a supplied EventId).
-- [ ] M7. Known-gap tutorial authored (user-land decider/evolve pattern).
-- [ ] M8. `content/docs/kiroku/meta.json` populated and ordered; site builds; sidebar renders;
-      ligatures + mermaid verified; snippets cross-checked against the real API.
-
-- [ ] Example incomplete step. *(Replace with real granular sub-steps as you work; split any
-      partially done page into "done" vs "remaining" here.)*
+- [x] M7. Known-gap tutorial authored at `tutorials/decider-and-evolve.mdx` (user-land
+      decider/evolve pattern, with the "kiroku ships no such typeclass" Callout). _(2026-05-30)_
+- [ ] M8. `meta.json` files populated and ordered; section `index.mdx` landings enriched; site
+      builds; sidebar renders; ligatures + mermaid verified; snippets cross-checked.
+- [ ] M9. Subscription **code walkthrough** authored under `walkthrough/` (user request) —
+      ordered tour of `Fsm.hs` pure `step` + `Worker.hs` impure `runWorker`, catch-up→live.
 
 
 ## Surprises & Discoveries
@@ -79,7 +82,24 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **The real subscription API is richer than this plan's §Context transcription.** Reading
+  `kiroku-store/src/Kiroku/Store/Subscription/{Types,Fsm}.hs` shows:
+  - `subscribe :: (MonadIO m) => KirokuStore -> SubscriptionConfig -> m SubscriptionHandle`
+    and `withSubscription :: (MonadUnliftIO m) => …` — monad-polymorphic, not `IO`-only.
+  - `SubscriptionResult = Continue | Stop | Retry !RetryDelay | DeadLetter !DeadLetterReason`
+    (the plan listed only `Continue | Stop`). The extra two drive bounded retry + dead-letter.
+  - `OverflowPolicy = PauseAndResume | DropSubscription | DropOldest`; the **default is
+    `PauseAndResume`** (lossless recoverable backpressure), not `DropSubscription`.
+  - `SubscriptionHandle { cancel :: m (), wait :: m (Either SomeException ()), currentState :: m SubscriptionState }`.
+  - `SubscriptionConfig` also carries `batchSize` (default 100), `queueCapacity` (default 16),
+    `consumerGroupGuard`, `retryPolicy`, `eventTypeFilter`, and an opaque `selector` escape hatch.
+  - The FSM (`Fsm.hs`) names six states: `CatchingUp`, `Live`, `Paused`, `Reconnecting`,
+    `Retrying`, `Stopped`, driven by one exhaustively-matched pure `step :: SubscriptionState
+    -> Input -> (SubscriptionState, [Effect])` interpreted by the impure `runWorker`.
+  - `subscribe` throws `InvalidConsumerGroup` eagerly on a bad `(member, size)` instead of
+    returning `Either`.
+  Bearing: content snippets and the reference page use the **real** shapes; the subscription
+  walkthrough (M9) is built directly on `Fsm.hs`/`Worker.hs`.
 
 
 ## Decision Log
@@ -110,6 +130,39 @@ Record every decision made while working on the plan.
   Rationale: Plan A (the scaffold) is now a TanStack Start static SPA and is already
   re-implemented and committed; the content plan must reference the real files a contributor
   will see, while preserving intent and scope.
+  Date: 2026-05-30
+- Decision: **Conform to Plan D's ACTUAL directory structure**, which differs from this plan's
+  anticipated layout. Plan D created per-product Diátaxis subtrees as
+  `tutorials/ how-to/ reference/ explanation/ cookbook/ walkthrough/` + a root `faq.mdx`, each
+  with a placeholder `index.mdx` and `meta.json`. So: the how-to directory is `how-to/` (NOT
+  `how-to-guides/`, though its sidebar title is "How-To Guides"); the getting-started and
+  decider/evolve tutorials live under `tutorials/` (NOT at the kiroku root); section landing
+  pages are the existing `index.mdx` files (I enrich them in place rather than leaving "coming
+  soon"). The page-set substance from the file-map table is unchanged; only the paths move to
+  match Plan D.
+  Rationale: Plan D owns `content/docs/**` structure (Integration Points); the content plan
+  populates within it. Inventing a parallel `how-to-guides/` tree would fork the IA.
+  Date: 2026-05-30
+- Decision: Author MDX **without `import` lines** for `Callout`/`Cards`/`Card`/`Steps`/`Tabs`/
+  `TypeTable`/`Accordions`/`Mermaid`. Plan A/D register them globally in
+  `src/components/mdx.tsx` via `getMDXComponents`, and every Plan D placeholder page uses them
+  bare. Matching that keeps the pages consistent and avoids duplicate-import drift.
+  Rationale: Confirmed by reading `src/components/mdx.tsx` (all components spread into the map)
+  and the existing placeholder pages (no imports).
+  Date: 2026-05-30
+- Decision: Add a **subscription-focused code walkthrough** under `walkthrough/` (a multi-part
+  ordered tour of the real `Kiroku.Store.Subscription.*` source: the pure FSM `step` in
+  `Fsm.hs` and the impure `runWorker` driver in `Worker.hs`, plus the catch-up→live phases).
+  Rationale: Explicit user request ("for kiroku, it would be good to have a code walkthrough
+  especially for the subscription part"). Plan D already scaffolded an empty `walkthrough/`
+  section, so this fills it. Tracked as milestone M9.
+  Date: 2026-05-30
+- Decision: Where the real kiroku source diverges from this plan's transcription, **follow the
+  source** (per the plan's own Idempotence/Recovery guidance). Notable deltas, recorded in
+  Surprises & Discoveries: `subscribe`/`withSubscription` are `MonadIO`/`MonadUnliftIO` (not
+  `IO`-only); `SubscriptionResult` also has `Retry`/`DeadLetter`; `OverflowPolicy` adds
+  `PauseAndResume` (the default); `SubscriptionHandle.wait :: m (Either SomeException ())`; the
+  FSM has five live states (`CatchingUp`/`Live`/`Paused`/`Reconnecting`/`Retrying`) + `Stopped`.
   Date: 2026-05-30
 
 

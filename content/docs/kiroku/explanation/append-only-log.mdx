@@ -1,0 +1,43 @@
+---
+title: "The append-only log"
+description: "Why events are immutable, how the database enforces it, and what deletion means."
+---
+
+kiroku stores events in an **append-only** log: you add to the end, and what is already written
+never changes. This is not merely a convention — it is enforced in PostgreSQL itself.
+
+## Immutability is enforced in the database
+
+The `events` table carries a `prevent_mutation()` trigger that **blocks `UPDATE` and `DELETE`**
+on event rows. An application bug, a stray migration, or a curious operator cannot quietly
+rewrite history; the database rejects the statement. This is what lets you trust replay: folding
+a stream today and folding it next year produce the same result, because the rows cannot have
+shifted underneath you.
+
+<Callout type="info">
+  Append-only is the foundation everything else rests on. Because events never change, the `$all`
+  log's global order is stable, projections are reproducible, and a subscription that replays from
+  a checkpoint sees exactly what it saw before.
+</Callout>
+
+## Deletion: soft vs hard
+
+"Immutable" raises a fair question: what about removing a stream you no longer want, or a GDPR
+erasure request? kiroku separates two very different operations:
+
+- **Soft delete** (`softDeleteStream`) marks a stream deleted (`streams.deleted_at`) but **keeps
+  its events in `$all`**. The stream disappears from `getStream` and direct reads, yet the global
+  order stays intact and gap-free. This is the everyday "retire this stream" operation, and it is
+  reversible with `undeleteStream`.
+- **Hard delete** (`hardDeleteStream`) physically removes events. It is **irreversible**, intended
+  for GDPR-style erasure, and **gated behind a database GUC** (`kiroku.enable_hard_deletes`): the
+  `protect_deletion()` / `protect_truncation()` triggers reject it unless an operator has
+  explicitly enabled the setting for that session. You cannot hard-delete by accident.
+
+## Trade-offs
+
+Append-only storage grows monotonically — you keep history rather than overwriting it. In
+exchange you get an audit trail by construction, time-travel debugging (replay to any past
+point), and the ability to build new read models from old events. When genuine erasure is
+required, hard delete exists, but it is deliberately awkward to reach so that the default — keep
+everything, immutably — is the easy path.

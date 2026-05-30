@@ -1,0 +1,62 @@
+---
+title: "Streams and categories"
+description: "How kiroku names streams, derives categories, and why stream names are resolved by lookup."
+---
+
+Every event in kiroku belongs to a **stream**, and every stream belongs to a **category**. Both
+are derived from one simple thing: the stream's name.
+
+## Stream names
+
+A `StreamName` is just `Text`, conventionally `"<category>-<id>"`, for example `"orders-1"` or
+`"account-42"`. A stream is the unit of optimistic concurrency: `appendToStream` targets one
+stream, and `StreamVersion` counts events within it (starting at `0`, `+1` per event).
+
+```haskell
+newtype StreamName    = StreamName Text       -- "orders-1"
+newtype CategoryName  = CategoryName Text      -- "orders"
+newtype StreamVersion = StreamVersion Int64    -- per-stream, starts at 0
+```
+
+## Categories are the prefix before the first `-`
+
+A **category** is the prefix of a stream name up to its first hyphen. `"orders-1"`,
+`"orders-2"`, and `"orders-99"` all belong to category `"orders"`. This is not an application
+convention layered on top — the database materialises it as a **generated column**:
+
+```text
+category := split_part(stream_name, '-', 1)
+```
+
+Because it is a generated column, the category is always consistent with the name and is
+indexable, which is what makes category reads efficient. You read a whole category — every
+stream sharing the prefix, in global order — with `readCategory`, and you can subscribe to a
+category with `SubscriptionTarget`'s `Category` constructor.
+
+<Callout type="info">
+  Categories are how you process "all orders" without knowing every order id in advance. A
+  consumer group over the `orders` category partitions those streams across workers while keeping
+  each individual order's events in order.
+</Callout>
+
+## Stream names are resolved by lookup (ADR 0001)
+
+A `RecordedEvent` does **not** carry its stream's *name* — it carries the numeric
+`originalStreamId` (a `StreamId`). To turn ids back into names, you ask the store:
+
+```haskell
+lookupStreamNames :: (Store :> es) => [StreamId] -> Eff es (Map StreamId StreamName)
+lookupStreamName  :: (Store :> es) => StreamId   -> Eff es (Maybe StreamName)
+```
+
+This is a deliberate design choice (ADR 0001). Stream **names** can change meaning over time and
+embedding the name on every event row would bloat storage and fix a naming decision permanently;
+the numeric id is stable and cheap, and `lookupStreamNames` does an efficient **batch** inverse
+lookup for fan-in reads (like `$all` or a category) where events come from many streams at once.
+
+## Trade-offs
+
+Naming streams `category-id` couples your category taxonomy to a string convention — choose
+prefixes deliberately, because the generated category column depends on the first hyphen. In
+return you get zero-cost category derivation, indexable category reads, and a stable id-based
+identity that survives renames.

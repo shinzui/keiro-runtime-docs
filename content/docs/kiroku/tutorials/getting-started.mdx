@@ -1,0 +1,170 @@
+---
+title: Getting started
+description: "Migrate a database, open a store, append your first events, read them back, and run a live subscription."
+---
+
+By the end of this tutorial you will have a working kiroku event store: you will migrate a
+PostgreSQL database, open a `Store`, append a couple of events to a brand-new stream, read
+them back in order, and run a live subscription that reacts to every event as it lands. Every
+snippet uses kiroku's real API.
+
+<Callout type="info">
+  This is a tutorial — a guided lesson. Follow every step in order. You do not need prior
+  experience with event sourcing beyond knowing that an *event* is an immutable record of
+  something that happened. By the end you will have appended, read, and subscribed to events.
+</Callout>
+
+## What you will build
+
+A tiny program that records two events on a stream called `orders-1`, prints them back in
+order, and then keeps a running count of every event in the store via a subscription.
+
+## Before you begin
+
+- **PostgreSQL 17+** running and reachable.
+- **GHC 9.12** (kiroku is built and tested there).
+- The `kiroku-store` and `kiroku-store-migrations` packages available to your project.
+
+kiroku never runs DDL when you open a store, so you migrate the schema **first**, then point
+kiroku at the migrated database.
+
+## Steps
+
+<Steps>
+<Step>
+
+### Apply the schema
+
+kiroku's schema lives in a dedicated `kiroku` schema and is installed by the
+`kiroku-store-migrate` executable (forward-only `codd` migrations). Point it at your database
+with the `CODD_*` environment variables and run it:
+
+```bash
+export CODD_CONNECTION='dbname=kiroku'
+export CODD_SCHEMAS=kiroku
+cabal run kiroku-store-migrate
+```
+
+You should see the migrations apply cleanly. The `kiroku` schema now holds the `streams`,
+`events`, `stream_events`, and `subscriptions` tables — `public` stays free for your own
+application tables.
+
+</Step>
+<Step>
+
+### Open a store
+
+`withStore` acquires a connection pool, sets the `search_path`, starts the `LISTEN/NOTIFY`
+notifier and the in-process event publisher, and tears them all down in reverse when the body
+returns. Build settings with `defaultConnectionSettings` from a connection string:
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedLabels  #-}
+import Kiroku.Store
+import Control.Lens ((^.))
+import qualified Data.Aeson as Aeson
+
+main :: IO ()
+main = withStore (defaultConnectionSettings "postgresql://localhost/kiroku") $ \store -> do
+  -- the store is open here; everything below runs against `store`
+  pure ()
+```
+
+</Step>
+<Step>
+
+### Append your first events
+
+Build a list of `EventData` and append it with `appendToStream`. The `ExpectedVersion`
+argument is the optimistic-concurrency guard; `NoStream` asserts the stream does **not** exist
+yet and creates it (you would get `StreamAlreadyExists` if it did). Run the `Store` effect with
+`runStoreIO`, which yields `Either StoreError`:
+
+```haskell
+let order  = StreamName "orders-1"
+    events =
+      [ EventData
+          { eventId       = Nothing                 -- store generates a UUIDv7
+          , eventType     = EventType "OrderPlaced"
+          , payload       = Aeson.object ["sku" Aeson..= ("ABC-123" :: Text)]
+          , metadata      = Nothing
+          , causationId   = Nothing
+          , correlationId = Nothing
+          }
+      ]
+appended <- runStoreIO store (appendToStream order NoStream events)
+case appended of
+  Left err     -> putStrLn ("store error: " <> show err)
+  Right result -> putStrLn ("appended up to version " <> show (result ^. #streamVersion))
+```
+
+You should see `appended up to version 0` — the first event in a stream is version `0`.
+
+</Step>
+<Step>
+
+### Read the stream back
+
+Read forward from the start with `readStreamForward`. The cursor is **exclusive**:
+`StreamVersion 0` means "from the very beginning", and the `Int32` is the page size.
+
+```haskell
+read' <- runStoreIO store (readStreamForward order (StreamVersion 0) 100)
+case read' of
+  Left err  -> putStrLn ("store error: " <> show err)
+  Right evs ->
+    mapM_ (\e -> putStrLn (show (e ^. #eventType) <> " @ " <> show (e ^. #globalPosition))) evs
+```
+
+You should see your `OrderPlaced` event with its `GlobalPosition` — its position in the global
+`$all` log.
+
+</Step>
+<Step>
+
+### Subscribe to the live stream
+
+A subscription delivers both history (catch-up) and new events (live). Build a config with
+`defaultSubscriptionConfig`; the handler returns `Continue` to acknowledge an event and keep
+going (or `Stop` to finish). `withSubscription` guarantees the worker thread is cancelled when
+the body returns:
+
+```haskell
+import Data.IORef
+
+runProjection :: KirokuStore -> IO ()
+runProjection store = do
+  counter <- newIORef (0 :: Int)
+  let cfg = defaultSubscriptionConfig (SubscriptionName "order-count") AllStreams handler
+      handler _evt = do
+        modifyIORef' counter (+ 1)        -- idempotent-friendly: a pure count tolerates replays
+        pure Continue                      -- ack this event; keep consuming
+  withSubscription store cfg $ \h ->
+    h ^. #wait                             -- block until the handler returns Stop (or you cancel)
+```
+
+The subscription first catches up over everything already stored, then switches to live and
+reacts to each new append. You can observe which phase it is in by reading `h ^. #currentState`
+(`CatchingUp`, `Live`, …).
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Two things to internalise now: read cursors are **exclusive** (`StreamVersion 0` /
+  `GlobalPosition 0` read from the start), and subscription delivery is **at-least-once** with a
+  **per-batch** checkpoint — so your handlers must be **idempotent**. Processing the same event
+  twice must not produce a wrong result.
+</Callout>
+
+## What you built
+
+You migrated a database, opened a store, appended and read events with optimistic concurrency,
+and ran a live subscription. From here:
+
+- Learn the application pattern kiroku deliberately does *not* ship in the
+  [decider &amp; evolve tutorial](/docs/kiroku/tutorials/decider-and-evolve).
+- Turn a subscription into a durable read model in
+  [Build a projection](/docs/kiroku/how-to/build-a-projection).
+- Understand the storage model in [Explanation](/docs/kiroku/explanation/event-sourcing).

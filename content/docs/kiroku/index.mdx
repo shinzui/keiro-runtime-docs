@@ -1,26 +1,57 @@
 ---
 title: kiroku
-description: An append-only PostgreSQL event store — the persistence foundation of the keiro runtime.
+description: "An append-only PostgreSQL event store — the persistence foundation of the keiro runtime."
 ---
 
-kiroku (記録, "record") is an append-only **PostgreSQL event store** written in
-Haskell. An event store keeps an immutable, ordered log of things that happened —
-"events" — instead of overwriting current state; you rebuild state by replaying the
-log. kiroku is the **persistence foundation** the rest of the keiro runtime writes
-through.
+**kiroku** (記録, "record / chronicle") is a high-performance, append-only **PostgreSQL
+event store**, written in Haskell on top of `hasql` and `effectful-core`. An event store
+keeps an immutable, ordered log of the things that happened — *events* — instead of
+overwriting current state; you rebuild state by replaying the log. kiroku is the
+**persistence foundation** the rest of the keiro runtime writes through.
+
+<Callout type="info">
+  kiroku is an event **store**, not a decider or aggregate framework. It gives you durable,
+  ordered, immutable events plus optimistic concurrency and subscriptions. Patterns such as
+  `decide` / `evolve` / projections are application code you write *on top* — see the
+  [decider &amp; evolve tutorial](/docs/kiroku/tutorials/decider-and-evolve). The library ships
+  no such typeclass anywhere; mislabeling it would make every downstream example wrong.
+</Callout>
 
 <Callout type="warn">
-  kiroku is in **active development** and its APIs may change. Pin a version and
-  review release notes before depending on it in production.
+  kiroku is in **active development** and its APIs may change. Pin a version and review
+  release notes before depending on it in production.
 </Callout>
+
+## How it fits together
+
+A write appends events to a named stream; the same transaction also writes each event to the
+global `$all` log, which gives a gap-free `GlobalPosition`. A `NOTIFY` wakes the in-process
+publisher, which fans new events out to subscriptions and consumer groups that fold them into
+your read models.
+
+```mermaid
+flowchart LR
+  App["Your application"]
+  Store[("kiroku-store · PostgreSQL")]
+  AllLog["$all log · gap-free GlobalPosition"]
+  Notifier["Notifier · LISTEN/NOTIFY"]
+  Sub["subscribe / consumer group"]
+  Proj["Your projection / read model"]
+
+  App -->|"appendToStream name ExpectedVersion [EventData]"| Store
+  Store -->|"source-stream row + $all row (stream_id 0)"| AllLog
+  Store -->|"pg_notify schema.events"| Notifier
+  Notifier --> Sub
+  Sub -->|"RecordedEvent -> IO SubscriptionResult"| Proj
+```
 
 ## Where to go next
 
 <Cards>
   <Card title="Tutorials" href="/docs/kiroku/tutorials" description="Learn kiroku step by step, from an empty database to a working event stream." />
-  <Card title="How-To Guides" href="/docs/kiroku/how-to" description="Task-oriented recipes for a specific goal." />
-  <Card title="Reference" href="/docs/kiroku/reference" description="The APIs, types, and configuration, stated plainly." />
-  <Card title="Explanation" href="/docs/kiroku/explanation" description="Why kiroku works the way it does — including the theory." />
+  <Card title="How-To Guides" href="/docs/kiroku/how-to" description="Task-oriented recipes: run against Postgres, enable OpenTelemetry, build a projection, integrate with shibuya." />
+  <Card title="Reference" href="/docs/kiroku/reference" description="The Store effect operations and core domain types, stated plainly and completely." />
+  <Card title="Explanation" href="/docs/kiroku/explanation" description="Why kiroku works the way it does — streams, the $all log, optimistic concurrency, subscriptions." />
   <Card title="Cookbook" href="/docs/kiroku/cookbook" description="Short, copy-paste recipes for common problems." />
-  <Card title="Code Walkthrough" href="/docs/kiroku/walkthrough" description="An ordered tour through kiroku's real source." />
+  <Card title="Code Walkthrough" href="/docs/kiroku/walkthrough" description="An ordered tour through kiroku's real subscription source." />
 </Cards>

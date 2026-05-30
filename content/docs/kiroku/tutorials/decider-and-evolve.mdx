@@ -1,0 +1,121 @@
+---
+title: The decider & evolve pattern
+description: "Build command handling on top of kiroku — a user-land pattern the store deliberately does not ship."
+---
+
+This tutorial teaches the **decider / evolve** pattern: how to turn kiroku's append-only log
+into a command-handling aggregate, the way most event-sourced applications do. You will write a
+small `Order` domain, fold its history into current state, decide which new events a command
+produces, and append them under optimistic concurrency.
+
+<Callout type="warn">
+  kiroku ships **no** `decide` / `evolve` / `fold` / `apply` / `project` typeclass. Everything
+  below is **application code you write on top of the store**. This is a deliberate design
+  boundary: kiroku is an event *store*; command handling lives in your code (or in the **keiro**
+  integration framework). Do not look for these functions in the library — you write them.
+</Callout>
+
+## What you will build
+
+A command handler for a single `Order` aggregate. A command comes in, you load the order's
+stream, fold it to current state, run a pure decision function, and append the resulting events
+— failing safely if someone else wrote concurrently.
+
+## The two pure functions
+
+The pattern rests on two **pure** functions you own:
+
+- `evolve :: State -> Event -> State` — fold one event into the running state. Replaying a
+  stream left-to-right through `evolve` reconstructs the aggregate's current state.
+- `decide :: Command -> State -> Either Error [Event]` — given a command and the current state,
+  decide which new events (if any) should be appended, or reject the command.
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedLabels  #-}
+
+-- USER-LAND pattern (NOT a kiroku API): a decider + evolve over the append-only log.
+data OrderState = NoOrder | Open { items :: Int } | Closed
+  deriving (Show)
+
+data OrderEvent = OrderPlaced | ItemAdded | OrderClosed
+  deriving (Show)
+
+data OrderCmd = PlaceOrder | AddItem | CloseOrder
+
+evolve :: OrderState -> OrderEvent -> OrderState
+evolve NoOrder  OrderPlaced = Open { items = 0 }
+evolve (Open n) ItemAdded   = Open { items = n + 1 }
+evolve (Open _) OrderClosed = Closed
+evolve st       _           = st          -- ignore impossible transitions
+
+decide :: OrderCmd -> OrderState -> Either String [OrderEvent]
+decide PlaceOrder NoOrder  = Right [OrderPlaced]
+decide AddItem    (Open _) = Right [ItemAdded]
+decide CloseOrder (Open _) = Right [OrderClosed]
+decide _          _        = Left "invalid command for current state"
+```
+
+## The command loop
+
+Now wire the pure functions to the store. The loop is always the same shape:
+
+1. **Read** the stream forward to its current end.
+2. **Fold** the events through `evolve` to reconstruct current state, noting the current
+   version.
+3. **Decide** which new events the command produces.
+4. **Append** them under `ExactVersion currentVersion` — so a concurrent writer that advanced
+   the stream in the meantime fails with `WrongExpectedVersion`, which you re-read and retry.
+
+```haskell
+import Kiroku.Store
+import Data.Foldable (foldl')
+import qualified Data.Vector as Vector
+
+-- the command loop: load -> fold -> decide -> append under ExactVersion
+handle :: KirokuStore -> StreamName -> OrderCmd -> IO (Either StoreError ())
+handle store name cmd = runStoreIO store $ do
+  recorded <- readStreamForward name (StreamVersion 0) 1000
+  let current  = foldl' evolve NoOrder (map decodeEvent (Vector.toList recorded))
+      -- the stream's current version is (count - 1); empty stream => NoStream below
+      expected = if Vector.null recorded
+                   then NoStream
+                   else ExactVersion (StreamVersion (fromIntegral (Vector.length recorded) - 1))
+  case decide cmd current of
+    Left _err    -> pure ()                                  -- rejected command: no events
+    Right events -> () <$ appendToStream name expected (map encodeEvent events)
+  -- On WrongExpectedVersion: someone else wrote concurrently — re-read and retry the loop.
+```
+
+`decodeEvent :: RecordedEvent -> OrderEvent` and `encodeEvent :: OrderEvent -> EventData` are
+your own converters between the stored JSON payload and your domain type — stubs you fill in:
+
+```haskell
+encodeEvent :: OrderEvent -> EventData
+encodeEvent e = EventData
+  { eventId       = Nothing
+  , eventType     = EventType (eventTypeOf e)    -- e.g. "OrderPlaced"
+  , payload       = encodePayload e              -- your Aeson encoding
+  , metadata      = Nothing
+  , causationId   = Nothing
+  , correlationId = Nothing
+  }
+
+decodeEvent :: RecordedEvent -> OrderEvent
+decodeEvent r = decodePayload (r ^. #eventType) (r ^. #payload)   -- your Aeson decoding
+```
+
+## Why `ExactVersion`
+
+`ExactVersion currentVersion` is what makes this safe under concurrency. Two handlers that both
+read version 4 will both try to append "expecting version 4". The database lets exactly one
+win; the loser gets `WrongExpectedVersion` and must restart the loop against the now-current
+state. That is optimistic concurrency doing its job — no locks, no lost updates. See
+[Optimistic concurrency](/docs/kiroku/explanation/optimistic-concurrency) for the full mapping
+of `ExpectedVersion` constructors to errors.
+
+## What you built
+
+You implemented command handling — `decide` + `evolve` + a load-decide-append loop — entirely
+in application code, using only kiroku's `readStreamForward` and `appendToStream`. The store
+gave you durability, ordering, and the concurrency guard; the domain logic is yours.

@@ -1,0 +1,60 @@
+---
+title: "Optimistic concurrency"
+description: "The four ExpectedVersion constructors and the store error each one can produce."
+---
+
+Every `appendToStream` call states what it **expects** about the stream's current state. That
+expectation is the `ExpectedVersion` argument, and it is how kiroku prevents two concurrent
+writers from silently clobbering each other — without locks.
+
+## The four constructors
+
+```haskell
+data ExpectedVersion
+  = NoStream                    -- the stream must NOT exist yet; this append creates it
+  | StreamExists                -- the stream must already exist (version irrelevant)
+  | ExactVersion !StreamVersion -- the current version must equal exactly this
+  | AnyVersion                  -- no expectation: create-or-append (upsert)
+```
+
+Each expresses a different intent:
+
+- **`NoStream`** — "I am creating this aggregate for the first time." Used for the first event of
+  a new stream.
+- **`StreamExists`** — "this stream must already be there", regardless of how many events it has.
+- **`ExactVersion v`** — "I read up to version `v`; only append if nothing has changed since."
+  This is the workhorse of the [decider &amp; evolve loop](/docs/kiroku/tutorials/decider-and-evolve).
+- **`AnyVersion`** — "just append, creating the stream if needed." An upsert; use when no
+  concurrency guard is required.
+
+## Which error each one produces
+
+When the expectation is not met, the append fails with a specific `StoreError`:
+
+| `ExpectedVersion` | If the expectation fails | `StoreError` |
+|---|---|---|
+| `NoStream` | the stream already exists | `StreamAlreadyExists` |
+| `StreamExists` | the stream does not exist (or is soft-deleted) | `StreamNotFound` |
+| `ExactVersion v` | the current version is not `v` | `WrongExpectedVersion` |
+| `AnyVersion` | — (no version conflict possible) | — |
+
+Two more errors are not about versions but worth knowing here:
+
+- **`DuplicateEvent`** — you supplied an explicit `eventId` that was already committed. This is
+  the mechanism behind [idempotent append](/docs/kiroku/cookbook/idempotent-append): a retried
+  command with the same id surfaces `DuplicateEvent` instead of double-writing.
+- **`ReservedStreamName`** — you tried to append to `$all` (stream_id 0) directly, which is not
+  allowed; `$all` is populated only as a side effect of appending to real streams.
+
+<Callout type="warn">
+  `WrongExpectedVersion` is not an error to log and forget — it is the **expected** signal that
+  someone else wrote first. The correct response is to re-read the stream, re-fold to the new
+  current state, re-decide, and retry the append. That retry loop *is* optimistic concurrency.
+</Callout>
+
+## Trade-offs
+
+Optimistic concurrency assumes conflicts are rare: writers proceed without locking and only one
+loses, retrying. Under genuinely high contention on a single stream, retries can pile up — that
+is a signal to model a hotter aggregate as several streams, or to serialise writes upstream.
+For the common case (many streams, little per-stream contention) it is lock-free and fast.

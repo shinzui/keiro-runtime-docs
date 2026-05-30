@@ -1,0 +1,88 @@
+---
+title: "Subscriptions and consumer groups"
+description: "Catch-up vs live delivery, at-least-once semantics, and static hash-partitioned consumer groups."
+---
+
+A **subscription** is how your code reacts to events: it delivers history and then new events as
+they land, calling your handler once per event. A **consumer group** runs the same subscription
+across several workers in parallel. Both are managed for you — you supply a handler and a target,
+kiroku supplies durability, ordering, and resumption.
+
+## Catch-up, then live
+
+A subscription worker moves through an explicit state machine. The two states you will care about
+most:
+
+- **`CatchingUp`** — the worker reads history **directly from the database** in batches from its
+  checkpoint, until it reaches the position of the last event the in-process publisher has seen.
+- **`Live`** — caught up. For an `AllStreams` subscription the worker now receives new events
+  pushed from the publisher's in-memory queue; for a `Category` subscription it re-queries with
+  the category filter whenever the publisher advances. A `LISTEN/NOTIFY` wake-up
+  (`pg_notify '<schema>.events'`) tells it when there is something new, so an idle subscription
+  costs almost nothing.
+
+There are three further states — `Paused` (recoverable backpressure), `Reconnecting` (the live
+connection dropped; back off and re-catch-up), and `Retrying` — plus the terminal `Stopped`. You
+can read the current state at any instant via the handle's `currentState`. The
+[subscription walkthrough](/docs/kiroku/walkthrough) traces the whole machine through the real
+source.
+
+## At-least-once, checkpoint-per-batch
+
+Delivery is **at-least-once**, and the checkpoint advances **per batch**, not per event. If the
+worker is cancelled or the process crashes after your handler ran but before the batch checkpoint
+was saved, those events **replay** on the next start.
+
+<Callout type="warn">
+  Your handler **must be idempotent**. Processing the same event twice must not produce a
+  wrong-on-replay result. Make the projection write idempotent — a unique key on the read-model
+  table, an upsert, or a domain check — so a duplicate is a no-op.
+</Callout>
+
+The handler returns a `SubscriptionResult` per event:
+
+- `Continue` — acknowledge and keep going.
+- `Stop` — finish the subscription gracefully (checkpoint saved at this event).
+- `Retry delay` — redeliver *this* event after a delay; bounded by the `RetryPolicy` (default 5
+  attempts), after which the event is **dead-lettered** into `kiroku.dead_letters` and the worker
+  moves on.
+- `DeadLetter reason` — record this event in `kiroku.dead_letters` and advance past it now.
+
+## Backpressure without loss
+
+If your handler is slow and the publisher's bounded per-subscriber queue fills, the default
+`OverflowPolicy` is **`PauseAndResume`**: the publisher stops pushing, the worker drains and then
+re-catches-up from its checkpoint — **no events are lost** and the checkpoint stays monotonic.
+The alternatives are `DropSubscription` (fail fast with `SubscriptionOverflowed`) and `DropOldest`
+(lossy best-effort), for consumers that prefer a hard error or can tolerate loss.
+
+## Consumer groups: static hash partitioning (ADR 0002)
+
+A consumer group splits a subscription across `size` members. kiroku partitions **statically by
+stream**: each stream hashes to exactly one member, so a given stream's events always go to the
+same worker. That gives you two properties at once:
+
+- **Order within a stream** is preserved — all of `orders-1`'s events go to one member, in order.
+- **Parallelism across streams** — distinct streams are processed concurrently by different
+  members.
+
+You declare membership on the config:
+
+```haskell
+let cfg = (defaultSubscriptionConfig (SubscriptionName "orders-projection")
+                                     (Category (CategoryName "orders"))
+                                     handler)
+            { consumerGroup = Just (ConsumerGroup { member = 0, size = 4 }) }
+```
+
+`subscribe` checks the invariant `size >= 1` and `0 <= member < size` eagerly, throwing
+`InvalidConsumerGroup` on a bad pair. Checkpoints live in the `subscriptions` table keyed by
+`(subscription_name, consumer_group_member)`, so each member resumes independently.
+
+## Trade-offs
+
+Static partitioning is simple and gives strong per-stream ordering, but it does **not**
+rebalance dynamically: if one member owns a hot stream, that member does more work, and resizing
+the group re-partitions all streams. The design trades elastic load-balancing for predictable
+ordering and a trivial, stateless partitioning function — the right call when per-stream order
+is the property you cannot give up.

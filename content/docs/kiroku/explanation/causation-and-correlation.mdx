@@ -1,0 +1,63 @@
+---
+title: "Causation and correlation"
+description: "How kiroku tracks why each event happened and which flow it belonged to."
+---
+
+Every `EventData` and `RecordedEvent` carries two optional ids that let you reconstruct *why*
+things happened: `causationId` and `correlationId`. They answer two different questions.
+
+## Two questions, two ids
+
+- **`causationId` — "what directly caused this?"** It points at the *immediate* parent event (or
+  command) that triggered this one. Follow causation ids and you walk a tree: this event was
+  caused by that one, which was caused by another.
+- **`correlationId` — "which flow does this belong to?"** It is the *same* value for every event
+  in one logical saga or business transaction, however deep the causation tree goes. Group by
+  correlation id and you have the whole story of one flow.
+
+A useful mental model: causation is the **edges** of the tree (parent → child), correlation is
+the **colour** shared by every node in one flow.
+
+```haskell
+data EventData = EventData
+  { ...
+  , causationId   :: !(Maybe UUID)   -- the immediate cause
+  , correlationId :: !(Maybe UUID)   -- the whole flow
+  }
+```
+
+By convention, when one event causes another you set the child's `causationId` to the parent's
+`eventId` and copy the parent's `correlationId` unchanged (a brand-new flow starts a fresh
+correlation id, often equal to its own event id).
+
+## Querying the graph
+
+kiroku indexes these ids so you can walk them efficiently:
+
+```haskell
+findCausationDescendants :: (Store :> es) => EventId -> Eff es (Vector RecordedEvent)
+findCausationAncestors   :: (Store :> es) => EventId -> Eff es (Vector RecordedEvent)
+findByCorrelation        :: (Store :> es) => UUID    -> Eff es (Vector RecordedEvent)
+```
+
+- `findCausationDescendants e` — everything that `e` caused, transitively (the subtree below `e`).
+- `findCausationAncestors e` — the chain of causes that led to `e` (the path up to the root).
+- `findByCorrelation c` — every event in the flow `c`, regardless of causal depth.
+
+The same selection is also expressible declaratively via `EventFilter`
+(`FilterCorrelation`, `FilterCausationDescendants`, `FilterCausationAncestors`) for the
+effect's `FindEvents` operation.
+
+<Callout type="info">
+  These ids are also the seam OpenTelemetry uses: `kiroku-otel` writes W3C trace context into
+  event metadata so a distributed trace can span the producer and every downstream consumer. See
+  [Enable OpenTelemetry](/docs/kiroku/how-to/enable-opentelemetry).
+</Callout>
+
+## Trade-offs
+
+Causation and correlation are entirely **opt-in** — both ids default to `Nothing`, and an event
+with neither is perfectly valid. The cost of leaving them unset is that you lose the ability to
+answer "why did this happen?" and "what else was part of this flow?" after the fact. Because they
+cannot be back-filled onto immutable events, decide early whether your domain needs this
+traceability and set the ids at append time.

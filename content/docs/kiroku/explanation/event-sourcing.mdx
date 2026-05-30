@@ -1,0 +1,50 @@
+---
+title: "Event store, not a framework"
+description: "What kiroku gives you, and what you build on top of it."
+---
+
+The single most important thing to understand about kiroku is where its responsibility ends.
+kiroku is an **event store**: it durably records immutable events in order and gives them back
+to you. It is *not* a CQRS / aggregate / decider framework — and that boundary is deliberate.
+
+## What kiroku gives you
+
+- **Durable, ordered, immutable events.** Once written, an event is never updated or deleted in
+  place (a database trigger enforces this). You get back exactly what was written.
+- **A gap-free global order.** Every event has a `GlobalPosition` on the `$all` log, contiguous
+  with no holes, which is what makes subscriptions resumable.
+- **Optimistic concurrency.** `appendToStream` takes an `ExpectedVersion` so concurrent writers
+  cannot silently clobber each other.
+- **Subscriptions and consumer groups.** Catch-up + live delivery of events to your code, with
+  at-least-once semantics and static hash-partitioned parallelism.
+
+## What you build on top
+
+The vocabulary of event-sourced *application* design — **commands**, `decide`, `evolve`/`fold`,
+**projections**, **process managers** — is not in the library. You write it:
+
+- A `decide :: Command -> State -> Either Error [Event]` function that turns intent into events.
+- An `evolve :: State -> Event -> State` fold that reconstructs current state from history.
+- Projections that subscribe and fold events into read models.
+
+<Callout type="info">
+  There is no `decide` or `evolve` typeclass anywhere in `kiroku-store`. These are patterns you
+  implement using `readStreamForward` and `appendToStream`. The
+  [decider &amp; evolve tutorial](/docs/kiroku/tutorials/decider-and-evolve) walks through one
+  concrete implementation; the **keiro** integration framework layers a reusable version on top.
+</Callout>
+
+## Why draw the line here
+
+Keeping the store free of domain opinions is what lets it be the shared foundation for the whole
+keiro runtime. Command handling, workflow orchestration, and queue processing each have their
+own opinions and their own libraries (keiro, shibuya); they all write their history through the
+*same* neutral store. A store that baked in one aggregate model would force that model on every
+component above it.
+
+## Trade-offs
+
+You write a little more code — the `decide`/`evolve` loop is yours — in exchange for a store
+that never constrains your domain model and never surprises you with hidden command-handling
+behaviour. If you want that loop ready-made, reach for keiro rather than expecting it from
+kiroku.
