@@ -24,6 +24,10 @@
             pkgs.oxlint
             pkgs.oxfmt
             pkgs.typescript
+            # The link-check gate (Plan F / #6) is provided by the `linkinator` npm
+            # devDependency, on PATH after `pnpm install` — not a nixpkgs package — so
+            # the dev shell needs no extra entry for it. The PragmataPro font input is
+            # the `pragmatapro` flake input above (exposed as packages.pragmatapro-fonts).
           ];
 
           shellHook = ''

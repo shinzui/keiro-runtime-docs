@@ -117,7 +117,7 @@ not *blocked* on them.
 | 3 | Beautiful Mermaid diagrams with zoom and pan | docs/plans/3-beautiful-mermaid-diagrams-with-zoom-and-pan.md | #1 | — | 2 | Complete |
 | 4 | Documentation information architecture and authoring system | docs/plans/4-documentation-information-architecture-and-authoring-system.md | #1 | #2, #3 | 3 | Complete |
 | 5 | Kiroku foundation documentation set | docs/plans/5-kiroku-foundation-documentation-set.md | #1, #4 | #2, #3 | 4 | Complete |
-| 6 | Build quality gates and CI | docs/plans/6-build-quality-gates-and-ci.md | #1 | #2, #3, #4, #5 | 2 | Not Started |
+| 6 | Build quality gates and CI | docs/plans/6-build-quality-gates-and-ci.md | #1 | #2, #3, #4, #5 | 2 | Complete |
 
 ## Dependency Graph
 
@@ -201,8 +201,11 @@ Next.js `app/` directory.
 - [x] #3 — Port mina-ui's MermaidViewer; register the zoomable `Mermaid` component. _(2026-05-30)_
 - [x] #3 — Wire pan/zoom interaction and styling. _(2026-05-30; on-screen interactive
       verification still pending a human browser pass — see Surprises & Discoveries.)_
-- [ ] #6 — Stand up build, lint, typecheck, and link-check gates.
-- [ ] #6 — Wire CI to run the gates on every change.
+- [x] #6 — Stood up the five gates (`pnpm run check`): typecheck, lint (oxlint), format-check
+      (oxfmt, scoped via `.prettierignore`), build (static SPA), and link-check (a source-level
+      `content/docs` internal-link checker + a linkinator crawl). All green. _(2026-05-30)_
+- [x] #6 — Wired CI in `.github/workflows/ci.yml` (pnpm + Node 22; oxlint/oxfmt pinned via
+      `pnpm dlx`) to run the gates on every PR and every push to `master`. _(2026-05-30)_
 
 ### Phase 3 — Information architecture
 
@@ -393,5 +396,53 @@ renders MDX **client-side** (a SPA client loader), so prerendered HTML is a
 hydration shell — verify rendered content in a browser (or via the static search
 index / raw `.md` route), not by grepping the static HTML.
 
-_Phases 2–4 to be filled in as they complete, then what comes next (the keiro /
-keiki / shibuya content master plans)._
+**Phase 2 — Authoring primitives (#2, #3): complete (2026-05-30).** PragmataPro
+`@font-face` declarations and Haskell-aware Shiki ligature highlighting (#2) and
+the zoomable beautiful-mermaid viewer (#3) are wired into `source.config.ts` /
+`src/styles/app.css` / `src/components/mdx.tsx`. The load-bearing detail was
+rehype ordering: the mermaid fence interceptor must be **prepended** before
+fumadocs' Shiki step (`rehypePlugins: (v) => [rehypeMermaid, ...v]`), or Shiki
+rewrites the fence first. On-screen ligature-glyph and pan/zoom interactivity
+remain a deferred human browser pass.
+
+**Phase 3 — Information architecture (#4): complete (2026-05-30).** A product-first
+Diátaxis content tree (`tutorials/ how-to/ reference/ explanation/ cookbook/
+walkthrough/` + `faq.mdx` per library), eight copy-paste `_templates/`, the
+authoring components (registered globally in `src/components/mdx.tsx`, so pages
+use them without imports), and a contributing/style guide. The kiroku content
+plan (#5) had to conform to this **actual** structure, which differed from its
+own anticipated layout.
+
+**Phase 4 — Content (#5): complete (2026-05-30).** The full kiroku set: landing,
+getting-started tutorial, the user-land decider/evolve tutorial, seven
+explanation pages, two reference pages, four how-to guides, an idempotent-append
+cookbook recipe, and — added at the user's request — a four-part **subscription
+code walkthrough** read from the real `Kiroku.Store.Subscription.*` source. All
+snippets were authored against the real API (source is authoritative over any
+transcription) and cross-checked against `kiroku-store/src`. 28 kiroku pages
+prerender cleanly.
+
+**Phase 2 — CI (#6): complete (2026-05-30).** Five quality gates behind
+`pnpm run check` (typecheck, lint, format-check, build, link-check) and a GitHub
+Actions workflow running them on every PR and push to `master`. Two discoveries
+reshaped the work: (1) the client-rendered SPA's prerendered HTML has **zero
+static links**, so a static crawler is hollow — the meaningful link gate is a
+source-level `content/docs` internal-link checker (linkinator is kept as a
+secondary build-output crawl); (2) the Nix-flake CI is non-viable because the
+flake's PragmataPro input is a **local filesystem path** absent on runners, so CI
+uses the pnpm/Node-22 fallback with oxlint/oxfmt pinned via `pnpm dlx`. The build
+still works on a runner because the font copy degrades gracefully.
+
+**Master plan complete (2026-05-30).** The site exists, is beautiful (PragmataPro
+ligatures + Haskell Shiki + zoomable mermaid), is fully populated for the kiroku
+foundation layer, and is guarded by CI — meeting the success criteria. The
+single remaining always-deferred item is **choosing a deployment host** (out of
+scope by design; the static `.output/public` is host-agnostic and ready).
+
+**What comes next:** separate content master plans for **keiro**, **keiki**, and
+**shibuya**, each filling its already-scaffolded Diátaxis subtree (including the
+`walkthrough/` and `faq.mdx` slots) the same way kiroku was — now on proven
+infrastructure. Cross-cutting carry-forwards for those plans: author against #4's
+real tree and the libraries' real source; use **absolute** doc links (the
+source-level link gate enforces this); and budget a human browser pass for the
+ligature/mermaid visual checks still outstanding from #2/#3.

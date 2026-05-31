@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: Quality gates (pnpm + Node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Installs from the committed pnpm-lock.yaml so CI gets the pinned
+      # nitro 3.0.260429-beta (a newer nitro breaks the Vite SSR worker — see the
+      # plan's Decision Log). The postinstall hook runs `fumadocs-mdx`, generating
+      # the `.source/` collection the typecheck needs.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      # oxlint / oxfmt are provided by the Nix dev shell locally; in CI they are
+      # fetched via `pnpm dlx`, PINNED to the same versions the flake ships
+      # (oxlint 1.66.0, oxfmt 0.45.0) so CI's lint/format rules match developers'
+      # exactly and the format gate never flaps on a version skew. Both read their
+      # repo configs (.oxlintrc.json, and .gitignore/.prettierignore for oxfmt).
+      - name: Lint
+        run: pnpm dlx oxlint@1.66.0
+
+      - name: Format check
+        run: pnpm dlx oxfmt@0.45.0 --check .
+
+      # `vite build` prerenders the static SPA into .output/public. The font
+      # package (a local Nix flake input) is absent on the runner; scripts/copy-fonts.mjs
+      # tolerates that and exits 0, so the build still succeeds (code blocks fall
+      # back to the system monospace — ligatures are a local/deploy concern).
+      - name: Build (static SPA -> .output/public)
+        run: pnpm build
+
+      # Source-level internal doc-link check (catches broken /docs links in MDX —
+      # the meaningful gate for this client-rendered SPA) followed by a linkinator
+      # crawl of the built output. See the plan's Decision Log on link-check coverage.
+      - name: Link check
+        run: pnpm run lint:links

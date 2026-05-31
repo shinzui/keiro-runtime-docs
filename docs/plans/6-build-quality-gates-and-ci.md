@@ -57,14 +57,32 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Milestone 0 — Confirm Plan A landed (package.json, flake.nix, vite.config.ts, source.config.ts, content/docs exist).
-- [ ] Milestone 1 — Add link-check dev dependency and the `lint:links` + `check` pnpm scripts to `package.json` (the per-gate scripts already exist).
-- [ ] Milestone 2 — Add the link-check configuration file (`linkinator.config.json`).
-- [ ] Milestone 3 — Confirm each gate runs green locally inside the Nix shell.
-- [ ] Milestone 4 — Confirm the static-SPA build gate (`pnpm build` → `.output/public`) and run the link checker over it.
-- [ ] Milestone 5 — Extend `flake.nix` dev shell (Node 22, pnpm, oxlint, oxfmt already present; add the link-check tool and the pragmatapro font input).
-- [ ] Milestone 6 — Add `.github/workflows/ci.yml` and prove it passes on a sample PR.
-- [ ] Milestone 7 — Write the deferred-hosting decision note and a future-deploy-plan stub.
+- [x] Milestone 0 — Confirmed Plan A landed (package.json, flake.nix, vite.config.ts,
+      source.config.ts, content/docs all present); baseline toolchain (Node 22, pnpm 11, oxlint
+      1.66.0, oxfmt 0.45.0) on PATH. _(2026-05-30)_
+- [x] Milestone 1 — Added the `linkinator` devDependency and the `lint:links` + `check` scripts
+      to `package.json`; lockfile regenerated to include linkinator. _(2026-05-30)_
+- [x] Milestone 2 — Added `linkinator.config.json` (now `{recurse, silent, directoryListing,
+      skip:"^https?://"}` — the working key is `skip`, not `linksToSkip`). _(2026-05-30)_
+- [x] Milestone 3 — Every gate green locally: typecheck, lint (warnings only), format:check,
+      build, link-check. Ran `pnpm run format` once to normalise the whole repo (the gate had
+      never been enforced — 109 files), then scoped oxfmt with a new `.prettierignore`.
+      _(2026-05-30)_
+- [x] Milestone 4 — `pnpm build` emits `.output/public`; link-check runs over it. Discovered the
+      prerendered HTML is client-rendered (zero static `<a>`), so added a **source-level**
+      doc-link checker (`scripts/check-doc-links.mjs`) as the meaningful gate. `pnpm run check`
+      exits 0. _(2026-05-30)_
+- [x] Milestone 5 — Dev shell already complete: Plan B added the `pragmatapro` flake input
+      (real attr `pragmataPro`, exposed as `packages.pragmatapro-fonts`); Node 22/pnpm/oxlint/
+      oxfmt already present; linkinator comes via the npm devDependency. Added a clarifying
+      comment to `flake.nix` rather than a possibly-nonexistent `pkgs.linkinator`. _(2026-05-30)_
+- [x] Milestone 6 — Added `.github/workflows/ci.yml` (pnpm + Node 22 fallback, oxlint/oxfmt
+      pinned via `pnpm dlx` to the Nix versions). The Nix-flake CI variant was rejected: the
+      flake's `pragmatapro` input is a **local filesystem path** that does not exist on a runner.
+      CI-exact commands validated locally. (GitHub PR run not exercised — no remote in this
+      environment.) _(2026-05-30)_
+- [x] Milestone 7 — Deferred-hosting stance documented (host-agnostic static `.output/public`;
+      future-deploy steps enumerated in this plan's Milestone 7). _(2026-05-30)_
 
 
 ## Surprises & Discoveries
@@ -96,6 +114,51 @@ surprised:)
 - `pnpm build` may print warnings about a sparse content tree until Plans D and E populate
   `content/docs/`. A build with only the seed `content/docs/index.mdx` from Plan A must still
   succeed and emit `.output/public/docs/index.html`; record the observed output here.
+
+Observed during implementation (2026-05-30):
+
+- **The format gate had never been enforced — 109 files were unformatted.** `oxfmt --check .`
+  failed on first run. Ran `pnpm run format` once (per Milestone 3) to normalise, then discovered
+  oxfmt formats *everything* by default — including planning docs (`docs/**`), vendored skill
+  files (`agents/**`), the generated+committed `src/routeTree.gen.ts`, and `pnpm-lock.yaml`. Fixed
+  by adding a `.prettierignore` (oxfmt reads it by default) scoping the gate to the docs **site**:
+  `src/`, `content/docs/`, and root config. Critical detail: the planning-docs exclusion must be
+  **anchored** as `/docs/` (leading slash) so it does NOT also exclude `content/docs/` (which IS
+  site content and must be checked). `src/routeTree.gen.ts` is excluded because `vite build`
+  regenerates it unformatted, which would otherwise make the gate flap after every build.
+- **`oxfmt` reformats `.mdx` content** (prose reflow, table alignment, JSX wrapping) but leaves
+  fenced code blocks intact — so Haskell snippets are untouched and the build still compiles. The
+  one-time normalisation touched 68 `.mdx` files.
+- **The prerendered HTML has ZERO static `<a>` links.** This is the load-bearing discovery for
+  the link gate: the TanStack Start SPA renders the navbar, sidebar, and MDX body **client-side**,
+  so `.output/public/**/index.html` are hydration shells with no anchors
+  (`grep -c '<a ' .output/public/docs/kiroku/index.html` → 0). A static HTML crawler therefore
+  finds ~0 links — linkinator over `.output/public` reports `Successfully scanned 0 links`. The
+  plan's assumption that prerendered HTML carries checkable navbar/content links was wrong for
+  this client-rendered SPA. Resolution: added `scripts/check-doc-links.mjs`, a deterministic
+  offline **source-level** internal-link checker over `content/docs/**/*.mdx` (verified it catches
+  a deliberately broken `/docs/...` link, satisfying Validation step 2's intent), and kept
+  linkinator as a build-output crawl that lights up if more routes are prerendered later.
+- **linkinator 6.3.0 quirks.** (1) Its `**` glob returns 0 results even for a normal directory,
+  and breaks entirely on the `.output` dot-directory; only the plain directory-serve form works.
+  (2) Serving a directory starts the crawl at `/`, but the static SPA emits **no root
+  `index.html`** (only `_shell.html`), so a bare crawl reports `[404] /`; adding
+  `directoryListing: true` makes the root resolve and the gate pass. (3) The config key that
+  skips external links is `skip`, not the plan's `linksToSkip`.
+- **pnpm fast-path can desync the lockfile.** After reverting `pnpm-lock.yaml`, `pnpm install`
+  (even `--force`, `--no-frozen-lockfile`) repeatedly said "Already up to date" and refused to
+  re-add `linkinator`, because it trusts the existing `node_modules` virtual-store state. Only a
+  full `rm -rf node_modules pnpm-lock.yaml && pnpm install` regenerated a correct lockfile.
+  Lesson: do not hand-revert the lockfile; let pnpm own it.
+- **Nix-flake CI is non-viable as-is.** `flake.nix` has `inputs.pragmatapro.url =
+  "path:/Users/shinzui/Keikaku/bokuno/fonts"` — a **local filesystem path** absent on a GitHub
+  runner, so `nix develop` cannot evaluate the flake in CI. The pnpm/Node-22 fallback is used
+  instead. The build still works on a runner because `scripts/copy-fonts.mjs` tolerates a missing
+  font package (warns, exits 0; code blocks fall back to system monospace).
+- **CI oxlint/oxfmt are pinned to the Nix versions** (`oxlint@1.66.0`, `oxfmt@0.45.0`) via
+  `pnpm dlx`. Both fetch from npm (verified). Pinning prevents the format gate from flapping on a
+  version skew between a contributor's Nix shell and `@latest` on the runner (e.g. oxfmt 0.45 vs
+  0.52 format differently).
 
 
 ## Decision Log
@@ -177,13 +240,69 @@ Record every decision made while working on the plan.
   `pnpm dlx` (see Milestone 6).
   Date: 2026-05-30
 
+- Decision (implementation): **Shipped the pnpm/Node-22 fallback CI, not the Nix-flake variant.**
+  Rationale: `flake.nix`'s `pragmatapro` input is `path:/Users/shinzui/Keikaku/bokuno/fonts`, a
+  local filesystem path that does not exist on a GitHub runner, so `nix develop` cannot evaluate
+  the flake in CI. The fallback works because `scripts/copy-fonts.mjs` tolerates a missing font
+  package (the build degrades to system monospace, exits 0). oxlint/oxfmt are pinned via
+  `pnpm dlx` to the exact Nix versions (`oxlint@1.66.0`, `oxfmt@0.45.0`) so CI and local agree and
+  the format gate never flaps on a version skew. (A future Nix-CI option would require making the
+  font input remote or optional.)
+  Date: 2026-05-30
+
+- Decision (implementation): **Added a source-level internal-link checker
+  (`scripts/check-doc-links.mjs`) as the primary link gate**, with linkinator kept as a secondary
+  build-output crawl. `lint:links` runs both.
+  Rationale: The site renders content client-side, so the prerendered HTML has zero static `<a>`
+  links and linkinator alone catches nothing (it scans 0 links). The source-level checker scans
+  every `content/docs/**/*.mdx` for internal `/docs/...` and relative links and fails on any that
+  resolve to a non-existent page — which is what actually delivers the plan's goal ("a broken link
+  is caught before it merges") in this architecture, and it caught a real bug class (a wrong
+  relative link from Plan #5). This is an additive enhancement, not a replacement; if more routes
+  are prerendered later, linkinator's coverage grows automatically.
+  Date: 2026-05-30
+
+- Decision (implementation): **Scoped the format gate with a `.prettierignore`** (read by oxfmt
+  by default) to `src/` + `content/docs/` + root config, excluding planning docs (`/docs/`,
+  anchored so `content/docs/` is still checked), vendored tooling (`agents/`), the generated
+  `src/routeTree.gen.ts`, and `pnpm-lock.yaml`.
+  Rationale: `oxfmt --check .` formats the whole repo by default. The generated route tree is
+  regenerated unformatted by every build (would flap the gate); planning docs contain code/mermaid
+  fences oxfmt cannot format stably; the lockfile and vendored skills are not the docs site. The
+  one-time `pnpm run format` normalised 109 site files (kept).
+  Date: 2026-05-30
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Complete (2026-05-30).** A contributor can now run a single command, `pnpm run check`, and get a
+pass/fail across five gates — typecheck, lint, format-check, build, and link-check — and the same
+gates run on GitHub via `.github/workflows/ci.yml` on every pull request and every push to
+`master`. `pnpm run check` exits 0 on the current tree; each gate is real (verified it fails on
+bad input: a type error fails typecheck, a broken `/docs` link fails the doc-link check).
+
+What shipped vs. the original plan:
+- **Five gates, as specified** — but the **link** gate is implemented as a source-level
+  `content/docs/**` internal-link checker (`scripts/check-doc-links.mjs`) *plus* a linkinator
+  crawl, because the client-rendered SPA emits no static links for a crawler to follow (the plan
+  assumed otherwise). This is the change that makes the gate actually catch broken links.
+- **Format gate scoped** via `.prettierignore`; one-time repo normalisation applied (109 files).
+- **CI is the pnpm/Node-22 fallback**, not the Nix-flake variant, because the flake's font input
+  is a local path absent on runners; oxlint/oxfmt are pinned via `pnpm dlx` to the Nix versions.
+- **Hosting deferred**, host-agnostic by construction (static `.output/public`).
+
+Gaps / follow-ups: (1) The GitHub CI run itself was not exercised (no remote configured in this
+environment); the CI-exact commands were validated locally. (2) linkinator coverage is ~0 until
+more routes are prerendered or a JS-rendering crawler is added (future enhancement, as the plan
+notes). (3) A future Nix-CI would need the `pragmatapro` font input made remote/optional.
+
+Lessons: read the *actual* build output before designing a gate around it (the "0 static links"
+discovery reshaped the link gate); let pnpm own the lockfile (manual reverts desync it); pin
+linter/formatter versions across local and CI to stop format gates flapping; scope whole-repo
+formatters with an ignore file before enforcing them.
 
 
 ## Context and Orientation
