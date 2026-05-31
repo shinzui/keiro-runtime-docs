@@ -1,0 +1,142 @@
+---
+title: "OpenTelemetry (kiroku-otel)"
+description: "The kiroku-otel package: the two TraceContext functions, the metadata wire format, and the full catalog of subscription span names and kiroku.* attribute keys."
+---
+
+`kiroku-otel` is a **sister package** to `kiroku-store`. It exists so `kiroku-store` carries no
+`hs-opentelemetry` dependency — you opt in by depending on `kiroku-otel` directly. It provides two
+seams: pure W3C trace-context helpers for the **append/read** path, and a span-emitting handler for
+the **subscription lifecycle**. This page states the full surface; the [how-to](/docs/kiroku/how-to/enable-opentelemetry)
+shows how to wire it, and the [explanation](/docs/kiroku/explanation/tracing-subscriptions)
+covers why the span model looks the way it does.
+
+<Callout type="info">
+  Package `kiroku-otel` (v0.1.0.0), modules `Kiroku.Otel.TraceContext` and
+  `Kiroku.Otel.Subscription`. Assumes you already have an OpenTelemetry `TracerProvider` and
+  exporter configured in your app — this package wires kiroku into them, it does not set up
+  OpenTelemetry itself.
+</Callout>
+
+## `Kiroku.Otel.TraceContext`
+
+Two pure functions move W3C trace context in and out of an event's `metadata` JSONB.
+
+```haskell
+injectTraceContext  :: SpanContext  -> EventData     -> EventData
+extractTraceContext :: RecordedEvent -> Maybe SpanContext
+```
+
+`injectTraceContext` encodes a `SpanContext` as `traceparent` / `tracestate` and **merges** them
+into the event's `metadata` object. Existing keys are preserved; any existing `traceparent` /
+`tracestate` are overwritten (the W3C spec mandates exactly one of each). If `metadata` is absent
+or is a non-object JSON value, it starts from an empty object.
+
+`extractTraceContext` pulls a `SpanContext` back out of a `RecordedEvent`. It returns `Nothing` —
+and **never throws** — when `metadata` is absent, is not an object, lacks `traceparent`, or holds a
+`traceparent` that fails W3C parsing.
+
+```haskell
+import Kiroku.Otel.TraceContext (extractTraceContext)
+
+handle :: RecordedEvent -> IO ()
+handle event =
+  case extractTraceContext event of
+    Just ctx -> withLinkedSpan ctx (process event)
+    Nothing  -> process event
+```
+
+### Wire format
+
+Trace context lives in the event's `metadata` JSONB column as plain W3C trace-context strings:
+
+```json
+{
+  "traceparent": "00-<32-hex traceId>-<16-hex spanId>-<2-hex flags>",
+  "tracestate": "<vendor entries, optional>"
+}
+```
+
+Because it is a plain JSON convention, consumers that do not use `kiroku-otel` can still read it —
+for example the [shibuya adapter](/docs/integrations/shibuya-kiroku-adapter) copies `traceparent`
+into its envelope.
+
+### Applying the helpers via store hooks
+
+You can call the helpers by hand on each event, or apply them automatically with the
+`StoreSettings` hooks:
+
+| Hook          | Type                                        | Path                                                   | Use                                          |
+| ------------- | ------------------------------------------- | ------------------------------------------------------ | -------------------------------------------- |
+| `enrichEvent` | `Maybe (EventData -> IO EventData)`         | append (typed `EventData`, before encode)              | inject the current span into outgoing events |
+| `decodeHook`  | `Maybe (RecordedEvent -> IO RecordedEvent)` | read & subscription (`RecordedEvent` before surfacing) | derive metadata, decrypt, redact             |
+
+```haskell
+enrichEvent = Just (pure . injectTraceContext spanCtx)
+```
+
+## `Kiroku.Otel.Subscription`
+
+Turns a subscription worker's lifecycle into OpenTelemetry spans. Build the handler from a
+`Tracer` and install it as the connection's `eventHandler :: Maybe (KirokuEvent -> IO ())`.
+
+```haskell
+subscriptionTraceHandler :: Tracer -> IO (KirokuEvent -> IO ())
+```
+
+The returned handler is thread-safe — a consumer group drives it from one thread per member, and it
+keeps its open-span bookkeeping in an internal `MVar` keyed by `(subscription name, member)`.
+
+<Callout type="warn">
+  Configure the `Tracer`'s `TracerProvider` with a **batch** span processor (the SDK default), not a
+  simple/synchronous one. The `eventHandler` runs inline on the worker's emit-site thread; a
+  synchronous exporter would stall event processing on network I/O.
+</Callout>
+
+### Span catalog
+
+Every span is a root span (no parent context). It is exported only when it **ends** — see the
+[span model explanation](/docs/kiroku/explanation/tracing-subscriptions) for why these are short
+spans rather than one lifetime span. The module exports each name as a `Text` constant.
+
+| Constant           | Span name                          | Kind       | Opens on / ends on                                                                                                               |
+| ------------------ | ---------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `spanCatchup`      | `kiroku.subscription.catchup`      | episode    | `Started` → `CaughtUp`                                                                                                           |
+| `spanFetch`        | `kiroku.subscription.fetch`        | per-batch  | each live `Fetched` (opens and ends immediately; carries `kiroku.batch.rows`)                                                    |
+| `spanPaused`       | `kiroku.subscription.paused`       | episode    | `Paused` → `Resumed`                                                                                                             |
+| `spanReconnecting` | `kiroku.subscription.reconnecting` | episode    | first `Reconnecting` → next `CaughtUp` (later attempts add a `reconnect.attempt` span event)                                     |
+| `spanRetrying`     | `kiroku.subscription.retrying`     | episode    | first `Retrying` for a poison event's global position → `DeadLettered` (status `Error`) or the worker moving on (status `Ok`)    |
+| `spanDeadLetter`   | `kiroku.subscription.dead_letter`  | standalone | an immediate dead-letter with no open retry episode                                                                              |
+| `spanDbError`      | `kiroku.subscription.db_error`     | standalone | a DB error with no episode span open (when one _is_ open, the error is recorded as a `kiroku.db_error` span event on it instead) |
+
+### Attribute keys
+
+Each is exported as a `Text` constant. `kiroku.subscription.name` is set on every span; group keys
+appear only for consumer-group members.
+
+| Constant               | Attribute key                       | On                                                   |
+| ---------------------- | ----------------------------------- | ---------------------------------------------------- |
+| `attrSubName`          | `kiroku.subscription.name`          | every span                                           |
+| `attrState`            | `kiroku.subscription.state`         | episode/fetch spans (`catchup`, `live`, `paused`, …) |
+| `attrAttempt`          | `kiroku.subscription.attempt`       | reconnecting / retrying spans                        |
+| `attrStopReason`       | `kiroku.subscription.stop_reason`   | the primary open episode when the worker stops       |
+| `attrCheckpoint`       | `kiroku.checkpoint.global_position` | catch-up, pause, stop                                |
+| `attrGroupMember`      | `kiroku.consumer_group.member`      | group members                                        |
+| `attrGroupSize`        | `kiroku.consumer_group.size`        | group members                                        |
+| `attrBatchRows`        | `kiroku.batch.rows`                 | fetch spans                                          |
+| `attrEventPos`         | `kiroku.event.global_position`      | retrying / immediate dead-letter spans               |
+| `attrDeadLetterReason` | `kiroku.dead_letter.reason`         | dead-letter spans/events                             |
+| `attrDbPhase`          | `kiroku.db.phase`                   | db-error spans/events                                |
+
+<Callout type="info">
+  The `KirokuEvent` constructor set is **additive**: a future subscription event surfaces here as a
+  `-Wincomplete-patterns` warning rather than a silently untraced transition. Non-subscription
+  operational events (notifier reconnects, publisher pool errors, hard-delete) are intentionally not
+  traced by this handler.
+</Callout>
+
+## Related
+
+- [Enable OpenTelemetry](/docs/kiroku/how-to/enable-opentelemetry) — the task-oriented wiring recipe.
+- [Tracing subscriptions](/docs/kiroku/explanation/tracing-subscriptions) — why the span model is what it is.
+- [Tracing the subscription FSM](/docs/kiroku/walkthrough/06-tracing-the-subscription) — a code walkthrough of the handler that emits these spans.
+- [Causation and correlation](/docs/kiroku/explanation/causation-and-correlation) — the metadata these traces ride alongside.

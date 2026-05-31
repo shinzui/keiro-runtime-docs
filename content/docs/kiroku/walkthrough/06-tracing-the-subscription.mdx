@@ -1,0 +1,292 @@
+---
+title: "06 — Tracing the subscription FSM"
+description: "Reading Kiroku.Otel.Subscription: how the trace handler turns the KirokuEvent stream into spans, and the MVar that tracks open spans per worker."
+---
+
+<Callout type="info">
+  Part of an ordered walkthrough. Previous: [05 — Consumer groups and the policy
+  contract](/docs/kiroku/walkthrough/05-consumer-groups-and-policy). This part reads a _different
+  package_ — `kiroku-otel`, the optional OpenTelemetry sister to `kiroku-store`.
+</Callout>
+
+## What this part covers
+
+`kiroku-otel/src/Kiroku/Otel/Subscription.hs` — the handler that turns a subscription worker's
+lifecycle into OpenTelemetry spans. It is the natural sequel to the subscription machinery: the
+[worker](/docs/kiroku/walkthrough/02-the-worker-driver) emits a structured `KirokuEvent` on every
+state transition, and this module is a **pure read-side consumer** of that stream. It adds no
+behaviour to the worker, changes no core type, and adds no `hs-opentelemetry` dependency to
+`kiroku-store`. If you are contributing here, this is the file to understand.
+
+For the API surface (span names, attribute keys) see the
+[reference](/docs/kiroku/reference/opentelemetry); for _why_ the span shapes are what they are, the
+[explanation](/docs/kiroku/explanation/tracing-subscriptions). This part is about the **code**.
+
+## The seam it plugs into
+
+Everything starts from one field on the connection settings:
+
+```haskell
+-- kiroku-store/src/Kiroku/Store/Connection.hs
+eventHandler :: !(Maybe (KirokuEvent -> IO ()))
+```
+
+The worker calls this callback **synchronously on its own thread** for every transition (see
+[`Observability.hs`](/docs/kiroku/explanation/subscriptions-and-consumer-groups) for the full
+`KirokuEvent` sum). `subscriptionTraceHandler` is a factory that produces exactly such a callback:
+
+```haskell
+-- kiroku-otel/src/Kiroku/Otel/Subscription.hs
+subscriptionTraceHandler :: Tracer -> IO (KirokuEvent -> IO ())
+subscriptionTraceHandler tracer = do
+  cell <- newMVar Map.empty
+  pure (onEvent tracer cell)
+```
+
+Two things to notice already. It is `IO (KirokuEvent -> IO ())`, not a pure function — because it
+allocates the `cell`, the `MVar` that holds all open-span state. And the returned closure captures
+both the `Tracer` and that `cell`, so each installed handler owns its own bookkeeping.
+
+## Why an MVar at all
+
+The handler is called from more than one thread. A **consumer group runs one worker per member**,
+each on its own thread ([part 05](/docs/kiroku/walkthrough/05-consumer-groups-and-policy)), and they
+all share the one handler closure. Span A's "open" and span A's "close" arrive as two separate calls
+that must find the same in-flight `Span` object — so the handler needs mutable state that survives
+across calls and is safe under concurrency.
+
+The state is a `Map` from a per-worker key to that worker's open spans:
+
+```haskell
+-- A worker is identified by its subscription name plus group member (if any).
+type SpanKey = (Text, Maybe Int32)
+
+data OpenState = OpenState
+  { osCatchup   :: !(Maybe Span)      -- catch-up episode (opened on Started)
+  , osReconnect :: !(Maybe Span)      -- reconnect episode (opened on first Reconnecting)
+  , osPause     :: !(Maybe Span)      -- backpressure pause episode (opened on Paused)
+  , osRetries   :: !(Map Int64 Span)  -- per-poison-event retries, keyed by global position
+  }
+```
+
+The `MVar` wraps `Map SpanKey OpenState`, so two members never collide: each `(name, member)` has
+its own `OpenState`. A non-grouped worker keys on `(name, Nothing)`. Within one worker the four
+fields track the four kinds of episode that can be open _at the same time_ — a worker can be
+retrying a poison event while also inside a reconnect episode, so they cannot share one slot.
+
+<Callout type="info">
+  Why `MVar` and not `TVar` or an `IORef`? The update is a read-modify-write that performs `IO` (it
+  opens and ends spans) while holding the lock, and it must be serialized per handler. `MVar` +
+  `modifyMVar_` gives exactly that: a mutually-exclusive critical section that can run `IO`. STM
+  transactions cannot run arbitrary `IO`, and an `IORef` `atomicModifyIORef'` cannot either.
+</Callout>
+
+## The two state-cell combinators
+
+Every branch of the dispatch goes through one of two helpers, so the locking lives in exactly one
+place:
+
+```haskell
+-- Run a state-update against the OpenState for a key, write the result back.
+withKey :: MVar (Map SpanKey OpenState) -> SpanKey -> (OpenState -> IO OpenState) -> IO ()
+withKey cell key f = modifyMVar_ cell $ \m -> do
+  st' <- f (Map.findWithDefault emptyOpenState key m)
+  pure $! Map.insert key st' m
+
+-- Run a finalizing action against a key's OpenState, then drop the key.
+dropKey :: MVar (Map SpanKey OpenState) -> SpanKey -> (OpenState -> IO ()) -> IO ()
+dropKey cell key f = modifyMVar_ cell $ \m -> do
+  f (Map.findWithDefault emptyOpenState key m)
+  pure $! Map.delete key m
+```
+
+`withKey` is the workhorse: look up the worker's `OpenState` (defaulting to `emptyOpenState` for the
+first event), run an `IO` action that opens/closes spans and returns the next `OpenState`, store it
+back. `dropKey` is the same shape but **removes** the key afterward — used only for
+`KirokuEventSubscriptionStopped`, so a stopped worker leaves no entry behind. The `$!` forces the
+new map so the `MVar` never holds a thunk chain across thousands of events.
+
+Both run the user-supplied function _inside_ `modifyMVar_`, i.e. while holding the lock. That is
+deliberate and safe here because span open/close is cheap, in-memory work — see the threading note
+below.
+
+## The dispatch, event by event
+
+`onEvent` is one big `\case` over the `KirokuEvent` constructors. The pattern is always the same:
+pick the key with `keyOf`, then `withKey` to mutate that worker's open spans. A few representative
+branches:
+
+```haskell
+onEvent :: Tracer -> MVar (Map SpanKey OpenState) -> KirokuEvent -> IO ()
+onEvent tracer cell = \case
+  KirokuEventSubscriptionStarted name pos grp ->
+    withKey cell (keyOf name grp) $ \st -> do
+      mapM_ closeSpan (osCatchup st)              -- defensively close a leftover catch-up span
+      sp <- openSpan tracer spanCatchup $
+              baseAttrs name grp
+                ++ [(attrState, toAttribute ("catchup" :: Text)), (attrCheckpoint, posAttr pos)]
+      pure st { osCatchup = Just sp }
+
+  KirokuEventSubscriptionCaughtUp name pos grp ->
+    withKey cell (keyOf name grp) $ \st -> do
+      let endAttrs = [(attrCheckpoint, posAttr pos)]
+      mapM_ (`closeSpanWith` endAttrs) (osCatchup st)                       -- close catch-up...
+      mapM_ (\sp -> setStatus sp Ok >> closeSpanWith sp endAttrs) (osReconnect st)  -- ...or reconnect
+      mapM_ (\sp -> setStatus sp Ok >> closeSpan sp) (Map.elems (osRetries st))     -- retries succeeded
+      pure st { osCatchup = Nothing, osReconnect = Nothing, osRetries = Map.empty }
+```
+
+`Started` **opens** the catch-up episode and parks the live `Span` in `osCatchup`. `CaughtUp` is the
+matching **close**: a single caught-up signal resolves whichever of catch-up / reconnect was open,
+and — because the worker has demonstrably moved past every event — marks any open retry spans `Ok`
+and clears them. Note the asymmetry: opens write one field; closes often resolve several, because
+reaching `Live` is good news for everything that was pending.
+
+The retry branch is the one place a `Map` rather than a `Maybe` is needed, because a worker can have
+several poison events in flight, each its own episode keyed by global position:
+
+```haskell
+  KirokuEventSubscriptionRetrying name pos attempt grp ->
+    withKey cell (keyOf name grp) $ \st -> do
+      let GlobalPosition p = pos
+      case Map.lookup p (osRetries st) of
+        Nothing -> do                                   -- first attempt: open a per-position span
+          sp <- openSpan tracer spanRetrying $
+                  baseAttrs name grp
+                    ++ [ (attrState, toAttribute ("retrying" :: Text))
+                       , (attrEventPos, toAttribute p), (attrAttempt, intAttr attempt) ]
+          pure st { osRetries = Map.insert p sp (osRetries st) }
+        Just sp -> do                                   -- later attempt: annotate the open span
+          spanEvent sp "retry.attempt" [(attrAttempt, intAttr attempt)]
+          setAttrs sp [(attrAttempt, intAttr attempt)]
+          pure st
+```
+
+This "first occurrence opens a span, subsequent occurrences add a span _event_" idiom recurs:
+`Reconnecting` does the same with `osReconnect` and a `reconnect.attempt` event. It keeps one span
+per logical episode instead of one per retry tick.
+
+### Episode precedence and DB errors
+
+`KirokuEventSubscriptionDbError` does not always open a span. If an episode is already open it
+annotates that instead, choosing the most relevant one:
+
+```haskell
+primaryEpisode :: OpenState -> Maybe Span
+primaryEpisode st = osReconnect st <|> osCatchup st <|> osPause st
+```
+
+The `<|>` on `Maybe` gives a fixed precedence — reconnect, then catch-up, then pause — so a DB error
+during a reconnect attaches to the reconnect span (the thing actually going wrong) rather than
+spawning a competing `db_error` span. Only when _no_ episode is open does it emit a standalone
+`spanDbError`. The same `primaryEpisode` is where `Stopped` records its stop reason before tearing
+everything down.
+
+### Stop: the teardown branch
+
+```haskell
+  KirokuEventSubscriptionStopped name pos reason grp ->
+    dropKey cell (keyOf name grp) $ \st -> do
+      let stopAttrs = [ (attrStopReason, toAttribute (T.pack (show reason)))
+                      , (attrCheckpoint, posAttr pos) ]
+      mapM_ (`setAttrs` stopAttrs) (primaryEpisode st)   -- annotate the most relevant open episode
+      mapM_ closeSpan (osCatchup st)                     -- then end EVERY open span so none leaks
+      mapM_ closeSpan (osReconnect st)
+      mapM_ closeSpan (osPause st)
+      mapM_ closeSpan (Map.elems (osRetries st))
+```
+
+This is the only `dropKey` branch. It records the stop reason on the primary episode, then closes
+**every** span the worker had open and removes its `OpenState` from the map. A worker that crashes
+mid-episode therefore still flushes its spans (with the stop reason recorded) rather than leaking
+them — directly serving the export-on-end constraint from the
+[explanation](/docs/kiroku/explanation/tracing-subscriptions).
+
+## The span helpers, and one easy-to-miss subtlety
+
+The low-level helpers are thin wrappers over `OpenTelemetry.Trace.Core`. All spans are **root**
+spans (`Context.empty`):
+
+```haskell
+openSpan :: Tracer -> Text -> [(Text, Attribute)] -> IO Span
+openSpan tracer name attrs = do
+  sp <- createSpan tracer Context.empty name defaultSpanArguments
+  setAttrs sp attrs
+  pure sp
+
+closeSpan :: Span -> IO ()
+closeSpan sp = endSpan sp Nothing       -- end at current time
+```
+
+The subtlety is in `setAttrs`, and it is the kind of thing a future contributor will trip over:
+
+```haskell
+-- Set attributes on a span, OVERRIDING any existing value for the same key.
+setAttrs :: Span -> [(Text, Attribute)] -> IO ()
+setAttrs sp = mapM_ (\(k, v) -> addAttribute sp k v)
+```
+
+It uses the singular `addAttribute` (an insert/override) in a loop, **not** the bulk
+`addAttributes`. The bulk version does a left-biased union that _keeps_ a key's existing value, so
+refreshing a checkpoint position or attempt counter would silently no-op. If you batch these for
+"efficiency," you reintroduce that bug.
+
+## Threading: why holding the lock during `IO` is fine
+
+The `eventHandler` runs synchronously on the worker's emit-site thread, and a consumer group drives
+the shared handler from one thread per member. Two facts make the lock-held-during-`IO` design safe:
+
+1. Opening and ending a span is cheap, in-memory work. The contended section is microseconds.
+2. The expensive part — **export** — does not happen in `endSpan`. It happens later, on a background
+   thread, _if_ the `TracerProvider` is configured with a batch span processor.
+
+That second point is the load-bearing requirement for the whole module:
+
+<Callout type="warn">
+  Configure the `Tracer`'s `TracerProvider` with a **batch** span processor (the SDK default). With
+  a simple/synchronous processor, `endSpan` would block on network I/O **while holding the MVar and
+  the worker's thread** — coupling event-processing throughput to your tracing backend's latency.
+</Callout>
+
+## Contributing: adding a newly-traced event
+
+The `KirokuEvent` constructor set is **additive** — new events are added, existing ones are never
+changed. `onEvent` is a total `\case`, so a new constructor surfaces as a `-Wincomplete-patterns`
+warning at compile time rather than a silently untraced transition. To trace a new event:
+
+1. Decide its span shape (episode / per-batch / standalone — see the
+   [explanation](/docs/kiroku/explanation/tracing-subscriptions)).
+2. If it is an episode, add a field to `OpenState` (and `emptyOpenState`) to hold the open `Span`;
+   if it pairs open/close like retries, key it in a `Map`.
+3. Add the `\case` branch: `withKey` (or `dropKey` for a terminal event), open or close the span,
+   set attributes via `setAttrs`.
+4. Export any new span-name / attribute-key constant at the bottom of the module and document it in
+   the [reference](/docs/kiroku/reference/opentelemetry).
+
+The non-subscription operational events (`KirokuEventNotifierReconnecting`, `...Reconnected`,
+`KirokuEventPublisherPoolError`, `KirokuEventHardDeleteIssued`) are intentionally matched and
+ignored here — they are not subscription-FSM transitions. Leave them explicit so the
+incomplete-patterns safety net keeps working.
+
+## A note on the append side
+
+This part covered the subscription handler. The other module, `Kiroku.Otel.TraceContext`, is the
+producer/consumer trace-propagation seam (`injectTraceContext` / `extractTraceContext`). It is
+worth one contributor caveat: `injectTraceContext` is marked `{-# NOINLINE #-}` and uses
+`unsafePerformIO` to call the propagator's `IO`-typed `encodeSpanContext` from a pure interface. That
+is sound because the encode is observably pure on the frozen span returned by `wrapSpanContext` (no
+shared mutable state, no exceptions) — but it is exactly the sort of thing not to "tidy up" without
+understanding why it is there.
+
+## The handler, in one sentence
+
+`subscriptionTraceHandler` is a pure read-side consumer of the worker's `KirokuEvent` stream that
+holds per-worker open-span state in one `MVar`-guarded `Map`, opening short spans on state entry and
+ending them promptly on the matching exit — so the trace timeline shows real episode durations and
+nothing leaks when a worker stops.
+
+## Next
+
+That closes the subscription walkthrough — pure FSM, impure driver, lifecycle handle, the shibuya
+adapter, consumer groups, and now telemetry. For the append side, read the separate
+[Write-Path Walkthrough](/docs/kiroku/write-path).
