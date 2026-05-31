@@ -1,0 +1,121 @@
+---
+title: "05 — Consumer groups and the policy contract"
+description: "Reading kirokuConsumerGroupProcessors: turning a size-N kiroku group into N correctly-policed shibuya processors."
+---
+
+<Callout type="info">
+  Part of an ordered walkthrough. Previous: [04 — The shibuya
+  adapter](/docs/kiroku/walkthrough/04-the-shibuya-adapter).
+</Callout>
+
+## What this part covers
+
+The consumer-group half of `shibuya-kiroku-adapter/src/Shibuya/Adapter/Kiroku.hs`:
+`kirokuConsumerGroupProcessors`, the config that drives it, and the small but load-bearing
+`consumerGroupPolicy` function. The theme: a kiroku consumer group has an ordering contract, and
+the adapter refuses to build processors that would violate it — _before_ opening any subscription.
+
+## The whole group, described once
+
+[Part 04](/docs/kiroku/walkthrough/04-the-shibuya-adapter)'s `KirokuAdapterConfig` describes **one
+member**. `KirokuConsumerGroupConfig` describes the **entire** group:
+
+```haskell
+-- src/Shibuya/Adapter/Kiroku.hs (trimmed)
+data KirokuConsumerGroupConfig = KirokuConsumerGroupConfig
+  { subscriptionName  :: !SubscriptionName   -- each member checkpoints under (name, member)
+  , subscriptionTarget :: !SubscriptionTarget -- same source for every member
+  , groupSize         :: !Int32              -- N members; >= 1
+  , batchSize         :: !Int32
+  , bufferSize        :: !Natural
+  , memberConcurrency :: !Concurrency        -- must be Serial (validated)
+  , eventTypeFilter   :: !EventTypeFilter
+  , selector          :: !(Maybe (RecordedEvent -> Bool))
+  }
+```
+
+The key field is `memberConcurrency`. kiroku delivers **each member a single, strictly
+global-position-ordered stream** (its hash-partitioned slice). So within a member, only **serial**
+processing honestly preserves order — processing a member's events concurrently would reorder them.
+The _group as a whole_ is parallel (members run independently), but each member is serial. That two-
+level shape is shibuya's `(PartitionedInOrder, Serial)` policy.
+
+## The policy gate
+
+Rather than invent its own legality check, the adapter reuses shibuya's `validatePolicy`:
+
+```haskell
+-- src/Shibuya/Adapter/Kiroku.hs
+consumerGroupPolicy :: Concurrency -> Either PolicyError (Ordering, Concurrency)
+consumerGroupPolicy conc = do
+  -- A member delivers one strictly-ordered stream; only Serial is honest.
+  validatePolicy StrictInOrder conc   -- rejects Ahead/Async with a PolicyError
+  pure (PartitionedInOrder, conc)
+```
+
+Read what this buys: if a caller asks for `Ahead` or `Async` per member, `validatePolicy
+StrictInOrder` returns `Left (InvalidPolicyCombo ...)` and the whole thing short-circuits. Only
+`Serial` yields `Right (PartitionedInOrder, Serial)`. And because the returned pair _also_ passes
+`validatePolicy`, shibuya's `runApp` will not reject it downstream either. The adapter never
+invents a rule kiroku and shibuya don't already agree on.
+
+## One call, N processors
+
+`kirokuConsumerGroupProcessors` is the boilerplate-eliminator. It validates the policy **once, up
+front**, then maps each member index `[0 .. N-1]` to a fully-wired processor:
+
+```haskell
+-- src/Shibuya/Adapter/Kiroku.hs (trimmed)
+kirokuConsumerGroupProcessors
+  :: (IOE :> es) => KirokuStore -> KirokuConsumerGroupConfig -> Handler es RecordedEvent
+  -> Eff es (Either PolicyError [(ProcessorId, QueueProcessor es)])
+kirokuConsumerGroupProcessors store cfg handler =
+  case consumerGroupPolicy (memberConcurrency cfg) of
+    Left e -> pure (Left e)                       -- bad policy: NO subscription is opened
+    Right (ordering, conc) -> do
+      processors <- mapM
+        (\m -> do
+            adapter <- kirokuAdapter store KirokuAdapterConfig
+                         { consumerGroup = Just (ConsumerGroup { member = m, size = n }), ... }
+            let pid = ProcessorId (name <> "-member-" <> T.pack (show m))
+            -- Built directly (not via mkProcessor, which hardcodes Unordered/Serial)
+            -- so the group policy is pinned.
+            pure (pid, QueueProcessor adapter handler ordering conc))
+        [0 .. n - 1]
+      pure (Right processors)
+```
+
+Three things to notice:
+
+1. **Fail before opening anything.** The `Left e` branch returns _before_ the `mapM`, so a bad
+   `memberConcurrency` never opens a kiroku subscription or a database connection. Validation is
+   total and cheap; resource acquisition only happens on the `Right` path.
+2. **Readable, collision-free ids.** Each processor's `ProcessorId` is `"<name>-member-<m>"`, so
+   member identity is legible in logs and two members can never collide on the same id.
+3. **The policy is pinned by hand.** The processor is built with `QueueProcessor adapter handler
+ordering conc` rather than the convenience `mkProcessor` — because `mkProcessor` hardcodes
+   `Unordered/Serial`, which would _drop the partitioned-ordering guarantee_. Building the record
+   directly is what pins `(PartitionedInOrder, Serial)`.
+
+## How a group stays correct
+
+Put the pieces together and the correctness argument is short:
+
+- **kiroku** assigns each originating stream to exactly one member by a hash computed in
+  PostgreSQL, so a stream's events always reach the same member, in `globalPosition` order
+  ([consumer groups, explained](/docs/kiroku/explanation/subscriptions-and-consumer-groups)).
+- **the policy gate** forces each member to process its slice `Serial`ly, so that per-member order
+  survives.
+- **shibuya** runs the `N` members in parallel under one supervised app.
+
+The result is the property you actually want from a partitioned projection: **order within a
+stream, parallelism across streams**, with kiroku still checkpointing each member independently
+under `(subscriptionName, member)` so any member can crash and resume on its own.
+
+## The whole adapter, in one sentence
+
+The shibuya adapter wraps kiroku's push subscription in an **ack-coupled** stream
+([04](/docs/kiroku/walkthrough/04-the-shibuya-adapter)) so shibuya's `AckDecision` drives kiroku's
+per-event checkpoint, and presents a consumer group as `N` processors pinned to
+`(PartitionedInOrder, Serial)` — validated before a single subscription opens — so partitioned
+ordering is guaranteed by construction.

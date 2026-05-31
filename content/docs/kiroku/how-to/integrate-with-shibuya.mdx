@@ -4,56 +4,122 @@ description: "Bridge a kiroku subscription into shibuya's queue-processing runti
 ---
 
 You want to process kiroku events through **shibuya**, the keiro family's Broadway-style queue
-runtime — getting batching, backpressure, and rate limiting — while kiroku still owns durable
-checkpointing. The `shibuya-kiroku-adapter` package bridges the two.
+runtime — getting supervised multi-subscription processing, failure isolation, per-subscription
+metrics, and coordinated graceful shutdown — while kiroku still owns durable checkpointing. The
+`shibuya-kiroku-adapter` package bridges the two: it wraps kiroku's **push-based** subscriptions
+into shibuya's **pull-based** `Adapter` interface.
 
 <Callout type="info">
   Assumes you know shibuya's `Adapter` / `QueueProcessor` model and have a configured kiroku store.
-  This guide covers the kiroku side of the bridge.
+  This guide covers the kiroku side of the bridge. For a single in-process subscription, the native
+  [subscription API](/docs/kiroku/tutorials/getting-started) is simpler — reach for the adapter when
+  you already run shibuya processors or want several subscriptions supervised together.
 </Callout>
 
 ## Goal
 
-A kiroku subscription (or consumer group) presented to shibuya as an `Adapter`, where each event's
-processing outcome drives kiroku's checkpoint.
+A kiroku subscription (or consumer group) presented to shibuya as an `Adapter`, where each
+event's processing outcome (`AckDecision`) drives kiroku's checkpoint.
 
 ## Steps
 
-1. **Build an adapter** from a store and a config. The adapter starts a kiroku subscription,
-   bridges it through a bounded `TBQueue` via the **ack-coupled** stream, and lifts it into
-   shibuya's effectful stream:
+1. **Build the adapter.** `defaultKirokuAdapterConfig` is a **function** of the subscription name
+   and target; override individual fields with record-update syntax. `kirokuAdapter` then starts a
+   kiroku subscription, bridges it through a bounded `TBQueue` via the **ack-coupled** stream, and
+   lifts it into shibuya's effectful stream:
 
    ```haskell
-   import Shibuya.Adapter.Kiroku (kirokuAdapter, defaultKirokuAdapterConfig)
+   {-# LANGUAGE OverloadedStrings #-}
+   import Effectful (runEff)
+   import Kiroku.Store (withStore, defaultConnectionSettings)
+   import Shibuya.Adapter.Kiroku
+   import Shibuya.App
+   import Shibuya.Core.Ack (AckDecision (..))
+   import Shibuya.Telemetry.Effect (runTracingNoop)
 
-   buildAdapter :: (IOE :> es) => KirokuStore -> Eff es (Adapter es RecordedEvent)
-   buildAdapter store = kirokuAdapter store defaultKirokuAdapterConfig
+   main :: IO ()
+   main = withStore (defaultConnectionSettings "postgresql://localhost/app") $ \store ->
+     runEff $ runTracingNoop $ do
+       adapter <- kirokuAdapter store
+         (defaultKirokuAdapterConfig (SubscriptionName "my-projection") AllStreams)
+
+       let handler ingested = do
+             -- ingested.envelope.payload :: RecordedEvent
+             pure AckOk
+
+       Right appHandle <-
+         runApp IgnoreFailures 100
+           [(ProcessorId "my-projection", mkProcessor adapter handler)]
+       waitApp appHandle
    ```
 
-2. **Let the ack decision drive checkpointing.** Your shibuya handler returns an `AckDecision`,
-   and the adapter translates it into kiroku's per-event disposition:
+   `SubscriptionName`, `SubscriptionTarget`, `ConsumerGroup`, and `EventTypeFilter` are
+   re-exported from `Shibuya.Adapter.Kiroku`, so you need no separate `kiroku-store` import for them.
 
-   | shibuya `AckDecision`  | kiroku effect                                                    |
-   | ---------------------- | ---------------------------------------------------------------- |
-   | `AckOk`                | advance the checkpoint past this event                           |
-   | `AckRetry delay`       | redeliver this event after `delay` (bounded by the retry policy) |
-   | `AckDeadLetter reason` | record in `kiroku.dead_letters` and advance past it              |
-   | `AckHalt`              | stop the subscription                                            |
+2. **Configure as needed.** The fields of `KirokuAdapterConfig`:
 
-3. **For consumer groups**, turn one `KirokuConsumerGroupConfig` into N named `QueueProcessor`s
-   with `kirokuConsumerGroupProcessors` (starting from `defaultConsumerGroupConfig`); each member
-   is pinned to shibuya's `(PartitionedInOrder, Serial)` policy so per-stream order is preserved
-   across the group.
+   | Field                                       | Default         | Meaning                                                                                        |
+   | ------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------- |
+   | `subscriptionName :: SubscriptionName`      | (required)      | Unique identifier — the checkpoint key in the `subscriptions` table.                           |
+   | `subscriptionTarget :: SubscriptionTarget`  | (required)      | `AllStreams` or `Category categoryName`.                                                       |
+   | `batchSize :: Int32`                        | `100`           | Events per database fetch during catch-up.                                                     |
+   | `bufferSize :: Natural`                     | `256`           | `TBQueue` capacity — the backpressure threshold.                                               |
+   | `consumerGroup :: Maybe ConsumerGroup`      | `Nothing`       | `Just (ConsumerGroup {member, size})` makes this adapter one member of a group.                |
+   | `eventTypeFilter :: EventTypeFilter`        | `AllEventTypes` | Deliver only chosen event types (worker-side; checkpoint still advances past filtered events). |
+   | `selector :: Maybe (RecordedEvent -> Bool)` | `Nothing`       | Opaque per-event predicate, AND-composed with `eventTypeFilter`.                               |
+
+3. **Let the ack decision drive checkpointing.** Because delivery is **ack-coupled**, the kiroku
+   worker blocks on each event until your handler finalizes its `AckDecision`, which the adapter
+   translates into a kiroku `SubscriptionResult`:
+
+   | shibuya `AckDecision`  | kiroku effect                                                                                                           |
+   | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+   | `AckOk`                | reply `Continue` — checkpoint past the event                                                                            |
+   | `AckRetry delay`       | reply `Retry delay` — redeliver the same event after `delay`, bounded by the retry policy (default 5), then dead-letter |
+   | `AckDeadLetter reason` | reply `DeadLetter` — record in `kiroku.dead_letters`, advance past it                                                   |
+   | `AckHalt`              | cancel the subscription (no checkpoint advance, so the event replays on restart)                                        |
+
+   The blocking-per-event coupling is also your **backpressure**: a slow handler throttles
+   database polling. The envelope's `attempt` (a zero-based redelivery counter) lets a handler
+   observe how many times kiroku has redelivered an event.
+
+4. **For consumer groups**, present a whole size-`N` group as one `PartitionedInOrder` unit with
+   `kirokuConsumerGroupProcessors` — one call yields `N` ready-to-run processors (ids
+   `"<name>-member-<m>"`), each pinned to `(PartitionedInOrder, Serial)`, with no manual
+   `[0..N-1]` wiring:
+
+   ```haskell
+   main = withStore settings $ \store ->
+     runEff $ runTracingNoop $ do
+       let cfg = defaultConsumerGroupConfig
+                   (SubscriptionName "orders-projection")
+                   (Category (CategoryName "orders"))
+                   4   -- group size
+       Right processors <- kirokuConsumerGroupProcessors store cfg handler
+       Right appHandle   <- runApp IgnoreFailures 100 processors
+       waitApp appHandle
+     where
+       handler ingested = pure AckOk
+   ```
+
+   Each originating stream hashes to exactly one member (in PostgreSQL), so same-stream events stay
+   ordered while distinct streams run in parallel. To run members across **separate processes**
+   instead, give each process one `kirokuAdapter` with its own `member` index and the same
+   `subscriptionName`; kiroku's per-member checkpoint (keyed by `(subscriptionName, member)`) lets
+   each resume independently. Exactly one live process must own each member index.
 
 ## Verify it worked
 
-Run the shibuya pipeline against a store with pending events. Events flow through the pipeline;
-returning `AckOk` advances the kiroku checkpoint (restarting resumes after the last acked event),
-and returning `AckRetry`/`AckDeadLetter` exercises kiroku's retry and dead-letter paths
-(inspect `kiroku.dead_letters`).
+Run the shibuya app against a store with pending events. Events flow through the processors;
+returning `AckOk` advances the kiroku checkpoint (restart resumes after the last acked event), and
+returning `AckRetry`/`AckDeadLetter` exercises kiroku's retry and dead-letter paths (inspect
+`kiroku.dead_letters`). For a consumer group, confirm each member's id appears as
+`"<name>-member-<m>"` and that a given stream's events always land on the same member.
 
 ## Related
 
+- [The shibuya adapter, walked through](/docs/kiroku/walkthrough/04-the-shibuya-adapter) — how the
+  bridge is built, from the source.
 - [Subscriptions and consumer groups](/docs/kiroku/explanation/subscriptions-and-consumer-groups)
   — the semantics the adapter preserves.
 - [The integrations section](/docs/integrations/shibuya-kiroku-adapter) for the cross-library view.
