@@ -25,12 +25,21 @@ What you hand to `appendToStream`.
 
 <TypeTable
   type={{
-    eventId:       { type: 'Maybe EventId',     description: 'Nothing => store generates a UUIDv7; Just => idempotent-retry key' },
-    eventType:     { type: 'EventType',         description: 'Free-form discriminator, e.g. "OrderPlaced"' },
-    payload:       { type: 'Aeson.Value',       description: 'JSONB body (DB column `data`)' },
-    metadata:      { type: 'Maybe Aeson.Value', description: 'Optional JSONB metadata (trace context, actor, …)' },
-    causationId:   { type: 'Maybe UUID',        description: 'Immediate-cause event id' },
-    correlationId: { type: 'Maybe UUID',        description: 'Saga / flow id shared across the whole flow' },
+    eventId: {
+      type: "Maybe EventId",
+      description: "Nothing => store generates a UUIDv7; Just => idempotent-retry key",
+    },
+    eventType: { type: "EventType", description: 'Free-form discriminator, e.g. "OrderPlaced"' },
+    payload: { type: "Aeson.Value", description: "JSONB body (DB column `data`)" },
+    metadata: {
+      type: "Maybe Aeson.Value",
+      description: "Optional JSONB metadata (trace context, actor, …)",
+    },
+    causationId: { type: "Maybe UUID", description: "Immediate-cause event id" },
+    correlationId: {
+      type: "Maybe UUID",
+      description: "Saga / flow id shared across the whole flow",
+    },
   }}
 />
 
@@ -40,17 +49,23 @@ What reads and subscriptions hand back.
 
 <TypeTable
   type={{
-    eventId:          { type: 'EventId',         description: 'The event identity' },
-    eventType:        { type: 'EventType',       description: 'The discriminator the event was written with' },
-    streamVersion:    { type: 'StreamVersion',   description: 'Position in the stream being read' },
-    globalPosition:   { type: 'GlobalPosition',  description: '$all position at append time; the subscription cursor' },
-    originalStreamId: { type: 'StreamId',        description: 'Source stream id (resolve to a name via lookupStreamNames)' },
-    originalVersion:  { type: 'StreamVersion',   description: 'Version in the source stream' },
-    payload:          { type: 'Aeson.Value',     description: 'The JSONB body' },
-    metadata:         { type: 'Maybe Aeson.Value', description: 'The JSONB metadata, if any' },
-    causationId:      { type: 'Maybe UUID',      description: 'Immediate-cause event id, if set' },
-    correlationId:    { type: 'Maybe UUID',      description: 'Flow id, if set' },
-    createdAt:        { type: 'UTCTime',         description: 'Server-assigned append timestamp' },
+    eventId: { type: "EventId", description: "The event identity" },
+    eventType: { type: "EventType", description: "The discriminator the event was written with" },
+    streamVersion: { type: "StreamVersion", description: "Position in the stream being read" },
+    globalPosition: {
+      type: "GlobalPosition",
+      description: "$all position at append time; the subscription cursor",
+    },
+    originalStreamId: {
+      type: "StreamId",
+      description: "Source stream id (resolve to a name via lookupStreamNames)",
+    },
+    originalVersion: { type: "StreamVersion", description: "Version in the source stream" },
+    payload: { type: "Aeson.Value", description: "The JSONB body" },
+    metadata: { type: "Maybe Aeson.Value", description: "The JSONB metadata, if any" },
+    causationId: { type: "Maybe UUID", description: "Immediate-cause event id, if set" },
+    correlationId: { type: "Maybe UUID", description: "Flow id, if set" },
+    createdAt: { type: "UTCTime", description: "Server-assigned append timestamp" },
   }}
 />
 
@@ -91,20 +106,20 @@ mapping of constructor → failure.
 
 The error type interpreters fail with (`runStoreIO` returns `Either StoreError`).
 
-| Constructor | Meaning |
-|---|---|
-| `WrongExpectedVersion !StreamName !ExpectedVersion !StreamVersion` | An `ExactVersion` expectation did not match; carries the actual version. |
-| `StreamNotFound !StreamName` | The stream does not exist (or is soft-deleted). |
-| `ReservedStreamName !StreamName` | Target is store-internal (`$all`) and cannot be appended to. |
-| `StreamAlreadyExists !StreamName` | `NoStream` expectation against an existing stream (or a conflicting link target). |
-| `DuplicateEvent !(Maybe EventId)` | A caller-supplied `eventId` collided with a committed event. |
-| `PoolAcquisitionTimeout` | The pool timed out acquiring a connection; usually retryable. |
-| `ConnectionLost !Text` | A network/session error tore down the connection mid-operation; usually retryable. |
-| `UnexpectedServerError !Text !Text` | A PostgreSQL `SQLSTATE` outside the recognised set (code, message); investigate. |
-| `ConnectionError !Text` | Backward-compatible catch-all; prefer the specific constructors. |
+| Constructor                                                        | Meaning                                                                            |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `WrongExpectedVersion !StreamName !ExpectedVersion !StreamVersion` | An `ExactVersion` expectation did not match; carries the actual version.           |
+| `StreamNotFound !StreamName`                                       | The stream does not exist (or is soft-deleted).                                    |
+| `ReservedStreamName !StreamName`                                   | Target is store-internal (`$all`) and cannot be appended to.                       |
+| `StreamAlreadyExists !StreamName`                                  | `NoStream` expectation against an existing stream (or a conflicting link target).  |
+| `DuplicateEvent !(Maybe EventId)`                                  | A caller-supplied `eventId` collided with a committed event.                       |
+| `PoolAcquisitionTimeout`                                           | The pool timed out acquiring a connection; usually retryable.                      |
+| `ConnectionLost !Text`                                             | A network/session error tore down the connection mid-operation; usually retryable. |
+| `UnexpectedServerError !Text !Text`                                | A PostgreSQL `SQLSTATE` outside the recognised set (code, message); investigate.   |
+| `ConnectionError !Text`                                            | Backward-compatible catch-all; prefer the specific constructors.                   |
 
 <Callout type="warn">
-  `WrongExpectedVersion` and `DuplicateEvent` are *expected* control-flow signals, not bugs —
-  retry the decide loop on the former, treat the latter as success for an idempotent append.
+  `WrongExpectedVersion` and `DuplicateEvent` are *expected* control-flow signals, not bugs — retry
+  the decide loop on the former, treat the latter as success for an idempotent append.
   `PoolAcquisitionTimeout` / `ConnectionLost` are generally retryable after a small backoff.
 </Callout>

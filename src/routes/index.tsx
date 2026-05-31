@@ -1,19 +1,18 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { HomeLayout } from "fumadocs-ui/layouts/home";
-import { baseOptions } from "@/lib/layout.shared";
+import { createFileRoute, Link } from "@tanstack/react-router"
+import { HomeLayout } from "fumadocs-ui/layouts/home"
+
+import { baseOptions } from "@/lib/layout.shared"
 
 export const Route = createFileRoute("/")({
   component: Home,
-});
+})
 
 function Home() {
   return (
     <HomeLayout {...baseOptions()}>
       <div className="flex flex-col items-center justify-center text-center flex-1">
         <h1 className="font-medium text-xl mb-4">keiro runtime docs</h1>
-        <p className="text-fd-muted-foreground mb-4">
-          Documentation for the keiro runtime.
-        </p>
+        <p className="text-fd-muted-foreground mb-4">Documentation for the keiro runtime.</p>
         <Link
           to="/docs/$"
           params={{ _splat: "" }}
@@ -23,5 +22,5 @@ function Home() {
         </Link>
       </div>
     </HomeLayout>
-  );
+  )
 }

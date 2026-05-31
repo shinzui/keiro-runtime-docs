@@ -1,5 +1,6 @@
-import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
-import { appName, gitConfig } from "./shared";
+import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared"
+
+import { appName, gitConfig } from "./shared"
 
 // Shared layout configuration (nav title + GitHub link) used by both the home
 // and docs layouts.
@@ -25,5 +26,5 @@ export function baseOptions(): BaseLayoutProps {
       { text: "shibuya", url: "/docs/shibuya" },
       { text: "Integrations", url: "/docs/integrations" },
     ],
-  };
+  }
 }

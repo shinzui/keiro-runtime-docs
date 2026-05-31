@@ -1,5 +1,6 @@
-import { defineConfig, defineDocs } from "fumadocs-mdx/config";
-import { rehypeMermaid } from "./src/lib/rehype-mermaid";
+import { defineConfig, defineDocs } from "fumadocs-mdx/config"
+
+import { rehypeMermaid } from "./src/lib/rehype-mermaid"
 
 // Docs collection: every .mdx under content/docs/ becomes a page.
 // `includeProcessedMarkdown` keeps a plain-markdown copy of each page so the
@@ -14,7 +15,7 @@ export const docs = defineDocs({
       includeProcessedMarkdown: true,
     },
   },
-});
+})
 
 // Plan B: Haskell-aware Shiki. `themes` pins a light/dark pair (fumadocs renders
 // both and CSS shows the right one per theme). `langs` preloads the exact
@@ -38,4 +39,4 @@ export default defineConfig({
     // `<pre class="shiki ...">` instead of `<Mermaid>`).
     rehypePlugins: (v) => [rehypeMermaid, ...v],
   },
-});
+})

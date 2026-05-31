@@ -1,12 +1,9 @@
-import {
-  createRootRoute,
-  HeadContent,
-  Outlet,
-  Scripts,
-} from "@tanstack/react-router";
-import appCss from "@/styles/app.css?url";
-import { RootProvider } from "fumadocs-ui/provider/tanstack";
-import SearchDialog from "@/components/search";
+import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router"
+import { RootProvider } from "fumadocs-ui/provider/tanstack"
+
+import SearchDialog from "@/components/search"
+
+import appCss from "@/styles/app.css?url"
 
 export const Route = createRootRoute({
   head: () => ({
@@ -18,7 +15,7 @@ export const Route = createRootRoute({
     links: [{ rel: "stylesheet", href: appCss }],
   }),
   component: RootComponent,
-});
+})
 
 function RootComponent() {
   return (
@@ -33,5 +30,5 @@ function RootComponent() {
         <Scripts />
       </body>
     </html>
-  );
+  )
 }
