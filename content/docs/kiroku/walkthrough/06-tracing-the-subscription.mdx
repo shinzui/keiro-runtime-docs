@@ -62,11 +62,12 @@ The state is a `Map` from a per-worker key to that worker's open spans:
 type SpanKey = (Text, Maybe Int32)
 
 data OpenState = OpenState
-  { osCatchup   :: !(Maybe Span)      -- catch-up episode (opened on Started)
-  , osReconnect :: !(Maybe Span)      -- reconnect episode (opened on first Reconnecting)
-  , osPause     :: !(Maybe Span)      -- backpressure pause episode (opened on Paused)
-  , osRetries   :: !(Map Int64 Span)  -- per-poison-event retries, keyed by global position
+  { catchup   :: !(Maybe Span)      -- catch-up episode (opened on Started)
+  , reconnect :: !(Maybe Span)      -- reconnect episode (opened on first Reconnecting)
+  , pause     :: !(Maybe Span)      -- backpressure pause episode (opened on Paused)
+  , retries   :: !(Map Int64 Span)  -- per-poison-event retries, keyed by global position
   }
+  deriving stock (Generic)
 ```
 
 The `MVar` wraps `Map SpanKey OpenState`, so two members never collide: each `(name, member)` has
@@ -75,40 +76,44 @@ fields track the four kinds of episode that can be open _at the same time_ — a
 retrying a poison event while also inside a reconnect episode, so they cannot share one slot.
 
 <Callout type="info">
-  Why `MVar` and not `TVar` or an `IORef`? The update is a read-modify-write that performs `IO` (it
-  opens and ends spans) while holding the lock, and it must be serialized per handler. `MVar` +
-  `modifyMVar_` gives exactly that: a mutually-exclusive critical section that can run `IO`. STM
-  transactions cannot run arbitrary `IO`, and an `IORef` `atomicModifyIORef'` cannot either.
+  The `MVar` guards the shared `Map` — the one structure several worker threads touch. The lock is
+  held only for short, pure map operations (read a key's `OpenState`, commit it back); the span `IO`
+  itself runs **outside** the lock. See [the critical section is
+  narrow](#the-critical-section-is-narrow) below for why that is both faster and still correct.
 </Callout>
 
 ## The two state-cell combinators
 
 Every branch of the dispatch goes through one of two helpers, so the locking lives in exactly one
-place:
+place. Crucially, the span `IO` in the closure runs **outside** the lock — the state is read under
+one short lock, the closure runs unlocked, and its result is committed under a second short lock:
 
 ```haskell
--- Run a state-update against the OpenState for a key, write the result back.
+-- Run a state-update against the OpenState for a key; span IO in `f` runs unlocked.
 withKey :: MVar (Map SpanKey OpenState) -> SpanKey -> (OpenState -> IO OpenState) -> IO ()
-withKey cell key f = modifyMVar_ cell $ \m -> do
-  st' <- f (Map.findWithDefault emptyOpenState key m)
-  pure $! Map.insert key st' m
+withKey cell key f = do
+  st  <- withMVar cell (pure . Map.findWithDefault emptyOpenState key)  -- short lock: read
+  st' <- f st                                                           -- unlocked: span IO
+  modifyMVar_ cell (\m -> pure $! Map.insert key st' m)                 -- short lock: commit
 
 -- Run a finalizing action against a key's OpenState, then drop the key.
 dropKey :: MVar (Map SpanKey OpenState) -> SpanKey -> (OpenState -> IO ()) -> IO ()
-dropKey cell key f = modifyMVar_ cell $ \m -> do
-  f (Map.findWithDefault emptyOpenState key m)
-  pure $! Map.delete key m
+dropKey cell key f = do
+  st <- modifyMVar cell $ \m ->                                         -- short lock: read + delete
+          let m' = Map.delete key m
+           in m' `seq` pure (m', Map.findWithDefault emptyOpenState key m)
+  f st                                                                  -- unlocked: end spans
 ```
 
-`withKey` is the workhorse: look up the worker's `OpenState` (defaulting to `emptyOpenState` for the
-first event), run an `IO` action that opens/closes spans and returns the next `OpenState`, store it
-back. `dropKey` is the same shape but **removes** the key afterward — used only for
-`KirokuEventSubscriptionStopped`, so a stopped worker leaves no entry behind. The `$!` forces the
-new map so the `MVar` never holds a thunk chain across thousands of events.
+`withKey` is the workhorse: read the worker's `OpenState` (defaulting to `emptyOpenState` for the
+first event) under a short lock, run the `IO` closure that opens/closes spans **with no lock held**,
+then commit the next `OpenState` under a second short lock. `dropKey` is the terminal variant — it
+reads and **removes** the key in one locked step, then runs the finalizer unlocked. It is used only
+for `KirokuEventSubscriptionStopped`, so a stopped worker leaves no entry behind. The `$!` / `seq`
+force the new map so the `MVar` never holds a thunk chain across thousands of events.
 
-Both run the user-supplied function _inside_ `modifyMVar_`, i.e. while holding the lock. That is
-deliberate and safe here because span open/close is cheap, in-memory work — see the threading note
-below.
+Each critical section is now just a pure `O(log n)` map operation. The next section explains why
+running the span `IO` outside the lock is safe.
 
 ## The dispatch, event by event
 
@@ -121,22 +126,22 @@ onEvent :: Tracer -> MVar (Map SpanKey OpenState) -> KirokuEvent -> IO ()
 onEvent tracer cell = \case
   KirokuEventSubscriptionStarted name pos grp ->
     withKey cell (keyOf name grp) $ \st -> do
-      mapM_ closeSpan (osCatchup st)              -- defensively close a leftover catch-up span
+      mapM_ closeSpan (catchup st)                -- defensively close a leftover catch-up span
       sp <- openSpan tracer spanCatchup $
               baseAttrs name grp
                 ++ [(attrState, toAttribute ("catchup" :: Text)), (attrCheckpoint, posAttr pos)]
-      pure st { osCatchup = Just sp }
+      pure st{catchup = Just sp}
 
   KirokuEventSubscriptionCaughtUp name pos grp ->
     withKey cell (keyOf name grp) $ \st -> do
       let endAttrs = [(attrCheckpoint, posAttr pos)]
-      mapM_ (`closeSpanWith` endAttrs) (osCatchup st)                       -- close catch-up...
-      mapM_ (\sp -> setStatus sp Ok >> closeSpanWith sp endAttrs) (osReconnect st)  -- ...or reconnect
-      mapM_ (\sp -> setStatus sp Ok >> closeSpan sp) (Map.elems (osRetries st))     -- retries succeeded
-      pure st { osCatchup = Nothing, osReconnect = Nothing, osRetries = Map.empty }
+      mapM_ (`closeSpanWith` endAttrs) (catchup st)                       -- close catch-up...
+      mapM_ (\sp -> setStatus sp Ok >> closeSpanWith sp endAttrs) (reconnect st)  -- ...or reconnect
+      mapM_ (\sp -> setStatus sp Ok >> closeSpan sp) (Map.elems (retries st))     -- retries succeeded
+      pure st{catchup = Nothing, reconnect = Nothing, retries = Map.empty}
 ```
 
-`Started` **opens** the catch-up episode and parks the live `Span` in `osCatchup`. `CaughtUp` is the
+`Started` **opens** the catch-up episode and parks the live `Span` in `catchup`. `CaughtUp` is the
 matching **close**: a single caught-up signal resolves whichever of catch-up / reconnect was open,
 and — because the worker has demonstrably moved past every event — marks any open retry spans `Ok`
 and clears them. Note the asymmetry: opens write one field; closes often resolve several, because
@@ -149,13 +154,13 @@ several poison events in flight, each its own episode keyed by global position:
   KirokuEventSubscriptionRetrying name pos attempt grp ->
     withKey cell (keyOf name grp) $ \st -> do
       let GlobalPosition p = pos
-      case Map.lookup p (osRetries st) of
+      case Map.lookup p (retries st) of
         Nothing -> do                                   -- first attempt: open a per-position span
           sp <- openSpan tracer spanRetrying $
                   baseAttrs name grp
                     ++ [ (attrState, toAttribute ("retrying" :: Text))
                        , (attrEventPos, toAttribute p), (attrAttempt, intAttr attempt) ]
-          pure st { osRetries = Map.insert p sp (osRetries st) }
+          pure st{retries = Map.insert p sp (retries st)}
         Just sp -> do                                   -- later attempt: annotate the open span
           spanEvent sp "retry.attempt" [(attrAttempt, intAttr attempt)]
           setAttrs sp [(attrAttempt, intAttr attempt)]
@@ -163,7 +168,7 @@ several poison events in flight, each its own episode keyed by global position:
 ```
 
 This "first occurrence opens a span, subsequent occurrences add a span _event_" idiom recurs:
-`Reconnecting` does the same with `osReconnect` and a `reconnect.attempt` event. It keeps one span
+`Reconnecting` does the same with `reconnect` and a `reconnect.attempt` event. It keeps one span
 per logical episode instead of one per retry tick.
 
 ### Episode precedence and DB errors
@@ -173,7 +178,7 @@ annotates that instead, choosing the most relevant one:
 
 ```haskell
 primaryEpisode :: OpenState -> Maybe Span
-primaryEpisode st = osReconnect st <|> osCatchup st <|> osPause st
+primaryEpisode st = reconnect st <|> catchup st <|> pause st
 ```
 
 The `<|>` on `Maybe` gives a fixed precedence — reconnect, then catch-up, then pause — so a DB error
@@ -190,10 +195,10 @@ everything down.
       let stopAttrs = [ (attrStopReason, toAttribute (T.pack (show reason)))
                       , (attrCheckpoint, posAttr pos) ]
       mapM_ (`setAttrs` stopAttrs) (primaryEpisode st)   -- annotate the most relevant open episode
-      mapM_ closeSpan (osCatchup st)                     -- then end EVERY open span so none leaks
-      mapM_ closeSpan (osReconnect st)
-      mapM_ closeSpan (osPause st)
-      mapM_ closeSpan (Map.elems (osRetries st))
+      mapM_ closeSpan (catchup st)                       -- then end EVERY open span so none leaks
+      mapM_ closeSpan (reconnect st)
+      mapM_ closeSpan (pause st)
+      mapM_ closeSpan (Map.elems (retries st))
 ```
 
 This is the only `dropKey` branch. It records the stop reason on the primary episode, then closes
@@ -231,21 +236,31 @@ It uses the singular `addAttribute` (an insert/override) in a loop, **not** the 
 refreshing a checkpoint position or attempt counter would silently no-op. If you batch these for
 "efficiency," you reintroduce that bug.
 
-## Threading: why holding the lock during `IO` is fine
+## The critical section is narrow
 
 The `eventHandler` runs synchronously on the worker's emit-site thread, and a consumer group drives
-the shared handler from one thread per member. Two facts make the lock-held-during-`IO` design safe:
+the shared handler from one thread per member. An earlier version ran the whole span-`IO` closure
+_inside_ `modifyMVar_`, so the single global `MVar` serialized **every** worker across span syscalls
+— `createSpan` / `endSpan` are each a `clock_gettime` plus an allocation, and one member's span work
+blocked the others. Narrowing the critical section to the two short map operations, with the span
+`IO` outside the lock, removes that serialization: workers no longer queue behind each other on
+tracing syscalls.
 
-1. Opening and ending a span is cheap, in-memory work. The contended section is microseconds.
-2. The expensive part — **export** — does not happen in `endSpan`. It happens later, on a background
-   thread, _if_ the `TracerProvider` is configured with a batch span processor.
+This is safe because each `SpanKey` is **single-writer**. Every `(subscription name, member)` is
+emitted by exactly one worker thread, and the `eventHandler` callback is synchronous on that thread,
+so a key's `OpenState` cannot change between the unlocked read and the unlocked commit — there is no
+second writer to race with. The shared `Map` is the only cross-thread structure, and the commit
+`Map.insert`s this key into whatever the current map is, preserving concurrent updates to _other_
+keys. `dropKey` reads-and-deletes in one locked step, and `Stopped` is a key's last event, so nothing
+touches it afterward.
 
-That second point is the load-bearing requirement for the whole module:
+Even with the lock out of the way, span **export** must still stay off the worker thread:
 
 <Callout type="warn">
-  Configure the `Tracer`'s `TracerProvider` with a **batch** span processor (the SDK default). With
-  a simple/synchronous processor, `endSpan` would block on network I/O **while holding the MVar and
-  the worker's thread** — coupling event-processing throughput to your tracing backend's latency.
+  Configure the `Tracer`'s `TracerProvider` with a **batch** span processor (the SDK default).
+  Export does not happen in `endSpan` — it happens later on a background thread. With a
+  simple/synchronous processor, `endSpan` would block on network I/O **on the worker's own thread**,
+  coupling event-processing throughput to your tracing backend's latency.
 </Callout>
 
 ## Contributing: adding a newly-traced event

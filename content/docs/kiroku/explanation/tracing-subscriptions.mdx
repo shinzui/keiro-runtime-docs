@@ -83,14 +83,17 @@ episodes; the live state has its own channels.
 The `eventHandler` callback runs **synchronously on the worker's emit-site thread**, and a consumer
 group runs one worker per member on separate threads. Two facts follow:
 
-1. The open-span bookkeeping is held in a thread-safe `MVar` keyed by `(subscription name, member)`,
-   so two members never collide.
+1. The open-span bookkeeping lives in one thread-safe `MVar` holding a `Map` keyed by
+   `(subscription name, member)`, so two members never collide. Each key is single-writer — only its
+   own worker thread touches it — so the lock is held just for two short map operations and the span
+   work runs outside it; workers do not serialize on tracing syscalls.
 2. Opening and ending a span is cheap and in-memory — but the _export_ may block on network I/O.
 
 This is why the [reference](/docs/kiroku/reference/opentelemetry) insists on a **batch** span
 processor: it moves export to a background thread so the synchronous callback never stalls the
 worker loop. A simple/synchronous processor would couple your event-processing throughput to your
-tracing backend's latency.
+tracing backend's latency. The [code walkthrough](/docs/kiroku/walkthrough/06-tracing-the-subscription#the-critical-section-is-narrow)
+covers the locking in detail.
 
 ## The append side, for contrast
 
