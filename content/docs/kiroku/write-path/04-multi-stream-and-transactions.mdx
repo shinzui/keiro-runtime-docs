@@ -1,0 +1,139 @@
+---
+title: "04 — Multi-stream and transactional appends"
+description: "Reading the AppendMultiStream interpreter and Transaction.hs: deadlock-free lock ordering, all-or-nothing condemn, and composing an append with caller SQL (the keiro projection seam) in one ACID transaction."
+---
+
+<Callout type="info">
+  Part of an ordered walkthrough. Previous: [03 — Outcomes &
+  errors](/docs/kiroku/write-path/03-outcomes-and-errors). This is the last part.
+</Callout>
+
+## What this part covers
+
+The two write paths that wrap the single-statement append in an explicit transaction: the
+`AppendMultiStream` branch of `Effect.hs`, and `Kiroku/Store/Transaction.hs`. Both reuse the exact
+building blocks from [part 01](/docs/kiroku/write-path/01-the-store-effect-and-append-api)
+(`prepareEvents`, `buildAppendParams`) and [part 02](/docs/kiroku/write-path/02-the-append-cte) (the
+four `append*` CTEs, here via `appendDispatchTx`) — the new material is _composition_: how several
+appends, or an append plus the caller's own SQL, become one atomic unit.
+
+## Multi-stream: many appends, all-or-nothing
+
+`appendMultiStream` writes to several streams so that **either every per-stream append commits or none
+does**. Since it spans multiple statements, it does need a real transaction. The interpreter builds the
+transaction body like this:
+
+```haskell
+-- src/Kiroku/Store/Effect.hs — the AppendMultiStream branch (trimmed)
+let txn = do
+      -- (1) pre-lock every named stream in deterministic stream_id order
+      Tx.statement names SQL.lockStreamsForMultiStmt
+      -- (2) run the per-stream append CTE for each op, collecting Maybe results
+      results <- mapM (\(StreamName n, expected, prepared) ->
+                         appendDispatchTx expected (buildAppendParams n now prepared)) preparedOps
+      -- (3) if ANY append hit a precondition conflict (Nothing), roll the whole thing back
+      case any isNothing results of
+        True  -> Tx.condemn >> pure results
+        False -> pure results
+result <- liftIO $ Pool.use (store ^. #pool) $
+            TxSessions.transaction TxSessions.ReadCommitted TxSessions.Write txn
+```
+
+Three mechanisms make this correct:
+
+1. **Deterministic lock ordering prevents deadlocks.** Before any append, the body locks all target
+   stream rows in **`stream_id` order**:
+
+   ```sql
+   -- src/Kiroku/Store/SQL.hs — lockStreamsForMultiStmt
+   SELECT 1 FROM streams WHERE stream_name = ANY($1::text[]) ORDER BY stream_id FOR UPDATE
+   ```
+
+   Two concurrent multi-stream calls that touch the same streams in _different caller-supplied orders_
+   would otherwise be a classic lock-ordering deadlock (txn A locks stream 1 then waits on 2; txn B
+   locks 2 then waits on 1). Forcing every transaction to acquire the `FOR UPDATE` row locks in the
+   same `stream_id` order makes that cycle impossible — one transaction always wins the whole set.
+
+2. **`appendDispatchTx` reuses the same CTEs.** Each per-stream append is the very statement from part
+   02, just issued via `Tx.statement` instead of `Session.statement` so it joins the open transaction.
+   A precondition conflict still surfaces as the CTE returning zero rows → `Nothing`.
+
+3. **`Tx.condemn` enforces all-or-nothing.** If _any_ append returned `Nothing`, the body calls
+   `Tx.condemn`, which marks the transaction for rollback at commit. The successful appends in the same
+   transaction are discarded with it — there is no partial multi-stream commit. After the transaction,
+   the interpreter walks the `(op, result)` pairs and attributes the failure to the specific stream
+   that conflicted (via `emptyResultError`), so the caller learns _which_ stream broke its precondition.
+
+PostgreSQL exceptions (rather than empty results) are attributed by `attributeMultiStreamError`, which
+parses the server detail for the offending stream name when it can and otherwise falls back to the
+first op — the same `mapUsageError` classification from [part 03](/docs/kiroku/write-path/03-outcomes-and-errors)
+underneath.
+
+## Transactional append: composing with the caller's own SQL
+
+The other reason to open a transaction is to land an append **together with writes the store doesn't
+know about** — most importantly a projection row that must exist if and only if the event was
+recorded. That is exactly the [keiro projection](/docs/integrations/keiro-with-kiroku) use case, and
+`runTransactionAppending` is the wrapper for it:
+
+```haskell
+-- src/Kiroku/Store/Transaction.hs — runTransactionAppendingWith (trimmed)
+runTransactionAppendingWith ctor sn@(StreamName name) expected events k
+  | name == "$all" = pure (Left (ReservedStreamName sn))   -- reject before opening any transaction
+  | otherwise = do
+      prepared <- prepareEventsIO events    -- (A) generate UUIDv7s OUTSIDE the transaction
+      now      <- liftIO getCurrentTime      -- (A) capture time OUTSIDE the transaction
+      let body = do
+            outcome <- appendToStreamTx sn expected prepared now
+            case outcome of
+              Left conflict -> Tx.condemn $> Left (appendConflictToStoreError conflict)  -- (B) skip the continuation
+              Right ar      -> Right <$> k ar                                            -- (C) run the caller's SQL
+      send (ctor body)
+```
+
+The design turns on three points:
+
+- **(A) Preparation happens outside the transaction.** `Tx.Transaction` has no `MonadIO` instance — you
+  cannot generate a UUID or read the clock inside it. So ids and the timestamp are produced first, in
+  `IO`, and only the pure SQL goes in the body. This also makes the body **retry-safe**: when the
+  default `transaction` retries on a serialization conflict, it re-runs the _same_ prepared events, not
+  freshly-generated ids (which would change the data and defeat idempotency).
+- **(B) A conflict condemns and skips the continuation.** If the append loses its precondition, the
+  body condemns the transaction and returns the conflict as a `StoreError` — and critically the
+  caller's continuation `k` **never runs**, so the projection row is never written for an event that
+  wasn't recorded.
+- **(C) On success the continuation runs in the same transaction.** `k ar` receives the `AppendResult`
+  and does the caller's SQL. If `k` itself calls `Tx.condemn`, _everything_ rolls back — including the
+  event append. Append and projection are genuinely atomic in both directions.
+
+`runTransactionAppendingNoRetry` is the same with `transactionNoRetry`, for callers who cannot tolerate
+the body running more than once. The `…Resource` variants additionally apply the `enrichEvent` hook (in
+`IO`, before the body, so retries don't re-fire it) — the path the keiro layer uses so trace-context
+injection is uniform across plain and transactional appends.
+
+## When to reach for which
+
+```text
+appendToStream                 -- default. one stream, one statement, no Haskell-level transaction.
+appendMultiStream              -- several streams, all-or-nothing, deadlock-safe lock ordering.
+runTransactionAppending        -- append + your SQL (projection row) in one ACID transaction.
+runTransaction / appendToStreamTx  -- bare escape hatch: full manual control inside a Tx body.
+```
+
+The guidance the source gives is "reach for `appendToStream` by default" — it is the cheapest path
+(one CTE, no transaction envelope, no retry semantics to reason about). Climb to the transactional
+wrappers only when you genuinely need to combine the append with writes the store doesn't perform
+itself.
+
+## Recap of the write path
+
+Five files, one idea: an append is a `Store` effect ([01](/docs/kiroku/write-path/01-the-store-effect-and-append-api))
+whose interpreter packs events into a **single CTE** that checks the version, writes the events, and
+dual-writes the `$all` sequence atomically and gap-free ([02](/docs/kiroku/write-path/02-the-append-cte));
+the statement's empty-result-or-`SQLSTATE` outcome is classified into a typed `StoreError`
+([03](/docs/kiroku/write-path/03-outcomes-and-errors)); and those same building blocks compose into
+deadlock-free multi-stream and atomic append-plus-projection transactions (this part). The optimistic
+concurrency that makes event sourcing safe lives in one SQL `WHERE` clause — everything else is
+plumbing around it.
+
+For the read and subscription side, see the [Subscription Walkthrough](/docs/kiroku/walkthrough).

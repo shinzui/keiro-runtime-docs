@@ -1,0 +1,117 @@
+---
+title: "03 — Outcomes and errors: from a result row to a typed StoreError"
+description: "Reading Effect.hs and Error.hs: how an empty CTE result or a PostgreSQL SQLSTATE becomes WrongExpectedVersion, StreamNotFound, DuplicateEvent, and friends — and how idempotent retries work."
+---
+
+<Callout type="info">
+  Part of an ordered walkthrough. Previous: [02 — The append
+  CTE](/docs/kiroku/write-path/02-the-append-cte).
+</Callout>
+
+## What this part covers
+
+The classification seam: the `case result` block at the end of the `AppendToStream` interpreter
+(`Effect.hs`) and the functions it calls in `Kiroku/Store/Error.hs`. [Part
+02](/docs/kiroku/write-path/02-the-append-cte) established that the CTE communicates its outcome in
+exactly one of three shapes; this part is how each shape becomes a value the caller can pattern-match.
+
+## Three outcomes, three branches
+
+`Pool.use` returns `Either UsageError (Maybe AppendResult)`, and the interpreter matches all three:
+
+```haskell
+-- src/Kiroku/Store/Effect.hs — the tail of AppendToStream
+case result of
+  Left usageErr  -> throwError (mapUsageError name expected usageErr)  -- PostgreSQL raised an error
+  Right Nothing  -> throwError (emptyResultError name expected)        -- 0 rows: a silent precondition failure
+  Right (Just r) -> pure r                                             -- success: the AppendResult
+```
+
+The middle branch is the subtle one and the reason the CTE was designed the way it was. A precondition
+failure is **not** a database error — the statement ran fine, it just matched zero rows ([part 02's
+optimistic check](/docs/kiroku/write-path/02-the-append-cte)). So there is nothing to parse from the
+server; the _intended_ error is implied entirely by which
+`ExpectedVersion` the caller asked for.
+
+## `emptyResultError` — the precondition map
+
+`emptyResultError` (in `Error.hs`) is a pure function from "the CTE returned nothing" plus the
+`ExpectedVersion` to the right `StoreError`:
+
+```haskell
+-- src/Kiroku/Store/Error.hs (via emptyResultConflict)
+emptyResultConflict sn = \case
+  ExactVersion v -> WrongExpectedVersionConflict sn (ExactVersion v) (StreamVersion 0)
+  StreamExists   -> StreamNotFoundConflict sn
+  NoStream       -> StreamAlreadyExistsConflict sn
+  AnyVersion     -> StreamNotFoundConflict sn   -- only reachable when the existing row is soft-deleted
+```
+
+Read it against the CTE variants table from [part 02](/docs/kiroku/write-path/02-the-append-cte#the-other-three-variants-differ-only-in-step-1):
+each precondition's "returns 0 rows when…" column is exactly the condition this maps to an error.
+`ExactVersion` → `WrongExpectedVersion`; `StreamExists` → `StreamNotFound`; `NoStream` →
+`StreamAlreadyExists`. The `AnyVersion` row is the only non-obvious one — an upsert "can't fail," so
+the only way it produces zero rows is a soft-deleted target whose `DO UPDATE … WHERE deleted_at IS
+NULL` filter rejects it, which is correctly a "not found."
+
+<Callout type="warn">
+  The `WrongExpectedVersion` carries `StreamVersion 0` as its "actual version," **not** the real
+  current version. An empty CTE result tells us the precondition failed but not the value it failed
+  against, so the field is a placeholder. A caller that needs the real version must re-read the
+  stream — which is the correct recovery for a version conflict anyway.
+</Callout>
+
+## `mapUsageError` — walking the PostgreSQL error hierarchy
+
+The `Left` branch handles the cases where PostgreSQL _did_ raise an error — chiefly constraint
+violations. `mapUsageError` descends the `hasql` error nesting (`UsageError → SessionError →
+StatementError → ServerError`) to the `SQLSTATE` code, then maps by code and, for unique violations, by
+**constraint name**:
+
+```haskell
+-- src/Kiroku/Store/Error.hs (the decision, condensed)
+-- 23505 (unique_violation) + "events_pkey"            -> DuplicateEvent (parse the id from the detail)
+-- 23505 (unique_violation) + "ix_streams_stream_name" -> StreamAlreadyExists
+-- 23505 (unique_violation) + (other constraint)       -> WrongExpectedVersion
+-- 23503 (foreign_key_violation)                        -> StreamNotFound
+-- (any other server code)                              -> UnexpectedServerError code message
+-- AcquisitionTimeoutUsageError                          -> PoolAcquisitionTimeout
+-- ConnectionUsageError                                  -> ConnectionLost
+```
+
+Two things worth noting. First, the classification keys off literal constraint names (`events_pkey`,
+`ix_streams_stream_name`); the source flags that a schema migration renaming them would silently
+demote a `23505` to the generic `WrongExpectedVersion` branch, so those names are a stability contract
+with the migrations. Second, when the `events_pkey` detail string can't be parsed (an unusual server
+locale), `DuplicateEvent` carries `Nothing` rather than a fabricated all-zeroes UUID — the code
+refuses to invent data it didn't actually read.
+
+## Idempotent retries ride on `DuplicateEvent`
+
+This is where [part 01's id-generation seam](/docs/kiroku/write-path/01-the-store-effect-and-append-api#id-generation-is-the-idempotency-seam)
+pays off. If you supply your own `eventId` and a transient failure makes you unsure whether the append
+committed, just **retry with the same id**:
+
+- The previous attempt did **not** commit → the retry succeeds normally.
+- The previous attempt **did** commit → the `event_id` collides with the `events_pkey` unique
+  constraint → `23505` → `DuplicateEvent`, telling you the work is already done.
+
+So the recovery for an ambiguous append is "retry with the same ids and treat `DuplicateEvent` as
+success." Note the one genuinely ambiguous case the source calls out: a retry that observed
+`WrongExpectedVersion` on an `ExactVersion` append could mean either a concurrent writer raced you _or_
+your own prior attempt landed; the only sound recovery is to re-read the stream and decide.
+
+## The error type is designed to grow
+
+`StoreError` is a flat sum with a retained `ConnectionError` catch-all. The module header makes the
+evolution rule explicit: new failure modes are **added** as constructors rather than folded into
+existing ones, so a caller's incomplete pattern-match becomes a `-Wincomplete-patterns` warning at the
+next compile — never a silent misclassification. Callers making retry-vs-escalate decisions match the
+specific constructors first (`PoolAcquisitionTimeout` and `ConnectionLost` are retryable;
+`UnexpectedServerError` is not) and let the catch-all mop up the rest.
+
+## Next
+
+[04 — Multi-stream & transactions](/docs/kiroku/write-path/04-multi-stream-and-transactions): how the
+same append building blocks compose into a deadlock-free multi-stream write and an atomic
+append-plus-projection transaction.

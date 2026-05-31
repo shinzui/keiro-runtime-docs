@@ -1,0 +1,145 @@
+---
+title: "01 — The Store effect and the append API"
+description: "Reading Append.hs and Effect.hs: the Store GADT, the four ExpectedVersion preconditions, and how EventData becomes columnar SQL parameters."
+---
+
+<Callout type="info">
+  Part of an ordered walkthrough. Start at [00 — Start here](/docs/kiroku/write-path/00-start-here).
+</Callout>
+
+## What this part covers
+
+`kiroku-store/src/Kiroku/Store/Append.hs` (the public surface) and the append branches of
+`Kiroku/Store/Effect.hs` (the interpreter). The goal of this part is to get from a caller's
+`appendToStream name expected events` down to the four parameters the SQL layer wants — and to see
+where the only two pieces of pre-SQL logic live: **id generation** and **parameter packing**.
+
+## The public API is a thin `send`
+
+`Append.hs` contains no logic at all. Each function constructs a `Store` effect value and `send`s it:
+
+```haskell
+-- src/Kiroku/Store/Append.hs (trimmed)
+appendToStream ::
+  (HasCallStack, Store :> es) =>
+  StreamName -> ExpectedVersion -> [EventData] -> Eff es AppendResult
+appendToStream name expected events = send (AppendToStream name expected events)
+
+appendMultiStream ::
+  (HasCallStack, Store :> es) =>
+  [(StreamName, ExpectedVersion, [EventData])] -> Eff es [AppendResult]
+appendMultiStream ops = send (AppendMultiStream ops)
+```
+
+That `send` is the whole point of the effect/interpreter split: the **caller's** code depends only on
+the abstract `Store` effect, never on `hasql`, a connection pool, or SQL. The behaviour is supplied
+later by whichever interpreter is in scope.
+
+## The `Store` effect is a dynamic, mockable GADT
+
+`Effect.hs` declares the effect as a GADT of operations. The append-relevant constructors are:
+
+```haskell
+-- src/Kiroku/Store/Effect.hs (trimmed)
+data Store :: Effect where
+  AppendToStream    :: StreamName -> ExpectedVersion -> [EventData] -> Store m AppendResult
+  AppendMultiStream :: [(StreamName, ExpectedVersion, [EventData])] -> Store m [AppendResult]
+  -- … read / lookup / delete / RunTransaction constructors …
+
+type instance DispatchOf Store = Dynamic
+```
+
+`DispatchOf Store = Dynamic` is deliberate: dynamic dispatch means the operation is a _value_ that a
+**mock interpreter** can pattern-match and answer from in-memory state, which is how the store is
+tested without a database. The production interpreter is `runStorePool`, built with `interpret_`.
+
+## The four preconditions, and the four-way dispatch
+
+The entire optimistic-concurrency surface is the `ExpectedVersion` type ([part
+00](/docs/kiroku/write-path/00-start-here#the-optimistic-concurrency-contract-in-one-preview)). The
+interpreter's `AppendToStream` branch is almost entirely a dispatch on it — each precondition selects
+a different SQL statement:
+
+```haskell
+-- src/Kiroku/Store/Effect.hs — the AppendToStream branch (trimmed)
+AppendToStream (StreamName name) expected events -> do
+  rejectReservedApplicationStream name           -- $all is the global read stream; never an append target
+  events'  <- liftIO $ enrichEvents (store ^. #storeSettings) events  -- the append-path hook
+  now      <- liftIO getCurrentTime              -- one timestamp for the whole batch
+  prepared <- prepareEvents events'              -- generate UUIDv7s for ids the caller omitted
+  let params = buildAppendParams name now prepared
+  result <- liftIO $ Pool.use (store ^. #pool) $ case expected of
+    ExactVersion (StreamVersion v) -> Session.statement (params, v) SQL.appendExpectedVersion
+    StreamExists                   -> Session.statement params      SQL.appendStreamExists
+    NoStream                       -> Session.statement params      SQL.appendNoStream
+    AnyVersion                     -> Session.statement params      SQL.appendAnyVersion
+  case result of
+    Left usageErr   -> throwError (mapUsageError name expected usageErr)   -- part 03
+    Right Nothing   -> throwError (emptyResultError name expected)         -- part 03
+    Right (Just r)  -> pure r
+```
+
+Four things happen here, in order, and only the first three are this part's subject (the `case result`
+classification is [part 03](/docs/kiroku/write-path/03-outcomes-and-errors)):
+
+1. **Reject `$all`.** The seeded `stream_id = 0` row is the global read stream. Appending to it as an
+   application stream is a category error, rejected up front with `ReservedStreamName`.
+2. **Enrich.** The optional `enrichEvent` hook (from `StoreSettings`) runs once per event in `IO`
+   before anything is packed — this is where trace-context or tenant-id injection lives. When unset it
+   is a no-op with no traversal.
+3. **Prepare ids and capture time.** See below.
+4. **Dispatch and run as a single statement.** Note `Session.statement` (not a transaction): a
+   single-statement append runs in autocommit on a pooled connection. The atomicity comes from the
+   statement being one CTE, not from a Haskell-level `BEGIN`/`COMMIT` — that is [part
+   02](/docs/kiroku/write-path/02-the-append-cte)'s whole story.
+
+## Id generation is the idempotency seam
+
+`prepareEvents` is small but carries a guarantee. The caller may leave `EventData.eventId` as
+`Nothing` (let the store assign one) or supply a `Just` (to make a retry idempotent). The function
+fills only the gaps:
+
+```haskell
+-- src/Kiroku/Store/Effect.hs (trimmed)
+prepareEvents :: (MonadIO m) => [EventData] -> m [PreparedEvent]
+prepareEvents evts = liftIO $ do
+  let needCount = length (filter (\(EventData eid _ _ _ _ _) -> isNothing eid) evts)
+  newIds <- if needCount > 0 then V7.genUUIDs (fromIntegral needCount) else pure []
+  pure (assign evts newIds)   -- caller-supplied ids kept; missing ones drawn from newIds in order
+```
+
+Two design points: ids are **UUIDv7** (timestamp-prefixed, so id order roughly tracks creation order —
+useful for index locality), and a caller who supplies its _own_ id turns the append into an idempotent
+operation — a retry that already committed surfaces as `DuplicateEvent` rather than a silent double
+write ([part 03](/docs/kiroku/write-path/03-outcomes-and-errors)). The id is generated in Haskell
+rather than by the database precisely so the caller can choose it.
+
+## Parameter packing is columnar, for one `unnest`
+
+`buildAppendParams` transposes the list of prepared events into **parallel arrays** — one vector per
+column — plus the stream name and a single shared `createdAt`:
+
+```haskell
+-- src/Kiroku/Store/Effect.hs (trimmed)
+buildAppendParams name now prepared =
+  SQL.AppendParams
+    { eventIds       = V.fromList (map (^. #peEventId) prepared)
+    , eventTypes     = V.fromList (map (\e -> let EventType t = e ^. #peEventType in t) prepared)
+    , causationIds   = V.fromList (map (^. #peCausationId) prepared)
+    , correlationIds = V.fromList (map (^. #peCorrelationId) prepared)
+    , payloads       = V.fromList (map (^. #pePayload) prepared)
+    , metadatas      = V.fromList (map (^. #peMetadata) prepared)
+    , createdAts     = V.fromList (replicate (length prepared) now)
+    , streamName     = name
+    }
+```
+
+This columnar shape exists to feed PostgreSQL's `unnest(...) WITH ORDINALITY`: the whole batch goes
+into the statement as a handful of array parameters and is expanded into rows server-side, so an
+N-event append is still **one round trip and one statement**. That is the bridge into the next part.
+
+## Next
+
+[02 — The append CTE](/docs/kiroku/write-path/02-the-append-cte): the single statement those
+parameters feed — how it checks the version, writes the events, and dual-writes the `$all` sequence
+atomically.
