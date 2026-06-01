@@ -1,0 +1,79 @@
+---
+title: "Run the migrations"
+description: "Apply keiro's schema with the keiro-migrate tool, or compose keiro's migrations into a service's own codd ledger."
+---
+
+keiro owns five PostgreSQL tables that must exist before the framework runs. They ship as **embedded
+codd migrations** (codd is a Haskell migration tool; the SQL is baked into the binary). This guide
+shows how to apply them — either with the ready-made `keiro-migrate` tool or by composing keiro's SQL
+into your service's own migration ledger.
+
+<Callout type="info">
+  keiro's tables live in the **`kiroku` schema** (the same schema the event store uses; keiro
+  extends it). You apply **kiroku's** event-store migrations and **keiro's** framework migrations
+  together, in that order — `keiro-migrate` does both for you.
+</Callout>
+
+## Goal
+
+Apply the kiroku + keiro schema to a database so the five keiro tables (`keiro_snapshots`,
+`keiro_read_models`, `keiro_timers`, `keiro_outbox`, `keiro_inbox`) exist.
+
+## Steps
+
+1. **Run `keiro-migrate` against your database.** It reads codd settings from the environment, then
+   applies kiroku's migrations followed by keiro's. For a local dev database, skip schema
+   verification with `KEIRO_MIGRATE_NO_CHECK`:
+
+   ```bash
+   # Apply kiroku + keiro schema (local dev: skip the expected-schema check).
+   export CODD_CONNECTION="host=localhost dbname=myservice user=postgres"
+   export CODD_SCHEMAS=kiroku
+   export KEIRO_MIGRATE_NO_CHECK=1
+   cabal run keiro-migrate
+   ```
+
+   <Callout type="info">
+   Without `KEIRO_MIGRATE_NO_CHECK`, `keiro-migrate` verifies the resulting schema with codd's
+   `LaxCheck` and a 5-second connect timeout. `LaxCheck` is the right default for production; the
+   no-check path is for dev databases that keep no checked-in expected-schema representation.
+   </Callout>
+
+2. **(Alternative) Compose keiro's migrations into your own ledger.** If your service already runs
+   codd, do not shell out — pull keiro's migrations into your own list. `keiroFrameworkMigrations`
+   returns **only** keiro-owned SQL; `allKeiroMigrations` returns **kiroku then keiro** in the
+   load-bearing order:
+
+   ```haskell
+   import Keiro.Migrations (keiroFrameworkMigrations, allKeiroMigrations)
+
+   -- keiro-owned SQL only, to splice after your own kiroku setup:
+   keiroOnly <- keiroFrameworkMigrations
+   -- or the full, correctly-ordered set (kiroku event store, then keiro framework):
+   everything <- allKeiroMigrations
+   ```
+
+   <Callout type="warn">
+   The order in `allKeiroMigrations` is **load-bearing**: kiroku's event-store tables must exist
+   before keiro's tables that reference them. If you compose by hand with
+   `keiroFrameworkMigrations`, make sure kiroku's migrations run first.
+   </Callout>
+
+## Verify it worked
+
+Connect to the database and confirm the five keiro tables exist in the `kiroku` schema:
+
+```bash
+psql "$CODD_CONNECTION" -c "\dt kiroku.keiro_*"
+```
+
+You should see `keiro_snapshots`, `keiro_read_models`, `keiro_timers`, `keiro_outbox`, and
+`keiro_inbox`. Re-running `keiro-migrate` is idempotent — codd's ledger skips already-applied
+migrations.
+
+## Related
+
+- [Migrations and schema reference](/docs/keiro/reference/migrations-and-schema) — the migration
+  functions, the runner signatures, and the table overview.
+- [Test with the Postgres fixture](/docs/keiro/how-to/test-with-the-postgres-fixture) — the test
+  fixture applies `allKeiroMigrations` to a template database for you.

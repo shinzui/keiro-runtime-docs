@@ -1,0 +1,64 @@
+---
+title: "Test with the Postgres fixture"
+description: "Use Keiro.Test.Postgres to give every hspec example a fresh, isolated, migrated database cloned from one template."
+---
+
+You want each test to run against a **real**, **isolated**, **migrated** PostgreSQL database — but
+starting a server and running migrations per test is far too slow. `Keiro.Test.Postgres` solves this
+with a suite-level template database: one server, one migration pass, then a fast clone per example.
+
+<Callout type="info">
+  Assumes an `hspec` test suite and the `keiro-test-support` package as a test dependency. The
+  fixture uses `ephemeral-pg`, which starts a throwaway PostgreSQL server for the suite.
+</Callout>
+
+## Goal
+
+Run every `hspec` example against its own fresh, migrated `KirokuStore` without paying server-startup
+and migration cost per test.
+
+## Steps
+
+1. **Wrap the whole suite in `withMigratedSuite`.** It starts one cached PostgreSQL server, creates a
+   `keiro_template` database, and applies `allKeiroMigrations` (kiroku + keiro) to it **once**:
+
+   ```haskell
+   import Keiro.Test.Postgres (withMigratedSuite, withFreshStore)
+   import Test.Hspec
+
+   main :: IO ()
+   main =
+     withMigratedSuite \fixture ->
+       hspec $
+         describe "orders" $ around (withFreshStore fixture) $ do
+           it "appends an order-placed event" \store -> do
+             -- store :: Kiroku.Store.KirokuStore, backed by a fresh isolated DB
+             pure ()
+   ```
+
+2. **Use `withFreshStore fixture` as the `around` action.** For each example it clones a fresh
+   database with `CREATE DATABASE … TEMPLATE keiro_template`, opens a `KirokuStore` against it, runs
+   the example, then drops the clone with `DROP DATABASE … WITH (FORCE)`. The expensive work
+   (startup + migrations) already happened once in step 1; the clone is cheap.
+
+3. **(Two databases) Use `withFreshStores2` for cross-context tests.** When a test needs two isolated
+   databases — for example to exercise an outbox-to-inbox hop between two services — `withFreshStores2`
+   provides a pair of independent stores cloned from the same template:
+
+   ```haskell
+   around (withFreshStores2 fixture) $ do
+     it "delivers across two stores" \(storeA, storeB) -> pure ()
+   ```
+
+## Verify it worked
+
+Run the suite (`cabal test`). Each example sees an empty, migrated database: the keiro tables exist
+(migrations ran against the template) but carry no rows from other tests (each example got a fresh
+clone). Writing a row in one example and asserting it is absent in the next confirms isolation.
+
+## Related
+
+- [Run the migrations](/docs/keiro/how-to/run-migrations) — the same `allKeiroMigrations` the fixture
+  applies to its template.
+- [Get started with keiro](/docs/keiro/tutorials/getting-started) — opening a `KirokuStore` outside
+  of tests.

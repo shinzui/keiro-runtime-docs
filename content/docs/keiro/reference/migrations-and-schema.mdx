@@ -1,0 +1,80 @@
+---
+title: "Migrations and schema"
+description: "Reference for Keiro.Migrations: the migration accessors, the four runners, the keiro-migrate CLI, and the five tables keiro owns."
+---
+
+The functions on this page live in `Keiro.Migrations` (package `keiro-migrations`); the CLI is the
+`keiro-migrate` executable. keiro's schema ships as **embedded codd migrations** — three SQL files
+under `keiro-migrations/sql-migrations/`, baked into the binary with Template Haskell and applied in
+filename-timestamp order. For the task narrative, see
+[Run the migrations](/docs/keiro/how-to/run-migrations).
+
+## Migration accessors
+
+```haskell
+keiroFrameworkMigrations  :: (MonadFail m, EnvVars m) => m [AddedSqlMigration m]
+keiroMigrations           :: (MonadFail m, EnvVars m) => m [AddedSqlMigration m]
+allKeiroMigrations        :: (MonadFail m, EnvVars m) => m [AddedSqlMigration m]
+```
+
+- `keiroFrameworkMigrations` — keiro-owned SQL only, ordered by timestamped filename.
+- `keiroMigrations` — a compatibility alias for `keiroFrameworkMigrations`.
+- `allKeiroMigrations` — kiroku's event-store migrations **then** keiro's framework migrations.
+
+<Callout type="warn">
+The concatenation order in `allKeiroMigrations` (kiroku, then keiro) is **load-bearing**: keiro's
+tables live in the `kiroku` schema and reference the event-store tables, so kiroku's migrations must
+be applied first.
+</Callout>
+
+## Runners
+
+```haskell
+runKeiroMigrations        :: CoddSettings -> DiffTime -> VerifySchemas -> IO ApplyResult
+runKeiroMigrationsNoCheck :: CoddSettings -> DiffTime -> IO ()
+runAllKeiroMigrations     :: CoddSettings -> DiffTime -> VerifySchemas -> IO ApplyResult
+runAllKeiroMigrationsNoCheck :: CoddSettings -> DiffTime -> IO ()
+```
+
+The `runKeiro*` pair applies keiro-owned SQL only; the `runAll*` pair applies kiroku-then-keiro. The
+`*NoCheck` variants skip codd's expected-schema verification (for dev databases that keep no
+checked-in schema representation); the others take a `VerifySchemas` mode. The `DiffTime` is the
+connect timeout.
+
+## The `keiro-migrate` CLI
+
+The executable reads codd settings from the environment with `getCoddSettings`, then dispatches on
+`KEIRO_MIGRATE_NO_CHECK`:
+
+- if `KEIRO_MIGRATE_NO_CHECK` is set → `runAllKeiroMigrationsNoCheck settings (secondsToDiffTime 5)`;
+- otherwise → `runAllKeiroMigrations settings (secondsToDiffTime 5) LaxCheck`.
+
+So both paths apply the **full** kiroku+keiro set, with a 5-second connect timeout; the only
+difference is whether codd verifies the schema afterward. The environment variables are codd's own:
+`CODD_CONNECTION` (the libpq connection string) and `CODD_SCHEMAS=kiroku` (the schema to manage).
+
+## Tables keiro owns
+
+All five tables live in the **`kiroku` schema**, created by the three embedded migrations. Field
+detail lives on the owning subsystem's reference page; this is the map.
+
+| Table | Migration | Purpose | Owning reference |
+|---|---|---|---|
+| `keiro_snapshots` | bootstrap | Per-stream aggregate snapshots for fast hydration | [Snapshot](/docs/keiro/reference/snapshot) |
+| `keiro_read_models` | bootstrap | Read-model registry (version, shape hash, build status) | [Read model](/docs/keiro/reference/read-model) |
+| `keiro_timers` | bootstrap | Durable timers for process managers | [Keiro.Timer](/docs/keiro/reference/timers) |
+| `keiro_outbox` | outbox | Transactional outbox rows awaiting publish | [Outbox](/docs/keiro/reference/outbox) |
+| `keiro_inbox` | inbox | Inbound dedupe ledger keyed by `(source, dedupe_key)` | [Inbox](/docs/keiro/reference/inbox) |
+
+The three migration files, applied in this order:
+
+```text
+2026-05-17-00-00-00-keiro-bootstrap.sql   -- keiro_snapshots, keiro_read_models, keiro_timers
+2026-05-17-01-00-00-keiro-outbox.sql      -- keiro_outbox
+2026-05-17-02-00-00-keiro-inbox.sql       -- keiro_inbox
+```
+
+<Cards>
+  <Card title="Run the migrations" href="/docs/keiro/how-to/run-migrations" />
+  <Card title="Test with the Postgres fixture" href="/docs/keiro/how-to/test-with-the-postgres-fixture" />
+</Cards>

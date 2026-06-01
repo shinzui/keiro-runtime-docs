@@ -75,9 +75,11 @@ This section must always reflect the actual current state of the work.
 - [x] M1. Telemetry pages authored — `how-to/enable-opentelemetry.mdx` and
       `reference/telemetry.mdx`; their slugs appended to the how-to and reference `meta.json`.
       All names cross-checked against `Keiro/Telemetry.hs`; build clean. _(2026-06-01)_
-- [ ] M2. Migrations pages authored — `how-to/run-migrations.mdx` and
-      `reference/migrations-and-schema.mdx`; slugs appended.
-- [ ] M3. Testing how-to authored — `how-to/test-with-the-postgres-fixture.mdx`; slug appended.
+- [x] M2. Migrations pages authored — `how-to/run-migrations.mdx` and
+      `reference/migrations-and-schema.mdx`; slugs appended. Names + five tables cross-checked
+      against `Migrations.hs`/`app/Main.hs`/the three SQL files; build clean. _(2026-06-01)_
+- [x] M3. Testing how-to authored — `how-to/test-with-the-postgres-fixture.mdx`; slug appended.
+      `withMigratedSuite`/`withFreshStore`/`withFreshStores2`/`Fixture` verified; build clean. _(2026-06-01)_
 - [ ] M4. Cookbook recipes authored — `cookbook/idempotent-fan-out.mdx` and
       `cookbook/timeout-saga.mdx`; slugs appended.
 - [ ] M5. FAQ authored — `faq.mdx` stub overwritten with real `<Accordions>` Q&A.
