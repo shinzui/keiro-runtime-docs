@@ -1,0 +1,76 @@
+---
+title: "02 — The transactional write path"
+description: "Reading runCommandWithSqlEvents: appending and running a user callback in one Hasql transaction, with Tx.condemn on conflict and arithmetic RecordedEvent reconstruction."
+---
+
+This chapter reads the transactional runner in `keiro/src/Keiro/Command.hs`. It is the primitive that
+inline projections, process managers, and the [router](/docs/keiro/walkthrough/command-cycle/04-the-router)
+build on. Read [01 — The command processor](/docs/keiro/walkthrough/command-cycle/01-the-command-processor)
+first.
+
+## One transaction: append, then the user callback
+
+`runCommandWithSqlEvents` shares the hydrate/decide front-end with `runCommand`, but its append runs
+inside a single Hasql transaction together with the caller's `afterAppend`:
+
+```haskell
+-- keiro/src/Keiro/Command.hs
+    appendWithSqlOnce remaining current events encoded = do
+      liftIO (options ^. #beforeAppend)
+      prepared <- prepareEventsIO encoded
+      now <- liftIO getCurrentTime
+      let streamName = (eventStream ^. #resolveStreamName) targetStream
+          expected = expectedVersion (current ^. #streamVersion)
+          body = do
+            appended <- appendToStreamTx streamName expected prepared now
+            case appended of
+              Left conflict ->
+                Tx.condemn $> Left (appendConflictToStoreError conflict)
+              Right appendResult -> do
+                let recordeds = reconstructRecorded appendResult now prepared
+                userValue <- afterAppend (Prelude.zip events recordeds) appendResult
+                pure (Right (appendResult, userValue))
+      outcome <- tryError @StoreError (runTransaction body)
+      ...
+```
+
+Two things to notice. First, on a conflict the code calls **`Tx.condemn`** — marking the Hasql
+transaction for rollback — and hands `appendConflictToStoreError conflict` back to the retry logic;
+the same `retryOrFail` from chapter 01 then decides whether to re-hydrate. Because the append and the
+callback share `body`, a conflict rolls back *both* — the read-model write never lands without its
+events.
+
+Second, the callback receives `Prelude.zip events recordeds` — each emitted domain event paired with
+its persisted `RecordedEvent`. That pairing is what lets an inline projection write a row keyed by the
+event's real `streamVersion`/`globalPosition` *inside* the same transaction.
+
+## Why `reconstructRecorded` instead of a re-read
+
+The persisted identities are not re-read from the database; they are reconstructed arithmetically from
+the single `AppendResult`:
+
+```haskell
+reconstructRecorded :: AppendResult -> UTCTime -> [PreparedEvent] -> [RecordedEvent]
+reconstructRecorded appendResult now prepared =
+  Prelude.zipWith mk [0 ..] prepared
+  where
+    count = Prelude.length prepared
+    StreamVersion lastSv = appendResult ^. #streamVersion
+    GlobalPosition lastGp = appendResult ^. #globalPosition
+    firstSv = lastSv Prelude.- Prelude.fromIntegral count Prelude.+ 1
+    firstGp = lastGp Prelude.- Prelude.fromIntegral count Prelude.+ 1
+    mk i prepared' = RecordedEvent
+      { ...
+      , streamVersion = StreamVersion (firstSv Prelude.+ i)
+      , globalPosition = GlobalPosition (firstGp Prelude.+ i)
+      , ...
+      }
+```
+
+The append returns only the *last* stream version and global position; event `i` of a batch of
+`count` gets `last - count + 1 + i` for both. This is deliberate, tight coupling to kiroku's
+`WITH ORDINALITY` numbering: the events were inserted as one contiguous, gap-free run, so their
+positions are derivable without a round-trip. It keeps the callback's view of each event's identity
+cheap — no second query inside the hot transaction.
+
+Next: [03 — The codec on the boundary](/docs/keiro/walkthrough/command-cycle/03-the-codec-on-the-boundary).

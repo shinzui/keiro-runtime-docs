@@ -1,0 +1,54 @@
+---
+title: "Why SymTransducer, not Decider"
+description: "Why keiro builds the command cycle on keiki's native symbolic-register transducer instead of a decide/evolve façade."
+---
+
+If you have written event-sourced aggregates before, you know the **decide/evolve** pattern: a
+`decide` function turns `(state, command)` into events, and an `evolve` function folds
+`(state, event)` into the next state. kiroku's own
+[decider-and-evolve tutorial](/docs/kiroku/tutorials/decider-and-evolve) teaches exactly this. keiro
+does **not** use it. An `EventStream` carries a keiki `SymTransducer phi rs s ci co` directly, and
+the command runner steps that transducer. This page explains why.
+
+## What the command cycle actually calls
+
+In `Keiro.Command`, the Decide phase is one call into keiki:
+
+```haskell
+-- evaluateCommand, simplified: step the transducer with the command in the hydrated state
+Keiki.step transducer (state, registers) command :: Maybe (s, RegFile rs, [co])
+```
+
+`Nothing` means the transducer **rejected** the command (no edge applies in this state) → keiro
+returns `CommandRejected`. `Just (state', registers', events)` is an accepted transition: the new
+control state, the new register file, and the events to emit. There is no separate `evolve`: stepping
+the transducer *is* both the decision and the state advance.
+
+## What a SymTransducer gives you that decide/evolve does not
+
+A `SymTransducer phi rs s ci co` is one object with three capabilities a plain decide/evolve split
+cannot express:
+
+- **A typed register file `RegFile rs`.** Beyond the control state `s` (the named states like
+  `Placed`, `Shipped`), the machine carries typed working memory between transitions — counters,
+  accumulated ids, deadlines. In a decide/evolve design this data has to be smuggled inside `state`
+  by hand; here it is first-class and typed.
+- **ε-edges.** The transducer can advance **without consuming a command** — an internal transition
+  that fires on a guard alone. This is how a workflow moves itself forward (e.g. "once both approvals
+  are in, advance") rather than waiting for an external trigger.
+- **A guard alphabet `phi`.** Transitions branch on predicates drawn from a guard algebra
+  (`BoolAlg phi (RegFile rs, ci)` is the constraint the command runner needs to evaluate a guard
+  against the registers and the incoming command). Guards are data the framework can reason about,
+  not opaque Haskell `if`s buried in `decide`.
+
+## The payoff: one formalism for the whole framework
+
+This is the MasterPlan's thesis made concrete. Because an aggregate, a process manager, and a saga
+are all *the same* `SymTransducer` — differing only in what `ci` and `co` are bound to — keiro has
+**one** decision core, **one** persistence story, and **one** mental model across its entire surface.
+A decide/evolve façade would force aggregates into one shape and workflows into another; the native
+transducer lets the command cycle, the read side, and the workflow engine all run the same object.
+
+For the record that marries a transducer to its codec and store wiring, see the
+[Event stream and Stream handle reference](/docs/keiro/reference/event-stream-and-stream); for the
+pipeline that steps it, see [The command cycle](/docs/keiro/explanation/the-command-cycle).

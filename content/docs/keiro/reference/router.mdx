@@ -1,0 +1,100 @@
+---
+title: "Router"
+description: "Keiro.Router: stateless content-based dispatch — Router, RouterResult, runRouterOnce, runRouterWorker, and deterministic-id exactly-once-per-target."
+---
+
+The types and functions on this page live in `Keiro.Router` (re-exported from `Keiro`). A `Router`
+is a **stateless, content-based router** (in the Enterprise Integration Patterns sense): for each
+incoming event it resolves a data-dependent set of target streams *effectfully* and dispatches one
+command to each. See [Route events to commands](/docs/keiro/how-to/route-events-to-commands) for the
+task recipe.
+
+## `Router`
+
+<TypeTable
+  type={{
+    name: { type: "Text", description: "Part of every dispatched command's deterministic id" },
+    key: { type: "input -> Text", description: "Correlation string for the source event" },
+    resolve: { type: "input -> Eff es [PMCommand targetCi]", description: "Effectful target set (e.g. a runQuery against a read model)" },
+    targetEventStream: { type: "EventStream targetPhi targetRs targetState targetCi targetCo", description: "The event stream each dispatched command runs against" },
+    targetProjections: { type: "Stream targetCi -> [InlineProjection targetCo]", description: "Inline projections to run in the dispatch transaction" },
+  }}
+/>
+
+```haskell
+data Router input targetPhi targetRs targetState targetCi targetCo es = Router
+  { name              :: !Text
+  , key               :: !(input -> Text)
+  , resolve           :: !(input -> Eff es [PMCommand targetCi])
+  , targetEventStream :: !(EventStream targetPhi targetRs targetState targetCi targetCo)
+  , targetProjections :: !(Stream targetCi -> [InlineProjection targetCo])
+  }
+  deriving stock (Generic)
+```
+
+`PMCommand`, `PMCommandResult`, `deterministicCommandId`, and `eventAlreadyIn` come from
+`Keiro.ProcessManager` (its `process-manager` reference is owned by the workflow plan), and
+`InlineProjection` / `runCommandWithProjections` from `Keiro.Projection` (its `projection` reference
+is owned by the read-side plan). See the [Reference index](/docs/keiro/reference) for those pages once
+they land.
+
+## `RouterResult`
+
+```haskell
+newtype RouterResult target = RouterResult { commandResults :: [PMCommandResult target] }
+  deriving stock (Generic, Eq, Show)
+```
+
+A failed dispatch surfaces as a `PMCommandFailed` element of the list, **not** as an outer `Either`.
+
+## `runRouterOnce`
+
+Dispatch the commands for one source event.
+
+```haskell
+runRouterOnce ::
+  forall input targetPhi targetRs targetState targetCi targetCo es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
+   BoolAlg targetPhi (RegFile targetRs, targetCi), Eq targetCo) =>
+  RunCommandOptions ->
+  Router input targetPhi targetRs targetState targetCi targetCo es ->
+  RecordedEvent ->
+  input ->
+  Eff es (RouterResult (EventStream targetPhi targetRs targetState targetCi targetCo))
+```
+
+<Callout type="info">
+Dispatch is **exactly-once-per-target by construction**. For each resolved target, the router derives
+a `deterministicCommandId name correlationId sourceEventId emitIndex`, pre-checks it with
+`eventAlreadyIn` (skip → `PMCommandDuplicate`), otherwise runs the command and folds a store-level
+`DuplicateEvent` rejection into a benign `PMCommandDuplicate`. Re-processing the same source event
+writes nothing the second time.
+</Callout>
+
+## `runRouterWorker`
+
+Run a router as a live subscription, draining a shibuya `Adapter`.
+
+```haskell
+runRouterWorker ::
+  forall msg input targetPhi targetRs targetState targetCi targetCo es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
+   BoolAlg targetPhi (RegFile targetRs, targetCi), Eq targetCo) =>
+  RunCommandOptions ->
+  Router input targetPhi targetRs targetState targetCi targetCo es ->
+  Adapter es msg ->
+  (msg -> Maybe (RecordedEvent, input)) ->
+  Eff es ()
+```
+
+The worker decodes each message to `(RecordedEvent, input)` and finalizes the ingested message's
+`AckHandle`:
+
+- an **undecodable** message → `AckHalt (HaltFatal …)`;
+- every dispatch `PMCommandAppended` / `PMCommandDuplicate` → `AckOk`;
+- any `PMCommandFailed` → `AckHalt (HaltFatal …)`, so the source event is retried (deterministic ids
+  make retry safe).
+
+The worked example is `jitsurei` `pagingRouter` (`jitsurei/src/Jitsurei/Paging.hs`): for each
+`IncidentRaisedData` it `runQuery`s the on-call read model and dispatches one `SendPage` per
+responder, with `targetProjections = const []`. Run it with `just jitsurei-paging`.

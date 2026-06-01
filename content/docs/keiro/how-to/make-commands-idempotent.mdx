@@ -1,0 +1,49 @@
+---
+title: "Make commands idempotent"
+description: "Supply caller-assigned event ids so re-running the same command is a benign duplicate, not a double-append."
+---
+
+A command may be delivered twice — a retry, a redelivered message, a crash-and-resume. You want the
+second run to write **nothing** rather than duplicate the events. keiro makes this deterministic with
+caller-assigned event ids.
+
+<Callout type="info">
+  Assumes you understand the command cycle (see
+  [The command cycle](/docs/keiro/explanation/the-command-cycle)).
+</Callout>
+
+## Goal
+
+Run the same command twice and have the second run be a benign no-write duplicate.
+
+## Steps
+
+1. **Supply `eventIds`.** They are assigned to the emitted events **positionally**, so the same
+   command with the same ids produces the same event identities. The store rejects the second append
+   as a `DuplicateEvent`; treat that as success:
+
+   ```haskell
+   let options = defaultRunCommandOptions { eventIds = [deterministicId] }
+   runCommand options orderEventStream (orderStream oid) command >>= \case
+     Left (StoreFailed (DuplicateEvent _)) -> pure ()  -- already applied; benign
+     other -> ...
+   ```
+
+2. **Derive the id deterministically** from something stable about the command (its source event id,
+   a request id) so the same logical command always maps to the same `eventIds`.
+
+<Callout type="info">
+`Keiro.Router` (and process managers) automate exactly this: they derive a `deterministicCommandId`
+per target and fold a `DuplicateEvent` into a benign `PMCommandDuplicate`. See
+[Route events to commands](/docs/keiro/how-to/route-events-to-commands).
+</Callout>
+
+## Verify it worked
+
+Run the command twice with the same `eventIds` in a test: the first appends, the second returns
+`StoreFailed (DuplicateEvent …)` and leaves the stream version unchanged.
+
+## Related
+
+- [Command reference](/docs/keiro/reference/command) — `RunCommandOptions.eventIds`.
+- [Route events to commands](/docs/keiro/how-to/route-events-to-commands) — automated deterministic ids.

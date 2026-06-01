@@ -1,0 +1,60 @@
+---
+title: "Evolve an event schema"
+description: "Add an upcaster, bump the schema version, and migrate old events forward — using the jitsurei order codec as the worked example."
+---
+
+Your event's JSON shape needs to change, but the old events are already on disk and immutable. You
+evolve the schema by teaching the codec to migrate old payloads forward on read.
+
+<Callout type="info">
+  Assumes you understand the codec (see
+  [Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution)).
+</Callout>
+
+## Goal
+
+Change an event's shape without rewriting stored events, so old and new payloads both decode to the
+current type.
+
+## Steps
+
+1. **Change `encode`/`decode` to the new shape.** Update the codec's current serialization to the
+   new field layout.
+
+2. **Bump `schemaVersion`.** Increment the codec's `schemaVersion` so new writes are stamped with the
+   new version and reads know how far to migrate.
+
+3. **Add an `Upcaster` keyed by the old version** that rewrites old payloads forward. The real
+   `jitsurei` order codec does exactly this, v1 → v2:
+
+   ```haskell
+   -- jitsurei/src/Jitsurei/OrderStream.hs
+   orderCodec :: Codec OrderEvent
+   orderCodec = Codec
+     { eventTypes    = "OrderPlaced" :| ["PaymentApproved", "OrderPacked", "OrderShipped", "OrderCancelled"]
+     , eventType     = ...
+     , schemaVersion = 2
+     , encode        = ...
+     , decode        = parseOrderEvent
+     , upcasters     = [(1, upcastOrderPlacedV1)]   -- migrates a v1 OrderPlaced into the v2 shape
+     }
+   ```
+
+   `upcastOrderPlacedV1` reads the v1 `"qty"` key and an *optional* `"sku"`, and writes the v2 shape:
+   a required `"quantity"` and an `"sku"` defaulted to `"UNKNOWN"`.
+
+<Callout type="warn">
+The upcaster chain must be **ascending and contiguous** — a missing rung yields `GapInUpcasterChain`,
+and an upcaster that returns `Left` becomes `UpcasterError`.
+</Callout>
+
+## Verify it worked
+
+Decode a stored **v1** payload with the **v2** codec and assert the migrated value: `decodeRecorded
+orderCodec v1Recorded` yields the v2-shaped `OrderPlaced`. Running `just jitsurei-fulfillment`
+exercises the order codec end-to-end.
+
+## Related
+
+- [Codec reference](/docs/keiro/reference/codec) — `Upcaster`, `CodecError`, `migrateToCurrent`.
+- [Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution) — the read/write paths.

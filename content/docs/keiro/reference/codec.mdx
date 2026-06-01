@@ -1,0 +1,79 @@
+---
+title: "Codec"
+description: "The value-level Codec, its Upcaster chain and CodecError, and the encode/decode/migrate/metadata functions in Keiro.Codec."
+---
+
+The types and functions on this page live in `Keiro.Codec` (re-exported from `Keiro`). For the
+narrative — value-not-typeclass, the schema-version stamp, the upcaster chain — see
+[Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution).
+
+## `Codec`
+
+Everything a stream needs to serialize, deserialize, and migrate its events. It is a **record value**,
+not a typeclass.
+
+<TypeTable
+  type={{
+    eventTypes: { type: "NonEmpty Text", description: "The complete event-type allow-list this codec owns" },
+    eventType: { type: "e -> Text", description: "Project a domain value to its wire tag (must be in eventTypes)" },
+    schemaVersion: { type: "Int", description: "Current payload version; must be >= 1" },
+    encode: { type: "e -> Value", description: "Current-version JSON serialization" },
+    decode: { type: "Value -> Either Text e", description: "Only ever sees payloads already migrated to schemaVersion" },
+    upcasters: { type: "[Upcaster]", description: "Migrations keyed by source version" },
+  }}
+/>
+
+## `Upcaster`
+
+One rung of an upcaster chain: the source version it upgrades **from**, and a pure migration.
+
+```haskell
+type Upcaster = (Int, Value -> Either Text Value)
+```
+
+<Callout type="warn">
+The chain must be **ascending and contiguous**. Reaching version `n` with the next available upcaster
+starting later yields `GapInUpcasterChain n nextVersion`.
+</Callout>
+
+## `CodecError`
+
+```haskell
+data CodecError
+  = UnknownEventType !EventType ![Text]       -- tag not in eventTypes (offending tag, allowed set)
+  | InvalidSchemaVersion !Int                 -- schemaVersion is not >= 1
+  | UnknownVersion !Int                       -- stored version is < 1 or beyond the chain
+  | UpcasterError !Int !Text                  -- an upcaster rejected its input (source version, msg)
+  | DecodeFailed !Text                        -- the current decode rejected a migrated payload
+  | GapInUpcasterChain !Int !Int              -- reached version n, next rung starts later
+  deriving stock (Generic, Eq, Show)
+```
+
+<Callout type="warn">
+An unknown `eventType` on read is **fatal** (`UnknownEventType`), carrying the offending tag and the
+allowed set. There is no "skip unknown events" mode.
+</Callout>
+
+## Functions
+
+```haskell
+encodeForAppend             :: Codec e -> e -> Either CodecError EventData
+encodeForAppendWithMetadata :: Codec e -> Maybe Value -> e -> Either CodecError EventData
+decodeRecorded              :: Codec e -> RecordedEvent -> Either CodecError e
+decodeRaw                   :: Codec e -> Int -> Value -> Either CodecError e
+migrateToCurrent            :: Codec e -> Int -> Value -> Either CodecError Value
+extractSchemaVersion        :: RecordedEvent -> Int            -- defaults to 1 when absent/invalid
+metadataFor                 :: Int -> Maybe Value -> Value     -- inserts the @schemaVersion@ key
+```
+
+Behavior to know:
+
+- `encodeForAppendWithMetadata` stamps `schemaVersion` into fresh or supplied metadata via
+  `metadataFor`, and the **schema-version key always wins** over any clashing caller key, so the
+  version on disk is authoritative.
+- `decodeRecorded` reads the stamped version (`extractSchemaVersion`, defaulting to `1`), runs
+  `migrateToCurrent` (replay upcasters `n, n+1, …` up to `schemaVersion`), then the current `decode`.
+
+The worked example is the `jitsurei` order codec (`orderCodec`, `schemaVersion = 2`,
+`upcasters = [(1, upcastOrderPlacedV1)]`); see
+[Evolve an event schema](/docs/keiro/how-to/evolve-an-event-schema).

@@ -1,0 +1,119 @@
+---
+title: "Command"
+description: "The command runners and their result, error, and options types: runCommand, runCommandWithSql, runCommandWithSqlEvents."
+---
+
+The types and functions on this page live in `Keiro.Command` (re-exported from `Keiro`). They run a
+command through the Hydrate → Decide → Append cycle; for the narrative, see
+[The command cycle](/docs/keiro/explanation/the-command-cycle).
+
+## `CommandResult`
+
+The outcome of a successfully handled command. `eventsAppended` is `0` for a no-op command (one the
+transducer accepted but that emitted no events).
+
+<TypeTable
+  type={{
+    target: { type: "Stream target", description: "The stream the command ran against" },
+    streamVersion: { type: "StreamVersion", description: "The stream's version after the append" },
+    globalPosition: { type: "Maybe GlobalPosition", description: "$all position of the last appended event; Nothing on a no-op" },
+    eventsAppended: { type: "Int", description: "How many events were appended; 0 for a no-op" },
+  }}
+/>
+
+## `CommandError`
+
+Why a command did not complete.
+
+```haskell
+data CommandError
+  = HydrationDecodeFailed !CodecError       -- a stored event could not be decoded while rehydrating
+  | HydrationReplayFailed !StreamVersion    -- replay stalled: the machine rejected a committed event
+  | CommandRejected                         -- the transducer rejected the command in the hydrated state
+  | EncodeFailed !CodecError                -- an emitted event could not be encoded for append
+  | StoreFailed !StoreError                 -- the store rejected the append (non-retryable)
+  | RetryExhausted !Int !StoreError         -- optimistic-concurrency retries ran out (limit, last error)
+  deriving stock (Generic, Eq, Show)
+```
+
+<Callout type="warn">
+Tell three outcomes apart: **rejected** (`Left CommandRejected` — no edge for this command in the
+hydrated state, nothing written), **no-op** (`Right CommandResult { eventsAppended = 0 }` — accepted
+but emitted nothing, nothing written, *not* a rejection), and **store failure**
+(`Left (StoreFailed …)` / `Left (RetryExhausted …)`). They flow through the same
+`Either CommandError CommandResult` and are easy to conflate.
+</Callout>
+
+## `RunCommandOptions` and `defaultRunCommandOptions`
+
+Knobs for a single command invocation.
+
+<TypeTable
+  type={{
+    retryLimit: { type: "Int", description: "Rehydrate-and-replay attempts after a conflict", default: "3" },
+    pageSize: { type: "Int32", description: "Read-batch size during hydration", default: "256" },
+    eventIds: { type: "[EventId]", description: "Caller ids assigned to emitted events, in order", default: "[]" },
+    beforeAppend: { type: "IO ()", description: "Hook run before each append attempt (test seam)", default: "pure ()" },
+    tracer: { type: "Maybe Tracer", description: "Optional OpenTelemetry tracer", default: "Nothing" },
+    metadata: { type: "Maybe Value", description: "JSON merged into every event's metadata", default: "Nothing" },
+  }}
+/>
+
+```haskell
+-- Defaults: 3 retries, 256-event read pages, no caller ids, no-op hook, no tracer, no metadata.
+defaultRunCommandOptions :: RunCommandOptions
+```
+
+## `runCommand` — append only
+
+```haskell
+runCommand ::
+  forall phi rs s ci co es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  RunCommandOptions ->
+  EventStream phi rs s ci co ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co)))
+```
+
+## `runCommandWithSql` — append plus an in-transaction callback
+
+Runs `afterAppend` in the **same** Hasql transaction as the append (e.g. to update an inline read
+model atomically). The callback sees the `AppendResult`; its return is surfaced as `Maybe a`
+(`Nothing` on a no-op, when no append happened).
+
+```haskell
+runCommandWithSql ::
+  forall phi rs s ci co a es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  RunCommandOptions ->
+  EventStream phi rs s ci co ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  (AppendResult -> Tx.Transaction a) ->
+  Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co), Maybe a))
+```
+
+## `runCommandWithSqlEvents` — the general primitive
+
+The most general runner: the in-transaction callback also receives each emitted event paired with its
+persisted `RecordedEvent`. This is the primitive that
+[projections](/docs/keiro/reference) (EP-9 `Keiro.Projection`), process managers, and the
+[router](/docs/keiro/reference/router) build on.
+
+```haskell
+runCommandWithSqlEvents ::
+  forall phi rs s ci co a es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  RunCommandOptions ->
+  EventStream phi rs s ci co ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  ([(co, RecordedEvent)] -> AppendResult -> Tx.Transaction a) ->
+  Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co), Maybe a))
+```
+
+See [Run a command in a transaction](/docs/keiro/how-to/run-a-command-in-a-transaction) for the
+transactional pattern and [Configure concurrency retries](/docs/keiro/how-to/configure-concurrency-retries)
+for tuning `retryLimit`/`pageSize`.

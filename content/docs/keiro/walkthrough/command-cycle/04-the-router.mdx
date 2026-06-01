@@ -1,0 +1,75 @@
+---
+title: "04 — The router"
+description: "Reading Keiro.Router: deterministic-id dispatch for exactly-once-per-target, and the worker's ack policy over a shibuya adapter."
+---
+
+This final chapter reads `keiro/src/Keiro/Router.hs` — keiro's stateless content-based router. Read
+[03 — The codec on the boundary](/docs/keiro/walkthrough/command-cycle/03-the-codec-on-the-boundary)
+first.
+
+## `dispatchCommand`: a deterministic id makes dispatch exactly-once-per-target
+
+For each resolved target, `runRouterOnce` calls `dispatchCommand`, which derives a deterministic id
+and pre-checks the target stream before running the command:
+
+```haskell
+-- keiro/src/Keiro/Router.hs
+    dispatchCommand correlationId sourceEventId emitIndex command = do
+      let commandId = deterministicCommandId (router ^. #name) correlationId sourceEventId emitIndex
+      ...
+      commandAlreadyProcessed <- eventAlreadyIn options targetStreamName commandId
+      if commandAlreadyProcessed
+        then pure (PMCommandDuplicate commandId)
+        else do
+          outcome <-
+            runCommandWithProjections targetOptions targetEventStream targetStream
+              (command ^. #command) ((router ^. #targetProjections) (command ^. #target))
+          pure $ case outcome of
+            Right result -> PMCommandAppended result
+            Left (StoreFailed (DuplicateEvent (Just duplicateId))) | duplicateId == commandId -> PMCommandDuplicate commandId
+            Left (StoreFailed (DuplicateEvent Nothing)) -> PMCommandDuplicate commandId
+            Left err -> PMCommandFailed err
+```
+
+The id is a pure function of `(router name, correlation, source event id, emit index)`. Two layers
+make re-processing a no-write: the `eventAlreadyIn` pre-check skips a command already present in the
+target stream, and even if two workers race past the pre-check, the store rejects the second append as
+a `DuplicateEvent` — which the router folds back into a benign `PMCommandDuplicate`. The command runs
+via `runCommandWithProjections` (the read-side wrapper over the transactional runner from chapter 02),
+so a target's events and its inline projections commit together. A genuine failure becomes a
+`PMCommandFailed` element of the `RouterResult` — never an exception, never an outer `Left`.
+
+## The worker: decode, dispatch, ack
+
+`runRouterWorker` drains a shibuya `Adapter` and finalizes each message's `AckHandle` with a decision:
+
+```haskell
+    handleIngested Ingested{envelope = Envelope{payload = message}, ack = AckHandle finalizeAck} = do
+      decision <- case decodeMessage message of
+        Nothing -> pure (AckHalt (HaltFatal "router worker could not decode message"))
+        Just (recorded, input) -> do
+          RouterResult results <- runRouterOnce options router recorded input
+          pure (ackDecisionFor results)
+      finalizeAck decision
+      pure decision
+
+    ackDecisionFor results =
+      case [err | PMCommandFailed err <- results] of
+        (err : _) -> AckHalt (HaltFatal (Text.pack (show err)))
+        [] -> AckOk
+```
+
+The policy is strict: an undecodable message halts fatally; if **any** dispatch is `PMCommandFailed`
+the message halts (so the source event is retried — and the deterministic ids make that retry safe,
+because already-applied targets fold to `PMCommandDuplicate`); only an all-`PMCommandAppended`/
+`PMCommandDuplicate` batch acks `AckOk`.
+
+<Callout type="warn">
+Because any `PMCommandFailed` halts and retries the source event, a *benign* domain rejection (a
+target with no matching edge) would wedge the worker. Model such rejections as **total** transitions
+(an ε-complement self-loop) in the target transducer so they never become `PMCommandFailed`.
+</Callout>
+
+The worked example is `jitsurei` `pagingRouter` (`just jitsurei-paging`). That closes the write-path
+tour — back to [00 — Start here](/docs/keiro/walkthrough/command-cycle/00-start-here), or on to the
+[Router reference](/docs/keiro/reference/router).

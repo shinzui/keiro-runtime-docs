@@ -1,0 +1,58 @@
+---
+title: "Run a command in a transaction"
+description: "Commit a read-model row (or any SQL) in the same transaction as a command's event append."
+---
+
+You need a side effect — typically an inline read-model update — to commit **atomically** with a
+command's events, so they are never out of step. keiro's transactional runners run your callback in
+the *same* Hasql transaction as the append.
+
+<Callout type="info">
+  Assumes you already have an `EventStream` and can run the `Store` effect (see
+  [Get started with keiro](/docs/keiro/tutorials/getting-started)).
+</Callout>
+
+## Goal
+
+Append a command's events and write a derived SQL row in one transaction that commits or rolls back
+together.
+
+## Steps
+
+1. Pick the runner. Use `runCommandWithSql` when your callback only needs the `AppendResult`; use
+   `runCommandWithSqlEvents` when it needs each emitted event paired with its persisted
+   `RecordedEvent` (for example to write one read-model row per event):
+
+   ```haskell
+   result <-
+     runCommandWithSqlEvents
+       defaultRunCommandOptions
+       orderEventStream
+       (orderStream theOrderId)
+       command
+       (\emitted appendResult ->
+           -- emitted :: [(OrderEvent, RecordedEvent)]; runs inside the append transaction
+           traverse_ (\(event, recorded) -> Tx.statement (rowFor event recorded) upsertSummaryStmt) emitted)
+   ```
+
+2. Handle the result. Both transactional runners return
+   `Either CommandError (CommandResult …, Maybe a)` — the `Maybe a` is your callback's return.
+
+<Callout type="warn">
+A callback exception aborts the **whole** transaction — the append is rolled back too. On a **no-op**
+command (the transducer emitted no events) the callback does **not** run and the `Maybe a` is
+`Nothing`.
+</Callout>
+
+## Verify it worked
+
+Query the read-model table after a successful command: the derived row and the appended events are
+both present. Force a callback exception in a test and confirm *neither* the row nor the events were
+committed.
+
+## Related
+
+- [Command reference](/docs/keiro/reference/command) — the three runners and their signatures.
+- [Make commands idempotent](/docs/keiro/how-to/make-commands-idempotent) — deterministic appends.
+- The inline-projection wrapper `runCommandWithProjections` (read-side plan) is built on
+  `runCommandWithSqlEvents`; see the [Reference index](/docs/keiro/reference).

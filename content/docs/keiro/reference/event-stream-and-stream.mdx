@@ -1,0 +1,89 @@
+---
+title: "Event stream and Stream handle"
+description: "EventStream, SnapshotPolicy, StateCodec (Keiro.EventStream) and the phantom-typed Stream handle (Keiro.Stream)."
+---
+
+`EventStream` (and its `SnapshotPolicy`/`StateCodec`) live in `Keiro.EventStream`; the `Stream`
+handle lives in `Keiro.Stream`. Both are re-exported from `Keiro`.
+
+## `EventStream`
+
+The complete description of one persistent event stream: a keiki transducer plus everything keiro
+needs to run it against a durable store. The type parameters thread through from the transducer —
+`phi` = guard alphabet, `rs` = register set, `s` = control state, `ci` = command input, `co` = event
+output.
+
+<TypeTable
+  type={{
+    transducer: { type: "SymTransducer phi rs s ci co", description: "The keiki decision core" },
+    initialState: { type: "s", description: "Control state before any event is replayed" },
+    initialRegisters: { type: "RegFile rs", description: "Register file before any event is replayed" },
+    eventCodec: { type: "Codec co", description: "Serializes/deserializes/migrates this stream's events" },
+    resolveStreamName: { type: "Stream (EventStream …) -> StreamName", description: "How the typed handle maps to a kiroku StreamName (commonly Stream.streamName)" },
+    snapshotPolicy: { type: "SnapshotPolicy (s, RegFile rs)", description: "When to write a snapshot of the folded state" },
+    stateCodec: { type: "Maybe (StateCodec (s, RegFile rs))", description: "Nothing disables snapshotting regardless of policy" },
+  }}
+/>
+
+<Callout type="info">
+`stateCodec = Nothing` disables snapshotting **regardless** of `snapshotPolicy`. The `jitsurei` order
+stream shows both ends: `orderEventStream` uses `snapshotPolicy = Never`, `stateCodec = Nothing`,
+while `snapshotOrderEventStream` uses `snapshotPolicy = Every 2`,
+`stateCodec = Just (defaultStateCodec @OrderRegs @OrderState 1)`.
+</Callout>
+
+## `SnapshotPolicy`
+
+When keiro writes a snapshot of the folded `(state, registers)`.
+
+```haskell
+data SnapshotPolicy state
+  = Never                                  -- never snapshot; always replay the full log
+  | Every !Int                             -- snapshot when version is a positive multiple of n
+  | OnTerminal                             -- snapshot only at a final state
+  | Custom !(state -> StreamVersion -> Bool)
+  deriving stock (Generic)
+```
+
+## `StateCodec`
+
+How a snapshot is encoded. It is **defined** here, but the runtime snapshot read/write mechanics —
+`writeSnapshot`, `hydrateWithSnapshot`, `defaultStateCodec`, `shouldSnapshot`, and the
+`keiro_snapshots` table — are documented on the read side's snapshot reference (the
+`reference/snapshot` page, owned by the read-side plan). See the
+[Reference index](/docs/keiro/reference) for that page once it lands.
+
+<TypeTable
+  type={{
+    stateCodecVersion: { type: "Int", description: "Bumped when the snapshot encoding changes incompatibly" },
+    shapeHash: { type: "Text", description: "Digest of the folded-state shape; guards reuse" },
+    encode: { type: "state -> Value", description: "Serialize the folded state to JSON" },
+    decode: { type: "Value -> Either Text state", description: "Deserialize a snapshot back to folded state" },
+  }}
+/>
+
+## `Stream` — the phantom-typed handle
+
+A `StreamName` tagged with a phantom type `a` identifying which aggregate it names, so a name for one
+aggregate cannot be passed where another is expected.
+
+```haskell
+newtype Stream a = Stream { name :: StreamName }
+  deriving stock (Generic, Eq, Ord, Show)
+
+stream        :: Text -> Stream a                                   -- build a handle from a raw stream-name Text
+streamName    :: Stream a -> StreamName                              -- recover the underlying StreamName
+mapStreamName :: (StreamName -> StreamName) -> Stream a -> Stream a  -- transform the name, keep the tag
+```
+
+The `jitsurei` order stream builds its handle as
+`orderStream orderId = stream ("order-" <> orderIdText orderId)`, typed `OrderId -> Stream
+OrderEventStream`.
+
+<Callout type="info">
+The design notes' old name for this type was `AggregateId a`; the shipped type is `Stream a`. Trust
+the source.
+</Callout>
+
+For why an `EventStream` carries a `SymTransducer` directly rather than a decide/evolve pair, see
+[Why SymTransducer, not Decider](/docs/keiro/explanation/why-symtransducer-not-decider).

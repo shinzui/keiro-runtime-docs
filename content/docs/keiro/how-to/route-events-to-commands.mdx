@@ -1,0 +1,57 @@
+---
+title: "Route events to commands"
+description: "Use Keiro.Router to dispatch one command per resolved target for each incoming event, once-only, over a shibuya subscription."
+---
+
+You have an event (an incident was raised) that must fan out to a data-dependent set of commands
+(page each on-call responder). keiro's `Router` resolves the targets effectfully and dispatches one
+command to each, exactly once per target.
+
+<Callout type="info">
+  Assumes you understand the command cycle (see
+  [The command cycle](/docs/keiro/explanation/the-command-cycle)) and have an `EventStream` for the
+  target commands.
+</Callout>
+
+## Goal
+
+For each incoming event, dispatch one command per resolved target, idempotently, and run it as a live
+subscription.
+
+## Steps
+
+1. **Define a `Router`** whose `resolve` queries a read model for the targets. The `jitsurei`
+   `pagingRouter` (`jitsurei/src/Jitsurei/Paging.hs`) looks up the on-call roster
+   (`serviceOncallReadModel`) and yields one `SendPage` `PMCommand` per responder, with
+   `targetProjections = const []`.
+
+2. **Dispatch for one event** with `runRouterOnce`:
+
+   ```haskell
+   RouterResult results <- runRouterOnce defaultRunCommandOptions pagingRouter recordedEvent incidentRaised
+   ```
+
+3. **Run it as a live subscription** with `runRouterWorker`, draining a shibuya `Adapter`;
+   `decodeMessage` turns each message into `(RecordedEvent, input)`:
+
+   ```haskell
+   -- decodeMessage :: msg -> Maybe (RecordedEvent, input)
+   runRouterWorker defaultRunCommandOptions pagingRouter adapter decodeMessage
+   ```
+
+<Callout type="warn">
+Model benign domain rejections (a target refusing a command because no edge matches) as **total**
+transitions in the keiki transducer, so they never surface as `PMCommandFailed` and wedge the worker
+(a `PMCommandFailed` makes the worker `AckHalt` and retry the source event).
+</Callout>
+
+## Verify it worked
+
+Run `just jitsurei-paging`: a raised incident dispatches one page per on-call responder. Re-deliver
+the same source event and confirm the second pass writes nothing (each target is a
+`PMCommandDuplicate`).
+
+## Related
+
+- [Router reference](/docs/keiro/reference/router) — `Router`, `runRouterOnce`, `runRouterWorker`.
+- [Make commands idempotent](/docs/keiro/how-to/make-commands-idempotent) — the deterministic-id mechanism the router automates.

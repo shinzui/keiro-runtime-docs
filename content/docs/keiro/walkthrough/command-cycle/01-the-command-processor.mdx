@@ -1,0 +1,116 @@
+---
+title: "01 — The command processor"
+description: "Reading runCommand: how hydrate, evaluateCommand, expectedVersion, and retryOrFail compose the append-only runner."
+---
+
+This chapter reads `runCommand` and its helpers in `keiro/src/Keiro/Command.hs` — the append-only
+runner. Read [00 — Start here](/docs/keiro/walkthrough/command-cycle/00-start-here) first.
+
+## `runCommand`: a span, an attempt loop, an outcome
+
+```haskell
+-- keiro/src/Keiro/Command.hs
+runCommand options eventStream targetStream command =
+  withCommandSpan (options ^. #tracer) (resolvedStreamName eventStream targetStream) Nothing $ \mSpan -> do
+    result <- attempt (options ^. #retryLimit)
+    recordCommandOutcome mSpan (^. #eventsAppended) result
+    pure result
+  where
+    attempt remaining = do
+      hydrated <- hydrate options eventStream targetStream
+      either (pure . Left) (runPlan remaining) hydrated
+```
+
+The body wraps the work in an optional OpenTelemetry span (`Nothing` tracer → no span), then runs
+`attempt` seeded with `retryLimit`. `attempt` **Hydrates** first; a hydration error short-circuits to
+`Left`, otherwise control passes to `runPlan`.
+
+## `runPlan`: Decide, then branch on what the transducer emitted
+
+```haskell
+    runPlan remaining current =
+      case prepareCommandPlan options eventStream targetStream current command of
+        Left err -> pure (Left err)
+        Right (CommandNoOp result) -> pure (Right result)
+        Right (CommandAppend current' events encoded) ->
+          appendOnce remaining current' events encoded
+```
+
+`prepareCommandPlan` runs the Decide phase (via `evaluateCommand`) and the encode step. An empty event
+list becomes a `CommandNoOp` — a `CommandResult` with `eventsAppended = 0` that returns immediately
+without touching the store. A non-empty list becomes a `CommandAppend` carrying the encoded events.
+This is the source of the **no-op vs. rejected** distinction: a no-op is a *successful* `Right` here,
+while a rejection comes out of `evaluateCommand` as a `Left CommandRejected`:
+
+```haskell
+evaluateCommand eventStream current command =
+  case Keiki.step (eventStream ^. #transducer) (state current, registers current) command of
+    Nothing -> Left CommandRejected
+    Just (_, _, events) -> Right events
+```
+
+Stepping the keiki transducer *is* the Decide phase: `Nothing` is a rejection, `Just (_, _, events)`
+is an accepted transition.
+
+## `appendOnce`: optimistic append, then maybe a snapshot
+
+```haskell
+    appendOnce remaining current events encoded = do
+      liftIO (options ^. #beforeAppend)
+      appended <- tryError @StoreError $
+        appendToStream
+          ((eventStream ^. #resolveStreamName) targetStream)
+          (expectedVersion (current ^. #streamVersion))
+          encoded
+      case appended of
+        Right appendResult -> do
+          writeSnapshotIfNeeded eventStream current events appendResult
+          pure (Right (appendedResult targetStream appendResult (Prelude.length encoded)))
+```
+
+The append asserts an expected version derived from the hydrated version:
+
+```haskell
+expectedVersion :: StreamVersion -> ExpectedVersion
+expectedVersion (StreamVersion 0) = NoStream
+expectedVersion version           = ExactVersion version
+```
+
+`StoreError` is captured with `tryError` (not thrown). On success, `writeSnapshotIfNeeded` runs
+**synchronously, inline in the command effect** — if `stateCodec = Nothing` it is a no-op, otherwise it
+re-folds the emitted events and writes a snapshot when the `snapshotPolicy` says so. (The snapshot
+read/write mechanics are documented on the read side's `reference/snapshot` page; see the
+[Reference index](/docs/keiro/reference).)
+
+## `retryOrFail`: the bounded conflict loop
+
+On a store error, the conflict loop decides whether to retry:
+
+```haskell
+retryOrFail options retry remaining storeError
+  | isRetryableConflict storeError
+  , remaining > 0 =
+      retry (remaining Prelude.- 1)
+  | isRetryableConflict storeError =
+      pure (Left (RetryExhausted (options ^. #retryLimit) storeError))
+  | otherwise =
+      pure (Left (StoreFailed storeError))
+```
+
+A retryable conflict with budget left re-enters `attempt` (which re-hydrates and re-decides); a
+retryable conflict with no budget becomes `RetryExhausted` carrying the configured limit and the last
+error; anything else is `StoreFailed`. And the retryable set is the sharp part:
+
+```haskell
+isRetryableConflict = \case
+  WrongExpectedVersion{} -> True
+  StreamAlreadyExists{} -> True
+  _ -> False
+```
+
+<Callout type="warn">
+`StreamAlreadyExists` is **retryable**, so a lost race to *create* a new stream is silently retried
+(the re-hydrate now sees the stream exists), never surfaced to the caller as `StreamAlreadyExists`.
+</Callout>
+
+Next: [02 — The transactional write path](/docs/keiro/walkthrough/command-cycle/02-the-transactional-write-path).
