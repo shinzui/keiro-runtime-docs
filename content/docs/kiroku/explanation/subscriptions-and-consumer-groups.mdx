@@ -22,10 +22,15 @@ most:
   costs almost nothing.
 
 There are three further states — `Paused` (recoverable backpressure), `Reconnecting` (the live
-connection dropped; back off and re-catch-up), and `Retrying` — plus the terminal `Stopped`. You
-can read the current state at any instant via the handle's `currentState`. The
-[subscription walkthrough](/docs/kiroku/walkthrough) traces the whole machine through the real
-source.
+connection dropped; back off and re-catch-up), and `Retrying` — plus the terminal `Stopped`. You can
+read the current state at any instant via the handle's `currentState :: m (Maybe SubscriptionState)`:
+`Just s` while the worker is live, `Nothing` once it is not (stopped, cancelled, crashed, not
+started, or superseded) — so a not-live subscription is **"stopped = absent"**, never observed as a
+`Just (Stopped …)`. To read every live subscription at once without holding each handle — for a
+health dashboard or metrics scrape — call `subscriptionStates store`, which snapshots the store's
+central registry as `SubscriptionStateView` records (name, member, state, a stable `statePhase`
+label, and the FSM `cursor`). The [subscription walkthrough](/docs/kiroku/walkthrough) traces the
+whole machine through the real source.
 
 ## At-least-once, checkpoint-per-batch
 

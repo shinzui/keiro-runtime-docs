@@ -1,0 +1,182 @@
+---
+title: "04 — subscribe and the lifecycle handle"
+description: "Reading Subscription.hs: spawning the worker, the cleanup contract, and what wait resolves to."
+---
+
+<Callout type="info">
+  Part of an ordered walkthrough. Previous: [03 — The event
+  publisher](/docs/kiroku/walkthrough/03-the-event-publisher).
+</Callout>
+
+## What this part covers
+
+`kiroku-store/src/Kiroku/Store/Subscription.hs` — the thin, public top of the stack. It validates
+the config, spawns the [worker](/docs/kiroku/walkthrough/02-the-worker-driver) on its own thread, and hands back a
+`SubscriptionHandle` for cancellation and waiting. This is the part your application actually
+calls.
+
+## subscribe, end to end
+
+```haskell
+-- src/Kiroku/Store/Subscription.hs (trimmed)
+subscribe :: (MonadIO m) => KirokuStore -> SubscriptionConfig -> m SubscriptionHandle
+subscribe store config = liftIO $ do
+  -- 1. Fail fast on a misconfigured group, before any thread is spawned.
+  for_ (consumerGroup config) $ \(ConsumerGroup m n) ->
+    when (n < 1 || m < 0 || m >= n) $
+      throwIO (InvalidConsumerGroup m n)
+
+  -- 2. Register with the publisher: a bounded queue + a status TVar + an unsubscribe action.
+  (queue, statusVar, unsubscribe) <-
+    atomically $ Pub.subscribePublisher (store ^. #publisher)
+                                        (queueCapacity config) (overflowPolicy config)
+
+  -- 3. Seed the observable state TVar with the catch-up entry state.
+  stateVar <- newTVarIO (CatchingUp (GlobalPosition 0) 0)
+
+  -- 4. Register this worker's state cell into the store's central registry under
+  --    (name, member), guarded by a fresh token that identifies THIS worker.
+  token <- newUnique
+  let reg = store ^. #subscriptionRegistry
+      key = (name config, configMember config)
+      -- Extend the existing `finally` to also deregister from the registry on
+      -- ANY exit; the delete is token-conditional so an older duplicate-key
+      -- worker's cleanup cannot remove a newer worker's live entry.
+      cleanup = unsubscribe >> atomically (modifyTVar' reg (Map.update dropMine key))
+      dropMine (tok, cell) = if tok == token then Nothing else Just (tok, cell)
+  atomically $ modifyTVar' reg (Map.insert key (token, stateVar))   -- insert before forking
+
+  -- 5. Spawn the worker; `finally cleanup` guarantees deregistration on ANY exit.
+  thread <-
+    Async.async
+      ( runWorker (store ^. #pool) queue statusVar stateVar pubPosVar catGenVar
+                  config (store ^. #eventHandler) (store ^. #storeSettings)
+          `finally` cleanup )
+
+  -- 6. Hand back the lifecycle handle; currentState resolves THIS worker's cell
+  --    through the registry by key and token.
+  pure SubscriptionHandle
+    { cancel       = Async.cancel thread
+    , wait         = Async.waitCatch thread
+    , currentState = do
+        m <- readTVarIO reg
+        case Map.lookup key m of
+          Just (tok, cell) | tok == token -> Just <$> readTVarIO cell
+          _                                -> pure Nothing
+    }
+```
+
+Six things happen, in order. Read each:
+
+1. **Eager validation.** A bad `(member, size)` is a _programmer_ error, so `subscribe` throws
+   `InvalidConsumerGroup` immediately rather than starting a doomed worker. This is also why
+   `subscribe`'s signature stays non-`Either` — the only failures here are bugs.
+2. **Publisher registration** gives the worker its live source (the bounded `queue`) and a
+   `statusVar` the publisher uses to signal overflow.
+3. **The observable `stateVar`** is seeded with `CatchingUp` so a `currentState` read _before_ the
+   worker's first transition still returns something sensible.
+4. **Registry registration.** The worker's _own_ `stateVar` is inserted into the store's central
+   `subscriptionRegistry` under `(name, member)`, paired with a fresh `Data.Unique` token that
+   identifies this worker. The cell is **registered, not copied** — the registry holds the same
+   `TVar` the worker writes and `currentState` reads, so there is one coherent value. The insert
+   happens _before_ forking, so a caller that snapshots immediately after `subscribe` returns
+   already sees this subscription.
+5. **The cleanup contract.** `runWorker ... \`finally\` cleanup` removes the subscription from the
+   publisher's registry **and** the subscription-state registry whenever the worker exits —
+   gracefully on `Stop`, by cancellation, or on any exception. Forgetting the publisher half would
+   leave an entry with no reader, tripping this subscriber's overflow policy on the next batch;
+   forgetting the registry half would leak a stale state entry. The registry delete is
+   **token-conditional** (`dropMine`), so a stale cleanup from an older worker that shared the key
+   cannot remove a newer worker's live entry.
+6. **The handle** exposes exactly three capabilities: `cancel`, `wait`, and `currentState` — but
+   `currentState` is now `m (Maybe SubscriptionState)`, resolved by looking this worker's cell up in
+   the registry by key **and** token. See [What `currentState` returns](#what-currentstate-returns)
+   below.
+
+## What `wait` resolves to
+
+`wait = Async.waitCatch thread`, so it returns `Either SomeException ()`. The module documents the
+cases, and they map straight back to the FSM's terminal `Stopped` reasons:
+
+- `Right ()` — the handler returned `Stop`; the worker exited cleanly with the checkpoint saved at
+  that event (`StopHandlerRequested`).
+- `Left AsyncCancelled` — the caller invoked `cancel`; in-flight events replay on the next start
+  (`StopCancelled`).
+- `Left SubscriptionOverflowed` — the publisher dropped this subscription under
+  `DropSubscription` (`StopOverflowed`).
+- `Left e` for any other exception — a handler that threw. Handler exceptions are **not** caught;
+  the worker thread dies and the exception propagates. That is intentional: a throwing handler is
+  signalling the subscription cannot proceed safely.
+
+## What `currentState` returns
+
+`currentState :: m (Maybe SubscriptionState)`. It looks the handle's key up in the registry and
+checks the token:
+
+- `Just s` — the worker is **live** and still owns its registry entry, in state `s` (one of
+  `CatchingUp`, `Live`, `Paused`, `Reconnecting`, `Retrying`).
+- `Nothing` — the subscription is **not currently live**: it has stopped, been cancelled, crashed
+  (its key was removed in `cleanup`), was never started, or has been **superseded** by a newer worker
+  registered under the same `(name, member)` key (the token no longer matches).
+
+<Callout type="info">
+  `Stopped` is **never** observed through `currentState`. The FSM never writes `Stopped` into the
+  cell — a stopped worker is removed from the registry instead — so a not-live subscription is always
+  `Nothing`, never `Just (Stopped …)`. This is the single rule **"stopped = absent"**, shared with
+  the `subscriptionStates` snapshot. For the terminal stop _reason_, read the `KirokuEvent` lifecycle
+  stream (or the always-emitted `kiroku.subscription.stopped` span).
+</Callout>
+
+To read **every** live subscription at once — for a health dashboard or a metrics scrape — without
+holding each individual handle, the store exposes a snapshot of the same registry:
+
+```haskell
+subscriptionStates :: KirokuStore -> IO (Map (SubscriptionName, Int32) SubscriptionStateView)
+
+data SubscriptionStateView = SubscriptionStateView
+  { subscriptionName :: !SubscriptionName  -- the subscription
+  , member           :: !Int32             -- consumer-group member (0 for a non-group subscription)
+  , state            :: !SubscriptionState  -- the live FSM state
+  , statePhase       :: !Text              -- stable low-cardinality label: "catching_up" | "live" | …
+  , cursor           :: !GlobalPosition    -- the worker's FSM cursor (cheap live-progress signal)
+  }
+  deriving stock (Show, Generic)
+```
+
+`subscriptionStates` snapshots the outer registry map, then reads each cell with `readTVarIO`
+**outside** STM — deliberately _not_ one big transaction over every cell, which would put all of
+them in the reader's STM read set and force a re-run on each per-batch worker write. The named
+consumers (a Prometheus scrape, an admin listing) read independent freshest values and do not need a
+globally atomic snapshot. A stopped/cancelled/crashed subscription is represented by **absence**,
+never a `"stopped"` phase — and `cursor` is the worker FSM cursor, a live-progress signal, not a
+guaranteed durable checkpoint row.
+
+## Prefer withSubscription
+
+Because forgetting to `cancel` leaks the worker thread for the life of the process, the
+bracket-style wrapper is the recommended entry point:
+
+```haskell
+-- src/Kiroku/Store/Subscription.hs
+withSubscription :: (MonadUnliftIO m) => KirokuStore -> SubscriptionConfig
+                 -> (SubscriptionHandle -> m a) -> m a
+withSubscription store config action = withRunInIO $ \runInIO ->
+  bracket (subscribe store config) cancel (runInIO . action)
+```
+
+It is `bracket (subscribe store config) cancel action`, lifted to any `MonadUnliftIO` so it
+composes with effectful stacks. Reach for the bare `subscribe` only when you already have a
+structured lifecycle of your own (for instance the Streamly bridge).
+
+## The subscription, in one sentence
+
+A subscription is a **pure state machine** ([`Fsm.hs`](/docs/kiroku/walkthrough/01-the-state-machine)) interpreted by an
+**impure two-phase driver** ([`Worker.hs`](/docs/kiroku/walkthrough/02-the-worker-driver)), spawned and wrapped in a
+**cleanup-guaranteeing lifecycle handle** (`Subscription.hs`) — which is why it is at-least-once,
+resumable, backpressure-safe, and observable, with almost no logic duplicated between the layers.
+
+## Next
+
+That is kiroku's subscription machinery end to end. The tour now crosses into a _separate_ package
+that builds on it: [05 — The shibuya adapter](/docs/kiroku/walkthrough/05-the-shibuya-adapter),
+which bridges this push-based subscription into shibuya's pull-based queue-processing runtime.

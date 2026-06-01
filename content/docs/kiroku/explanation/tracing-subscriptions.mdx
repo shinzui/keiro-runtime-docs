@@ -41,13 +41,19 @@ completed episode shows its real duration on the timeline:
   rather than new spans.
 - `kiroku.subscription.retrying` — keyed _per poison event_ by its global position. Opens on the
   first `Retrying` for that position and ends either when a `DeadLettered` for the same position
-  arrives (status `Error`) or when the worker moves on — a later `Fetched`/`CaughtUp` — meaning the
-  retry succeeded (status `Ok`).
+  arrives (status `Error`) or when the worker moves on — a later live `Delivered`/`CaughtUp` —
+  meaning the retry succeeded (status `Ok`).
 
-**Per-batch work spans** open and end immediately during `Live`:
+**Per-batch work spans** open and end immediately on every delivered batch:
 
-- `kiroku.subscription.fetch` — one per live fetch, carrying `kiroku.batch.rows`. Because these end
-  at once they export continuously, giving live visibility without any long-lived `Live` span.
+- `kiroku.subscription.deliver` — one per non-empty batch handed to the handler, on **every** target
+  (`$all`, category, consumer group) and in **both** phases. It carries `kiroku.batch.rows` and a
+  `kiroku.subscription.state` of `catchup` or `live`, so an `$all` subscription's live phase is now
+  traced (previously it emitted no per-batch event and went dark while live). Because these end at
+  once they export continuously, giving live visibility without any long-lived `Live` span. The
+  DB-driven live loops still emit `KirokuEventSubscriptionFetched` (the live-fetch-rate signal) but
+  the tracer intentionally does **not** trace it — the deliver span subsumes it, so the live path
+  does not emit two spans per batch.
 
 **Standalone spans** cover point events with no open episode to attach to:
 
@@ -55,45 +61,56 @@ completed episode shows its real duration on the timeline:
 - `kiroku.subscription.db_error` — a DB error when no episode span is open. When one _is_ open, the
   error is recorded as a `kiroku.db_error` span _event_ on that episode instead of spawning a
   competing span.
+- `kiroku.subscription.stopped` — **always** emitted on `Stopped`, carrying the
+  `kiroku.subscription.stop_reason` and the `kiroku.checkpoint.global_position`. This means the
+  terminal state is present in the trace even for a healthy worker that catches up, runs live, and
+  stops with no open episode span — without it, such a worker would leave no terminal marker on the
+  timeline.
 
 ```mermaid
 stateDiagram-v2
   [*] --> CatchingUp: Started · catchup opens
+  CatchingUp --> CatchingUp: Delivered · deliver span (catchup)
   CatchingUp --> Live: CaughtUp · catchup ends
-  Live --> Live: Fetched · fetch span (opens+ends)
+  Live --> Live: Delivered · deliver span (live)
   Live --> Paused: Paused · paused opens
   Paused --> Live: Resumed · paused ends
   Live --> Reconnecting: Reconnecting · reconnecting opens
   Reconnecting --> CatchingUp: CaughtUp · reconnecting ends
   Live --> Retrying: Retrying · retrying opens (per position)
-  Retrying --> Live: Fetched/CaughtUp · retrying ends Ok
+  Retrying --> Live: Delivered/CaughtUp · retrying ends Ok
   Retrying --> [*]: DeadLettered · retrying ends Error
+  Live --> [*]: Stopped · stopped span (always)
 ```
 
 ### The honest limitation
 
 An _in-progress_ (unresolved) episode does not appear in the backend until it ends — that is the
-direct cost of the export-on-end rule. "What state is this worker in _right now_" is answered
-instead by the `currentState` subscription-handle accessor and by the `KirokuEvent` log stream
-itself (and, eventually, a deferred state-gauge metric). Tracing is for the timeline of _completed_
-episodes; the live state has its own channels.
+direct cost of the export-on-end rule. An in-progress `Reconnecting` or `Paused` worker is invisible
+in traces until its span closes. "What state is this worker in _right now_" is answered instead by
+the `currentState` subscription-handle accessor (`m (Maybe SubscriptionState)`), by the store's
+`subscriptionStates` registry snapshot (every live subscription at once, at zero per-event cost), and
+by the `KirokuEvent` log stream itself. Tracing is for the timeline of _completed_ episodes; the
+live state has its own channels.
 
 ## Threading and the batch processor
 
 The `eventHandler` callback runs **synchronously on the worker's emit-site thread**, and a consumer
 group runs one worker per member on separate threads. Two facts follow:
 
-1. The open-span bookkeeping lives in one thread-safe `MVar` holding a `Map` keyed by
-   `(subscription name, member)`, so two members never collide. Each key is single-writer — only its
-   own worker thread touches it — so the lock is held just for two short map operations and the span
-   work runs outside it; workers do not serialize on tracing syscalls.
+1. The open-span bookkeeping lives in a **striped, lock-free** registry keyed by
+   `(subscription name, member)`, so two members never collide. Each key owns a single-writer
+   `IORef OpenState` — only its own worker thread touches it — and the outer map is mutated only when
+   a key is first seen (`Started`) or removed (`Stopped`). The now per-batch deliver-span work
+   therefore reads the outer map lock-free and mutates only its own key's cell; workers never
+   serialize on a shared lock or on tracing syscalls.
 2. Opening and ending a span is cheap and in-memory — but the _export_ may block on network I/O.
 
 This is why the [reference](/docs/kiroku/reference/opentelemetry) insists on a **batch** span
 processor: it moves export to a background thread so the synchronous callback never stalls the
 worker loop. A simple/synchronous processor would couple your event-processing throughput to your
-tracing backend's latency. The [code walkthrough](/docs/kiroku/walkthrough/06-tracing-the-subscription#the-critical-section-is-narrow)
-covers the locking in detail.
+tracing backend's latency. The [code walkthrough](/docs/kiroku/walkthrough/07-tracing-the-subscription#the-hot-path-holds-no-shared-lock)
+covers the striped registry in detail.
 
 ## The append side, for contrast
 
@@ -109,5 +126,5 @@ here are about the worker's own lifecycle, not the per-event causal chain.
 
 - [OpenTelemetry reference](/docs/kiroku/reference/opentelemetry) — the full span and attribute catalog.
 - [Enable OpenTelemetry](/docs/kiroku/how-to/enable-opentelemetry) — how to wire it up.
-- [Tracing the subscription FSM](/docs/kiroku/walkthrough/06-tracing-the-subscription) — a line-by-line read of the handler that implements this model.
+- [Tracing the subscription FSM](/docs/kiroku/walkthrough/07-tracing-the-subscription) — a line-by-line read of the handler that implements this model.
 - [Subscriptions and consumer groups](/docs/kiroku/explanation/subscriptions-and-consumer-groups) — the FSM these spans observe.

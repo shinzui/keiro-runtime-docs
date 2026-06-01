@@ -1,11 +1,11 @@
 ---
-title: "04 — The shibuya adapter: bridging push to pull"
+title: "05 — The shibuya adapter: bridging push to pull"
 description: "Reading shibuya-kiroku-adapter and kiroku-store's Stream.hs: how a push subscription becomes a pull-based shibuya Adapter — the Streamly stream, the STM coupling, and the LISTEN/NOTIFY-to-pull path — preserving event order end to end, without deadlocks or unbounded memory."
 ---
 
 <Callout type="info">
   Part of an ordered walkthrough. The previous parts traced kiroku's own subscription worker
-  ([01](/docs/kiroku/walkthrough/01-the-state-machine)–[03](/docs/kiroku/walkthrough/03-subscribe-and-lifecycle)).
+  ([01](/docs/kiroku/walkthrough/01-the-state-machine)–[04](/docs/kiroku/walkthrough/04-subscribe-and-lifecycle)).
   This part reads a *different* package — `shibuya-kiroku-adapter` — plus the one kiroku-store
   module it builds on (`Kiroku/Store/Subscription/Stream.hs`).
 </Callout>
@@ -441,7 +441,7 @@ ORDER BY se.stream_version ASC
 Because the hash is over `original_stream_id`, **every event of a given stream maps to exactly one
 member** — so a stream's events are never split across members and their order is preserved globally,
 while distinct streams run on different members in parallel. That is precisely shibuya's
-`PartitionedInOrder`. The [consumer-group helper](/docs/kiroku/walkthrough/05-consumer-groups-and-policy)
+`PartitionedInOrder`. The [consumer-group helper](/docs/kiroku/walkthrough/06-consumer-groups-and-policy)
 pins each member to `(PartitionedInOrder, Serial)` and reuses `validatePolicy`'s `StrictInOrder ⇒
 Serial` rule to reject any per-member `Ahead`/`Async`, so a member can never try to parallelize its own
 ordered partition.
@@ -468,7 +468,7 @@ Shutdown is the case worth checking explicitly, because that is where a careless
 
 - `cancelAction` runs `cancel subHandle` first. If the worker is parked in `takeTMVar` (the common
   case), `Async.cancel` delivers `AsyncCancelled`, which aborts the STM transaction — the worker is
-  _not_ stuck waiting for a reply that will never come. Its `finally unsubscribe` ([part 03](/docs/kiroku/walkthrough/03-subscribe-and-lifecycle))
+  _not_ stuck waiting for a reply that will never come. Its `finally unsubscribe` ([part 04](/docs/kiroku/walkthrough/04-subscribe-and-lifecycle))
   removes it from the publisher registry, so the front half stops pushing too.
 - `cancelAction` then writes the `Nothing` sentinel. A stream reader parked in `readTBQueue` wakes,
   `step` returns `Nothing`, and `unfoldrM` ends the stream — shibuya's `source` terminates gracefully
@@ -525,5 +525,5 @@ consumer-group members, and graceful shutdown on top. The seam between them is t
 
 ## Next
 
-[05 — Consumer groups and policy](/docs/kiroku/walkthrough/05-consumer-groups-and-policy): how one
+[06 — Consumer groups and policy](/docs/kiroku/walkthrough/06-consumer-groups-and-policy): how one
 call turns a size-`N` group into `N` correctly-policed shibuya processors.

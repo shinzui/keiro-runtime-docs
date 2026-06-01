@@ -1,6 +1,6 @@
 ---
 title: "02 — The worker driver"
-description: "Reading Worker.hs: how runWorker interprets the FSM, the catch-up and live phases, and per-event delivery."
+description: "Reading Worker.hs: how runWorker is wired, its startup, the loop → nextInput → feed → runEffects driver cycle, catch-up vs live, per-event delivery, and the single Stopped exit."
 ---
 
 <Callout type="info">
@@ -14,6 +14,39 @@ description: "Reading Worker.hs: how runWorker interprets the FSM, the catch-up 
 [`Fsm.hs`](/docs/kiroku/walkthrough/01-the-state-machine) decides transitions, `runWorker` performs them: it supplies the
 `Input`s (a batch was fetched, the pool errored, the handler returned a disposition) and carries
 out the resulting `Effect`s (deliver a batch, save the checkpoint, back off, emit an event, halt).
+`runWorker` is the heart of a subscription, so this part reads it closely — its wiring, its startup,
+and the small `loop → nextInput → feed → runEffects` cycle that drives everything.
+
+## How `runWorker` is wired
+
+`subscribe` ([part 04](/docs/kiroku/walkthrough/04-subscribe-and-lifecycle)) spawns one `runWorker`
+on its own thread. Its arguments are the entire surface the driver talks to — read them as the
+worker's I/O ports:
+
+```haskell
+-- src/Kiroku/Store/Subscription/Worker.hs (signature, with each port annotated)
+runWorker
+  :: MonadIO m
+  => Pool                           -- connection pool: catch-up + DB-driven live fetches, checkpoints
+  -> TBQueue (Vector RecordedEvent) -- the publisher's bounded per-subscriber queue (AllStreams live source)
+  -> TVar SubscriberStatus          -- publisher → worker signal: Active | Paused | Overflowed
+  -> TVar SubscriptionState         -- the observable FSM state, written on every transition (currentState reads it)
+  -> TVar GlobalPosition            -- the publisher's last-published $all position: the catch-up *target*
+  -> TVar (Map Text Word64)         -- per-category NOTIFY generation counters (Category live wake-ups)
+  -> SubscriptionConfig             -- target, filters, batchSize, retryPolicy, consumer-group membership
+  -> Maybe (KirokuEvent -> IO ())   -- the optional observability handler (the otel handler plugs in here)
+  -> StoreSettings                  -- interpreter hooks; decodeHook runs on the catch-up fetch path
+  -> m ()
+```
+
+Two locals set up at the top are referenced throughout the body:
+
+- `emit evt = for_ mHandler ($ evt)` — fire a `KirokuEvent` **only if** a handler is installed. Every
+  lifecycle signal in the loop goes through `emit`, which is exactly the stream
+  [part 07](/docs/kiroku/walkthrough/07-tracing-the-subscription) turns into spans.
+- `posRef :: IORef GlobalPosition` — the **last-processed position**, updated as the worker advances
+  and read once at the very end to report the stop checkpoint. It is the single cursor both the
+  catch-up path and the DB-driven live loops thread through.
 
 ## Two phases
 
@@ -48,11 +81,156 @@ database — in `batchSize` chunks (default 100) from the checkpoint, and only w
 to what the publisher knows does it switch to the cheap live path. The FSM models exactly this:
 `CatchingUp`'s `FetchEmpty` / `CaughtUp` inputs both transition to `Live`.
 
+## Startup: the `body`
+
+Before the loop spins, `body` does the one-time setup, in order:
+
+```haskell
+body = do
+  -- Optional consumer-group guardrail: fail fast if another holder currently
+  -- holds this (name, member)'s advisory lock.
+  case (consumerGroupGuard config, consumerGroup config) of
+    (True, Just (ConsumerGroup m _)) -> guardMember pool subName m
+    _                                -> pure ()
+  checkpoint <- loadCheckpoint pool config emit          -- resume position, keyed by (name, member)
+  writeIORef posRef checkpoint
+  emit (KirokuEventSubscriptionStarted subName checkpoint groupCtx)
+  loop (CatchingUp checkpoint 0)                          -- enter the FSM at the catch-up state
+```
+
+`loadCheckpoint` is keyed by `(subscription_name, member)`, so a consumer-group member resumes from
+its **own** saved position; a non-group worker reads the `(name, 0)` row. A DB error here degrades to
+position `0` (re-process from the start) but surfaces a `KirokuEventSubscriptionDbError` first, so a
+silent transient pool error can never quietly rewind a subscription without a signal. The `Started`
+event is emitted **once**, after the checkpoint is known — then control enters the loop at
+`CatchingUp checkpoint 0`.
+
+## The driver cycle
+
+This is the core. The whole worker is three mutually-recursive locals — `loop`, `feed`, and
+`nextInput` — wrapped around the pure `step`:
+
+```haskell
+-- One driver iteration: publish state, discover the next input, react to it.
+loop :: SubscriptionState -> IO ()
+loop st = do
+  atomically (writeTVar stateVar st)   -- 1. publish the state for observability (currentState)
+  nextInput st >>= feed st             -- 2. find out what just happened, then 3. react
+
+-- Ask the pure FSM, perform its effects, continue.
+feed :: SubscriptionState -> Input -> IO ()
+feed st inp = do
+  let (st', effs) = step st inp        -- the ONLY call to the pure transition function
+  follow <- runEffects st' effs        -- perform the effects against the NEW state
+  case follow of
+    Just fInp -> feed st' fInp          -- an effect produced a follow-up input (e.g. handler Stop)
+    Nothing   -> case st' of
+      Stopped _ -> pure ()              -- terminal: fall out of the loop
+      _         -> loop st'             -- otherwise drive the next iteration
+```
+
+Read the cycle as **publish → sense → decide → act**:
+
+1. **Publish** (`writeTVar stateVar st`). The state is written _at loop entry_, before the worker
+   does anything. That ordering matters: `nextInput` is where the worker **blocks** (waiting on the
+   live queue, sleeping through a backoff), so recording the state first means
+   [`currentState`](/docs/kiroku/walkthrough/04-subscribe-and-lifecycle#what-currentstate-returns)
+   and the `subscriptionStates` snapshot report the state the worker is _blocked in_, not a stale
+   prior one.
+2. **Sense** (`nextInput st`). Perform the current state's natural, possibly-blocking action and turn
+   its outcome into a single `Input` — see below.
+3. **Decide** (`step st inp`). The one and only call into the pure FSM. The driver holds no recovery
+   logic of its own; every "what next" answer comes from `step`.
+4. **Act** (`runEffects st' effs`). Interpret the `Effect`s the transition returned. An effect may
+   yield a **follow-up input** (only `DeliverBatch`, when the handler returns `Stop`), which is fed
+   straight back into `feed` without another `nextInput` — otherwise the loop either terminates on
+   `Stopped` or recurses on the new state.
+
+### `nextInput`: where the worker actually blocks
+
+`nextInput` is the sensing half — one branch per state, each performing that state's real work and
+collapsing it to an `Input` for the FSM:
+
+```haskell
+nextInput :: SubscriptionState -> IO Input
+nextInput = \case
+  CatchingUp c _ -> do                              -- Phase 1: read history from the DB
+    pubPos <- atomically (readTVar pubPosVar)
+    if c >= pubPos
+      then pure CaughtUp                            -- reached the publisher's cursor → go live
+      else fetchBatch pool config c emit stSettings >>= \case
+             Left err               -> pure (FetchFailed err)
+             Right evs | V.null evs -> pure CaughtUp
+                       | otherwise  -> pure (BatchFetched evs)
+  Live c -> case (consumerGroup config, target config) of
+    (Nothing, AllStreams) ->                        -- Phase 2a: read the publisher's bounded queue
+      atomically $ readTVar statusVar >>= \case
+        Pub.Overflowed -> pure QueueOverflowed
+        Pub.Paused     -> pure QueueBackpressured
+        Pub.Active     -> do
+          events <- readTBQueue liveQueue           -- blocks until the publisher pushes
+          let fresh = V.filter ((> c) . globalPosition) events  -- drop events already seen in catch-up
+          pure (if V.null fresh then FetchEmpty else BatchFetched fresh)
+    (Nothing, Category cat) ->                       -- Phase 2b: NOTIFY-driven category live loop
+      liveExitToInput =<< liveLoopCategoryNotify ... 
+    (Just _, _) ->                                   -- Phase 2c: DB-driven loop for group members
+      liveExitToInput =<< liveLoopDbDriven ...
+  Paused{}        -> do drainQueue liveQueue; ...; pure QueueDrained   -- drain, clear flag, re-catch-up
+  Reconnecting c _ -> fetchBatch ... >>= ...         -- re-probe the DB from the checkpoint
+  Stopped{}       -> pure Cancelled
+```
+
+A few things this makes concrete. The `AllStreams` live path filters `(> c)` because a subscription
+registers its queue **before** catch-up starts, so an event appended mid-catch-up can be both fetched
+from SQL _and_ waiting in the queue — the filter stops live mode replaying it or rewinding the
+checkpoint. The two **DB-driven** live loops (`liveLoopCategoryNotify` for a non-group `Category`,
+`liveLoopDbDriven` for any group member) run to their own natural termination and report back through
+`liveExitToInput`: a clean handler stop becomes `HandlerStopped`, a fetch error becomes
+`ConnectionLost` (which `step` turns into `Reconnecting`). `AllStreams` has no such loop because it
+never fetches — its reconnect is the publisher's concern.
+
+### `runEffects`: performing the transition
+
+The acting half walks the `Effect` list against the **new** state and returns an optional follow-up
+input:
+
+```haskell
+runEffects :: SubscriptionState -> [Effect] -> IO (Maybe Input)
+runEffects st' = go where
+  go []       = pure Nothing
+  go (e : es) = case e of
+    EmitCaughtUp        -> emit (KirokuEventSubscriptionCaughtUp subName (stateCursor st') groupCtx) >> go es
+    EmitPaused          -> emit (...Paused...) >> go es
+    EmitResumed         -> emit (...Resumed...) >> go es
+    EmitReconnecting n  -> emit (...Reconnecting n...) >> go es
+    Backoff n           -> threadDelay (fetchRetryDelayMicros n) >> go es   -- the FSM names it; the driver times it
+    Checkpoint p        -> saveCheckpoint pool config p emit >> go es
+    DeliverBatch events -> processEvents pool config stateVar events emit posRef >>= \case
+                             Nothing -> pure (Just (HandlerStopped (lastPosOf events)))  -- handler said Stop
+                             Just _  -> go es
+    Halt reason         -> case reason of
+                             StopHandlerRequested -> pure Nothing            -- clean: outer try emits Stopped
+                             StopOverflowed       -> throwIO (SubscriptionOverflowed subName)
+                             StopCancelled        -> throwIO Async.AsyncCancelled
+                             StopWorkerCrashed ex -> throwIO ex
+    _                   -> go es                                            -- FetchHistory / RunLive / WaitForDrain: no-ops here
+```
+
+This is where the FSM's _names_ become real I/O: `Backoff n` is the FSM choosing to wait, but only
+`fetchRetryDelayMicros` here decides _how long_; `Checkpoint p` becomes an actual durable write;
+`DeliverBatch` runs the events through your handler. `Halt` is the only terminator — a clean
+handler-stop returns `Nothing` (and the loop falls out), while overflow / cancel / crash **rethrow**
+so the outer wrapper can classify them. Note that the emit effects all use `stateCursor st'`, the
+cursor of the state the FSM just computed, so the lifecycle event reports the right position.
+
 ## The delivery primitive and the checkpoint
 
-The single most important behaviour lives in the per-event delivery path, shared by every live
-strategy so that `AllStreams`, `Category`, and consumer-group members behave identically. For each
-event in a batch it:
+`runEffects`' `DeliverBatch` branch calls **`processEvents`** — the single delivery primitive shared
+by every path (the FSM effect for catch-up and `AllStreams` live, plus both DB-driven live loops), so
+`AllStreams`, `Category`, and consumer-group members behave identically. It emits exactly one
+`KirokuEventSubscriptionDelivered` per non-empty batch (carrying the row count and whether the worker
+was catching up or live — the signal [part 07](/docs/kiroku/walkthrough/07-tracing-the-subscription)
+turns into the `deliver` span), then walks the batch. For each event it:
 
 1. Applies the worker-side filters **before** calling the handler — `eventTypeFilter` and the
    opaque `selector` (`shouldDeliver`). A filtered-out event never reaches the handler, is never
@@ -91,7 +269,32 @@ returned `Effect`s:
 
 The split keeps the driver small: its job is I/O plus "ask `step`, then perform the effects".
 
+## Every exit emits exactly one `Stopped`
+
+The entire `body` runs inside one `try`, and that wrapper is what guarantees a terminal signal on
+**every** way out — clean stop, cancel, overflow, or crash:
+
+```haskell
+result <- try body
+pos    <- readIORef posRef                       -- the last position the worker reached
+case result of
+  Right ()                   -> emit (KirokuEventSubscriptionStopped subName pos StopHandlerRequested groupCtx)
+  Left (e :: SomeException)  -> do
+    emit (KirokuEventSubscriptionStopped subName pos (classifyStopReason e) groupCtx)  -- classify: overflow / cancel / crash
+    throwIO e                                     -- re-raise so Async.waitCatch surfaces it on the handle
+```
+
+A handler `Stop` lets `body` return `()` and emits `StopHandlerRequested`. Any exception —
+`SubscriptionOverflowed`, `AsyncCancelled` from a `cancel`, or a handler that threw — is caught,
+`classifyStopReason` maps it to the right `SubscriptionStopReason`, the `Stopped` event fires, and
+then the exception is **re-thrown** so it still surfaces through
+[`wait`](/docs/kiroku/walkthrough/04-subscribe-and-lifecycle#what-wait-resolves-to). Because this
+emit is unconditional, the lifecycle stream always closes with exactly one `Stopped` — which is what
+lets the otel handler always draw a terminal `kiroku.subscription.stopped` span
+([part 07](/docs/kiroku/walkthrough/07-tracing-the-subscription)) and lets the registry treat a
+stopped subscription as simply absent.
+
 ## Next
 
-[03 — subscribe & lifecycle](/docs/kiroku/walkthrough/03-subscribe-and-lifecycle): how the worker thread is spawned and
-how the handle guarantees cleanup.
+[03 — The event publisher](/docs/kiroku/walkthrough/03-the-event-publisher): the centralized `$all`
+broadcaster that fills the live queue this driver reads from.

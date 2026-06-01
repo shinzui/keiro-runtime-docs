@@ -1,11 +1,11 @@
 ---
-title: "06 — Tracing the subscription FSM"
-description: "Reading Kiroku.Otel.Subscription: how the trace handler turns the KirokuEvent stream into spans, and the MVar that tracks open spans per worker."
+title: "07 — Tracing the subscription FSM"
+description: "Reading Kiroku.Otel.Subscription: how the trace handler turns the KirokuEvent stream into spans, and the striped lock-free registry that tracks open spans per worker."
 ---
 
 <Callout type="info">
-  Part of an ordered walkthrough. Previous: [05 — Consumer groups and the policy
-  contract](/docs/kiroku/walkthrough/05-consumer-groups-and-policy). This part reads a _different
+  Part of an ordered walkthrough. Previous: [06 — Consumer groups and the policy
+  contract](/docs/kiroku/walkthrough/06-consumer-groups-and-policy). This part reads a _different
   package_ — `kiroku-otel`, the optional OpenTelemetry sister to `kiroku-store`.
 </Callout>
 
@@ -39,27 +39,31 @@ The worker calls this callback **synchronously on its own thread** for every tra
 -- kiroku-otel/src/Kiroku/Otel/Subscription.hs
 subscriptionTraceHandler :: Tracer -> IO (KirokuEvent -> IO ())
 subscriptionTraceHandler tracer = do
-  cell <- newMVar Map.empty
-  pure (onEvent tracer cell)
+  cells <- newIORef Map.empty
+  pure (onEvent tracer cells)
 ```
 
 Two things to notice already. It is `IO (KirokuEvent -> IO ())`, not a pure function — because it
-allocates the `cell`, the `MVar` that holds all open-span state. And the returned closure captures
-both the `Tracer` and that `cell`, so each installed handler owns its own bookkeeping.
+allocates `cells`, the registry that holds all open-span state. And the returned closure captures
+both the `Tracer` and that registry, so each installed handler owns its own bookkeeping.
 
-## Why an MVar at all
+## Why a mutable registry at all
 
 The handler is called from more than one thread. A **consumer group runs one worker per member**,
-each on its own thread ([part 05](/docs/kiroku/walkthrough/05-consumer-groups-and-policy)), and they
+each on its own thread ([part 06](/docs/kiroku/walkthrough/06-consumer-groups-and-policy)), and they
 all share the one handler closure. Span A's "open" and span A's "close" arrive as two separate calls
 that must find the same in-flight `Span` object — so the handler needs mutable state that survives
 across calls and is safe under concurrency.
 
-The state is a `Map` from a per-worker key to that worker's open spans:
+The state is a `Map` from a per-worker key to that worker's open spans, but the value is held behind
+a per-key `IORef` rather than inline — that **striping** is what keeps workers off a shared lock:
 
 ```haskell
 -- A worker is identified by its subscription name plus group member (if any).
 type SpanKey = (Text, Maybe Int32)
+
+-- The striped registry: an outer IORef of per-key cells, each its own single-writer IORef.
+type SpanCells = IORef (Map SpanKey (IORef OpenState))
 
 data OpenState = OpenState
   { catchup   :: !(Maybe Span)      -- catch-up episode (opened on Started)
@@ -70,50 +74,64 @@ data OpenState = OpenState
   deriving stock (Generic)
 ```
 
-The `MVar` wraps `Map SpanKey OpenState`, so two members never collide: each `(name, member)` has
-its own `OpenState`. A non-grouped worker keys on `(name, Nothing)`. Within one worker the four
-fields track the four kinds of episode that can be open _at the same time_ — a worker can be
-retrying a poison event while also inside a reconnect episode, so they cannot share one slot.
+The registry maps each `SpanKey` to its **own** `IORef OpenState`, so two members never collide:
+each `(name, member)` has its own cell. A non-grouped worker keys on `(name, Nothing)`. Within one
+worker the four fields track the four kinds of episode that can be open _at the same time_ — a
+worker can be retrying a poison event while also inside a reconnect episode, so they cannot share one
+slot.
 
 <Callout type="info">
-  The `MVar` guards the shared `Map` — the one structure several worker threads touch. The lock is
-  held only for short, pure map operations (read a key's `OpenState`, commit it back); the span `IO`
-  itself runs **outside** the lock. See [the critical section is
-  narrow](#the-critical-section-is-narrow) below for why that is both faster and still correct.
+  The outer `IORef` is **read-mostly**: it is mutated (via `atomicModifyIORef'`) only when a key is
+  first seen (`Started`) or removed (`Stopped`). Each key's inner `IORef OpenState` is
+  **single-writer** — only its own worker thread touches it — so the per-batch hot path reads the
+  outer map lock-free and writes only its own cell with a plain `writeIORef`. There is no shared
+  lock at all. See [the hot path holds no shared lock](#the-hot-path-holds-no-shared-lock) below for
+  why that is both faster and still correct.
 </Callout>
 
-## The two state-cell combinators
+## The state-cell combinators
 
-Every branch of the dispatch goes through one of two helpers, so the locking lives in exactly one
-place. Crucially, the span `IO` in the closure runs **outside** the lock — the state is read under
-one short lock, the closure runs unlocked, and its result is committed under a second short lock:
+Every branch of the dispatch goes through one of these helpers, so the registry mechanics live in
+one place. The hot-path helper, `withKey`, never touches a shared lock — it resolves the key's own
+cell, reads it, runs the span `IO`, and writes the cell back:
 
 ```haskell
--- Run a state-update against the OpenState for a key; span IO in `f` runs unlocked.
-withKey :: MVar (Map SpanKey OpenState) -> SpanKey -> (OpenState -> IO OpenState) -> IO ()
-withKey cell key f = do
-  st  <- withMVar cell (pure . Map.findWithDefault emptyOpenState key)  -- short lock: read
-  st' <- f st                                                           -- unlocked: span IO
-  modifyMVar_ cell (\m -> pure $! Map.insert key st' m)                 -- short lock: commit
+-- Resolve a key's own cell, creating an empty one on first touch (its Started event).
+-- The outer map is read lock-free; it is written (atomicModifyIORef') only to insert a new key.
+cellFor :: SpanCells -> SpanKey -> IO (IORef OpenState)
+cellFor cells key = do
+  m <- readIORef cells
+  case Map.lookup key m of
+    Just ref -> pure ref
+    Nothing  -> do
+      fresh <- newIORef emptyOpenState
+      atomicModifyIORef' cells $ \m' ->
+        case Map.lookup key m' of
+          Just ref -> (m', ref)                      -- another thread inserted meanwhile; reuse
+          Nothing  -> (Map.insert key fresh m', fresh)
 
--- Run a finalizing action against a key's OpenState, then drop the key.
-dropKey :: MVar (Map SpanKey OpenState) -> SpanKey -> (OpenState -> IO ()) -> IO ()
-dropKey cell key f = do
-  st <- modifyMVar cell $ \m ->                                         -- short lock: read + delete
-          let m' = Map.delete key m
-           in m' `seq` pure (m', Map.findWithDefault emptyOpenState key m)
-  f st                                                                  -- unlocked: end spans
+-- Run a state-update against a key's own cell; span IO in `f` holds no shared lock.
+withKey :: SpanCells -> SpanKey -> (OpenState -> IO OpenState) -> IO ()
+withKey cells key f = do
+  ref <- cellFor cells key       -- outer map: lock-free read (rare insert on a new key)
+  st  <- readIORef ref           -- this key's cell only
+  st' <- f st                    -- span IO: no shared lock
+  writeIORef ref st'             -- this key's cell only
+
+-- Run a finalizer against a key's OpenState, then drop the key from the outer registry.
+dropKey :: SpanCells -> SpanKey -> (OpenState -> IO ()) -> IO ()
+dropKey cells key f = do
+  mref <- atomicModifyIORef' cells $ \m -> (Map.delete key m, Map.lookup key m)
+  st   <- maybe (pure emptyOpenState) readIORef mref
+  f st                           -- unlocked: end spans
 ```
 
-`withKey` is the workhorse: read the worker's `OpenState` (defaulting to `emptyOpenState` for the
-first event) under a short lock, run the `IO` closure that opens/closes spans **with no lock held**,
-then commit the next `OpenState` under a second short lock. `dropKey` is the terminal variant — it
-reads and **removes** the key in one locked step, then runs the finalizer unlocked. It is used only
-for `KirokuEventSubscriptionStopped`, so a stopped worker leaves no entry behind. The `$!` / `seq`
-force the new map so the `MVar` never holds a thunk chain across thousands of events.
-
-Each critical section is now just a pure `O(log n)` map operation. The next section explains why
-running the span `IO` outside the lock is safe.
+`withKey` is the workhorse: resolve the worker's own cell (creating it on the first event), read it,
+run the `IO` closure that opens/closes spans, then write the cell back — all without serializing on
+anything another worker touches. `dropKey` is the terminal variant — it removes the key from the
+outer map in one `atomicModifyIORef'`, then runs the finalizer unlocked. It is used only for
+`KirokuEventSubscriptionStopped`, so a stopped worker leaves no entry behind. The next section
+explains why this lock-free scheme is safe.
 
 ## The dispatch, event by event
 
@@ -122,7 +140,7 @@ pick the key with `keyOf`, then `withKey` to mutate that worker's open spans. A 
 branches:
 
 ```haskell
-onEvent :: Tracer -> MVar (Map SpanKey OpenState) -> KirokuEvent -> IO ()
+onEvent :: Tracer -> SpanCells -> KirokuEvent -> IO ()
 onEvent tracer cell = \case
   KirokuEventSubscriptionStarted name pos grp ->
     withKey cell (keyOf name grp) $ \st -> do
@@ -146,6 +164,44 @@ matching **close**: a single caught-up signal resolves whichever of catch-up / r
 and — because the worker has demonstrably moved past every event — marks any open retry spans `Ok`
 and clears them. Note the asymmetry: opens write one field; closes often resolve several, because
 reaching `Live` is good news for everything that was pending.
+
+The per-batch **deliver** span is the one transition that fires constantly, on every target and in
+both phases — it is keyed on the new `KirokuEventSubscriptionDelivered` event and opens-and-ends a
+span at once:
+
+```haskell
+  KirokuEventSubscriptionDelivered name count phase grp ->
+    withKey cell (keyOf name grp) $ \st -> do
+      let stateText = case phase of
+            DeliveredCatchUp -> "catchup" :: Text
+            DeliveredLive    -> "live"
+      sp <- openSpan tracer spanDeliver $
+              baseAttrs name grp
+                ++ [(attrState, toAttribute stateText), (attrBatchRows, intAttr count)]
+      closeSpan sp
+      case phase of
+        DeliveredLive -> do                         -- a live batch means the worker advanced...
+          mapM_ (\rsp -> setStatus rsp Ok >> closeSpan rsp) (Map.elems (retries st))  -- ...past any retry
+          pure st{retries = Map.empty}
+        DeliveredCatchUp -> pure st                 -- catch-up delivery resolves nothing
+```
+
+This is the span that closed the old blind spot. Previously the per-batch span keyed on
+`KirokuEventSubscriptionFetched`, which only the **DB-driven live loops** emit — so an `$all`
+subscription's live phase (pushed from the in-memory queue, never "fetched") produced no per-batch
+span and went dark on the timeline once it caught up. `Delivered` is emitted from the single
+delivery primitive on **every** path and **both** phases, carrying `kiroku.subscription.state =
+catchup | live` and `kiroku.batch.rows`, so every batch is now traced. A live delivery also doubles
+as "the worker moved on," so it closes any open retry spans `Ok` — the same resolution `CaughtUp`
+does; a catch-up delivery is just progress and resolves nothing.
+
+<Callout type="info">
+  `KirokuEventSubscriptionFetched` is now a **no-op** in the tracer — matched explicitly (`{} -> pure
+  ()`) so the incomplete-patterns net still fires, but not traced. The DB-driven live loops emit
+  _both_ `Fetched` (per fetch, the live-fetch-rate signal) and `Delivered` (per delivered batch);
+  keying the span on `Delivered` is what stops the category/consumer-group live path from emitting
+  two spans per batch.
+</Callout>
 
 The retry branch is the one place a `Map` rather than a `Maybe` is needed, because a worker can have
 several poison events in flight, each its own episode keyed by global position:
@@ -194,18 +250,23 @@ everything down.
     dropKey cell (keyOf name grp) $ \st -> do
       let stopAttrs = [ (attrStopReason, toAttribute (T.pack (show reason)))
                       , (attrCheckpoint, posAttr pos) ]
-      mapM_ (`setAttrs` stopAttrs) (primaryEpisode st)   -- annotate the most relevant open episode
+      -- Always emit a short standalone terminal span, even with no open episode.
+      term <- openSpan tracer spanStopped (baseAttrs name grp ++ stopAttrs)
+      closeSpan term
+      mapM_ (`setAttrs` stopAttrs) (primaryEpisode st)   -- also annotate the most relevant open episode
       mapM_ closeSpan (catchup st)                       -- then end EVERY open span so none leaks
       mapM_ closeSpan (reconnect st)
       mapM_ closeSpan (pause st)
       mapM_ closeSpan (Map.elems (retries st))
 ```
 
-This is the only `dropKey` branch. It records the stop reason on the primary episode, then closes
-**every** span the worker had open and removes its `OpenState` from the map. A worker that crashes
-mid-episode therefore still flushes its spans (with the stop reason recorded) rather than leaking
-them — directly serving the export-on-end constraint from the
-[explanation](/docs/kiroku/explanation/tracing-subscriptions).
+This is the only `dropKey` branch. It **always** emits a standalone `spanStopped` carrying the stop
+reason and checkpoint — so a healthy worker that catches up, runs `Live`, and stops with no open
+episode still leaves a terminal marker on the timeline. It then records the stop reason on the
+primary episode _if one is open_, closes **every** span the worker had open, and removes its cell
+from the registry. A worker that crashes mid-episode therefore still flushes its spans (with the
+stop reason recorded) rather than leaking them — directly serving the export-on-end constraint from
+the [explanation](/docs/kiroku/explanation/tracing-subscriptions).
 
 ## The span helpers, and one easy-to-miss subtlety
 
@@ -236,23 +297,24 @@ It uses the singular `addAttribute` (an insert/override) in a loop, **not** the 
 refreshing a checkpoint position or attempt counter would silently no-op. If you batch these for
 "efficiency," you reintroduce that bug.
 
-## The critical section is narrow
+## The hot path holds no shared lock
 
 The `eventHandler` runs synchronously on the worker's emit-site thread, and a consumer group drives
-the shared handler from one thread per member. An earlier version ran the whole span-`IO` closure
-_inside_ `modifyMVar_`, so the single global `MVar` serialized **every** worker across span syscalls
-— `createSpan` / `endSpan` are each a `clock_gettime` plus an allocation, and one member's span work
-blocked the others. Narrowing the critical section to the two short map operations, with the span
-`IO` outside the lock, removes that serialization: workers no longer queue behind each other on
-tracing syscalls.
+the shared handler from one thread per member. An earlier version held the whole `Map SpanKey
+OpenState` behind a single `MVar`; once the per-batch deliver span was added — emitted on **every**
+batch on **every** target — that shared lock would serialize **every** worker across span syscalls
+(`createSpan` / `endSpan` are each a `clock_gettime` plus an allocation). The striped registry
+removes the shared structure from the hot path entirely: the per-batch path reads the outer map
+lock-free, then reads and writes only its **own** key's `IORef`. Workers never queue behind each
+other.
 
 This is safe because each `SpanKey` is **single-writer**. Every `(subscription name, member)` is
 emitted by exactly one worker thread, and the `eventHandler` callback is synchronous on that thread,
-so a key's `OpenState` cannot change between the unlocked read and the unlocked commit — there is no
-second writer to race with. The shared `Map` is the only cross-thread structure, and the commit
-`Map.insert`s this key into whatever the current map is, preserving concurrent updates to _other_
-keys. `dropKey` reads-and-deletes in one locked step, and `Stopped` is a key's last event, so nothing
-touches it afterward.
+so a key's `OpenState` cannot change between the `readIORef` and the `writeIORef` of its cell — there
+is no second writer to race with. The only cross-thread structure is the **outer** registry, and it
+is mutated only on the rare `Started` (insert a key's cell) and `Stopped` (delete it), each via
+`atomicModifyIORef'`, so a concurrent insert of _another_ key never clobbers this one. `Stopped` is a
+key's last event, so nothing touches its cell afterward.
 
 Even with the lock out of the way, span **export** must still stay off the worker thread:
 
@@ -296,9 +358,10 @@ understanding why it is there.
 ## The handler, in one sentence
 
 `subscriptionTraceHandler` is a pure read-side consumer of the worker's `KirokuEvent` stream that
-holds per-worker open-span state in one `MVar`-guarded `Map`, opening short spans on state entry and
-ending them promptly on the matching exit — so the trace timeline shows real episode durations and
-nothing leaks when a worker stops.
+holds per-worker open-span state in a striped, lock-free registry of per-key `IORef`s, opening short
+spans on state entry, a `deliver` span on every batch, and a `stopped` span on every exit — ending
+them promptly on the matching exit, so the trace timeline shows real episode durations and nothing
+leaks when a worker stops.
 
 ## Next
 
