@@ -80,9 +80,12 @@ This section must always reflect the actual current state of the work.
       against `Migrations.hs`/`app/Main.hs`/the three SQL files; build clean. _(2026-06-01)_
 - [x] M3. Testing how-to authored — `how-to/test-with-the-postgres-fixture.mdx`; slug appended.
       `withMigratedSuite`/`withFreshStore`/`withFreshStores2`/`Fixture` verified; build clean. _(2026-06-01)_
-- [ ] M4. Cookbook recipes authored — `cookbook/idempotent-fan-out.mdx` and
-      `cookbook/timeout-saga.mdx`; slugs appended.
-- [ ] M5. FAQ authored — `faq.mdx` stub overwritten with real `<Accordions>` Q&A.
+- [x] M4. Cookbook recipes authored — `cookbook/idempotent-fan-out.mdx` and
+      `cookbook/timeout-saga.mdx`; slugs appended. `deterministicCommandId`/`eventAlreadyIn`/
+      `DuplicateEvent`/`TimerRequest`/`runTimerWorker` verified in source; build clean. _(2026-06-01)_
+- [x] M5. FAQ authored — `faq.mdx` stub overwritten with real `<Accordions>` Q&A (library vs server,
+      the kiroku/keiki/shibuya family, process managers + timers today / named-step durable execution
+      is roadmap, Postgres-only, at-least-once + inbox dedupe). "coming soon" callout gone. _(2026-06-01)_
 - [ ] M6. FINALIZATION (runs LAST — precondition: EP-8/9/10/11 Complete). Every section
       `meta.json` ordered; every section landing's "coming soon" callout replaced with
       `<Cards>`; `docs/keiro-source-sync.md` "most-coupled pages" updated; whole-tree gate

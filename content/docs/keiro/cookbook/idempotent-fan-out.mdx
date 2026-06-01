@@ -1,0 +1,47 @@
+---
+title: "Idempotent fan-out"
+description: "Dispatch a command from a subscription or process manager so at-least-once delivery never double-acts."
+---
+
+A subscription that fans an event out to a command can be delivered **more than once** — a redelivery,
+a crash-and-resume, a replay. The recipe is to derive a **deterministic command id** so the second
+dispatch is a benign duplicate, not a second action.
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## Problem
+
+Your subscription handler reacts to a source event by dispatching a command; if the same source event
+is delivered twice, the command must run **at most once**.
+
+## Solution
+
+```haskell
+import Keiro.ProcessManager (deterministicCommandId, eventAlreadyIn)
+import Keiro.Command (runCommand, defaultRunCommandOptions, RunCommandOptions (..), CommandError (..))
+import Kiroku.Store (StoreError (DuplicateEvent))
+
+-- Derive a stable id from (handler name, correlation key, source event id, emit index),
+-- then pre-check the target and fold the store's duplicate rejection into "benign".
+dispatchOnce handlerName correlationId sourceEventId targetStream command = do
+  let commandId = deterministicCommandId handlerName correlationId sourceEventId 0
+      options   = defaultRunCommandOptions { eventIds = [commandId] }
+  alreadyDone <- eventAlreadyIn options (streamName targetStream) commandId
+  if alreadyDone
+    then pure ()                       -- the prior delivery already applied it
+    else runCommand options orderEventStream targetStream command >>= \case
+      Left (StoreFailed (DuplicateEvent _)) -> pure ()  -- raced; benign duplicate
+      Right _                               -> pure ()
+      Left err                              -> handleError err
+```
+
+## How it works
+
+`deterministicCommandId` hashes the handler name, correlation key, source event id, and emit index
+into a stable `EventId`, so the **same** source event always maps to the **same** command id. Passing
+it as `eventIds` makes the append idempotent: the store's unique constraint rejects the second append
+as `DuplicateEvent`, which you treat as success. The `eventAlreadyIn` pre-check skips the work
+entirely when the prior delivery already landed. This is exactly what
+[`Keiro.Router`](/docs/keiro/reference/router) and process managers do internally — see
+[Route events to commands](/docs/keiro/how-to/route-events-to-commands) and
+[Make commands idempotent](/docs/keiro/how-to/make-commands-idempotent) for the full treatment.

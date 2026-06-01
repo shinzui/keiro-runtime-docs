@@ -1,0 +1,68 @@
+---
+title: "Timeout saga"
+description: "Schedule a durable timeout timer in a process manager and fire a compensating command when it elapses."
+---
+
+A workflow often needs to act when something *doesn't* happen in time — a payment not confirmed, an
+order not acknowledged. The recipe is a process manager that schedules a durable **timer** when the
+clock starts and dispatches a **compensating command** when the timer fires.
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## Problem
+
+When a step has not completed within a deadline, run a compensating action exactly once — and never
+fire if the step did complete in time.
+
+## Solution
+
+```haskell
+import Keiro.ProcessManager (ProcessManager (..), ProcessManagerAction (..), PMCommand (..))
+import Keiro.Timer (TimerRequest (..), TimerId (..), runTimerWorker)
+
+-- 1. When the workflow starts, schedule the timeout (committed in the manager's transaction).
+handle = \event ->
+  case event of
+    OrderSubmitted{} ->
+      ProcessManagerAction
+        { command  = ObserveSubmitted (observed event)
+        , commands = []
+        , timers   =
+            [ TimerRequest
+                { timerId            = timeoutTimerId (eventOrderId event)
+                , processManagerName = "order-timeout"
+                , correlationId      = orderKey (eventOrderId event)
+                , fireAt             = addUTCTime 900 (eventAt event)  -- 15 minutes
+                , payload            = toJSON (eventOrderId event)
+                }
+            ]
+        }
+    -- 2. If the step completes in time, the manager advances; the timer's re-arm guard
+    --    (ON CONFLICT ... WHERE status = 'scheduled') means it is never resurrected once fired.
+    OrderConfirmed{} ->
+      ProcessManagerAction { command = ObserveConfirmed (observed event), commands = [], timers = [] }
+    _ ->
+      ProcessManagerAction { command = ObserveOther (observed event), commands = [], timers = [] }
+
+-- 3. The timer worker fires the compensating command when the deadline elapses.
+fireTimeout row = do
+  let oid = decodeOrderId (row ^. #payload)
+  result <- runCommand defaultRunCommandOptions orderEventStream (orderStream oid)
+              (CancelOrder (CancelOrderData oid "timed out"))
+  pure (firedEventIdOf result)   -- returning the event id marks the timer Fired
+
+-- driven on each tick:
+runTimerWorker now fireTimeout
+```
+
+## How it works
+
+The `TimerRequest` is scheduled **inside the manager's append transaction**, so the timer and the
+state change commit together. `runTimerWorker` claims the earliest due timer (`FOR UPDATE SKIP
+LOCKED`), runs `fireTimeout`, and — only if it returns the produced event id — marks the timer
+`Fired`; a crash leaves it claimable, giving **at-least-once** firing. The compensating command
+(`CancelOrder`) must be **total** on the target so a late timeout after a successful confirm is a
+benign no-op. See [Understanding durable timers](/docs/keiro/explanation/durable-timers),
+[Keiro.Timer reference](/docs/keiro/reference/timers),
+[Write a saga with compensation](/docs/keiro/how-to/write-a-saga-with-compensation), and
+[Keep target commands total](/docs/keiro/how-to/keep-target-commands-total).
