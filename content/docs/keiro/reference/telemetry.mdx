@@ -1,0 +1,143 @@
+---
+title: "Telemetry"
+description: "Reference for Keiro.Telemetry: the three span helpers, the W3C TraceContext bridge, the attribute keys keiro sets, and the vendored-key rationale."
+---
+
+The types and functions on this page live in `Keiro.Telemetry`. This is the **single** module where
+keiro touches `hs-opentelemetry-api`. Tracing is opt-in through `Maybe Tracer`: with `Nothing` every
+helper is a pass-through that runs the body and emits **zero** spans; with `Just tracer` it opens a
+span. The application makes the `Tracer` (typically `hs-opentelemetry-sdk`'s `makeTracer`) and
+threads it in via the option records owned by the command and outbox surfaces
+([`RunCommandOptions.tracer`](/docs/keiro/reference/command),
+[`OutboxPublishOptions.tracer`](/docs/keiro/reference/outbox)). For the wiring narrative, see
+[Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry).
+
+## Span helpers
+
+All three are `MonadUnliftIO m` with `HasCallStack`. Each takes a `Maybe Tracer`; under `Nothing` it
+calls `body Nothing` and returns — no span. The body receives a `Maybe Span` so it can add
+attributes or record an error on the live span.
+
+### `withProducerSpan`
+
+```haskell
+withProducerSpan
+  :: (MonadUnliftIO m, HasCallStack)
+  => Maybe Tracer -> IntegrationEvent -> KafkaProducerRecord -> (Maybe Span -> m a) -> m a
+```
+
+Opens a `Producer`-kind span named `"send " <> destination` and sets the messaging attributes for an
+outbox publish (`messaging.system = kafka`, `messaging.operation.type = publish`,
+`messaging.destination.name`, `messaging.message.id`, and the message key when present). Used by the
+outbox publisher.
+
+### `withConsumerSpan`
+
+```haskell
+withConsumerSpan
+  :: (MonadUnliftIO m, HasCallStack)
+  => Maybe Tracer -> Maybe Text -> KafkaInboundRecord -> Maybe IntegrationEvent
+  -> (Maybe Span -> m a) -> m a
+```
+
+Opens a `Consumer`-kind span named `"process " <> topic`. The optional `Text` is the consumer group
+name (recorded as `messaging.consumer.group.name`); the `Maybe IntegrationEvent` is the decoded
+envelope (`Nothing` on a decode-failure path, in which case only broker-known attributes are set).
+**It extracts the upstream parent** from the inbound record's W3C `traceparent`/`tracestate` headers,
+so this span becomes a **child** of the producer span in the upstream process — joining the two
+traces by trace id.
+
+### `withCommandSpan`
+
+```haskell
+withCommandSpan
+  :: (MonadUnliftIO m, HasCallStack)
+  => Maybe Tracer -> Text -> Maybe Int64 -> (Maybe Span -> m a) -> m a
+```
+
+Opens an `Internal`-kind span named after the resolved stream. Sets `keiro.stream.name` and, when the
+`Maybe Int64` retry attempt is given, `keiro.retry.attempt`. The caller adds `keiro.events.appended`
+on the returned span after a successful append.
+
+## The W3C TraceContext bridge
+
+W3C TraceContext is the web standard for propagating a trace across processes via the
+`traceparent`/`tracestate` headers. These helpers convert between an in-memory span and the keiro
+`TraceContext` record carried on `IntegrationEvent` envelopes and outbox rows. The application is
+expected to have installed the W3C propagator on its `TracerProvider`; these are keiro's side of the
+bridge.
+
+```haskell
+traceContextFromCurrentSpan :: (MonadIO m) => m (Maybe TraceContext)
+traceContextFromHeaders     :: [(Text, Text)] -> Maybe TraceContext
+injectTraceContext          :: (MonadIO m) => [(Text, Text)] -> m [(Text, Text)]
+```
+
+- `traceContextFromCurrentSpan` reads the current thread-local span and formats it as a
+  `TraceContext`; `Nothing` when no span is active.
+- `traceContextFromHeaders` lifts a `TraceContext` out of a flat header list (it does not validate
+  the `traceparent` format — the propagator's parser does that at consume time).
+- `injectTraceContext` appends the current span's `traceparent`/`tracestate` headers to a header
+  list, returning it unchanged when no span is active. Used by the outbox publisher.
+
+## Attributes keiro sets
+
+`messaging.*` follow the OpenTelemetry messaging semantic conventions; the `keiro.*` keys are
+bespoke to keiro.
+
+| Attribute | Set on | Value |
+|---|---|---|
+| `messaging.system` | producer, consumer | `"kafka"` |
+| `messaging.operation.type` | producer / consumer | `"publish"` / `"process"` |
+| `messaging.operation.name` | producer / consumer | `"send"` / `"process"` |
+| `messaging.destination.name` | producer, consumer | destination / topic |
+| `messaging.message.id` | producer, consumer | the envelope `messageId` |
+| `messaging.destination.partition.id` | consumer | inbound record partition |
+| `messaging.kafka.offset` | consumer | inbound record offset |
+| `messaging.consumer.group.name` | consumer | the consumer group, when given |
+| `messaging.kafka.message.key` | producer, consumer | the message key, when present |
+| `keiro.stream.name` | command | the resolved stream name |
+| `keiro.retry.attempt` | command | the 1-based retry attempt, when given |
+| `keiro.events.appended` | command | events appended (added by the caller after append) |
+
+## Vendored attribute keys
+
+keiro links against `hs-opentelemetry-semantic-conventions 0.1.0.0` (generated from spec v1.24),
+which exports only a fraction of the typed `AttributeKey`s keiro needs. So `Keiro.Telemetry`
+**vendors** the missing keys locally — each binding carries the canonical dotted-name string from
+spec **v1.40**, so the **wire name matches the spec exactly**; only the binding *location* differs
+(the module, instead of an `OpenTelemetry.SemanticConventions` import). When an upstream release
+pairs the post-0.3 API with the v1.40 conventions, these can be replaced with imports — except the
+`keiro_*` keys, which have no upstream equivalent and stay.
+
+The exported keys (binding name → wire name):
+
+```haskell
+messaging_operation_type           -- "messaging.operation.type"
+messaging_operation_name           -- "messaging.operation.name"
+messaging_destination_partition_id -- "messaging.destination.partition.id"
+messaging_consumer_group_name      -- "messaging.consumer.group.name"
+messaging_client_id                -- "messaging.client.id"
+messaging_kafka_offset             -- "messaging.kafka.offset"
+db_system_name                     -- "db.system.name"
+db_namespace                       -- "db.namespace"
+db_collection_name                 -- "db.collection.name"
+db_operation_name                  -- "db.operation.name"
+keiro_stream_name                  -- "keiro.stream.name"   (bespoke)
+keiro_retry_attempt                -- "keiro.retry.attempt" (bespoke)
+keiro_events_appended              -- "keiro.events.appended" (bespoke)
+```
+
+<Callout type="warn">
+**Instrumentation coverage is partial.** As shipped at keiro 0.1.0.0, three sites emit spans:
+**outbox publish**, **inbox consume**, and **command run**. Hydration, snapshot reads, projection
+writes, and the timer worker are **not yet instrumented** — those spans are deferred (tracked in the
+keiro repo's `docs/research/opentelemetry-semconv-audit.md`). Enabling a tracer does not give you
+full coverage of the framework's internals today.
+</Callout>
+
+<Cards>
+  <Card title="Enable OpenTelemetry" href="/docs/keiro/how-to/enable-opentelemetry" />
+  <Card title="Command reference" href="/docs/keiro/reference/command" />
+  <Card title="Outbox reference" href="/docs/keiro/reference/outbox" />
+</Cards>

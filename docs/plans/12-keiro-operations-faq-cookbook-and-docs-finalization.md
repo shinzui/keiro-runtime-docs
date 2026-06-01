@@ -5,6 +5,7 @@ title: "Keiro operations, FAQ, cookbook, and docs finalization"
 kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
 ---
 
 # Keiro operations, FAQ, cookbook, and docs finalization
@@ -67,11 +68,13 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M0. Preconditions verified — Node 22 + pnpm on PATH, `node_modules` present, EP-7
+- [x] M0. Preconditions verified — Node 22.22.3 + pnpm 11.4.0 on PATH, `node_modules` present, EP-7
       Complete (the `content/docs/keiro/` tree, `docs/keiro-source-sync.md`, and the
-      getting-started/overview pages exist), baseline `pnpm typecheck` and `pnpm build` clean.
-- [ ] M1. Telemetry pages authored — `how-to/enable-opentelemetry.mdx` and
+      getting-started/overview pages exist), baseline `pnpm typecheck` and `pnpm build` clean
+      (zero crawler warnings). _(2026-06-01)_
+- [x] M1. Telemetry pages authored — `how-to/enable-opentelemetry.mdx` and
       `reference/telemetry.mdx`; their slugs appended to the how-to and reference `meta.json`.
+      All names cross-checked against `Keiro/Telemetry.hs`; build clean. _(2026-06-01)_
 - [ ] M2. Migrations pages authored — `how-to/run-migrations.mdx` and
       `reference/migrations-and-schema.mdx`; slugs appended.
 - [ ] M3. Testing how-to authored — `how-to/test-with-the-postgres-fixture.mdx`; slug appended.

@@ -1,0 +1,87 @@
+---
+title: "Enable OpenTelemetry"
+description: "Configure a Tracer and thread it into keiro's command and outbox surfaces so the framework emits distributed-tracing spans."
+---
+
+You want keiro to emit OpenTelemetry spans — a command run, an outbox publish, an inbox consume —
+and have them join up into one distributed trace across services. keiro never creates a tracer for
+you: tracing is **opt-in**, driven by a `Maybe Tracer` you thread in. This guide shows how to wire
+it.
+
+<Callout type="info">
+  Assumes you already have a working command path (see
+  [Get started with keiro](/docs/keiro/tutorials/getting-started)) and, for the cross-service part,
+  the outbox/inbox (see [The outbox pattern](/docs/keiro/explanation/the-outbox-pattern)).
+</Callout>
+
+## Goal
+
+Turn on tracing for the command cycle and the outbox publisher, and propagate the trace across a
+Kafka hop so a consumer's span becomes a child of the producer's span.
+
+## Steps
+
+1. **Bootstrap a `TracerProvider` and make a `Tracer` (application side).** keiro depends only on
+   `hs-opentelemetry-api`; the application owns the SDK. Initialize the provider with
+   `hs-opentelemetry-sdk` and make a tracer with `makeTracer`. Configure the **W3C TraceContext
+   propagator** on the provider — that is the wire format keiro's header bridge reads and writes:
+
+   ```haskell
+   import OpenTelemetry.Trace (makeTracer, tracerOptions)
+   import OpenTelemetry.Trace.Setup (initializeGlobalTracerProvider)  -- hs-opentelemetry-sdk
+
+   main :: IO ()
+   main = do
+     provider <- initializeGlobalTracerProvider  -- reads OTEL_* env, installs the W3C propagator
+     let tracer = makeTracer provider "my-service" tracerOptions
+     runApp tracer
+   ```
+
+   <Callout type="info">
+   The exact bootstrap is `hs-opentelemetry-sdk`'s, not keiro's. The only thing keiro needs is the
+   resulting `Tracer`. If you never make one, leave the option fields `Nothing` and keiro emits
+   zero spans (one `Maybe` branch of overhead) — see the default in
+   [`RunCommandOptions`](/docs/keiro/reference/command).
+   </Callout>
+
+2. **Thread the tracer into the command path.** Set `tracer` on `RunCommandOptions`. keiro opens an
+   `Internal`-kind span named after the resolved stream and records `keiro.stream.name`,
+   `keiro.retry.attempt`, and `keiro.events.appended`:
+
+   ```haskell
+   let options = defaultRunCommandOptions { tracer = Just tracer }
+   runCommand options orderEventStream (orderStream oid) command
+   ```
+
+3. **Thread the tracer into the outbox publisher.** Set `tracer` on `OutboxPublishOptions`. The
+   publisher opens a `Producer`-kind span (`"send " <> destination`) per published event:
+
+   ```haskell
+   let publishOpts = defaultPublishOptions { tracer = Just tracer }
+   ```
+
+   See [`OutboxPublishOptions`](/docs/keiro/reference/outbox) for the full option record.
+
+4. **Let the trace cross the Kafka hop.** The outbox publisher attaches the active span's W3C
+   headers with `injectTraceContext`, and the inbox consumer extracts the upstream parent from the
+   inbound record's `traceparent`/`tracestate` headers (via `withConsumerSpan`). With the W3C
+   propagator installed on both sides, the consumer span automatically becomes a **child** of the
+   producer span — the two services share one trace id. No extra wiring is needed beyond passing the
+   tracer; the keiro publisher and inbox consumer call the bridge for you.
+
+## Verify it worked
+
+Point your collector (or a console exporter) at the service and run a command that publishes through
+the outbox to a topic a second service consumes. Confirm three linked spans appear under **one trace
+id**: an `Internal` command span, a `Producer` `send …` span, and — in the downstream service — a
+`Consumer` `process …` span whose parent is the producer span. With `tracer = Nothing` (the
+default), no spans are emitted at all.
+
+## Related
+
+- [Telemetry reference](/docs/keiro/reference/telemetry) — the three span helpers, span names/kinds,
+  the attribute table, and which instrumentation sites are still deferred.
+- [`RunCommandOptions`](/docs/keiro/reference/command) and
+  [`OutboxPublishOptions`](/docs/keiro/reference/outbox) — the records carrying the `tracer` field.
+- [Wire a Kafka consumer to the inbox](/docs/keiro/how-to/wire-a-kafka-consumer-to-the-inbox) — the
+  consume side the consumer span wraps.
