@@ -5,6 +5,7 @@ title: "Keiro read-side documentation: projections, read models, and snapshots"
 kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
 ---
 
 # Keiro read-side documentation: projections, read models, and snapshots
@@ -71,23 +72,27 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M0. Preconditions verified — EP-7 Complete (overview/getting-started/jitsurei map +
+- [x] M0. Preconditions verified — EP-7 Complete (overview/getting-started/jitsurei map +
       `docs/keiro-source-sync.md` exist); toolchain present; `content/docs/keiro/` + its section
       subdirs exist; baseline `pnpm build` clean; keiro source readable at the pinned commit.
-- [ ] M1. Explanation pages authored (`explanation/projections-read-models-and-snapshots.mdx`,
-      `explanation/consistency-and-snapshots.mdx`), each with a `mermaid` diagram.
-- [ ] M2. Reference pages authored (`reference/projection.mdx`, `reference/read-model.mdx`,
-      `reference/snapshot.mdx`).
-- [ ] M3. Tutorial authored (`tutorials/your-first-read-model.mdx`).
-- [ ] M4. How-to guides authored (`how-to/choose-a-consistency-mode.mdx`,
+      _(2026-06-01; EP-8 also Complete, so soft-dep links resolve directly.)_
+- [x] M1. Explanation pages authored (`explanation/projections-read-models-and-snapshots.mdx`,
+      `explanation/consistency-and-snapshots.mdx`), each with a `mermaid` diagram. _(2026-06-01)_
+- [x] M2. Reference pages authored (`reference/projection.mdx`, `reference/read-model.mdx`,
+      `reference/snapshot.mdx`). _(2026-06-01)_
+- [x] M3. Tutorial authored (`tutorials/your-first-read-model.mdx`). _(2026-06-01)_
+- [x] M4. How-to guides authored (`how-to/choose-a-consistency-mode.mdx`,
       `how-to/make-an-async-projection-idempotent.mdx`, `how-to/rebuild-a-read-model.mdx`,
-      `how-to/add-a-snapshot.mdx`).
-- [ ] M5. Walkthrough authored (`walkthrough/read-side/` subdir + its `meta.json`:
+      `how-to/add-a-snapshot.mdx`). _(2026-06-01)_
+- [x] M5. Walkthrough authored (`walkthrough/read-side/` subdir + its `meta.json`:
       `00-start-here.mdx`, `01-snapshots-in-the-command-path.mdx`,
-      `02-the-read-model-query-path.mdx`, `03-projections.mdx`).
-- [ ] M6. meta.json appends done (section `meta.json`s + `walkthrough/read-side/meta.json` +
+      `02-the-read-model-query-path.mdx`, `03-projections.mdx`). _(2026-06-01; every excerpt quoted
+      verbatim from the pinned source.)_
+- [x] M6. meta.json appends done (section `meta.json`s + `walkthrough/read-side/meta.json` +
       "read-side" in `walkthrough/meta.json`); full `pnpm build` prerenders new pages with zero
-      crawler warnings; Haskell-name and link audits pass.
+      crawler warnings; Haskell-name and link audits pass. _(2026-06-01: typecheck clean; build
+      exits 0, no crawler warnings; `pnpm lint:links` OK, 111 files; Haskell-name audit 0 missing;
+      no relative links.)_
 
 
 ## Surprises & Discoveries
@@ -95,7 +100,20 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **EP-8 landed before EP-9, so every soft-dep link resolved directly — no landing-link fallback
+  needed.** Because EP-8 was Complete when EP-9 was authored, the read-side pages link straight to
+  the real EP-8 slugs (`/docs/keiro/reference/command`, `/docs/keiro/reference/event-stream-and-stream`,
+  `/docs/keiro/explanation/the-command-cycle`, and the command-cycle walkthrough chapters
+  `…/walkthrough/command-cycle/01-the-command-processor` and `…/02-the-transactional-write-path`)
+  rather than parking on a section landing. Evidence: `pnpm lint:links` checked 111 files with no
+  broken internal links, with the precise EP-8 targets in place. (Note for sequencing: this is the
+  payoff of doing EP-8 before EP-9 — the soft dep became a non-issue.)
+- **Source confirmed every Decision-Log gotcha exactly.** `waitIfNeeded Strong _ = pure (Right ())`
+  and `waitIfNeeded Eventual _ = pure (Right ())` (identical no-wait); `validateMetadata` hard-fails
+  on `version`/`shapeHash` drift (`ReadModelStaleSchema`) and on non-`Live` status
+  (`ReadModelNotLive`); `hydrate` silently falls back to `hydrateFull` on a `replayFrom` `Left`;
+  `writeSnapshotIfNeeded` runs inline in the command effect; `applyAsyncProjection` is a one-line
+  `(projection ^. #applyRecorded) recorded` with no worker. All quoted verbatim in the walkthrough.
 
 
 ## Decision Log
@@ -143,7 +161,31 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-01): complete and accepted.** The keiro read-side slice exists in full. Against
+the Purpose, a reader can tell apart the three primitives (projection = verb, read model = noun,
+snapshot = cache), choose a consistency mode and avoid the `Strong == Eventual` trap, understand the
+failure-mode asymmetry (read-model drift hard-fails; snapshot miss falls back to replay), and build a
+working read model and snapshot against the real jitsurei example.
+
+**Shipped (14 pages + 1 subdir meta.json + 5 meta appends):** explanations
+`projections-read-models-and-snapshots`, `consistency-and-snapshots`; references `projection`,
+`read-model`, `snapshot`; tutorial `your-first-read-model`; how-tos `choose-a-consistency-mode`,
+`make-an-async-projection-idempotent`, `rebuild-a-read-model`, `add-a-snapshot`; and the four-chapter
+`walkthrough/read-side/` tour.
+
+**Honestly-documented gaps (per the Decision Log):** the async-projection worker is not shipped
+(`applyAsyncProjection` hands you a bare `Tx`); the rebuild lifecycle is skeleton-only (status
+transitions, no shadow-table swap or automated replay); the snapshot write is synchronous; and
+`Strong`/`Eventual` are identical in `runQuery`. Each is called out in the relevant page.
+
+**Validation:** `pnpm typecheck` clean; `pnpm build` exits 0 prerendering all 14 routes with zero
+crawler warnings; `pnpm lint:links` OK (111 files); no relative cross-links; Haskell-name audit 0
+missing against the source at `3f5dc9c`.
+
+**Lesson:** sequencing a soft dependency *before* the dependent plan erases the forward-link problem
+entirely — EP-9 linked directly to real EP-8 pages, so unlike EP-8 it needed no landing-link
+fallback. When a soft dep is cheap to do first, doing so is the simplest way to keep cross-links
+precise.
 
 
 ## Context and Orientation
