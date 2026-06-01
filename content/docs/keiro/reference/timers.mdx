@@ -1,0 +1,172 @@
+---
+title: "Keiro.Timer"
+description: "Reference for keiro's durable timers: the TimerId, TimerRequest, TimerRow, and TimerStatus types, the storage operations, the worker, and the keiro_timers table."
+---
+
+The types and functions on this page live in `Keiro.Timer` (the wire types are defined in
+`Keiro.Timer.Types` and the storage in `Keiro.Timer.Schema`, both re-exported from `Keiro.Timer`).
+They schedule, claim, and fire durable timers backed by the `keiro_timers` table. For the
+narrative, see [Understanding durable timers](/docs/keiro/explanation/durable-timers).
+
+## `TimerId`
+
+A timer's stable identifier. A caller-chosen id makes scheduling idempotent (rescheduling the same
+id updates rather than duplicates).
+
+```haskell
+newtype TimerId = TimerId UUID
+```
+
+## `TimerRequest`
+
+A request to schedule a timer.
+
+```haskell
+data TimerRequest = TimerRequest
+  { timerId            :: !TimerId
+  , processManagerName :: !Text
+  , correlationId      :: !Text
+  , fireAt             :: !UTCTime
+  , payload            :: !Value
+  }
+```
+
+<TypeTable
+  type={{
+    timerId: { type: "TimerId", description: "Stable id; rescheduling the same id is idempotent." },
+    processManagerName: { type: "Text", description: "Identifies the saga instance the timer belongs to, so the firing can be routed back to it." },
+    correlationId: { type: "Text", description: "The correlation key of the saga instance (e.g. the incident id)." },
+    fireAt: { type: "UTCTime", description: "The earliest time the timer becomes due." },
+    payload: { type: "Value", description: "Opaque JSON carried through to the fire action." },
+  }}
+/>
+
+## `TimerStatus`
+
+A timer's lifecycle state.
+
+```haskell
+data TimerStatus = Scheduled | Firing | Fired | Cancelled
+```
+
+<TypeTable
+  type={{
+    Scheduled: { type: "—", description: "Waiting for its fireAt; claimable." },
+    Firing: { type: "—", description: "Claimed by a worker and being processed (re-claimable if the worker crashes before completing)." },
+    Fired: { type: "—", description: "Successfully fired; terminal." },
+    Cancelled: { type: "—", description: "Withdrawn before firing; ALSO the decode fallback for an unrecognized stored value." },
+  }}
+/>
+
+<Callout type="info">
+`statusFromText` maps any **unknown** stored status string to `Cancelled`. There is no
+`cancelTimer` function in keiro 0.1.0.0 — no cancellation SQL ships.
+</Callout>
+
+## `TimerRow`
+
+A timer row as stored: the original `TimerRequest` fields plus the live status, the attempt count
+(incremented on each claim), and the fired event id once it fires.
+
+```haskell
+data TimerRow = TimerRow
+  { timerId            :: !TimerId
+  , processManagerName :: !Text
+  , correlationId      :: !Text
+  , fireAt             :: !UTCTime
+  , payload            :: !Value
+  , status             :: !TimerStatus
+  , attempts           :: !Int
+  , firedEventId       :: !(Maybe EventId)
+  }
+```
+
+<TypeTable
+  type={{
+    timerId: { type: "TimerId", description: "The timer's stable id." },
+    processManagerName: { type: "Text", description: "The owning process manager's name." },
+    correlationId: { type: "Text", description: "The saga instance's correlation key." },
+    fireAt: { type: "UTCTime", description: "When the timer became due." },
+    payload: { type: "Value", description: "The opaque JSON payload." },
+    status: { type: "TimerStatus", description: "The current lifecycle state." },
+    attempts: { type: "Int", description: "How many times the timer has been claimed." },
+    firedEventId: { type: "Maybe EventId", description: "The id of the event the firing produced; Nothing until fired." },
+  }}
+/>
+
+## `scheduleTimerTx`
+
+Schedule a timer inside the caller's transaction (typically a process manager's append). Upserts on
+`timerId`: a conflicting row is re-armed **only while it is still `Scheduled`**, so a timer that has
+already fired or been cancelled is not resurrected.
+
+```haskell
+scheduleTimerTx :: TimerRequest -> Tx.Transaction ()
+```
+
+The re-arm guard is the `ON CONFLICT … WHERE keiro_timers.status = 'scheduled'` clause on the
+underlying `INSERT`.
+
+## `claimDueTimer`
+
+Atomically claim the single earliest timer due at `now`, moving it to `Firing` and bumping its
+attempt count. Uses `FOR UPDATE SKIP LOCKED` so concurrent workers each get a distinct timer.
+Returns `Nothing` when none is due.
+
+```haskell
+claimDueTimer :: (Store :> es) => UTCTime -> Eff es (Maybe TimerRow)
+```
+
+## `markTimerFired`
+
+Mark a claimed timer `Fired`, recording the id of the event its firing produced.
+
+```haskell
+markTimerFired :: (Store :> es) => TimerId -> EventId -> Eff es ()
+```
+
+## `runTimerWorker`
+
+Claim and fire at most one timer due at `now`. Atomically claims the earliest due timer (marking it
+`Firing`), runs `fire` on it, and — **if** `fire` returns the id of the event it produced — marks
+the timer `Fired`. Returns the claimed `TimerRow`, or `Nothing` when nothing is due.
+
+```haskell
+runTimerWorker ::
+  (Store :> es) => UTCTime -> (TimerRow -> Eff es (Maybe EventId)) -> Eff es (Maybe TimerRow)
+```
+
+A `fire` that returns `Nothing` (or a crash) leaves the timer `Firing`, to be retried on a later
+claim — this is what gives **at-least-once** firing. The caller drives this on a schedule (e.g. once
+per tick) and supplies `now`. See [Drive the timer
+worker](/docs/keiro/how-to/drive-the-timer-worker).
+
+## The `keiro_timers` table
+
+The bootstrap migration creates the table and its due-timer index:
+
+```sql
+CREATE TABLE IF NOT EXISTS keiro_timers (
+  timer_id UUID PRIMARY KEY,
+  process_manager_name TEXT NOT NULL,
+  correlation_id TEXT NOT NULL,
+  fire_at TIMESTAMPTZ NOT NULL,
+  payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'scheduled',
+  attempts BIGINT NOT NULL DEFAULT 0,
+  fired_event_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS keiro_timers_due_idx
+  ON keiro_timers (status, fire_at, process_manager_name);
+```
+
+The status column stores the lowercase strings `scheduled | firing | fired | cancelled`.
+
+<Cards>
+  <Card title="Keiro.ProcessManager reference" href="/docs/keiro/reference/process-manager" />
+  <Card title="Understanding durable timers" href="/docs/keiro/explanation/durable-timers" />
+  <Card title="Drive the timer worker" href="/docs/keiro/how-to/drive-the-timer-worker" />
+</Cards>

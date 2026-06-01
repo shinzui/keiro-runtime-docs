@@ -1,0 +1,86 @@
+---
+title: "Drive the timer worker"
+description: "Build a polling loop around runTimerWorker, choose a clock and cadence, run many workers safely, and bind a fired timer back to a process manager via its payload."
+---
+
+`runTimerWorker` is a **bare** worker: it claims at most one due timer per call and has no loop, no
+clock, and no supervisor. This guide shows how to drive it — the polling loop, the clock, the
+cadence, and how to route a fired timer back into a process manager.
+
+<Callout type="info">
+Assumes you understand [durable timers](/docs/keiro/explanation/durable-timers) and have a process
+manager scheduling them. Run the worked example with `just jitsurei-escalation`.
+</Callout>
+
+## Goal
+
+Run durable timers continuously: poll for due timers on a tick, fire each by dispatching a command
+back into the owning process manager, and let many workers share the table safely.
+
+## Steps
+
+1. **Choose a clock source.** `runTimerWorker` takes `now :: UTCTime` as an argument — it has no
+   internal clock. In production pass `getCurrentTime`; in tests pass a fixed or stepped time so the
+   worker is deterministic:
+
+   ```haskell
+   now <- liftIO getCurrentTime
+   ```
+
+2. **Write the `fire` action that routes a timer back to its process manager.** A `TimerRow`
+   carries `processManagerName`, `correlationId`, and `payload`; read them to decide what command to
+   dispatch, then return `Just` the produced `EventId` so the timer is marked `Fired`. This is the
+   real jitsurei escalation worker:
+
+   ```haskell
+   runEscalationTimerWorker options now =
+     runTimerWorker now $ \timer ->
+       case incidentIdFromTimer timer of
+         Nothing         -> pure Nothing            -- not ours: leave it for another worker
+         Just incidentId -> do
+           _ <- runCommand options incidentEventStream (incidentStream incidentId)
+                  (EscalateIncident (EscalateIncidentData incidentId))
+           pure (Just firedEventId)                 -- Just -> mark Fired
+
+   incidentIdFromTimer :: TimerRow -> Maybe IncidentId
+   incidentIdFromTimer timer
+     | (timer ^. #processManagerName) == "jitsurei-escalation" =
+         Just (IncidentId (timer ^. #correlationId))
+     | otherwise = Nothing
+   ```
+
+   Returning `Nothing` leaves the timer `Firing` to be re-claimed later; returning `Just eventId`
+   marks it `Fired`. Because firing dispatches a command that the incident aggregate accepts only
+   from `Triaging`, a duplicate firing is a benign no-op — exactly what at-least-once delivery
+   requires.
+
+3. **Wrap it in a polling loop with a cadence.** The worker fires one timer per call, so loop and
+   re-poll. Pick a tick interval that balances latency against load (e.g. one second); sleep between
+   ticks:
+
+   ```haskell
+   timerLoop options = forever $ do
+     now <- liftIO getCurrentTime
+     _   <- runEscalationTimerWorker options now    -- claims at most one due timer
+     liftIO (threadDelay 1_000_000)                 -- 1s tick
+   ```
+
+   If a single tick should drain *all* currently-due timers, call the worker repeatedly until it
+   returns `Nothing` before sleeping.
+
+4. **Run as many workers as you like.** `claimDueTimer` uses `FOR UPDATE SKIP LOCKED`, so concurrent
+   workers each claim a **distinct** timer and never collide. Scale throughput by running more loops
+   — there is nothing to partition or coordinate.
+
+## Verify it worked
+
+Schedule a timer with a `fireAt` a few seconds out (jitsurei's `escalationTimerRequest` does this on
+`IncidentReported`). When the worker's `now` passes `fireAt`, the timer's row moves `scheduled →
+firing → fired` and the dispatched command's effect appears (an `IncidentEscalated` event). Query
+`SELECT status FROM keiro_timers WHERE timer_id = …` to watch the transition.
+
+## Related
+
+- [Understanding durable timers](/docs/keiro/explanation/durable-timers) — the lifecycle and at-least-once semantics.
+- [Keiro.Timer reference](/docs/keiro/reference/timers) — `runTimerWorker`, `claimDueTimer`, the schema.
+- [Keep target commands total](/docs/keiro/how-to/keep-target-commands-total) — make the fired command idempotent.

@@ -1,0 +1,79 @@
+---
+title: "Write a saga with compensation"
+description: "There is no saga primitive in keiro — a saga is a process manager whose handle emits compensating commands on failure events. This guide shows how."
+---
+
+You need a workflow that *undoes* earlier steps when a later step fails — reserve inventory, charge
+a card, and if the charge fails, release the inventory. That pattern is a **saga**. This guide shows
+how to write one in keiro.
+
+<Callout type="info">
+Assumes you have read [Understanding process managers and
+sagas](/docs/keiro/explanation/process-managers-and-sagas) and can write a basic process manager
+([Your first process manager](/docs/keiro/tutorials/your-first-process-manager)).
+</Callout>
+
+## Goal
+
+Express a compensating workflow. The key fact: **keiro ships no separate saga type.** A saga is just
+a `ProcessManager` whose `handle` matches *failure* events and emits **compensating** commands —
+commands that reverse the effect of an earlier step.
+
+## Steps
+
+1. **Model the failure as a domain event.** Compensation is triggered by an event, like everything
+   else a process manager reacts to. Make sure the step that can fail records its outcome as an
+   event the saga subscribes to (e.g. `PaymentFailed`, `ShipmentRejected`).
+
+2. **Match the failure in `handle` and emit a compensating command.** A saga's `handle` is an
+   ordinary `case`: the happy-path events dispatch forward commands; the failure events dispatch
+   compensation. Both still advance the manager's own state so it remembers what it has done:
+
+   ```haskell
+   handle = \event ->
+     case event of
+       -- happy path: a forward command
+       PaymentApproved{} ->
+         ProcessManagerAction
+           { command  = ObserveFulfillmentEvent (observed event)
+           , commands = [ PMCommand (orderCommandStream (eventOrderId event)) (MarkPacked (MarkPackedData (eventOrderId event))) ]
+           , timers   = []
+           }
+
+       -- compensation: an UNDO command on the failure event
+       PaymentFailed{} ->
+         ProcessManagerAction
+           { command  = ObserveFulfillmentEvent (observed event)
+           , commands = [ PMCommand (orderCommandStream (eventOrderId event)) (CancelOrder (CancelOrderData (eventOrderId event) "payment failed")) ]
+           , timers   = []
+           }
+
+       _ ->
+         ProcessManagerAction
+           { command  = ObserveFulfillmentEvent (observed event)
+           , commands = []
+           , timers   = []
+           }
+   ```
+
+   The compensating command (`CancelOrder`) is dispatched through the same command cycle as any
+   other — there is nothing special about it except its *meaning*.
+
+3. **Keep the compensating command total on the target.** A compensation may arrive when the target
+   is already in a state that makes it a no-op (already cancelled, already released). Model that as
+   a **total** transition on the target aggregate so it returns a benign rejection rather than a
+   `PMCommandFailed`. See [Keep target commands total](/docs/keiro/how-to/keep-target-commands-total)
+   — this is the same discipline that makes the jitsurei escalation/ack race safe.
+
+## Verify it worked
+
+Feed the saga a failure event and confirm the compensating command lands on the target: the order
+stream gains an `OrderCancelled` event, and the manager's own state stream records that it observed
+the failure. Replaying the failure event is a no-op (the compensation is idempotent via the
+deterministic dispatch id).
+
+## Related
+
+- [Understanding process managers and sagas](/docs/keiro/explanation/process-managers-and-sagas) — why a saga is "just" a process manager.
+- [Keep target commands total](/docs/keiro/how-to/keep-target-commands-total) — make compensation idempotent.
+- [Keiro.ProcessManager reference](/docs/keiro/reference/process-manager).

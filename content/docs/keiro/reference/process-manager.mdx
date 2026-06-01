@@ -1,0 +1,208 @@
+---
+title: "Keiro.ProcessManager"
+description: "Reference for keiro's process manager: the ProcessManager and ProcessManagerAction types, the result types, the runners, and the idempotency primitives."
+---
+
+The types and functions on this page live in `Keiro.ProcessManager`. A process manager reacts to
+an incoming event by advancing its own event-sourced state, dispatching commands to target
+aggregates, and scheduling durable timers. For the narrative, see [Understanding process managers
+and sagas](/docs/keiro/explanation/process-managers-and-sagas).
+
+<Callout type="warn">
+The manager-state append and its timers commit in **one** transaction; **each** dispatched
+`PMCommand` commits in its **own** transaction. This is **not** one atomic multi-stream commit.
+Replay-safety comes entirely from `deterministicCommandId` + `eventAlreadyIn` + the store's
+uniqueness constraint.
+</Callout>
+
+## `ProcessManager`
+
+The full wiring: the manager's own state machine and the target aggregate it drives. It is
+parameterised over the manager aggregate (`phi rs s ci co`), the target aggregate (`targetPhi
+targetRs targetState targetCi targetCo`), and the incoming event type (`input`).
+
+```haskell
+data ProcessManager input phi rs s ci co targetPhi targetRs targetState targetCi targetCo = ProcessManager
+  { name              :: !Text
+  , correlate         :: !(input -> Text)
+  , eventStream       :: !(EventStream phi rs s ci co)
+  , streamFor         :: !(Text -> Stream (EventStream phi rs s ci co))
+  , targetEventStream :: !(EventStream targetPhi targetRs targetState targetCi targetCo)
+  , targetProjections :: !(Stream targetCi -> [InlineProjection targetCo])
+  , handle            :: !(input -> ProcessManagerAction ci targetCi)
+  }
+```
+
+<TypeTable
+  type={{
+    name: { type: "Text", description: "Stable identity; part of every deterministic write id." },
+    correlate: { type: "input -> Text", description: "Derives the correlation key for an input event, selecting which manager instance handles it." },
+    eventStream: { type: "EventStream phi rs s ci co", description: "The manager's own EventStream; its events record the saga's progress." },
+    streamFor: { type: "Text -> Stream (EventStream phi rs s ci co)", description: "Maps a correlation key to the manager's Stream handle." },
+    targetEventStream: { type: "EventStream targetPhi ...", description: "The aggregate that dispatched commands are sent to." },
+    targetProjections: { type: "Stream targetCi -> [InlineProjection targetCo]", description: "Inline projections run in the same transaction as each dispatched command's append. Return [] for append-only dispatch." },
+    handle: { type: "input -> ProcessManagerAction ci targetCi", description: "The pure reaction: the manager-state command, the target commands, and the timers to schedule." },
+  }}
+/>
+
+## `ProcessManagerAction`
+
+What a process manager decides to do for one input event.
+
+```haskell
+data ProcessManagerAction ci targetCi = ProcessManagerAction
+  { command  :: !ci
+  , commands :: ![PMCommand targetCi]
+  , timers   :: ![TimerRequest]
+  }
+```
+
+<TypeTable
+  type={{
+    command: { type: "ci", description: "The command applied to the manager's OWN event stream to advance its state." },
+    commands: { type: "[PMCommand targetCi]", description: "Zero or more commands dispatched to target aggregates." },
+    timers: { type: "[TimerRequest]", description: "Zero or more durable timers to schedule (in the manager-append transaction)." },
+  }}
+/>
+
+## `PMCommand`
+
+A single command addressed to a specific target stream.
+
+```haskell
+data PMCommand targetCi = PMCommand
+  { target  :: !(Stream targetCi)
+  , command :: !targetCi
+  }
+```
+
+<TypeTable
+  type={{
+    target: { type: "Stream targetCi", description: "The target aggregate stream the command is dispatched to." },
+    command: { type: "targetCi", description: "The command to run against that target." },
+  }}
+/>
+
+## `PMCommandResult`
+
+The outcome of one dispatched target command.
+
+```haskell
+data PMCommandResult target
+  = PMCommandAppended  !(CommandResult target)  -- the dispatch appended events
+  | PMCommandDuplicate !EventId                 -- idempotent replay; the id already existed
+  | PMCommandFailed    !CommandError            -- fatal: the worker retries the source event
+```
+
+<Callout type="warn">
+`PMCommandFailed` is treated as **fatal**. In `runProcessManagerWorker` a reaction that returns
+`Left` finalizes `AckHalt (HaltFatal …)`, so the source event is **retried forever**. Model benign
+target rejections as **total** transitions so they never surface as `PMCommandFailed`. See [Keep
+target commands total](/docs/keiro/how-to/keep-target-commands-total).
+</Callout>
+
+## `PMStateResult`
+
+The outcome of the manager's own state append. Unlike `PMCommandResult` there is no failure case —
+a manager-state append that genuinely errors aborts the whole reaction via an outer `Left
+CommandError`.
+
+```haskell
+data PMStateResult target
+  = PMStateAppended  !(CommandResult target)
+  | PMStateDuplicate !EventId
+```
+
+## `ProcessManagerResult`
+
+The complete result of reacting to one event.
+
+```haskell
+data ProcessManagerResult managerTarget commandTarget = ProcessManagerResult
+  { managerResult   :: !(PMStateResult managerTarget)
+  , commandResults  :: ![PMCommandResult commandTarget]
+  , timersScheduled :: !Int
+  }
+```
+
+<TypeTable
+  type={{
+    managerResult: { type: "PMStateResult managerTarget", description: "How the manager's own state advanced." },
+    commandResults: { type: "[PMCommandResult commandTarget]", description: "The outcome of each dispatched command, in dispatch order." },
+    timersScheduled: { type: "Int", description: "How many timers were scheduled." },
+  }}
+/>
+
+## `runProcessManagerOnce`
+
+React to a single source event: advance the manager's state, dispatch its target commands, and
+schedule its timers — each under a deterministic, idempotent write id.
+
+```haskell
+runProcessManagerOnce ::
+  ( HasCallStack, IOE :> es, Store :> es, Error StoreError :> es
+  , BoolAlg phi (RegFile rs, ci)
+  , BoolAlg targetPhi (RegFile targetRs, targetCi)
+  , Eq co, Eq targetCo ) =>
+  RunCommandOptions ->
+  ProcessManager input phi rs s ci co targetPhi targetRs targetState targetCi targetCo ->
+  RecordedEvent ->
+  input ->
+  Eff es (Either CommandError (ProcessManagerResult (EventStream phi rs s ci co) (EventStream targetPhi targetRs targetState targetCi targetCo)))
+```
+
+Returns `Left` **only** when the manager-state append fails for a non-duplicate reason; per-command
+failures are reported inside `commandResults`. A duplicate manager append short-circuits to
+`PMStateDuplicate` but **still re-runs the dispatch loop**, so a crash between the state append and
+a command dispatch is recovered on replay.
+
+## `runProcessManagerWorker`
+
+Run a process manager as a live subscription draining a shibuya `Adapter`.
+
+```haskell
+runProcessManagerWorker ::
+  ( HasCallStack, IOE :> es, Store :> es, Error StoreError :> es
+  , BoolAlg phi (RegFile rs, ci)
+  , BoolAlg targetPhi (RegFile targetRs, targetCi)
+  , Eq co, Eq targetCo ) =>
+  RunCommandOptions ->
+  ProcessManager input phi rs s ci co targetPhi targetRs targetState targetCi targetCo ->
+  Adapter es msg ->
+  (msg -> Maybe (RecordedEvent, input)) ->
+  Eff es ()
+```
+
+Each message is decoded with the caller's `msg -> Maybe (RecordedEvent, input)`. A message that
+fails to decode, or a reaction that returns `Left`, finalizes `AckHalt (HaltFatal …)` so the source
+event is retried; a successful reaction acks `AckOk`. Deterministic write ids make the forced retry
+safe. See [Run a process manager as a
+subscription](/docs/keiro/how-to/run-a-process-manager-as-a-subscription).
+
+## `deterministicCommandId`
+
+Derive a stable, collision-resistant `EventId` for a manager write from `(manager name,
+correlation id, source event id, emit index)` via a v5 UUID.
+
+```haskell
+deterministicCommandId :: Text -> Text -> EventId -> Int -> EventId
+```
+
+The same inputs always yield the same id, so a replayed source event produces the same write ids
+and the store's uniqueness constraint collapses the duplicate. The manager-state append uses an
+emit index of `-1`; dispatched commands are numbered `0, 1, 2, …`.
+
+## `eventAlreadyIn`
+
+Check whether an event with the given id is already present in a stream, by scanning it forward.
+Used as the pre-dispatch idempotency guard.
+
+```haskell
+eventAlreadyIn :: (Store :> es) => RunCommandOptions -> StreamName -> EventId -> Eff es Bool
+```
+
+<Cards>
+  <Card title="Keiro.Timer reference" href="/docs/keiro/reference/timers" />
+  <Card title="Command reference" href="/docs/keiro/reference/command" />
+  <Card title="Understanding process managers and sagas" href="/docs/keiro/explanation/process-managers-and-sagas" />
+</Cards>

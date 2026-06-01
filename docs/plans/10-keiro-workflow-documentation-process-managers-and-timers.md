@@ -5,6 +5,7 @@ title: "Keiro workflow documentation: process managers and timers"
 kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
 ---
 
 # Keiro workflow documentation: process managers and timers
@@ -73,22 +74,23 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M0. Preconditions verified — toolchain present, baseline build clean, EP-7 Complete
+- [x] M0. Preconditions verified — toolchain present (pnpm 11.4.0, Node 22.22.3 on PATH;
+      no `nix develop` needed), baseline `pnpm build` exits 0, EP-7/EP-8/EP-9 Complete
       (keiro landing/getting-started/core-concepts pages, the jitsurei module map, and
-      `docs/keiro-source-sync.md` exist; `walkthrough/` lists `workflow` or will be added),
-      keiro source readable at commit `3f5dc9c`.
-- [ ] M1. Explanation pages authored (`process-managers-and-sagas`, `durable-timers`,
-      `workflow-roadmap`).
-- [ ] M2. Reference pages authored (`process-manager`, `timers`).
-- [ ] M3. Tutorial authored (`your-first-process-manager`).
-- [ ] M4. How-to guides authored (`run-a-process-manager-as-a-subscription`,
-      `write-a-saga-with-compensation`, `drive-the-timer-worker`, `keep-target-commands-total`).
-- [ ] M5. Walkthrough authored under `walkthrough/workflow/` (`00-start-here`,
-      `01-the-process-manager`, `02-the-timer-schema`, `03-the-timer-worker`) + its `meta.json`.
-- [ ] M6. meta.json appends done (explanation/reference/how-to/tutorials section files +
-      new `walkthrough/workflow/meta.json` + `workflow` present in `walkthrough/meta.json`);
-      `pnpm typecheck` clean; `pnpm build` exits 0 with zero crawler warnings; snippet/framing
-      checks pass; v2 roadmap page shows no shipped-looking v2 API.
+      `docs/keiro-source-sync.md` exist), keiro source readable at commit `3f5dc9c`. _(2026-06-01)_
+- [x] M1. Explanation pages authored (`process-managers-and-sagas`, `durable-timers`,
+      `workflow-roadmap`). _(2026-06-01)_
+- [x] M2. Reference pages authored (`process-manager`, `timers`). _(2026-06-01)_
+- [x] M3. Tutorial authored (`your-first-process-manager`). _(2026-06-01)_
+- [x] M4. How-to guides authored (`run-a-process-manager-as-a-subscription`,
+      `write-a-saga-with-compensation`, `drive-the-timer-worker`, `keep-target-commands-total`). _(2026-06-01)_
+- [x] M5. Walkthrough authored under `walkthrough/workflow/` (`00-start-here`,
+      `01-the-process-manager`, `02-the-timer-schema`, `03-the-timer-worker`) + its `meta.json`. _(2026-06-01)_
+- [x] M6. meta.json appends done (explanation/reference/how-to/tutorials section files +
+      new `walkthrough/workflow/meta.json` + `workflow` appended to `walkthrough/meta.json`);
+      `pnpm typecheck` clean; `pnpm build` exits 0 with zero crawler warnings;
+      `pnpm lint:links` OK (125 files, no broken internal links); snippet/framing
+      checks pass; v2 roadmap page shows no shipped-looking v2 API. _(2026-06-01)_
 
 
 ## Surprises & Discoveries
@@ -96,9 +98,31 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet. Record here any further divergence between the keiro repo's notes and the shipped
-source discovered while authoring — the Decision Log already records the ones found during
-research.)
+- **The router has no `explanation/the-content-based-router` page; it is documented at
+  `reference/router` (+ `walkthrough/command-cycle/04-the-router`).** (Authoring M1,
+  2026-06-01.) The plan's M1 guidance said to link the process-manager↔router contrast to
+  `/docs/keiro/explanation/the-content-based-router`, but EP-8 (Complete) shipped the router
+  as a *reference* page, not an explanation page — that slug does not exist. Linking to it
+  would have been a broken internal link (crawler failure). **Resolution:** the contrast links
+  to the real, existing `/docs/keiro/reference/router`. Bearing: none on other plans; this is
+  EP-10 matching the as-shipped IA. Evidence: `reference/meta.json` lists `router`; no
+  `the-content-based-router` in `explanation/meta.json`; `pnpm lint:links` clean.
+
+- **No shibuya-adapter how-to exists in the keiro tree to link from the subscription guide.**
+  (Authoring M4, 2026-06-01.) The plan suggested linking a shibuya-adapter how-to (EP-7/EP-8
+  territory); none was authored there. `how-to/run-a-process-manager-as-a-subscription.mdx`
+  therefore describes the adapter wiring in prose and links the existing
+  `how-to/make-commands-idempotent` for the deterministic-id idempotency discipline instead of
+  a non-existent page. Bearing: if EP-12 adds a shibuya-adapter page, it may upgrade this prose
+  to a link.
+
+- **The v2 roadmap page deliberately contains *zero* literal v2 API tokens** (`Keiro.Workflow`,
+  `keiro_workflow_steps`, `keiro_awakeables`, `awakeable`) — stricter than the plan's "only in
+  clearly-marked prose" bar. Naming them at all risked a reader copy-pasting; instead the page
+  describes durable execution purely conceptually ("a future durable-execution model", "a step",
+  "an awaitable signal") and explicitly flags the repo's `docs/research/*`/`docs/plans/*` names
+  as historical, undecided, and not shown. Validation step 5's grep returns no matches, which
+  exceeds (rather than just meets) the acceptance bar. _(2026-06-01)_
 
 
 ## Decision Log
@@ -191,9 +215,34 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation. Compare against Purpose: a complete, accurate
-workflow slice — process managers and durable timers — that builds and link-checks cleanly,
-with the two-transaction model and the v2-roadmap-only framing documented honestly.)
+**Outcome (2026-06-01): complete and accepted.** All 14 files plus
+`walkthrough/workflow/meta.json` were authored against the keiro source at the pinned commit
+`3f5dc9c`: 3 explanation pages, 2 reference pages, 1 tutorial, 4 how-to guides, and a 4-chapter
+walkthrough. Every Haskell snippet, the `keiro_timers` SQL, and the claim/re-arm CTEs were
+transcribed from the read-only source (`Keiro/ProcessManager.hs`, `Keiro/Timer.hs`,
+`Keiro/Timer/Schema.hs`, `Keiro/Timer/Types.hs`, the bootstrap migration) and the jitsurei
+worked-example modules (`FulfillmentProcess`, `EscalationProcess`, `Timers`, `Incident`,
+`OrderStream`, `Domain`), not from the divergent in-repo notes.
+
+Measured against Purpose:
+- **Builds & link-checks cleanly** — `pnpm typecheck` clean, `pnpm build` exits 0 with zero
+  crawler warnings, `pnpm lint:links` OK (125 files, no broken internal links), no relative
+  cross-links (all `/docs/keiro/...` absolute).
+- **Two-transaction model documented honestly** — the explanation and reference both state that
+  the manager append + timers commit in one transaction while each dispatched `PMCommand` commits
+  in its own (not one atomic multi-stream commit), and explain why deterministic ids + the
+  re-run-on-duplicate dispatch loop make replay safe.
+- **`PMCommandFailed` caveat is first-class** — flagged in the explanation, the reference (a
+  warn `<Callout>`), and given a dedicated how-to (`keep-target-commands-total`) anchored to
+  `Jitsurei/Incident.hs`'s `Triaging`-only guard.
+- **v2 is roadmap-only** — `workflow-roadmap.mdx` shows no shipped-looking v2 API (in fact no v2
+  API tokens at all; see Surprises).
+- **jitsurei spine intact** — every conceptual page links the relevant `Jitsurei/*.hs` module and
+  `just jitsurei-fulfillment` / `just jitsurei-escalation` targets.
+
+Gaps / deferred to EP-12 (by design): the walkthrough hub `<Card>` for the workflow tour is still
+href-less (EP-12 adds the four hrefs in finalization), and the final whole-tree `meta.json`
+ordering pass is EP-12's. No content gaps in EP-10's own surface.
 
 
 ## Context and Orientation

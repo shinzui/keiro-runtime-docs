@@ -140,7 +140,7 @@ and whole-tree-integrity responsibilities.
 | 7 | Keiro overview, getting started, and the jitsurei example spine | docs/plans/7-keiro-overview-getting-started-and-the-jitsurei-example-spine.md | — | — | 1 | Complete |
 | 8 | Keiro command cycle and write-path documentation | docs/plans/8-keiro-command-cycle-and-write-path-documentation.md | #7 | — | 2 | Complete |
 | 9 | Keiro read-side documentation: projections, read models, and snapshots | docs/plans/9-keiro-read-side-documentation-projections-read-models-and-snapshots.md | #7 | #8 | 2 | Complete |
-| 10 | Keiro workflow documentation: process managers and timers | docs/plans/10-keiro-workflow-documentation-process-managers-and-timers.md | #7 | #8, #9 | 2 | Not Started |
+| 10 | Keiro workflow documentation: process managers and timers | docs/plans/10-keiro-workflow-documentation-process-managers-and-timers.md | #7 | #8, #9 | 2 | Complete |
 | 11 | Keiro integration-events documentation: inbox, outbox, and Kafka | docs/plans/11-keiro-integration-events-documentation-inbox-outbox-and-kafka.md | #7 | #8 | 2 | Not Started |
 | 12 | Keiro operations, FAQ, cookbook, and docs finalization | docs/plans/12-keiro-operations-faq-cookbook-and-docs-finalization.md | #7 | #8, #9, #10, #11 | 3 | Not Started |
 
@@ -283,8 +283,8 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 - [x] EP-8: Command-cycle how-tos + `walkthrough/command-cycle/` tour authored. _(2026-06-01)_
 - [x] EP-9: Read-side explanation + reference (Projection, ReadModel, Snapshot) authored. _(2026-06-01)_
 - [x] EP-9: Read-side how-tos + `walkthrough/read-side/` tour authored. _(2026-06-01; + tutorial your-first-read-model.)_
-- [ ] EP-10: Workflow explanation + reference (ProcessManager, Timer) authored.
-- [ ] EP-10: Workflow how-tos + tutorial + `walkthrough/workflow/` tour authored.
+- [x] EP-10: Workflow explanation + reference (ProcessManager, Timer) authored. _(2026-06-01)_
+- [x] EP-10: Workflow how-tos + tutorial + `walkthrough/workflow/` tour authored. _(2026-06-01)_
 - [ ] EP-11: Integration-events explanation + reference (Inbox, Outbox, IntegrationEvent) authored.
 - [ ] EP-11: Integration-events how-tos + `walkthrough/integration/` tour (inbox + outbox) authored.
 - [ ] EP-12: Operations docs authored (telemetry, migrations, testing) + FAQ + cookbook.
@@ -326,6 +326,11 @@ that affect more than one plan.)
   - **(Update, implementing EP-8, 2026-06-01.)** EP-8 added `"command-cycle"` to
     `walkthrough/meta.json` (its subdir now exists with real chapters), so the command-cycle tour is
     navigable from the sidebar; its hub `<Card>` is still href-less, awaiting EP-12.
+  - **(Update, implementing EP-10, 2026-06-01.)** EP-10 added `"workflow"` to `walkthrough/meta.json`
+    (the `walkthrough/workflow/` subdir now exists with `00-start-here` + three real chapters), so the
+    workflow tour is navigable from the sidebar; its hub `<Card>` is still href-less, awaiting EP-12.
+    **EP-12 finalization now owns three hub hrefs** (`command-cycle`, `read-side`, `workflow`) plus
+    EP-11's `integration` once it lands.
 
 - **Forward-links to not-yet-authored sibling pages are parked on the section landing until their
   owner lands.** (Discovered implementing EP-8, 2026-06-01.) The same crawler behavior that bit the
@@ -337,6 +342,15 @@ that affect more than one plan.)
   precise slugs** (grep the keiro tree for `](/docs/keiro/reference)` occurrences that name a
   specific page in nearby prose). Evidence: EP-8 `pnpm build` clean + `pnpm lint:links` 97 files, no
   broken internal links.
+  - **(Update, implementing EP-10, 2026-06-01.)** EP-10 created `reference/process-manager` (and
+    `reference/timers`), so EP-8's parked landing link to it can now be upgraded by EP-12. EP-10
+    itself needed **no** parked landing links — its cross-subsystem references all point at
+    already-shipped EP-8 pages. One naming correction for EP-12: the process-manager↔router contrast
+    links to **`/docs/keiro/reference/router`**, because EP-8 shipped the router as a *reference*
+    page — there is **no** `explanation/the-content-based-router` page (despite the child plan's
+    prose suggesting that slug). EP-12 should not try to "upgrade" those router links to a
+    non-existent explanation page. Evidence: `reference/meta.json` lists `router`; `pnpm lint:links`
+    clean over 125 files including the EP-10 pages.
 
 
 ## Decision Log

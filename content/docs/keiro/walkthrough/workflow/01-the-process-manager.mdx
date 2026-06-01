@@ -1,0 +1,130 @@
+---
+title: "01 — The process manager"
+description: "Reading runProcessManagerOnce in keiro/src/Keiro/ProcessManager.hs: correlate/handle setup, the one-transaction manager append, the dispatch loop, and the retarget coerce."
+---
+
+This chapter reads `runProcessManagerOnce` and its helpers in `keiro/src/Keiro/ProcessManager.hs` —
+the heart of the workflow engine. Read [00 — Start
+here](/docs/keiro/walkthrough/workflow/00-start-here) first.
+
+## Setup: correlate, handle, and the deterministic manager id
+
+```haskell
+-- keiro/src/Keiro/ProcessManager.hs
+runProcessManagerOnce options manager sourceEvent input = do
+  let correlationId = (manager ^. #correlate) input
+      action = (manager ^. #handle) input
+      managerStream = (manager ^. #streamFor) correlationId
+      managerEventId = deterministicCommandId (manager ^. #name) correlationId (sourceEvent ^. #eventId) (-1)
+      managerOptions = options & #eventIds .~ [managerEventId]
+      managerStreamName = ((manager ^. #eventStream) ^. #resolveStreamName) managerStream
+  managerAlreadyProcessed <- eventAlreadyIn options managerStreamName managerEventId
+```
+
+The reaction is decided *up front* and purely: `correlate` gives the correlation key, `handle` gives
+the whole `ProcessManagerAction`. The manager-state write id is `deterministicCommandId name
+correlationId sourceEventId (-1)` — note the emit index of **`-1`**, which keeps the manager append
+distinct from the dispatched commands (which start at `0`). `managerOptions` pins that single id onto
+the append via `#eventIds`. Before doing anything, it asks `eventAlreadyIn`: has this manager write
+already landed on a prior attempt?
+
+## The branch: duplicate short-circuit vs. the one-transaction append
+
+```haskell
+  if managerAlreadyProcessed
+    then finish correlationId (PMStateDuplicate managerEventId) action
+    else do
+      managerOutcome <-
+        runCommandWithSql
+          managerOptions
+          (manager ^. #eventStream)
+          managerStream
+          (action ^. #command)
+          (\_ -> traverse_ scheduleTimerTx (action ^. #timers))
+      case managerOutcome of
+        Left (StoreFailed (DuplicateEvent (Just duplicateId))) | duplicateId == managerEventId ->
+          finish correlationId (PMStateDuplicate managerEventId) action
+        Left (StoreFailed (DuplicateEvent Nothing)) ->
+          finish correlationId (PMStateDuplicate managerEventId) action
+        Left err -> pure (Left err)
+        Right (managerResult, _) ->
+          finish correlationId (PMStateAppended managerResult) action
+```
+
+This is the key structural fact of the whole engine. The manager-state append and *all of its
+timers* commit in **one** `runCommandWithSql` transaction: the `\_ -> traverse_ scheduleTimerTx
+(action ^. #timers)` continuation runs each `scheduleTimerTx` inside that same Hasql transaction. So
+"advance my state and arm my timers" is atomic.
+
+A duplicate manager append is folded to `PMStateDuplicate` (whether the store reports the colliding
+id or just `Nothing`); any *other* `Left` aborts the entire reaction by returning `Left err`. A
+fresh append is `PMStateAppended`. Crucially, **every** non-aborting branch calls `finish` — even the
+duplicate one. That is what makes a crash between the state append and a later dispatch recoverable.
+
+## `finish`: always run the dispatch loop
+
+```haskell
+    finish correlationId managerResult action = do
+      commandResults <- dispatchCommands correlationId (sourceEvent ^. #eventId) (action ^. #commands)
+      pure $ Right ProcessManagerResult
+        { managerResult = managerResult
+        , commandResults = commandResults
+        , timersScheduled = length (action ^. #timers)
+        }
+
+    dispatchCommands correlationId sourceEventId commands =
+      traverse (uncurry (dispatchCommand correlationId sourceEventId)) (zip [0 ..] commands)
+```
+
+`finish` runs `dispatchCommands` regardless of whether the manager append was fresh or a duplicate.
+Commands are numbered `0, 1, 2, …` by `zip [0 ..]` — that index becomes the emit index in each
+command's deterministic id, so the *n*-th dispatch always gets the *same* id on every replay.
+
+## `dispatchCommand`: guard, dispatch in its own transaction, classify
+
+```haskell
+    dispatchCommand correlationId sourceEventId emitIndex command = do
+      let commandId = deterministicCommandId (manager ^. #name) correlationId sourceEventId emitIndex
+          targetOptions = options & #eventIds .~ [commandId]
+          targetStream = retarget (command ^. #target)
+          targetStreamName = ((manager ^. #targetEventStream) ^. #resolveStreamName) targetStream
+      commandAlreadyProcessed <- eventAlreadyIn options targetStreamName commandId
+      if commandAlreadyProcessed
+        then pure (PMCommandDuplicate commandId)
+        else do
+          outcome <-
+            runCommandWithProjections
+              targetOptions
+              (manager ^. #targetEventStream)
+              targetStream
+              (command ^. #command)
+              ((manager ^. #targetProjections) (command ^. #target))
+          pure $ case outcome of
+            Right result -> PMCommandAppended result
+            Left (StoreFailed (DuplicateEvent (Just duplicateId))) | duplicateId == commandId -> PMCommandDuplicate commandId
+            Left (StoreFailed (DuplicateEvent Nothing)) -> PMCommandDuplicate commandId
+            Left err -> PMCommandFailed err
+```
+
+Each dispatch repeats the pattern: compute the deterministic `commandId`, pre-check `eventAlreadyIn`
+on the *target* stream, and only then dispatch via `runCommandWithProjections` — which appends the
+target's events **and** runs its inline projections in **its own** transaction. A duplicate collapses
+to `PMCommandDuplicate`; a non-duplicate `Left` becomes `PMCommandFailed`. This `PMCommandFailed` is
+the value that, surfaced to the worker, halts and retries forever — hence the [keep-commands-total
+discipline](/docs/keiro/how-to/keep-target-commands-total).
+
+## The `retarget` coerce
+
+```haskell
+    retarget :: Stream targetCi -> Stream (EventStream targetPhi targetRs targetState targetCi targetCo)
+    retarget = coerce
+```
+
+A `PMCommand` names its target as a `Stream targetCi` (a stream of *commands*), but
+`runCommandWithProjections` wants a `Stream (EventStream …)` (a stream typed by the whole event
+stream). A `Stream` is a phantom-typed newtype over a stream name, so the two are representationally
+identical — `coerce` re-types the handle for free, with no runtime cost. (This is why jitsurei
+defines both `orderStream :: OrderId -> Stream OrderEventStream` and `orderCommandStream :: OrderId ->
+Stream OrderCommand` over the *same* name `order-<id>`.)
+
+Next: [02 — The timer schema](/docs/keiro/walkthrough/workflow/02-the-timer-schema).
