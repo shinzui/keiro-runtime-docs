@@ -138,7 +138,7 @@ and whole-tree-integrity responsibilities.
 | # | Title | Path | Hard Deps | Soft Deps | Phase | Status |
 |---|-------|------|-----------|-----------|-------|--------|
 | 7 | Keiro overview, getting started, and the jitsurei example spine | docs/plans/7-keiro-overview-getting-started-and-the-jitsurei-example-spine.md | — | — | 1 | Complete |
-| 8 | Keiro command cycle and write-path documentation | docs/plans/8-keiro-command-cycle-and-write-path-documentation.md | #7 | — | 2 | Not Started |
+| 8 | Keiro command cycle and write-path documentation | docs/plans/8-keiro-command-cycle-and-write-path-documentation.md | #7 | — | 2 | Complete |
 | 9 | Keiro read-side documentation: projections, read models, and snapshots | docs/plans/9-keiro-read-side-documentation-projections-read-models-and-snapshots.md | #7 | #8 | 2 | Not Started |
 | 10 | Keiro workflow documentation: process managers and timers | docs/plans/10-keiro-workflow-documentation-process-managers-and-timers.md | #7 | #8, #9 | 2 | Not Started |
 | 11 | Keiro integration-events documentation: inbox, outbox, and Kafka | docs/plans/11-keiro-integration-events-documentation-inbox-outbox-and-kafka.md | #7 | #8 | 2 | Not Started |
@@ -279,8 +279,8 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 - [x] EP-7: Overview/landing + core-concepts explanation authored. _(2026-06-01)_
 - [x] EP-7: Getting-started tutorial authored (open store → EventStream → runCommand → read back). _(2026-06-01)_
 - [x] EP-7: jitsurei example introduced + module map page; `docs/keiro-source-sync.md` created; conventions fixed. _(2026-06-01)_
-- [ ] EP-8: Command-cycle explanation + reference (Command, Codec, EventStream, Stream, Router) authored.
-- [ ] EP-8: Command-cycle how-tos + `walkthrough/command-cycle/` tour authored.
+- [x] EP-8: Command-cycle explanation + reference (Command, Codec, EventStream, Stream, Router) authored. _(2026-06-01)_
+- [x] EP-8: Command-cycle how-tos + `walkthrough/command-cycle/` tour authored. _(2026-06-01)_
 - [ ] EP-9: Read-side explanation + reference (Projection, ReadModel, Snapshot) authored.
 - [ ] EP-9: Read-side how-tos + `walkthrough/read-side/` tour authored.
 - [ ] EP-10: Workflow explanation + reference (ProcessManager, Timer) authored.
@@ -323,6 +323,20 @@ that affect more than one plan.)
   pointing at its tour's `00-start-here`) as part of the finalization pass, and order
   `walkthrough/meta.json`. Evidence: EP-7's build log on 2026-06-01 (four `Failed to fetch` lines
   with `href`s present; `OK: no crawler warnings` after removing them).
+  - **(Update, implementing EP-8, 2026-06-01.)** EP-8 added `"command-cycle"` to
+    `walkthrough/meta.json` (its subdir now exists with real chapters), so the command-cycle tour is
+    navigable from the sidebar; its hub `<Card>` is still href-less, awaiting EP-12.
+
+- **Forward-links to not-yet-authored sibling pages are parked on the section landing until their
+  owner lands.** (Discovered implementing EP-8, 2026-06-01.) The same crawler behavior that bit the
+  walkthrough hub bites any premature cross-link: EP-8 needed to reference EP-9's
+  `reference/projection` and `reference/snapshot`, EP-10's `reference/process-manager`, and EP-11's
+  `reference/integration-event`, none of which exist yet. EP-8 links the existing landing
+  `/docs/keiro/reference` and names the target page in prose. **Bearing:** EP-9, EP-10, and EP-11
+  author those reference pages; **EP-12's finalization pass must upgrade these landing links to the
+  precise slugs** (grep the keiro tree for `](/docs/keiro/reference)` occurrences that name a
+  specific page in nearby prose). Evidence: EP-8 `pnpm build` clean + `pnpm lint:links` 97 files, no
+  broken internal links.
 
 
 ## Decision Log

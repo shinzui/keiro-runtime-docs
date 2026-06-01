@@ -5,6 +5,7 @@ title: "Keiro command cycle and write-path documentation"
 kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
 ---
 
 # Keiro command cycle and write-path documentation
@@ -94,24 +95,28 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 it requires splitting a partially completed task into two ("done" vs. "remaining"). This section
 must always reflect the actual current state of the work.
 
-- [ ] M0. Preconditions verified — EP-7 Complete (overview/getting-started/jitsurei map +
+- [x] M0. Preconditions verified — EP-7 Complete (overview/getting-started/jitsurei map +
       `docs/keiro-source-sync.md` exist); toolchain present; `content/docs/keiro/` + its section
       subdirs exist; baseline `pnpm build` clean; keiro source readable at the pinned commit
-      `3f5dc9c`; the `walkthrough/command-cycle/` subdir created.
-- [ ] M1. Explanation pages authored (`explanation/the-command-cycle.mdx`,
+      `3f5dc9c`; the `walkthrough/command-cycle/` subdir created. _(2026-06-01)_
+- [x] M1. Explanation pages authored (`explanation/the-command-cycle.mdx`,
       `explanation/codec-and-schema-evolution.mdx`, `explanation/why-symtransducer-not-decider.mdx`),
-      with at least one `mermaid` diagram (the Hydrate→Decide→Append pipeline).
-- [ ] M2. Reference pages authored (`reference/command.mdx`, `reference/event-stream-and-stream.mdx`,
-      `reference/codec.mdx`, `reference/router.mdx`).
-- [ ] M3. How-to guides authored (`how-to/run-a-command-in-a-transaction.mdx`,
+      with at least one `mermaid` diagram (the Hydrate→Decide→Append pipeline). _(2026-06-01; two
+      mermaid diagrams — the pipeline and the codec decode path.)_
+- [x] M2. Reference pages authored (`reference/command.mdx`, `reference/event-stream-and-stream.mdx`,
+      `reference/codec.mdx`, `reference/router.mdx`). _(2026-06-01)_
+- [x] M3. How-to guides authored (`how-to/run-a-command-in-a-transaction.mdx`,
       `how-to/configure-concurrency-retries.mdx`, `how-to/evolve-an-event-schema.mdx`,
-      `how-to/make-commands-idempotent.mdx`, `how-to/route-events-to-commands.mdx`).
-- [ ] M4. Walkthrough authored (`walkthrough/command-cycle/` subdir + its `meta.json`:
+      `how-to/make-commands-idempotent.mdx`, `how-to/route-events-to-commands.mdx`). _(2026-06-01)_
+- [x] M4. Walkthrough authored (`walkthrough/command-cycle/` subdir + its `meta.json`:
       `00-start-here.mdx`, `01-the-command-processor.mdx`, `02-the-transactional-write-path.mdx`,
-      `03-the-codec-on-the-boundary.mdx`, `04-the-router.mdx`).
-- [ ] M5. meta.json appends done (section `meta.json`s + `walkthrough/command-cycle/meta.json` +
+      `03-the-codec-on-the-boundary.mdx`, `04-the-router.mdx`). _(2026-06-01; every excerpt quoted
+      verbatim from the pinned source.)_
+- [x] M5. meta.json appends done (section `meta.json`s + `walkthrough/command-cycle/meta.json` +
       "command-cycle" present in `walkthrough/meta.json`); full `pnpm build` prerenders new pages
-      with zero crawler warnings; Haskell-name and link audits pass.
+      with zero crawler warnings; Haskell-name and link audits pass. _(2026-06-01: typecheck clean;
+      build exits 0, no `unhandledRejection`/`Failed to fetch`; `pnpm lint:links` OK, 97 files;
+      Haskell-name audit 0 missing; no relative links.)_
 
 
 ## Surprises & Discoveries
@@ -119,7 +124,23 @@ must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during implementation.
 Provide concise evidence.
 
-(None yet.)
+- **Forward-links to not-yet-authored sibling pages must point at the section landing, not the
+  eventual slug, or the prerender crawler warns.** EP-8's pages naturally reference EP-9's
+  `reference/projection` / `reference/snapshot`, EP-10's `reference/process-manager`, and EP-11's
+  `reference/integration-event` — none of which exist yet. Linking them directly would emit
+  `Failed to fetch` (the same crawler behavior EP-7 hit with the walkthrough hub). Per this plan's
+  own Idempotence & Recovery guidance, every such reference instead links the existing section
+  landing `/docs/keiro/reference` and names the intended page in prose. Bearing: when EP-9/EP-10/EP-11
+  land their reference pages, and in EP-12's finalization pass, these landing links should be
+  upgraded to the precise slugs. Evidence: `pnpm build` log on 2026-06-01 shows `OK: no crawler
+  warnings` with the landing-link form; `pnpm lint:links` checked 97 files with no broken internal
+  links.
+- **The command-cycle walkthrough is reachable via the sidebar without touching the hub `<Cards>`.**
+  Adding `"command-cycle"` to `walkthrough/meta.json` (now that the subdir exists with real chapter
+  pages) makes the tour appear nested under "Code Walkthrough" in the sidebar; the hub
+  `index.mdx` `<Card>` for it stays href-less because the MasterPlan assigns hub-`<Cards>`
+  finalization to EP-12 (Integration Point #2). No dead link is introduced, and the tour navigates
+  correctly from the sidebar.
 
 
 ## Decision Log
@@ -168,6 +189,22 @@ Record every decision made while working on the plan.
   tutorial) need this bridge explicitly. Evidence: `EventStream` carries a
   `SymTransducer phi rs s ci co` directly; `Keiro.Command.evaluateCommand` calls `Keiki.step`.
   Date: 2026-06-01
+- Decision: Point every forward-link to a not-yet-authored sibling page (EP-9's `reference/projection`
+  and `reference/snapshot`, EP-10's `reference/process-manager`, EP-11's `reference/integration-event`)
+  at the **existing section landing** `/docs/keiro/reference`, naming the intended page in prose,
+  rather than at the eventual slug.
+  Rationale: the prerender crawler follows MDX links and emits `Failed to fetch` for any target that
+  does not yet exist, which would fail this plan's zero-crawler-warnings gate. This is the fallback
+  the plan's Context (§"Where this plan sits") and Idempotence & Recovery prescribe. EP-9/EP-10/EP-11
+  + EP-12 upgrade these to precise slugs once the targets exist. Evidence: clean `pnpm build` +
+  `pnpm lint:links` (97 files) on 2026-06-01.
+  Date: 2026-06-01
+- Decision: Wire the command-cycle tour into the sidebar via `walkthrough/meta.json`
+  (`["index", "command-cycle"]`) but **leave the walkthrough hub `<Card>` href-less**, deferring it
+  to EP-12.
+  Rationale: MasterPlan Integration Point #2 assigns hub-`<Cards>` finalization to EP-12; the
+  meta.json entry alone makes the tour fully navigable from the sidebar with no dead link.
+  Date: 2026-06-01
 
 
 ## Outcomes & Retrospective
@@ -175,7 +212,36 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion. Compare the
 result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-01): complete and accepted.** The keiro write-path slice now exists in full.
+Against the Purpose, a reader can trace a command through Hydrate → Decide → Append, understand
+optimistic concurrency and the retryable-conflict set (`{WrongExpectedVersion, StreamAlreadyExists}`),
+tell a rejection from a no-op from a store failure, pick among the three runners, evolve a schema with
+the real jitsurei v1→v2 upcaster, make commands idempotent, and route events to commands.
+
+**Shipped (17 pages + 1 subdir meta.json + 4 meta appends):** explanations
+`the-command-cycle`, `codec-and-schema-evolution`, `why-symtransducer-not-decider`; references
+`command`, `event-stream-and-stream`, `codec`, `router`; how-tos `run-a-command-in-a-transaction`,
+`configure-concurrency-retries`, `evolve-an-event-schema`, `make-commands-idempotent`,
+`route-events-to-commands`; and the five-chapter `walkthrough/command-cycle/` tour
+(`00-start-here` … `04-the-router`).
+
+**Validation:** `pnpm typecheck` clean; `pnpm build` exits 0 prerendering all 17 routes with zero
+`unhandledRejection`/`Failed to fetch`; `pnpm lint:links` OK (97 files); no relative cross-links; the
+Haskell-name audit (every quoted identifier, including the walkthrough internals `evaluateCommand`,
+`reconstructRecorded`, `isRetryableConflict`, `Tx.condemn`, `appendToStreamTx`, and the jitsurei
+anchors `orderCodec`/`upcastOrderPlacedV1`/`pagingRouter`) reports 0 missing against the source at
+`3f5dc9c`.
+
+**Gaps / handoffs:** the four soft forward-links (to `reference/projection`, `reference/snapshot`,
+`reference/process-manager`, `reference/integration-event`) currently point at the
+`/docs/keiro/reference` landing and name their target in prose; EP-9/EP-10/EP-11 author those pages,
+and EP-12's finalization should upgrade the landing links to precise slugs and add the
+command-cycle href onto the walkthrough hub card.
+
+**Lesson:** in a phased docs build, the prerender crawler turns every premature forward-link into a
+build-quality regression. Linking the section landing (which always exists) and naming the target in
+prose keeps each phase independently link-clean while preserving the intent for the finalization pass
+to resolve.
 
 
 ## Context and Orientation
