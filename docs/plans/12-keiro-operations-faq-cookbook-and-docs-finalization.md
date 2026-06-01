@@ -86,11 +86,15 @@ This section must always reflect the actual current state of the work.
 - [x] M5. FAQ authored — `faq.mdx` stub overwritten with real `<Accordions>` Q&A (library vs server,
       the kiroku/keiki/shibuya family, process managers + timers today / named-step durable execution
       is roadmap, Postgres-only, at-least-once + inbox dedupe). "coming soon" callout gone. _(2026-06-01)_
-- [ ] M6. FINALIZATION (runs LAST — precondition: EP-8/9/10/11 Complete). Every section
-      `meta.json` ordered; every section landing's "coming soon" callout replaced with
-      `<Cards>`; `docs/keiro-source-sync.md` "most-coupled pages" updated; whole-tree gate
-      green (`pnpm typecheck`, `pnpm build` zero crawler warnings, `pnpm lint:links`, search
-      index, snippet cross-check vs `3f5dc9c`).
+- [x] M6. FINALIZATION (precondition met — all four walkthrough subdirs present, sections carry
+      subsystem pages). Section `meta.json` ordered (how-to grouped by subsystem;
+      `why-symtransducer-not-decider` moved up in explanation); the five "coming soon" landings
+      (tutorials, how-to, reference, explanation, cookbook) replaced with grouped `<Cards>`; the
+      four walkthrough-hub `<Card href>`s added; six parked landing links upgraded to precise slugs;
+      `docs/keiro-source-sync.md` "most-coupled pages" list expanded to the reference + walkthrough +
+      conceptual anchors. Gate green: `pnpm typecheck` clean, `pnpm build` 0 crawler warnings,
+      `pnpm lint:links` exit 0 (148 files), search index carries the new pages, no relative links,
+      `Keiro.Workflow` appears only as roadmap in the FAQ. _(2026-06-01)_
 
 
 ## Surprises & Discoveries
@@ -98,7 +102,23 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **Six parked forward-links across the tree pointed at `/docs/keiro/reference` (the landing)
+  while naming a now-shipped page in prose.** The master plan's Surprises (EP-8 entry) flagged that
+  EP-12 must upgrade these. Found by `grep -rn "](/docs/keiro/reference)" content/docs/keiro` — six
+  hits, all naming a specific page nearby: `explanation/the-jitsurei-example.mdx` (inbox/outbox),
+  `walkthrough/command-cycle/01-the-command-processor.mdx` (snapshot), `how-to/run-a-command-in-a-transaction.mdx`
+  (projection), `reference/event-stream-and-stream.mdx` (snapshot), `reference/router.mdx`
+  (process-manager + projection), `reference/command.mdx` (projection). All six upgraded to the
+  precise slug now that the target pages exist. Evidence: post-edit `grep` returns no
+  landing-only links that name a page; `pnpm lint:links` clean over 148 files.
+- **`linkinator` scans 0 links on the built SPA — expected, not a failure.** `pnpm lint:links`
+  exits 0 with `Successfully scanned 0 links`, because the prerendered HTML carries no static `<a>`
+  tags (the SPA renders links client-side). The meaningful in-content check is
+  `scripts/check-doc-links.mjs` (the source scan), which validated 148 files. Evidence: the
+  `linkinator` header comment in the script and the gate's exit 0.
+- **No relative `./`/`../` links were introduced anywhere in the keiro tree** — the kiroku lesson
+  held throughout; all cross-links are absolute `/docs/keiro/...`. Evidence:
+  `grep -rnE "\]\(\.\.?/" content/docs/keiro` → no matches.
 
 
 ## Decision Log
@@ -164,9 +184,30 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation. Compare against Purpose: the operations how-tos
-and reference, two cookbook recipes, a real FAQ, and a finalized IA where every keiro section
-landing carries `<Cards>` and the whole tree builds and link-checks with zero crawler warnings.)
+**Outcome (2026-06-01): complete, matching the Purpose.** The keiro doc set is finalized.
+
+- **Operations docs shipped:** `how-to/enable-opentelemetry` + `reference/telemetry` (the three span
+  helpers, the W3C bridge, the attribute table, the vendored-key rationale and the honest
+  deferred-sites note); `how-to/run-migrations` + `reference/migrations-and-schema` (the
+  `keiro-migrate` CLI, the migration accessors and runners, the load-bearing kiroku-then-keiro order,
+  and the five-table overview cross-linking each owning subsystem); `how-to/test-with-the-postgres-fixture`
+  (the `withMigratedSuite`/`withFreshStore` hspec pattern).
+- **Cookbook + FAQ shipped:** `cookbook/idempotent-fan-out` and `cookbook/timeout-saga`; the FAQ
+  rewritten with five real accordions (library-vs-server, the kiroku/keiki/shibuya family, process
+  managers + timers today / named-step durable execution as roadmap, Postgres-only, at-least-once +
+  inbox dedupe).
+- **IA finalized:** every section landing (tutorials, how-to, reference, explanation, cookbook)
+  carries a `<Cards>` index — the large sections grouped by subsystem; the walkthrough hub's four
+  cards now link to their tours; section `meta.json` files ordered into a deliberate reading order;
+  six parked forward-links upgraded to precise slugs; the source-sync "most-coupled pages" list
+  expanded.
+- **Gate green:** `pnpm typecheck` clean; `pnpm build` prerenders the whole tree with **zero**
+  crawler warnings; `pnpm lint:links` exits 0 over 148 files; the search index carries the new
+  pages; no relative links; every Haskell identifier cross-checked against keiro `3f5dc9c`; the v2
+  durable-workflow engine appears only as roadmap in the FAQ.
+- **Gaps / honest notes:** the telemetry reference states plainly that instrumentation is partial
+  (publish/consume/command spans done; hydration/snapshot/projection/timer spans deferred). Nothing
+  in the set documents an unshipped API as real.
 
 
 ## Context and Orientation

@@ -41,9 +41,18 @@ keiro 0.1.0.0
    diverge from it** (renamed types, different SQL columns, unimplemented features); trust the
    shipped source over the notes.
 2. Update the affected pages under `content/docs/keiro/`. The pages most coupled to the source
-   surface (EP-12 finalizes this list once every keiro page exists) are:
-   - `explanation/what-is-keiro.mdx`, `explanation/the-keiro-stack.mdx`,
-     `explanation/the-jitsurei-example.mdx`
-   - `tutorials/getting-started.mdx`
+   surface (transcribe exact Haskell signatures, SQL column shapes, or option-record fields, so a
+   source change is most likely to invalidate them) are:
+   - **Reference pages** (verbatim signatures and SQL): `reference/command.mdx`,
+     `reference/event-stream-and-stream.mdx`, `reference/codec.mdx`, `reference/router.mdx`,
+     `reference/projection.mdx`, `reference/read-model.mdx`, `reference/snapshot.mdx`,
+     `reference/process-manager.mdx`, `reference/timers.mdx`, `reference/integration-event.mdx`,
+     `reference/inbox.mdx`, `reference/outbox.mdx`, `reference/telemetry.mdx`,
+     `reference/migrations-and-schema.mdx`.
+   - **Walkthroughs** (line-by-line tours of the real source): every chapter under
+     `walkthrough/command-cycle/`, `walkthrough/read-side/`, `walkthrough/workflow/`, and
+     `walkthrough/integration/`.
+   - **Conceptual anchors**: `explanation/what-is-keiro.mdx`, `explanation/the-keiro-stack.mdx`,
+     `explanation/the-jitsurei-example.mdx`, and `tutorials/getting-started.mdx`.
 3. Replace the **Last reviewed commit** block above with the new `HEAD`, and move the old SHA into
    **Previous pointers** with a one-line summary of what the range covered.
