@@ -142,7 +142,7 @@ and whole-tree-integrity responsibilities.
 | 9 | Keiro read-side documentation: projections, read models, and snapshots | docs/plans/9-keiro-read-side-documentation-projections-read-models-and-snapshots.md | #7 | #8 | 2 | Complete |
 | 10 | Keiro workflow documentation: process managers and timers | docs/plans/10-keiro-workflow-documentation-process-managers-and-timers.md | #7 | #8, #9 | 2 | Complete |
 | 11 | Keiro integration-events documentation: inbox, outbox, and Kafka | docs/plans/11-keiro-integration-events-documentation-inbox-outbox-and-kafka.md | #7 | #8 | 2 | Complete |
-| 12 | Keiro operations, FAQ, cookbook, and docs finalization | docs/plans/12-keiro-operations-faq-cookbook-and-docs-finalization.md | #7 | #8, #9, #10, #11 | 3 | In Progress |
+| 12 | Keiro operations, FAQ, cookbook, and docs finalization | docs/plans/12-keiro-operations-faq-cookbook-and-docs-finalization.md | #7 | #8, #9, #10, #11 | 3 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their `#` prefix (e.g., #7).
@@ -287,8 +287,8 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 - [x] EP-10: Workflow how-tos + tutorial + `walkthrough/workflow/` tour authored. _(2026-06-01)_
 - [x] EP-11: Integration-events explanation + reference (Inbox, Outbox, IntegrationEvent) authored. _(2026-06-01)_
 - [x] EP-11: Integration-events how-tos + `walkthrough/integration/` tour (inbox + outbox) authored. _(2026-06-01)_
-- [ ] EP-12: Operations docs authored (telemetry, migrations, testing) + FAQ + cookbook.
-- [ ] EP-12: Finalization — all meta.json ordered, section landings carry `<Cards>`, build + link-check pass over the keiro tree.
+- [x] EP-12: Operations docs authored (telemetry, migrations, testing) + FAQ + cookbook. _(2026-06-01)_
+- [x] EP-12: Finalization — all meta.json ordered, section landings carry `<Cards>`, build + link-check pass over the keiro tree. _(2026-06-01)_
 
 
 ## Surprises & Discoveries
@@ -339,6 +339,11 @@ that affect more than one plan.)
     `integration`); EP-12's finalization adds all four hub `<Card href>`s and runs the final
     `walkthrough/meta.json` ordering pass. EP-11 also shipped `reference/integration-event`
     (Integration Point #5), so EP-8's parked link to it can now be resolved by EP-12.
+  - **(Resolved, implementing EP-12, 2026-06-01.)** EP-12's finalization pass added all four hub
+    `<Card href>`s (`command-cycle`, `read-side`, `workflow`, `integration` → each tour's
+    `00-start-here`) and ran the `walkthrough/meta.json` ordering pass. `pnpm build` re-ran with the
+    hrefs present and emitted **zero** crawler warnings (all four tours exist), closing the
+    create-hub-without-hrefs contract this Surprise opened in EP-7.
 
 - **Forward-links to not-yet-authored sibling pages are parked on the section landing until their
   owner lands.** (Discovered implementing EP-8, 2026-06-01.) The same crawler behavior that bit the
@@ -359,6 +364,16 @@ that affect more than one plan.)
     prose suggesting that slug). EP-12 should not try to "upgrade" those router links to a
     non-existent explanation page. Evidence: `reference/meta.json` lists `router`; `pnpm lint:links`
     clean over 125 files including the EP-10 pages.
+  - **(Resolved, implementing EP-12, 2026-06-01.)** EP-12 found **six** landing-only
+    `](/docs/keiro/reference)` links that named a now-shipped page in nearby prose and upgraded each
+    to its precise slug: `explanation/the-jitsurei-example` (→ `reference/inbox` + `reference/outbox`),
+    `walkthrough/command-cycle/01-the-command-processor` (→ `reference/snapshot`),
+    `how-to/run-a-command-in-a-transaction` (→ `reference/projection`),
+    `reference/event-stream-and-stream` (→ `reference/snapshot`), `reference/router`
+    (→ `reference/process-manager` + `reference/projection`), and `reference/command`
+    (→ `reference/projection`). It did **not** invent an `explanation/the-content-based-router` page,
+    per EP-10's correction above. Evidence: `pnpm lint:links` clean over 148 files;
+    `grep -rn "](/docs/keiro/reference)" content/docs/keiro` now returns nothing (all six upgraded).
 
 
 ## Decision Log
@@ -396,7 +411,37 @@ that affect more than one plan.)
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation. Compare the result against the Vision &
-Scope: a complete, accurate, navigable keiro doc set matching the kiroku precedent, with
-walkthroughs of the command processor, inbox, outbox, and the other critical subsystems,
-plus guides and how-tos, all building and link-checking cleanly.)
+**Outcome (2026-06-01): the initiative is complete — all six child plans (EP-7 … EP-12) are
+Complete and the Vision & Scope is met.**
+
+A reader landing on `/docs/keiro` now finds a full Diátaxis set under `content/docs/keiro/`:
+- **Foundation (EP-7):** the overview/landing, core-concepts explanation, getting-started tutorial,
+  the `jitsurei` worked-example spine and module map, `docs/keiro-source-sync.md`, and the shared
+  authoring conventions every other plan built on.
+- **Subsystems (EP-8 … EP-11):** the command cycle / write path, the read side
+  (projections/read-models/snapshots), the workflow engine (process managers/timers), and the
+  integration-event path (inbox/outbox/Kafka) — each with its explanation, reference, how-tos, and a
+  disjoint code walkthrough under `walkthrough/<subdir>/`. The command-processor, inbox, and outbox
+  walkthroughs the user named explicitly all shipped (EP-8, EP-11).
+- **Operations & finalization (EP-12):** telemetry, migrations, and testing how-tos + references; an
+  idempotent-fan-out and a timeout-saga cookbook recipe; a real five-question FAQ; and the
+  whole-tree IA finalization (grouped `<Cards>` on every section landing, ordered `meta.json`, the
+  walkthrough hub wired up, six parked links upgraded).
+
+**Verification at completion:** `pnpm typecheck` clean; `pnpm build` prerenders the entire tree with
+**zero** crawler / `unhandledRejection` warnings; `pnpm lint:links` exits 0 over **148** files with
+no broken or relative internal links; the search index carries every new page. Every Haskell snippet
+was authored against the shipped source at the pinned commit `3f5dc9c` (keiro 0.1.0.0); the planned
+v2 durable-execution engine (`Keiro.Workflow`) appears only as clearly-labelled roadmap in the FAQ.
+
+**What worked:** decomposing by subsystem (not by Diátaxis quadrant) let each plan read one coherent
+slice of source and ship independently; the disjoint walkthrough subdirectories let the four Phase-2
+plans run without colliding on chapter numbers; the "append-then-order, EP-12 finalizes" contract on
+the `meta.json` files and the walkthrough hub avoided merge churn while keeping every intermediate
+build green. The hardest-won cross-cutting lesson — absolute links only, plus the
+hub-without-hrefs-until-the-target-exists discipline — held across all six plans, so the final
+whole-tree build was clean on the first finalization run.
+
+**Gaps / honest notes:** keiro's telemetry instrumentation is genuinely partial (publish/consume/
+command spans done; hydration/snapshot/projection/timer deferred) and the reference says so rather
+than implying full coverage; the doc set documents only what ships at `3f5dc9c`.
