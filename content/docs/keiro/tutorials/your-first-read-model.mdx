@@ -1,0 +1,116 @@
+---
+title: "Your first read model"
+description: "Define an inline projection, run a command that updates it transactionally, and query the read model."
+---
+
+By the end of this tutorial you will have a working read model: you will attach an **inline
+projection** to a command, run the command so the projection updates a table *in the same
+transaction* as the event append, and then query the read model. Every snippet uses keiro's real API
+and mirrors the `jitsurei` order-summary example (`jitsurei/src/Jitsurei/ReadModels.hs`).
+
+<Callout type="info">
+  This is a tutorial — follow every step in order. You should already be able to run a command (see
+  [Get started with keiro](/docs/keiro/tutorials/getting-started)). By the end you will have written
+  and queried derived state.
+</Callout>
+
+## What you will build
+
+An order-summary read model: a table that holds one row per order, kept up to date by an inline
+projection that folds each `OrderEvent`, and queried with strong consistency.
+
+## Before you begin
+
+- A migrated database and an `EventStream` for your aggregate (the order aggregate from the
+  getting-started tutorial).
+- The read-model's table created (the jitsurei example creates `jitsurei_order_summary` in its
+  `just jitsurei-migrate` target).
+
+## Steps
+
+<Steps>
+<Step>
+
+### Define the inline projection
+
+An `InlineProjection` names a fold from a domain event into your table. The jitsurei one is:
+
+```haskell
+-- jitsurei/src/Jitsurei/ReadModels.hs
+orderSummaryInlineProjection :: InlineProjection OrderEvent
+orderSummaryInlineProjection = InlineProjection
+  { name  = "jitsurei-order-summary-inline"
+  , apply = applyOrderEvent      -- folds each OrderEvent into jitsurei_order_summary
+  }
+```
+
+</Step>
+<Step>
+
+### Define the read model
+
+A `ReadModel` is the queryable noun: its identity, schema version, consistency mode, and query. The
+jitsurei one reads `jitsurei_order_summary` with `Strong` consistency:
+
+```haskell
+orderSummaryReadModel :: ReadModel OrderSummaryQuery (Maybe OrderSummary)
+orderSummaryReadModel = ReadModel
+  { name               = "jitsurei-order-summary"
+  , tableName          = "jitsurei_order_summary"
+  , subscriptionName   = "jitsurei-order-summary-inline"
+  , version            = 1
+  , shapeHash          = "jitsurei-order-summary-v1"
+  , defaultConsistency = Strong
+  , query              = \(OrderSummaryQuery orderId) ->
+      Tx.statement (orderIdText orderId) selectOrderSummaryStmt
+  }
+```
+
+</Step>
+<Step>
+
+### Run the command with the projection
+
+`runCommandWithProjections` runs the command and applies the inline projections **in the append
+transaction** — so the events and the read-model row commit together:
+
+```haskell
+result <- runCommandWithProjections options orderEventStream targetStream command
+            [orderSummaryInlineProjection]
+```
+
+If the projection throws, the whole transaction rolls back — the events are not written either.
+
+</Step>
+<Step>
+
+### Query the read model
+
+`runQuery` validates the registered schema, then (because the mode is `Strong`) reads with no
+waiting:
+
+```haskell
+summary <- runQuery orderSummaryReadModel (OrderSummaryQuery theOrderId)   -- Strong: no waiting
+```
+
+`summary` is `Either ReadModelError (Maybe OrderSummary)` — a `Left ReadModelStaleSchema` if your
+code's `version`/`shapeHash` drifted from the registered row, otherwise the queried value.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+Because the mode is `Strong`, this query does **not** wait for anything — and `Eventual` behaves the
+same. The inline projection already committed in the command's transaction, so a `Strong` read
+*after* a successful `runCommandWithProjections` sees the update. If you read a model fed by an
+**async** projection and need read-your-writes, use `PositionWait`; see
+[Choose a consistency mode](/docs/keiro/how-to/choose-a-consistency-mode).
+</Callout>
+
+## What you built
+
+You defined an inline projection and a read model, ran a command that updated the projection
+transactionally, and queried it. Run the real thing with `just jitsurei-fulfillment`. From here:
+
+- [Choose a consistency mode](/docs/keiro/how-to/choose-a-consistency-mode) — when to wait.
+- [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots) — the modes and the hydration fast path.

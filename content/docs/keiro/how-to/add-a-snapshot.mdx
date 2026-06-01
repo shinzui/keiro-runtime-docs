@@ -1,0 +1,60 @@
+---
+title: "Add a snapshot"
+description: "Enable snapshotting on an event stream with a state codec and a policy, and invalidate stale snapshots."
+---
+
+Hydrating a long stream by replaying every event gets slow. A snapshot caches the folded state so
+hydration can start partway. You enable it on the `EventStream`.
+
+<Callout type="info">
+  Assumes you have an `EventStream` (see [Get started with keiro](/docs/keiro/tutorials/getting-started))
+  and understand that snapshots are advisory (see
+  [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots)).
+</Callout>
+
+## Goal
+
+Turn on snapshotting for a stream and know how to invalidate old snapshots.
+
+## Steps
+
+1. **Set a `stateCodec` and a `snapshotPolicy`.** The jitsurei order stream does exactly this — it
+   reuses the base stream but enables snapshotting:
+
+   ```haskell
+   -- jitsurei/src/Jitsurei/OrderStream.hs (re-exported by Jitsurei/Snapshots.hs)
+   snapshotOrderEventStream :: OrderEventStream
+   snapshotOrderEventStream = baseOrderEventStream
+     { snapshotPolicy = Every 2
+     , stateCodec     = Just (defaultStateCodec @OrderRegs @OrderState 1)
+     }
+   ```
+
+   `defaultStateCodec` encodes the joint `(state, registers)`; its `Int` argument is the
+   `stateCodecVersion`. `Every 2` writes a snapshot whenever the stream version is a positive multiple
+   of 2. Leaving `stateCodec = Nothing` disables snapshotting regardless of policy.
+
+2. **Invalidate when needed.** Old snapshot rows are ignored automatically when their identity no
+   longer matches (a register-shape change bumps `regfile_shape_hash`; a codec-version change bumps
+   `state_codec_version`). To force a clean slate, truncate the table:
+
+   ```sql
+   TRUNCATE keiro_snapshots;
+   ```
+
+<Callout type="warn">
+A snapshot is **advisory** and the write is **synchronous** (after the append, inside the command
+effect). A missing, stale, or undecodable snapshot is a benign cache miss — hydration replays from
+the beginning. You never lose correctness by invalidating snapshots, only the latency benefit.
+</Callout>
+
+## Verify it worked
+
+Run `just jitsurei-snapshots`. Append past the policy threshold and confirm a row appears in
+`keiro_snapshots` for the stream; truncate it and confirm the next hydration still produces the same
+state (via full replay).
+
+## Related
+
+- [Snapshot reference](/docs/keiro/reference/snapshot) — `defaultStateCodec`, `shouldSnapshot`, the table.
+- [Event stream and Stream handle reference](/docs/keiro/reference/event-stream-and-stream) — `SnapshotPolicy`, `StateCodec`.

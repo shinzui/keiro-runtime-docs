@@ -1,0 +1,65 @@
+---
+title: "Consistency and snapshots"
+description: "The three read-model consistency modes (and the Strong == Eventual gotcha), and how snapshots accelerate hydration."
+---
+
+Two read-side questions decide how fresh a read is and how fast a write replays: which
+**consistency mode** a query runs under, and whether the aggregate has a usable **snapshot**. Both
+have a sharp, easily-missed detail.
+
+## The three consistency modes
+
+A read model carries a `defaultConsistency :: ConsistencyMode`, and `runQuery` uses it (or you
+override it with `runQueryWith`):
+
+- **`Strong`** — read the table as-is.
+- **`Eventual`** — read the table as-is.
+- **`PositionWait`** — wait until the model's projection has caught up to a target `GlobalPosition`
+  before reading.
+
+<Callout type="warn">
+In the shipped `runQuery`, **`Strong` and `Eventual` are behaviorally identical** — both skip waiting
+entirely. The internal `waitIfNeeded` returns immediately for both; only `PositionWait` with a
+`Just target` blocks. If you expect `Strong` to give you read-your-writes, it will not. Use
+`PositionWait` with the `GlobalPosition` a command just returned.
+</Callout>
+
+`PositionWait` polls the `subscriptions.last_seen` cursor (the kiroku-owned `subscriptions` table)
+until the target `GlobalPosition` is reached, or `timeoutMicros` elapses (→ `ReadModelWaitTimeout`).
+A `PositionWait` whose `target` is `Nothing` also skips waiting. Before any of this, `runQuery`
+validates the registered schema: drift hard-fails with `ReadModelStaleSchema`, and a non-`Live` model
+fails with `ReadModelNotLive`.
+
+For the decision procedure, see
+[Choose a consistency mode](/docs/keiro/how-to/choose-a-consistency-mode).
+
+## How snapshots accelerate hydration
+
+Hydration normally replays an aggregate's whole event log. A snapshot lets it start partway. The
+fast path:
+
+```mermaid
+flowchart TD
+  H["hydrate"] --> C{"stateCodec set?"}
+  C -- "No" --> Full["hydrateFull (replay from 0)"]
+  C -- "Yes" --> L["hydrateWithSnapshot"]
+  L -- "Nothing (miss/stale/undecodable)" --> Full
+  L -- "Just seed" --> R["replay forward from seed.streamVersion"]
+  R --> D["decide + append"]
+  D --> W["writeSnapshotIfNeeded (synchronous)"]
+```
+
+A snapshot stores the joint `(state, registers)` as JSON. It is gated on two identities: the
+`state_codec_version` and a `regfile_shape_hash` (a SHA-256 over the register-file *shape*, so any
+slot change invalidates older snapshots). On write, an upsert with a monotonicity guard keeps the
+newest version — a stale write cannot clobber a fresher row.
+
+<Callout type="info">
+The snapshot write is **synchronous**: `writeSnapshotIfNeeded` runs *after* the append but *inside*
+the command-running effect, not as a fire-and-forget post-commit task. And it is advisory — if
+`stateCodec = Nothing`, or the lookup misses, or the row is incompatible/undecodable, hydration
+falls back to a full replay with no error.
+</Callout>
+
+See [Add a snapshot](/docs/keiro/how-to/add-a-snapshot) for the recipe and the
+[Snapshot reference](/docs/keiro/reference/snapshot) for the exact API.

@@ -1,0 +1,71 @@
+---
+title: "01 — Snapshots in the command path"
+description: "Reading hydrate and writeSnapshotIfNeeded: how a snapshot seeds the replay, and why the snapshot write is synchronous."
+---
+
+This chapter reads the snapshot fast path in `keiro/src/Keiro/Command.hs`. Read
+[00 — Start here](/docs/keiro/walkthrough/read-side/00-start-here) first.
+
+## `hydrate`: seed if you can, else replay from zero
+
+Hydration tries a snapshot seed first, and falls back to a full replay on any miss:
+
+```haskell
+-- keiro/src/Keiro/Command.hs
+hydrate options eventStream targetStream =
+  snapshotSeed >>= \case
+    Nothing -> hydrateFull options eventStream targetStream
+    Just seed -> do
+      replayed <- replayFrom seed
+      case replayed of
+        Left _ -> hydrateFull options eventStream targetStream
+        Right hydrated -> pure (Right hydrated)
+  where
+    snapshotSeed =
+      case eventStream ^. #stateCodec of
+        Nothing -> pure Nothing
+        Just codec ->
+          hydrateWithSnapshot ((eventStream ^. #resolveStreamName) targetStream) codec
+```
+
+Three things make snapshots **advisory** here. If `stateCodec = Nothing`, `snapshotSeed` is `Nothing`
+and the code replays from zero. If `hydrateWithSnapshot` finds no compatible row (or cannot decode
+one), it too returns `Nothing`. And even with a seed, if `replayFrom seed` returns `Left` — replay
+from the seed failed for any reason — the code *silently falls back* to `hydrateFull`. A snapshot can
+never make hydration wrong; at worst it is ignored.
+
+When a seed *is* usable, `replayFrom` resumes the transducer from the seed's `(state, registers,
+streamVersion)` and replays only the events after it, finishing only if the machine `Settled` (an
+`InFlight` machine at the end is `HydrationReplayFailed`).
+
+## `writeSnapshotIfNeeded`: synchronous, after the append
+
+After a successful append, the runner may write a snapshot — inline, in the same effect, not as a
+background task:
+
+```haskell
+writeSnapshotIfNeeded eventStream current events appendResult =
+  case eventStream ^. #stateCodec of
+    Nothing -> pure ()
+    Just codec ->
+      case Keiki.applyEvents (eventStream ^. #transducer) (state current, registers current) events of
+        Nothing -> pure ()
+        Just finalState -> do
+          let finalVersion = appendResult ^. #streamVersion
+              terminal = Keiki.isFinal (eventStream ^. #transducer) (Prelude.fst finalState)
+          when (shouldSnapshot (eventStream ^. #snapshotPolicy) terminal finalState finalVersion) $
+            writeSnapshot (appendResult ^. #streamId) finalVersion codec finalState
+```
+
+It re-folds the just-emitted events to the post-append state, computes terminality with
+`Keiki.isFinal`, and writes only when `shouldSnapshot` says so (e.g. `Every 2` at an even version,
+`OnTerminal` at a final state). No `stateCodec` → no snapshot, so the cost is opt-in.
+
+<Callout type="info">
+The write being synchronous matters operationally: it happens on the command's own effect, so a slow
+snapshot write adds latency to the command (a deliberate trade for simplicity and no
+fire-and-forget races). The research notes described a post-commit background write; the shipped code
+does not do that.
+</Callout>
+
+Next: [02 — The read-model query path](/docs/keiro/walkthrough/read-side/02-the-read-model-query-path).

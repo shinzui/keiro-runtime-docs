@@ -1,0 +1,65 @@
+---
+title: "03 — Projections: inline vs async"
+description: "Reading Keiro.Projection: the in-transaction inline path that wraps runCommandWithSqlEvents, and the bare-Tx async boundary with no shipped worker."
+---
+
+This final chapter reads `keiro/src/Keiro/Projection.hs` — the two projection flavors. Read
+[02 — The read-model query path](/docs/keiro/walkthrough/read-side/02-the-read-model-query-path)
+first.
+
+## Inline: a thin wrapper over the transactional runner
+
+`runCommandWithProjections` is built directly on EP-8's
+[`runCommandWithSqlEvents`](/docs/keiro/walkthrough/command-cycle/02-the-transactional-write-path):
+
+```haskell
+-- keiro/src/Keiro/Projection.hs
+runCommandWithProjections options eventStream targetStream command projections = do
+  result <-
+    runCommandWithSqlEvents options eventStream targetStream command
+      ( \pairs _appendResult ->
+          traverse_
+            ( \projection ->
+                traverse_
+                  (\(event, recorded) -> (projection ^. #apply) event recorded)
+                  pairs
+            )
+            projections
+      )
+  pure (fmap Prelude.fst result)
+```
+
+The callback runs **inside the append transaction**. For each emitted `(event, recorded)` pair and
+each projection, it calls the projection's `apply`. Because this is the same transaction as the
+append, the read-model rows and the events commit atomically — an exception in any `apply` rolls back
+the whole command. The final `fmap Prelude.fst` discards the callback's unit result, so the public
+type matches plain `runCommand`. This is why a `Strong` read after a successful inline command already
+sees the row: it committed with the events.
+
+## Async: a bare transaction, and nothing else
+
+The async flavor is deliberately minimal:
+
+```haskell
+applyAsyncProjection :: AsyncProjection -> RecordedEvent -> Tx.Transaction ()
+applyAsyncProjection projection recorded =
+  (projection ^. #applyRecorded) recorded
+```
+
+That is the *entire* runtime keiro ships for async projections — a function that hands you the
+`Tx.Transaction ()` for one event. There is no subscription loop, no checkpoint advance, no dedupe.
+
+<Callout type="warn">
+keiro ships **no async-projection worker**. You drive `applyAsyncProjection` from your own kiroku
+subscription, run the returned `Tx`, and advance the projection's `subscriptionName` checkpoint
+yourself. Because delivery is at-least-once, your `applyRecorded` must be idempotent (keyed off
+`idempotencyKey`); see
+[Make an async projection idempotent](/docs/keiro/how-to/make-an-async-projection-idempotent).
+</Callout>
+
+The contrast is the whole point: the inline flavor buys you strong consistency for free by riding the
+command's transaction; the async flavor trades that for decoupling, and hands you the wiring to do.
+
+That closes the read-side tour — back to
+[00 — Start here](/docs/keiro/walkthrough/read-side/00-start-here), or on to the
+[Projection reference](/docs/keiro/reference/projection).

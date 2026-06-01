@@ -1,0 +1,98 @@
+---
+title: "Snapshot"
+description: "Keiro.Snapshot: SnapshotSeed, hydrateWithSnapshot, writeSnapshot, defaultStateCodec, SnapshotPolicy, shouldSnapshot, and the keiro_snapshots table."
+---
+
+The types and functions on this page span `Keiro.Snapshot`, `Keiro.Snapshot.Codec`,
+`Keiro.Snapshot.Policy` (in `keiro-core`), and `Keiro.Snapshot.Schema`. A snapshot is an **advisory
+cache** of folded aggregate state that accelerates hydration; it is never queried by application
+code. See [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots).
+
+## `SnapshotSeed`
+
+What hydration reads from a snapshot: a state, its registers, and the version it was taken at
+(replay resumes from here).
+
+<TypeTable
+  type={{
+    state: { type: "s", description: "The folded control state at the snapshot version" },
+    registers: { type: "RegFile rs", description: "The folded register file at the snapshot version" },
+    streamVersion: { type: "StreamVersion", description: "Version the snapshot was taken at; replay resumes after it" },
+  }}
+/>
+
+## Read and write
+
+```haskell
+-- Nothing means "replay from the beginning". A decode failure is a benign miss.
+hydrateWithSnapshot :: (Store :> es) => StreamName -> StateCodec (s, RegFile rs) -> Eff es (Maybe (SnapshotSeed rs s))
+writeSnapshot       :: (Store :> es) => StreamId -> StreamVersion -> StateCodec state -> state -> Eff es ()
+```
+
+<Callout type="info">
+`hydrateWithSnapshot` returning `Nothing` — a miss, a stale row, or an undecodable payload — is
+benign: hydration falls back to a full replay. The snapshot write is **synchronous**, performed by
+`writeSnapshotIfNeeded` after the append inside the command-running effect (see the
+[Command walkthrough](/docs/keiro/walkthrough/command-cycle/01-the-command-processor)).
+</Callout>
+
+## The state codec and the policy
+
+`StateCodec` (`stateCodecVersion`, `shapeHash`, `encode`, `decode`) is defined in `Keiro.EventStream`
+and documented on the
+[Event stream and Stream handle reference](/docs/keiro/reference/event-stream-and-stream). The
+default codec encodes the joint `(state, registers)`:
+
+```haskell
+-- Keiro.Snapshot.Codec — JSON {state, registers}; shapeHash = SHA-256 over the register-file SHAPE.
+-- The Int is the explicit stateCodecVersion.
+defaultStateCodec ::
+  forall rs s. (FromJSON s, KnownRegFileShape rs, RegFileToJSON rs, ToJSON s) =>
+  Int -> StateCodec (s, RegFile rs)
+```
+
+`SnapshotPolicy` (also defined in `Keiro.EventStream`) decides *when* to snapshot; `shouldSnapshot`
+evaluates it. `Bool` is the terminality flag (from `Keiki.isFinal`); `Every n` fires when the version
+is a positive multiple of `n`:
+
+```haskell
+shouldSnapshot :: SnapshotPolicy state -> Bool -> state -> StreamVersion -> Bool
+shouldSnapshot Never              _ _ _ = False
+shouldSnapshot (Every interval)   _ _ (StreamVersion version) = ...   -- positive multiple of interval
+shouldSnapshot OnTerminal terminal _ _ = terminal
+shouldSnapshot (Custom decide)    _ state version = decide state version
+```
+
+An `EventStream` with `stateCodec = Nothing` disables snapshotting regardless of policy.
+
+## The schema layer
+
+```haskell
+-- Keiro.Snapshot.Schema
+lookupSnapshot   :: (Store :> es) => StreamId -> Int -> Text -> Eff es (Maybe SnapshotRow)
+writeSnapshotRow :: (Store :> es) => SnapshotWrite -> Eff es ()
+```
+
+`lookupSnapshot` filters by `stream_id` + `state_codec_version` + `regfile_shape_hash` and orders
+`stream_version DESC LIMIT 1` (newest compatible row). `writeSnapshotRow` upserts with a monotonicity
+guard (`WHERE stream_version <= EXCLUDED.stream_version`) so a stale write cannot clobber a fresher
+row.
+
+## The `keiro_snapshots` table
+
+```sql
+CREATE TABLE IF NOT EXISTS keiro_snapshots (
+  stream_id           BIGINT PRIMARY KEY,
+  stream_version      BIGINT NOT NULL,
+  state               JSONB NOT NULL,
+  state_codec_version BIGINT NOT NULL,
+  regfile_shape_hash  TEXT NOT NULL,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS keiro_snapshots_compat_idx
+  ON keiro_snapshots (stream_id, state_codec_version, regfile_shape_hash, stream_version DESC);
+```
+
+One row per stream (PK `stream_id`); the compat index backs the `lookupSnapshot` filter and ordering.
+See [Add a snapshot](/docs/keiro/how-to/add-a-snapshot).

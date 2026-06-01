@@ -1,0 +1,73 @@
+---
+title: "Projection"
+description: "Keiro.Projection: InlineProjection, AsyncProjection, runCommandWithProjections, and applyAsyncProjection."
+---
+
+The types and functions on this page live in `Keiro.Projection`. A projection folds events into a
+read-side table; see
+[Projections, read models, and snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots)
+for the conceptual distinction.
+
+## `InlineProjection`
+
+Runs in the **same** transaction as the command's append (strong consistency). An exception in
+`apply` aborts the append, so events and the read-model update commit together or not at all.
+
+<TypeTable
+  type={{
+    name: { type: "Text", description: "Logical name of the projection" },
+    apply: { type: "co -> RecordedEvent -> Tx.Transaction ()", description: "Fold one decoded event (and its RecordedEvent) into the table, in the append transaction" },
+  }}
+/>
+
+## `AsyncProjection`
+
+Meant to run **later**, off a subscription, with at-least-once delivery — hence an idempotency key.
+
+<TypeTable
+  type={{
+    name: { type: "Text", description: "Logical name of the projection" },
+    subscriptionName: { type: "Text", description: "Checkpoint cursor name the worker advances" },
+    applyRecorded: { type: "RecordedEvent -> Tx.Transaction ()", description: "Fold one RecordedEvent into the table" },
+    idempotencyKey: { type: "RecordedEvent -> EventId", description: "Dedupe key used to suppress duplicate application on redelivery" },
+  }}
+/>
+
+<Callout type="warn">
+keiro ships **no** async-projection worker loop. The boundary is the bare
+`RecordedEvent -> Tx.Transaction ()` returned by `applyAsyncProjection`; wiring it to a kiroku
+subscription and advancing the checkpoint is **your** job. See
+[Make an async projection idempotent](/docs/keiro/how-to/make-an-async-projection-idempotent).
+</Callout>
+
+## `runCommandWithProjections`
+
+Run a command and apply a list of inline projections in the append transaction. It **delegates to**
+`runCommandWithSqlEvents` (see the [Command reference](/docs/keiro/reference/command)): it runs the
+command and applies each `InlineProjection`'s `apply` to every `(decoded event, RecordedEvent)` pair
+the command emitted, in the same transaction.
+
+```haskell
+runCommandWithProjections ::
+  forall phi rs s ci co es.
+  ( HasCallStack, IOE :> es, Store :> es, Error StoreError :> es
+  , BoolAlg phi (RegFile rs, ci), Eq co ) =>
+  RunCommandOptions ->
+  EventStream phi rs s ci co ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  [InlineProjection co] ->
+  Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co)))
+```
+
+## `applyAsyncProjection`
+
+Apply one event to an `AsyncProjection`, yielding the `Tx` the (caller-supplied) worker runs.
+
+```haskell
+applyAsyncProjection :: AsyncProjection -> RecordedEvent -> Tx.Transaction ()
+```
+
+The worked example is `jitsurei` `orderSummaryInlineProjection` (`jitsurei/src/Jitsurei/ReadModels.hs`),
+which folds each `OrderEvent` into `jitsurei_order_summary`. See
+[Your first read model](/docs/keiro/tutorials/your-first-read-model).

@@ -1,0 +1,123 @@
+---
+title: "Read model"
+description: "Keiro.ReadModel: ReadModel, ConsistencyMode, the query functions, the registry, and the keiro_read_models table."
+---
+
+The types and functions on this page live in `Keiro.ReadModel` and `Keiro.ReadModel.Schema`
+(registry) / `Keiro.ReadModel.Rebuild` (lifecycle). A read model is the queryable noun; see
+[Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots) for the modes.
+
+## `ReadModel`
+
+<TypeTable
+  type={{
+    name: { type: "Text", description: "Logical identity; key in keiro_read_models" },
+    tableName: { type: "Text", description: "Underlying projection table" },
+    subscriptionName: { type: "Text", description: "Cursor PositionWait polls (subscriptions.last_seen)" },
+    version: { type: "Int", description: "Schema identity; drift => ReadModelStaleSchema" },
+    shapeHash: { type: "Text", description: "Schema identity; drift => ReadModelStaleSchema" },
+    defaultConsistency: { type: "ConsistencyMode", description: "Mode runQuery uses" },
+    query: { type: "q -> Tx.Transaction r", description: "The SQL read" },
+  }}
+/>
+
+## `ConsistencyMode` and `PositionWaitOptions`
+
+```haskell
+data ConsistencyMode
+  = Strong
+  | Eventual
+  | PositionWait !PositionWaitOptions
+  deriving stock (Generic, Eq, Show)
+```
+
+<TypeTable
+  type={{
+    target: { type: "Maybe GlobalPosition", description: "Nothing => skip waiting entirely" },
+    timeoutMicros: { type: "Int", description: "Give up after this long => ReadModelWaitTimeout" },
+    pollMicros: { type: "Int", description: "Poll interval while waiting" },
+  }}
+/>
+
+<Callout type="warn">
+In `runQuery`, **`Strong` and `Eventual` are behaviorally identical** — both skip waiting. Only
+`PositionWait` with a `Just target` blocks (polling `subscriptions.last_seen`). For read-your-writes,
+pass the `GlobalPosition` a command just returned as the `PositionWait` target.
+</Callout>
+
+## `ReadModelError`
+
+```haskell
+data ReadModelError
+  = ReadModelStaleSchema !Text !Int !Int !Text !Text            -- name, expVer, foundVer, expHash, foundHash
+  | ReadModelWaitTimeout !Text !GlobalPosition !GlobalPosition  -- name, target, last observed
+  | ReadModelNotLive     !Text !ReadModelStatus                 -- name, current status
+  deriving stock (Generic, Eq, Show)
+```
+
+## Query functions
+
+```haskell
+runQuery     :: (IOE :> es, Store :> es) => ReadModel q r -> q -> Eff es (Either ReadModelError r)
+runQueryWith :: (IOE :> es, Store :> es) => ConsistencyMode -> ReadModel q r -> q -> Eff es (Either ReadModelError r)
+waitFor      :: (IOE :> es, Store :> es) => PositionWaitOptions -> ReadModel q r -> GlobalPosition -> Eff es (Either ReadModelError ())
+```
+
+`runQueryWith` does, in order: `ensureReadModel` (which calls `registerReadModel` then
+`validateMetadata`); if the schema and liveness are OK, `waitIfNeeded` for the mode; then run `query`
+in a transaction. On schema drift it hard-fails with `ReadModelStaleSchema`; while a model is not
+`Live` it fails with `ReadModelNotLive`.
+
+## The registry
+
+```haskell
+data ReadModelStatus = Live | Rebuilding | Paused | Abandoned
+  deriving stock (Generic, Eq, Show)
+
+data ReadModelMetadata = ReadModelMetadata
+  { name        :: !Text
+  , version     :: !Int
+  , shapeHash   :: !Text
+  , lastBuiltAt :: !(Maybe UTCTime)
+  , status      :: !ReadModelStatus
+  }
+
+registerReadModel :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMetadata
+lookupReadModel   :: (Store :> es) => Text -> Eff es (Maybe ReadModelMetadata)
+markRebuilding    :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMetadata
+markLive          :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMetadata
+markAbandoned     :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMetadata
+```
+
+`registerReadModel` is an idempotent `INSERT … ON CONFLICT (name) DO NOTHING` that returns the
+existing row **unchanged** — it never overwrites the stored `version`/`shapeHash`. That is exactly
+what lets `validateMetadata` detect drift. An unrecognized stored status decodes defensively to
+`Paused`.
+
+## Rebuild lifecycle — skeleton only
+
+```haskell
+rebuild        :: (Store :> es) => ReadModel q r -> Eff es ReadModelMetadata  -- -> markRebuilding
+promote        :: (Store :> es) => ReadModel q r -> Eff es ReadModelMetadata  -- -> markLive
+abandonRebuild :: (Store :> es) => ReadModel q r -> Eff es ReadModelMetadata  -- -> markAbandoned
+```
+
+<Callout type="warn">
+These are thin wrappers over status transitions **only**. There is **no shadow-table swap and no
+automated replay** — repopulating the table between `rebuild` and `promote` is manual, and `runQuery`
+returns `ReadModelNotLive` while a model is not `Live`. See
+[Rebuild a read model](/docs/keiro/how-to/rebuild-a-read-model).
+</Callout>
+
+## The `keiro_read_models` table
+
+```sql
+CREATE TABLE IF NOT EXISTS keiro_read_models (
+  name          TEXT PRIMARY KEY,
+  version       BIGINT NOT NULL,
+  shape_hash    TEXT NOT NULL,
+  last_built_at TIMESTAMPTZ,
+  status        TEXT NOT NULL,           -- no CHECK constraint on status
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
