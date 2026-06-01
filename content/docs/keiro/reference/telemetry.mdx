@@ -1,10 +1,11 @@
 ---
 title: "Telemetry"
-description: "Reference for Keiro.Telemetry: the three span helpers, the W3C TraceContext bridge, the attribute keys keiro sets, and the vendored-key rationale."
+description: "Reference for Keiro.Telemetry: the three span helpers, the W3C TraceContext bridge, and the attribute keys keiro sets."
 ---
 
 The types and functions on this page live in `Keiro.Telemetry`. This is the **single** module where
-keiro touches `hs-opentelemetry-api`. Tracing is opt-in through `Maybe Tracer`: with `Nothing` every
+keiro touches `hs-opentelemetry-api` and `hs-opentelemetry-semantic-conventions`. Tracing is opt-in
+through `Maybe Tracer`: with `Nothing` every
 helper is a pass-through that runs the body and emits **zero** spans; with `Just tracer` it opens a
 span. The application makes the `Tracer` (typically `hs-opentelemetry-sdk`'s `makeTracer`) and
 threads it in via the option records owned by the command and outbox surfaces
@@ -100,17 +101,13 @@ bespoke to keiro.
 | `keiro.retry.attempt` | command | the 1-based retry attempt, when given |
 | `keiro.events.appended` | command | events appended (added by the caller after append) |
 
-## Vendored attribute keys
+## Attribute keys
 
-keiro links against `hs-opentelemetry-semantic-conventions 0.1.0.0` (generated from spec v1.24),
-which exports only a fraction of the typed `AttributeKey`s keiro needs. So `Keiro.Telemetry`
-**vendors** the missing keys locally — each binding carries the canonical dotted-name string from
-spec **v1.40**, so the **wire name matches the spec exactly**; only the binding *location* differs
-(the module, instead of an `OpenTelemetry.SemanticConventions` import). When an upstream release
-pairs the post-0.3 API with the v1.40 conventions, these can be replaced with imports — except the
-`keiro_*` keys, which have no upstream equivalent and stay.
-
-The exported keys (binding name → wire name):
+keiro links `hs-opentelemetry-semantic-conventions 1.40.0.0` (generated from spec **v1.40**)
+directly. Every `messaging.*` / `db.*` typed `AttributeKey` keiro sets is **imported** from
+`OpenTelemetry.SemanticConventions` and **re-exported** from `Keiro.Telemetry`, so this module stays
+the one-stop telemetry import while every convention name is anchored to the spec-generated module
+rather than a hand-typed string. The exported semantic-convention keys (binding name → wire name):
 
 ```haskell
 messaging_operation_type           -- "messaging.operation.type"
@@ -123,13 +120,19 @@ db_system_name                     -- "db.system.name"
 db_namespace                       -- "db.namespace"
 db_collection_name                 -- "db.collection.name"
 db_operation_name                  -- "db.operation.name"
-keiro_stream_name                  -- "keiro.stream.name"   (bespoke)
-keiro_retry_attempt                -- "keiro.retry.attempt" (bespoke)
-keiro_events_appended              -- "keiro.events.appended" (bespoke)
+```
+
+Only the bespoke `keiro.*` keys have no upstream equivalent, so they are **defined locally** in
+`Keiro.Telemetry`:
+
+```haskell
+keiro_stream_name                  -- "keiro.stream.name"
+keiro_retry_attempt                -- "keiro.retry.attempt"
+keiro_events_appended              -- "keiro.events.appended"
 ```
 
 <Callout type="warn">
-**Instrumentation coverage is partial.** As shipped at keiro 0.1.0.0, three sites emit spans:
+**Instrumentation coverage is partial.** Today three sites emit spans:
 **outbox publish**, **inbox consume**, and **command run**. Hydration, snapshot reads, projection
 writes, and the timer worker are **not yet instrumented** — those spans are deferred (tracked in the
 keiro repo's `docs/research/opentelemetry-semconv-audit.md`). Enabling a tracer does not give you

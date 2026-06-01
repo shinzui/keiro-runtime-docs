@@ -18,40 +18,31 @@ the affected pages, then bump the pointer below.
 ## Last reviewed commit
 
 ```text
-3f5dc9c1fa90f6358cebb9e85d92dde4c325db48  (3f5dc9c)
-2026-05-31 17:46:39 -0700
-keiro 0.1.0.0
+94c85e2a3ccbdb1adb07fcb5a7ee57b964802a2f  (94c85e2)
+2026-06-01 13:20:34 -0700
+keiro 0.1.0.0 (development line; the in-tree version is still 0.1.0.0)
 ```
+
+> **Note.** Most pages describe keiro **as released at 0.1.0.0** and are unchanged since the original
+> `3f5dc9c` review. `reference/telemetry.mdx` tracks one **post-0.1.0.0** change on this line: the
+> OpenTelemetry 1.40 upgrade (semantic-convention `AttributeKey`s are now **imported/re-exported**
+> from `OpenTelemetry.SemanticConventions`, not vendored locally). Wire-level attribute names are
+> unchanged.
 
 ### Previous pointers (for traceability)
 
-- _(none yet — `3f5dc9c` is the baseline the keiro doc set was first authored against.)_
-
-### Known upstream drift since this pin
-
-The docs intentionally describe keiro **as released at `3f5dc9c` (0.1.0.0)**. keiro `master` has since
-advanced; the following changes are **not** reflected in the docs and should be folded in **only when
-they ship in a tagged release** (at which point bump the pin):
-
-- **OpenTelemetry 1.40 upgrade (keiro `master`, ~`c519f2a`).** `Keiro.Telemetry` now links
-  `hs-opentelemetry-semantic-conventions 1.40.0.0` and **imports** the `messaging.*` / `db.*`
-  `AttributeKey`s from `OpenTelemetry.SemanticConventions` (re-exporting them), instead of **vendoring**
-  them locally as it did at `0.1.0.0`. Wire-level attribute names are unchanged, so
-  `reference/telemetry.mdx`'s **attribute table** stays correct; only its **"Vendored attribute keys"**
-  section (the 0.1.0.0 vendoring rationale) will need rewording to "re-exported from
-  semantic-conventions 1.40" when this releases. The bespoke `keiro_*` keys remain locally defined
-  either way.
-- **Docs-driven comment fix (keiro `94c85e2`).** The `Keiro.Command` Haddock now names the middle
-  phase **"Transduce"** (was "Decide"), matching this doc set's Hydrate → Transduce → Append
-  terminology. Comment-only; no pin bump needed.
+- `3f5dc9c1fa90f6358cebb9e85d92dde4c325db48` (`3f5dc9c`, 2026-05-31, keiro 0.1.0.0) — the baseline the
+  keiro doc set was first authored against. The `3f5dc9c..94c85e2` range covered the OpenTelemetry
+  1.40 / hs-opentelemetry 1.0 upgrade (folded into `reference/telemetry.mdx`) and the docs-driven
+  `Keiro.Command` "Transduce" comment fix.
 
 ## Update procedure
 
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline 3f5dc9c..HEAD
-   git -C "$KEIRO" diff --stat 3f5dc9c..HEAD
+   git -C "$KEIRO" log --oneline 94c85e2..HEAD
+   git -C "$KEIRO" diff --stat 94c85e2..HEAD
    ```
    keiro also keeps its own `docs/`, `CHANGELOG.md`, and `docs/plans|masterplans` entries — the
    prose diff there is the fastest way to understand intent before touching the source. Note that

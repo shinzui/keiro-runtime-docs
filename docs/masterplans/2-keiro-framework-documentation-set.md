@@ -435,6 +435,17 @@ that affect more than one plan.)
   (`#what-is-a-transducer`), linked from the command-cycle explanation and the getting-started
   tutorial. Gate re-run green: typecheck clean, build 0 crawler warnings, `lint:links` OK over 148
   files.
+- Decision (post-completion, 2026-06-01): Update `reference/telemetry.mdx` to the **OpenTelemetry
+  1.40** surface and bump the source-sync pin `3f5dc9c → 94c85e2`.
+  Rationale: keiro `master` advanced past the original pin with an OTel-1.40 / hs-opentelemetry-1.0
+  upgrade — `Keiro.Telemetry` now **imports/re-exports** the semantic-convention `AttributeKey`s from
+  `OpenTelemetry.SemanticConventions` instead of **vendoring** them locally. This narrows the earlier
+  "document as shipped at `3f5dc9c` (0.1.0.0)" decision: the telemetry page now tracks the
+  post-0.1.0.0 development line (keiro's in-tree version is still `0.1.0.0`), while every other page is
+  unaffected (the only doc-relevant source change in the range was `Keiro.Telemetry`). Wire-level
+  attribute names are unchanged, so the attribute table and span helpers are untouched; only the
+  vendoring rationale was reworded. The nuance is recorded in `docs/keiro-source-sync.md`.
+  Date: 2026-06-01
 
 
 ## Outcomes & Retrospective
