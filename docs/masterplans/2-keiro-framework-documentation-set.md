@@ -42,7 +42,7 @@ A reader who lands on `/docs/keiro` can:
   substrate (your Postgres);
 - follow a hands-on **getting-started tutorial** that opens a store, defines an
   `EventStream` (a keiki transducer married to a codec), runs a command through the
-  Hydrate → Decide → Append cycle, and reads the resulting events back — all against the
+  Hydrate → Transduce → Append cycle, and reads the resulting events back — all against the
   **real** keiro API;
 - learn each critical subsystem through an **explanation** essay and look up its exact
   Haskell signatures and PostgreSQL schema in a **reference** page: the command cycle
@@ -297,6 +297,21 @@ Cross-plan insights, dependency changes, and scope adjustments discovered during
 initiative. (Per-subsystem source findings live in each child plan; this records things
 that affect more than one plan.)
 
+- **Command-cycle phase renamed Decide → Transduce (post-completion, 2026-06-01).** The user
+  flagged that "Decide" echoes keiki's legacy **Decider façade**, which must not appear in the docs
+  or diagrams. The middle phase was renamed to **Transduce** (the shipped op is `Keiki.step` on a
+  `SymTransducer`) across all keiro pages, prose, and `mermaid` diagrams, and a basic
+  "What is a transducer?" primer was added at
+  `/docs/keiro/explanation/the-keiro-stack#what-is-a-transducer` (linked from the command-cycle
+  explanation and getting-started). **Bearing on the plan bodies:** the detailed authoring
+  instructions in **EP-7** and **EP-8** still say "Hydrate → Decide → Append" — those are now
+  *superseded historical records*; the shipped docs use "Hydrate → Transduce → Append". A future
+  re-implementation should follow the shipped terminology, not the EP-7/EP-8 prose. Ordinary-English
+  "decide" verbs and the `explanation/why-symtransducer-not-decider` contrast page (which argues
+  *against* the façade) were intentionally left in place. See the Decision Log entry of the same
+  date. Evidence: `grep` for the phase label across `content/docs/keiro` returns no cycle-name or
+  diagram hits; gate green (0 crawler warnings, `lint:links` 148 files).
+
 - **The keiro repo's `docs/research/*` and `docs/plans/*` notes predate the shipped code
   and diverge from it in many concrete ways** — renamed types (`AggregateId a` →
   `Stream a`), different `CommandError` variants, different SQL column names/status enums
@@ -407,6 +422,19 @@ that affect more than one plan.)
   Rationale: minimise serialization while respecting that every page links back to the
   shared foundation; self-contained plans + absolute links make soft deps non-blocking.
   Date: 2026-06-01
+- Decision (post-completion, 2026-06-01): Rename the middle phase of the command cycle from
+  **Decide** to **Transduce** across all keiro docs and diagrams — the cycle is now
+  **Hydrate → Transduce → Append** — and add a basic "What is a transducer?" primer for readers
+  unfamiliar with the concept.
+  Rationale: the user (keiro's author) noted that "Decide" borrows the vocabulary of keiki's
+  **Decider façade**, which is a legacy compatibility layer that should not appear in the docs or
+  diagrams. The shipped operation is `Keiki.step` on a `SymTransducer` — a *transducer step*, not a
+  Decider call — so "Transduce" is the source-honest name. Ordinary-English "decide" verbs and the
+  deliberate `explanation/why-symtransducer-not-decider` contrast page (which argues *against* the
+  façade) were left intact. The primer lives in `explanation/the-keiro-stack.mdx`
+  (`#what-is-a-transducer`), linked from the command-cycle explanation and the getting-started
+  tutorial. Gate re-run green: typecheck clean, build 0 crawler warnings, `lint:links` OK over 148
+  files.
 
 
 ## Outcomes & Retrospective

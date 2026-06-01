@@ -13,7 +13,7 @@ does and does not do.
 ```mermaid
 flowchart TD
   subgraph keiro["keiro · the framework you import"]
-    Cmd["Keiro.Command · the Hydrate → Decide → Append cycle"]
+    Cmd["Keiro.Command · the Hydrate → Transduce → Append cycle"]
     Read["Keiro.Projection / Keiro.ReadModel · the read side"]
     WF["Keiro.ProcessManager / Keiro.Timer · the workflow engine"]
     Int["Keiro.Inbox / Keiro.Outbox · integration events"]
@@ -22,7 +22,7 @@ flowchart TD
   Kiroku[("kiroku · append-only PostgreSQL event store")]
   Shibuya["shibuya · supervised subscription / worker substrate"]
 
-  Cmd -->|"Decide"| Keiki
+  Cmd -->|"Transduce"| Keiki
   Cmd -->|"Hydrate / Append"| Kiroku
   Read -->|"driven by subscriptions"| Shibuya
   WF -->|"driven by subscriptions"| Shibuya
@@ -44,8 +44,41 @@ flowchart TD
   the workflow engine do.
 
 keiro's own job is the glue: marrying a keiki transducer to a codec in an `EventStream`, running
-the Hydrate → Decide → Append cycle against kiroku in `Keiro.Command`, and wiring projections,
+the Hydrate → Transduce → Append cycle against kiroku in `Keiro.Command`, and wiring projections,
 process managers, and the outbox onto shibuya workers.
+
+## What is a transducer?
+
+If the word "transducer" is new, here is all you need to read the rest of these docs.
+
+Start with an ordinary **finite-state machine**: a set of named states with labelled transitions
+between them; feed it an input and it moves to a next state (or has no transition and rejects the
+input). A turnstile (`Locked`/`Unlocked`) is the classic example. A **transducer** is a finite-state
+machine with one addition: on each transition it also **emits output**. So a transducer doesn't just
+*move* on an input — it *produces* something as it moves.
+
+That is exactly the shape of an event-sourced decision. Feed keiki's machine the current state and a
+**command** and it returns the next state plus the **events** to emit — or it rejects the command
+because no transition applies. "Step the machine on a command, collect the events" *is* the Transduce
+phase of the command cycle. And because each stored event corresponds to a transition, replaying a
+stream's events back through the same machine rebuilds the current state — that is the Hydrate phase.
+One machine powers both directions.
+
+keiki's machine is a `SymTransducer phi rs s ci co` — a transducer with two extras that ordinary ones
+lack:
+
+- **Registers (`rs`)** — typed working memory the machine carries *alongside* its control state
+  (counters, accumulated ids, deadlines), so not everything has to be encoded into the state itself.
+- **Symbolic guards (`phi`)** — transitions branch on **predicates** over the registers and the
+  input, rather than on hard-coded values; the framework can inspect these guards as data.
+
+Hence "**Sym**bolic-**reg**ister transducer". The five type parameters are the guard alphabet
+(`phi`), the registers (`rs`), the control state (`s`), the input/command (`ci`), and the
+output/event (`co`). You do not need to understand the symbolic-guard machinery to use keiro — only
+that one object turns *(state, command)* into *(next state, events)*, and that the same object
+defines aggregates, process managers, and sagas alike. For why keiro builds on this instead of the
+familiar decide/evolve pair, see
+[Why SymTransducer, not Decider](/docs/keiro/explanation/why-symtransducer-not-decider).
 
 ## The core event-sourcing concepts, as keiro uses them
 
@@ -59,7 +92,7 @@ process managers, and the outbox onto shibuya workers.
 - **Event** — the output `co` the transducer emits, serialized by the stream's `Codec` and
   appended to kiroku. Events *are* the stored, immutable truth; state is always a fold over them.
 - **Optimistic concurrency** — keiro never locks a stream. `runCommand` hydrates the stream to a
-  `streamVersion`, decides, and then appends asserting that the stream is *still* at that version
+  `streamVersion`, transduces, and then appends asserting that the stream is *still* at that version
   (an `ExpectedVersion` derived from the hydrated version). If another writer advanced the stream
   first, the append is rejected and `runCommand` re-hydrates and retries, up to `retryLimit`
   (default 3); when retries are exhausted it returns `RetryExhausted`. This is how keiro stays
@@ -74,14 +107,14 @@ The store-level mechanics of these concepts live in kiroku's own documentation:
 ## The cycle, end to end
 
 Every write in keiro is the same three beats. `runCommand` reads the target stream into state
-(**Hydrate**), runs the keiki transducer to turn the command into events (**Decide**), and appends
+(**Hydrate**), runs the keiki transducer to turn the command into events (**Transduce**), and appends
 them to kiroku under optimistic concurrency (**Append**), retrying on conflict:
 
 ```mermaid
 flowchart LR
   Cmd["Command (ci)"] --> Hydrate
-  Hydrate["Hydrate · readStreamForward → fold events → state + streamVersion"] --> Decide
-  Decide["Decide · keiki transducer (pure)"] -->|"events (co)"| Append
+  Hydrate["Hydrate · readStreamForward → fold events → state + streamVersion"] --> Transduce
+  Transduce["Transduce · keiki transducer (pure)"] -->|"events (co)"| Append
   Append["Append · appendToStream @ ExpectedVersion (retry on conflict)"] --> Result["CommandResult / CommandError"]
 ```
 

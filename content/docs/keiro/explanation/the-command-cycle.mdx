@@ -1,6 +1,6 @@
 ---
 title: "The command cycle"
-description: "How keiro turns a command into durable events: Hydrate, Decide, Append, with optimistic concurrency and bounded retry."
+description: "How keiro turns a command into durable events: Hydrate, Transduce, Append, with optimistic concurrency and bounded retry."
 ---
 
 keiro's write path is one pipeline with three phases. A **command** (an instruction such as "place
@@ -10,12 +10,19 @@ aggregate's **stream** (its ordered slice of the log).
 1. **Hydrate** — replay the stream's stored events (optionally fast-forwarding from a snapshot)
    through the keiki transducer to recover the current `(state, registers)` and the stream's current
    `StreamVersion`.
-2. **Decide** — step the transducer with the command. The transducer either rejects the command
+2. **Transduce** — step the transducer with the command. The transducer either rejects the command
    (yielding `CommandRejected`) or accepts it and emits a list of events. An accepted command that
    emits *no* events is a **no-op**.
 3. **Append** — encode the emitted events with the stream's `Codec` and append them at the expected
    version. A concurrency conflict triggers a bounded rehydrate-and-retry; exhausting the budget
    yields `RetryExhausted`.
+
+<Callout type="info">
+  New to **transducers**? A transducer is a state machine that, on each input, both moves to a next
+  state *and* emits output — so stepping keiki's machine on a command yields the next state and the
+  events to emit. See [What is a transducer?](/docs/keiro/explanation/the-keiro-stack#what-is-a-transducer)
+  for a one-screen primer.
+</Callout>
 
 The worked example throughout this set is the `jitsurei` order aggregate — its
 `OrderCommand`/`OrderEvent`/`OrderState` types live in `jitsurei/src/Jitsurei/Domain.hs` and the
@@ -33,7 +40,7 @@ expectedVersion (StreamVersion 0) = NoStream          -- first write: the stream
 expectedVersion version           = ExactVersion version
 ```
 
-If another writer appended first, the store rejects the append and keiro **re-hydrates, re-decides,
+If another writer appended first, the store rejects the append and keiro **re-hydrates, re-transduces,
 and retries** up to `retryLimit` times (default 3) before returning `RetryExhausted` with the
 configured limit and the last store error.
 
@@ -59,7 +66,7 @@ therefore *retried*, not surfaced — your caller never sees `StreamAlreadyExist
 ```mermaid
 flowchart LR
   Cmd["command (ci)"] --> H["Hydrate: replay events (maybe via snapshot)"]
-  H --> D{"Decide: Keiki.step"}
+  H --> D{"Transduce: Keiki.step"}
   D -- "Nothing" --> Rej["CommandRejected"]
   D -- "Just (s, regs, [])" --> NoOp["no-op CommandResult"]
   D -- "Just (s, regs, events)" --> Enc["encode via Codec"]
