@@ -1,0 +1,170 @@
+---
+title: "Integration event"
+description: "Reference for Keiro.Integration.Event: the IntegrationEvent envelope, its content-type/schema/trace types, the JSON and wire-mapping helpers, and the canonical keiro-* header names."
+---
+
+The types and functions on this page live in `Keiro.Integration.Event` (in `keiro-core`). This
+module owns the public integration-event envelope — the wire shape, the identity rules, and the
+pure encode/decode helpers. The [outbox](/docs/keiro/reference/outbox) and
+[inbox](/docs/keiro/reference/inbox) consume this contract; they do not redefine it. For the
+narrative, see [Integration events](/docs/keiro/explanation/integration-events).
+
+## `IntegrationEvent`
+
+The canonical public envelope. Byte-oriented (`payloadBytes`) so a future schema-registry format
+needs no migration; JSON is the v1 encoding.
+
+```haskell
+data IntegrationEvent = IntegrationEvent
+  { messageId            :: !Text
+  , source               :: !Text
+  , destination          :: !Text
+  , key                  :: !(Maybe Text)
+  , eventType            :: !Text
+  , schemaVersion        :: !Int
+  , contentType          :: !IntegrationContentType
+  , schemaReference      :: !(Maybe SchemaReference)
+  , sourceEventId        :: !(Maybe EventId)
+  , sourceGlobalPosition :: !(Maybe GlobalPosition)
+  , payloadBytes         :: !ByteString
+  , occurredAt           :: !UTCTime
+  , causationId          :: !(Maybe EventId)
+  , correlationId        :: !(Maybe EventId)
+  , traceContext         :: !(Maybe TraceContext)
+  , attributes           :: !(Maybe Value)
+  }
+```
+
+<TypeTable
+  type={{
+    messageId:            { type: "Text", description: "Producer-minted TypeID/UUIDv7; the canonical dedupe key, stable across publish retries." },
+    source:               { type: "Text", description: 'Producing bounded context, e.g. "ordering".' },
+    destination:          { type: "Text", description: 'Kafka topic, e.g. "billing.orders.v1".' },
+    key:                  { type: "Maybe Text", description: "Per-aggregate partition key." },
+    eventType:            { type: "Text", description: 'Public event type, e.g. "OrderSubmitted".' },
+    schemaVersion:        { type: "Int", description: "Contract version." },
+    contentType:          { type: "IntegrationContentType", description: "Payload content type (ApplicationJson in v1)." },
+    schemaReference:      { type: "Maybe SchemaReference", description: "Optional registry-neutral schema reference." },
+    sourceEventId:        { type: "Maybe EventId", description: "The private event that produced this integration event." },
+    sourceGlobalPosition: { type: "Maybe GlobalPosition", description: "$all position of that private event." },
+    payloadBytes:         { type: "ByteString", description: "The wire body (JSON in v1)." },
+    occurredAt:           { type: "UTCTime", description: "When the event occurred." },
+    causationId:          { type: "Maybe EventId", description: "Event that caused this one." },
+    correlationId:        { type: "Maybe EventId", description: "Correlation across a workflow." },
+    traceContext:         { type: "Maybe TraceContext", description: "W3C trace propagation fields." },
+    attributes:           { type: "Maybe Value", description: "Free-form JSON attributes." },
+  }}
+/>
+
+<Callout type="info">
+`messageId` is the canonical dedupe key; the Kafka topic/partition/offset are delivery metadata
+only. This is owned here; the [command-cycle docs](/docs/keiro/reference/command) link to this page
+rather than re-documenting the envelope.
+</Callout>
+
+## `IntegrationContentType`
+
+```haskell
+data IntegrationContentType
+  = ApplicationJson
+  | OtherContentType !Text
+```
+
+`ApplicationJson` is the v1 default; `OtherContentType` is the open door for Avro/Protobuf or any
+registry-backed binary format.
+
+## `SchemaReference`
+
+Optional, registry-neutral. Every field is optional because v1 does not require a registry.
+
+```haskell
+data SchemaReference = SchemaReference
+  { registry    :: !(Maybe Text)
+  , subject     :: !(Maybe Text)
+  , version     :: !(Maybe Int)
+  , schemaId    :: !(Maybe Int64)
+  , fingerprint :: !(Maybe Text)
+  }
+```
+
+## `TraceContext`
+
+W3C Trace Context propagation fields, threaded through publish and consume via Kafka headers.
+
+```haskell
+data TraceContext = TraceContext
+  { traceparent :: !Text
+  , tracestate  :: !(Maybe Text)
+  }
+```
+
+## `IntegrationEventError`
+
+Typed decode errors. The encode side cannot fail; decode can.
+
+```haskell
+data IntegrationEventError
+  = MalformedPayload      !Text   -- payload bytes are not valid JSON
+  | DecodeFailed          !Text   -- JSON does not satisfy the target type
+  | MissingField          !Text   -- required envelope metadata is missing
+  | UnsupportedContentType !Text  -- contentType is not ApplicationJson
+```
+
+## JSON helpers
+
+```haskell
+encodeJsonIntegrationEvent :: ToJSON a => IntegrationEvent -> a -> IntegrationEvent
+decodeJsonIntegrationEvent :: FromJSON a => IntegrationEvent -> Either IntegrationEventError a
+```
+
+`encodeJsonIntegrationEvent envelope value` sets `contentType = ApplicationJson` and replaces
+`payloadBytes` with the UTF-8 JSON of `value`, leaving every other field from `envelope`.
+`decodeJsonIntegrationEvent` is the inverse: it returns `UnsupportedContentType` if the envelope is
+not JSON, `MalformedPayload` if the bytes are not valid JSON, and `DecodeFailed` if the JSON does
+not satisfy the target `FromJSON` instance.
+
+## Wire mapping
+
+```haskell
+integrationPayload :: IntegrationEvent -> ByteString          -- the bytes to put on the wire
+integrationHeaders :: IntegrationEvent -> [(Text, Text)]      -- canonical headers, emitted only when populated
+contentTypeText    :: IntegrationContentType -> Text          -- "application/json" | raw
+parseContentType   :: Text -> IntegrationContentType          -- inverse of contentTypeText
+```
+
+`integrationHeaders` emits the six always-present headers plus optional headers only when their
+source field is populated — a service that captures no trace context pays no trace header.
+
+## Canonical header names
+
+Each constant is a `Text`. Lower-case kebab-case matches Kafka convention.
+
+| Constant | Value |
+|---|---|
+| `headerMessageId` | `keiro-message-id` |
+| `headerSource` | `keiro-source` |
+| `headerDestination` | `keiro-destination` |
+| `headerEventType` | `keiro-event-type` |
+| `headerSchemaVersion` | `keiro-schema-version` |
+| `headerContentType` | `content-type` |
+| `headerSchemaRegistry` | `keiro-schema-registry` |
+| `headerSchemaSubject` | `keiro-schema-subject` |
+| `headerSchemaVersionRef` | `keiro-schema-version-ref` |
+| `headerSchemaId` | `keiro-schema-id` |
+| `headerSchemaFingerprint` | `keiro-schema-fingerprint` |
+| `headerSourceEventId` | `keiro-source-event-id` |
+| `headerSourceGlobalPosition` | `keiro-source-global-position` |
+| `headerCausationId` | `keiro-causation-id` |
+| `headerCorrelationId` | `keiro-correlation-id` |
+| `headerTraceParent` | `traceparent` |
+| `headerTraceState` | `tracestate` |
+
+The six required on the receive side are `keiro-source`, `keiro-destination`,
+`keiro-event-type`, `keiro-schema-version`, `content-type`, and `keiro-message-id` (a missing one
+yields `MissingHeader`; see [`integrationEventFromKafka`](/docs/keiro/reference/inbox)).
+
+<Cards>
+  <Card title="Inbox reference" href="/docs/keiro/reference/inbox" />
+  <Card title="Outbox reference" href="/docs/keiro/reference/outbox" />
+  <Card title="Integration events" href="/docs/keiro/explanation/integration-events" />
+</Cards>

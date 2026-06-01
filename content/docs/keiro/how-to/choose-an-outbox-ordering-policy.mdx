@@ -1,0 +1,91 @@
+---
+title: "Choose an outbox ordering policy"
+description: "Pick PerKeyHeadOfLine, PerSourceStream, StopTheLine, or BestEffort; tune maxAttempts and backoff; and recover rows stranded in publishing."
+---
+
+The outbox publisher claims rows under an `OrderingPolicy`, which decides how a stuck row affects
+the rows behind it. This guide helps you pick one, tune the retry/dead-letter knobs, and recover
+the one failure mode the worker does not handle automatically.
+
+<Callout type="info">
+Assumes you publish through the outbox (see [Publish with the
+outbox](/docs/keiro/how-to/publish-with-the-outbox)).
+</Callout>
+
+## Goal
+
+Choose the ordering guarantee your consumers need, and tune retry behavior, while keeping the
+table healthy.
+
+## The four policies
+
+```haskell
+data OrderingPolicy = PerKeyHeadOfLine | PerSourceStream | StopTheLine | BestEffort
+```
+
+- **`PerKeyHeadOfLine`** (the default) — within a `source`, a non-terminal row with key `k` blocks
+  every later row with the same key, so each aggregate's events publish **in order**; rows with a
+  `Nothing` key bypass the block. One stuck aggregate cannot stall *other* aggregates. Choose this
+  unless you have a specific reason not to.
+- **`PerSourceStream`** — any non-terminal row blocks every later row in the source, regardless of
+  key. Strict total order across keys; rare, and it means one stuck row halts the whole source.
+- **`StopTheLine`** — the worker halts after the first `PublishFailed` and records the offending id
+  in `haltedOn`. Use when correctness demands a human looks at every failure before more events go
+  out.
+- **`BestEffort`** — no head-of-line blocking; failed rows do not block anything. Opt-in only, safe
+  only when published events have no per-key or causal relationship.
+
+## Tune retries and dead-lettering
+
+`OutboxPublishOptions` controls the retry curve and the dead-letter threshold:
+
+```haskell
+opts = defaultPublishOptions          -- batch 32, maxAttempts 10, ConstantBackoff 2, PerKeyHeadOfLine
+  { maxAttempts = 8
+  , backoff = ExponentialBackoff (ExponentialBackoffOptions
+      { initial = 1, maxDelay = 300, multiplier = 2 })
+  , orderingPolicy = PerKeyHeadOfLine
+  }
+```
+
+Each failed publish bumps `attempt_count` and sets `next_attempt_at = now + nextDelay backoff
+attempt`. After `maxAttempts` consecutive failures the row goes **`dead`** (terminal) — it stays in
+the table for inspection and, being terminal, stops head-of-line-blocking its key. `ConstantBackoff`
+is a fixed delay; `ExponentialBackoff` grows `initial * multiplier ^ (attempt-1)` capped at
+`maxDelay`.
+
+## Recovering stranded publishing rows
+
+<Callout type="warn">
+**Known gap (shipped behavior).** The claim query selects only `pending` and `failed` rows — it
+does **not** reclaim `publishing`. A worker that crashes *between* claiming a row (which sets
+`publishing`) and marking it sent/failed strands the row in `publishing` **forever**, and under
+`PerKeyHeadOfLine` / `PerSourceStream` that stranded non-terminal row head-of-line-blocks its key.
+keiro 0.1.0.0 does **not** reclaim it automatically.
+</Callout>
+
+This is an operational runbook item, not an automatic recovery. When you observe a key that has
+stopped publishing, look for a row stuck in `publishing` and — **after confirming no worker still
+holds it** (give it well over one publisher tick) — reset it to `pending`:
+
+```sql
+UPDATE keiro_outbox
+SET status = 'pending'
+WHERE status = 'publishing'
+  AND updated_at < now() - interval '5 minutes';
+```
+
+The next claim pass picks it up again. Tune the interval to comfortably exceed your worker's tick
+plus publish timeout. Do **not** assume the worker reclaims these rows on its own — it does not.
+
+## Verify it worked
+
+Under `PerKeyHeadOfLine`, enqueue two rows for the same key, make the first fail repeatedly, and
+confirm the second does **not** publish until the first reaches `sent` or `dead`. Enqueue a row for
+a *different* key and confirm it publishes immediately (other keys are not blocked).
+
+## Related
+
+- [The outbox pattern](/docs/keiro/explanation/the-outbox-pattern) — head-of-line blocking and dead-lettering.
+- [Outbox reference](/docs/keiro/reference/outbox) — `OrderingPolicy`, `OutboxPublishOptions`, `nextDelay`.
+- [Publish with the outbox](/docs/keiro/how-to/publish-with-the-outbox).

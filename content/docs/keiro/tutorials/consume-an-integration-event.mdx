@@ -1,0 +1,141 @@
+---
+title: "Consume an integration event"
+description: "Build an IntegrationEvent, run it through the inbox with a row-inserting handler, deliver it twice, and watch the handler run exactly once — no Kafka broker required."
+---
+
+In this tutorial you will prove the inbox's central promise with your own eyes: deliver the *same*
+integration event twice and watch the handler run **exactly once**. No Kafka broker is involved —
+you construct an `IntegrationEvent` in memory and feed it to `runInboxTransaction` directly.
+
+<Callout type="info">
+This is a tutorial: a guided lesson. Follow every step in order. You need a PostgreSQL with the
+keiro migrations applied (so the `keiro_inbox` table exists — see the [getting-started
+tutorial](/docs/keiro/tutorials/getting-started)) and an open kiroku `Store`. You do not need a
+broker.
+</Callout>
+
+## What you will build
+
+A tiny consumer: a handler that inserts one local row, run through `runInboxTransaction` under the
+default `PreferIntegrationMessageId` policy. You will deliver an event once (handler runs, one
+row), deliver it again (handler does **not** run), and inspect the inbox to confirm one record.
+
+## Before you begin
+
+- A running PostgreSQL with the keiro migrations applied (the `keiro_inbox` table present).
+- An open `Store` effect (the [getting-started tutorial](/docs/keiro/tutorials/getting-started)
+  shows how to open one).
+- The modules `Keiro.Inbox` and `Keiro.Integration.Event` in scope.
+
+## Steps
+
+<Steps>
+<Step>
+
+### Build an `IntegrationEvent`
+
+Fill the envelope fields, then attach a JSON payload with `encodeJsonIntegrationEvent`. The
+`messageId` is the dedupe key under the default policy — keep it stable:
+
+```haskell
+buildEvent :: UTCTime -> IntegrationEvent
+buildEvent now =
+  encodeJsonIntegrationEvent
+    IntegrationEvent
+      { messageId = "msg_01hxyz"        -- stable; the dedupe key under the default policy
+      , source = "ordering"
+      , destination = "billing.orders.v1"
+      , key = Just "order-42"
+      , eventType = "OrderSubmitted"
+      , schemaVersion = 1
+      , contentType = ApplicationJson
+      , schemaReference = Nothing
+      , sourceEventId = Nothing
+      , sourceGlobalPosition = Nothing
+      , payloadBytes = ""               -- replaced by encodeJsonIntegrationEvent
+      , occurredAt = now
+      , causationId = Nothing
+      , correlationId = Nothing
+      , traceContext = Nothing
+      , attributes = Nothing
+      }
+    (Aeson.object ["orderId" Aeson..= ("order-42" :: Text)])
+```
+
+</Step>
+<Step>
+
+### Write a handler
+
+The handler runs **inside** the inbox transaction, so its type is `IntegrationEvent ->
+Tx.Transaction a`. Have it insert one local row (your real consumer would apply the business
+effect — e.g. open a kiroku command, write a read-model row):
+
+```haskell
+handler :: IntegrationEvent -> Tx.Transaction ()
+handler _event = Tx.statement () insertLocalRowStmt   -- your idempotent local write
+```
+
+<Callout type="warn">
+Because the handler runs in the inbox transaction, use `Tx.Transaction`, not arbitrary `IO`. A
+thrown exception or `Tx.condemn` rolls back the **whole** transaction, including the inbox row — so
+the next delivery starts clean.
+</Callout>
+
+</Step>
+<Step>
+
+### Deliver it once
+
+Run the event through the inbox under the default policy, with no Kafka delivery ref:
+
+```haskell
+first <- runInboxTransaction PreferIntegrationMessageId event Nothing handler
+-- first == Right (InboxProcessed ())   <- the handler ran
+```
+
+The handler ran and its row plus the inbox row committed together.
+
+</Step>
+<Step>
+
+### Deliver the same event again
+
+Call it a second time with the *same* event:
+
+```haskell
+second <- runInboxTransaction PreferIntegrationMessageId event Nothing handler
+-- second == Right InboxDuplicate        <- the handler did NOT run the second time
+```
+
+The `INSERT … ON CONFLICT (source, dedupe_key) DO NOTHING` found the existing
+`(ordering, msg_01hxyz)` row, so the handler was skipped — `InboxDuplicate`.
+
+</Step>
+<Step>
+
+### Inspect the inbox
+
+Confirm there is exactly one inbox row and exactly one local row:
+
+```haskell
+rows <- listInbox "ordering"
+-- length rows == 1, and the single row's status is InboxCompleted
+```
+
+</Step>
+</Steps>
+
+## What you proved
+
+The inbox turned two deliveries of one message into a single effect — exactly-once effect on top
+of at-least-once delivery. From here, learn how to pick the right identity in [Choose an inbox
+dedupe policy](/docs/keiro/how-to/choose-an-inbox-dedupe-policy), and how to feed real broker
+records in [Wire a Kafka consumer to the
+inbox](/docs/keiro/how-to/wire-a-kafka-consumer-to-the-inbox).
+
+<Cards>
+  <Card title="The inbox pattern" href="/docs/keiro/explanation/the-inbox-pattern" />
+  <Card title="Choose an inbox dedupe policy" href="/docs/keiro/how-to/choose-an-inbox-dedupe-policy" />
+  <Card title="Wire a Kafka consumer to the inbox" href="/docs/keiro/how-to/wire-a-kafka-consumer-to-the-inbox" />
+</Cards>

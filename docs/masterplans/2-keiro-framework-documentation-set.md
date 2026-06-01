@@ -141,7 +141,7 @@ and whole-tree-integrity responsibilities.
 | 8 | Keiro command cycle and write-path documentation | docs/plans/8-keiro-command-cycle-and-write-path-documentation.md | #7 | — | 2 | Complete |
 | 9 | Keiro read-side documentation: projections, read models, and snapshots | docs/plans/9-keiro-read-side-documentation-projections-read-models-and-snapshots.md | #7 | #8 | 2 | Complete |
 | 10 | Keiro workflow documentation: process managers and timers | docs/plans/10-keiro-workflow-documentation-process-managers-and-timers.md | #7 | #8, #9 | 2 | Complete |
-| 11 | Keiro integration-events documentation: inbox, outbox, and Kafka | docs/plans/11-keiro-integration-events-documentation-inbox-outbox-and-kafka.md | #7 | #8 | 2 | Not Started |
+| 11 | Keiro integration-events documentation: inbox, outbox, and Kafka | docs/plans/11-keiro-integration-events-documentation-inbox-outbox-and-kafka.md | #7 | #8 | 2 | Complete |
 | 12 | Keiro operations, FAQ, cookbook, and docs finalization | docs/plans/12-keiro-operations-faq-cookbook-and-docs-finalization.md | #7 | #8, #9, #10, #11 | 3 | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -285,8 +285,8 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 - [x] EP-9: Read-side how-tos + `walkthrough/read-side/` tour authored. _(2026-06-01; + tutorial your-first-read-model.)_
 - [x] EP-10: Workflow explanation + reference (ProcessManager, Timer) authored. _(2026-06-01)_
 - [x] EP-10: Workflow how-tos + tutorial + `walkthrough/workflow/` tour authored. _(2026-06-01)_
-- [ ] EP-11: Integration-events explanation + reference (Inbox, Outbox, IntegrationEvent) authored.
-- [ ] EP-11: Integration-events how-tos + `walkthrough/integration/` tour (inbox + outbox) authored.
+- [x] EP-11: Integration-events explanation + reference (Inbox, Outbox, IntegrationEvent) authored. _(2026-06-01)_
+- [x] EP-11: Integration-events how-tos + `walkthrough/integration/` tour (inbox + outbox) authored. _(2026-06-01)_
 - [ ] EP-12: Operations docs authored (telemetry, migrations, testing) + FAQ + cookbook.
 - [ ] EP-12: Finalization — all meta.json ordered, section landings carry `<Cards>`, build + link-check pass over the keiro tree.
 
@@ -331,6 +331,14 @@ that affect more than one plan.)
     workflow tour is navigable from the sidebar; its hub `<Card>` is still href-less, awaiting EP-12.
     **EP-12 finalization now owns three hub hrefs** (`command-cycle`, `read-side`, `workflow`) plus
     EP-11's `integration` once it lands.
+  - **(Update, implementing EP-11, 2026-06-01.)** EP-11 added `"integration"` to
+    `walkthrough/meta.json` (the `walkthrough/integration/` subdir now exists with `00-start-here` +
+    three real chapters: the inbox, the outbox, the Kafka mapping), so the integration tour is
+    navigable from the sidebar; its hub `<Card>` is still href-less, awaiting EP-12. **All four
+    Phase-2 walkthrough subdirs now exist** (`command-cycle`, `read-side`, `workflow`,
+    `integration`); EP-12's finalization adds all four hub `<Card href>`s and runs the final
+    `walkthrough/meta.json` ordering pass. EP-11 also shipped `reference/integration-event`
+    (Integration Point #5), so EP-8's parked link to it can now be resolved by EP-12.
 
 - **Forward-links to not-yet-authored sibling pages are parked on the section landing until their
   owner lands.** (Discovered implementing EP-8, 2026-06-01.) The same crawler behavior that bit the

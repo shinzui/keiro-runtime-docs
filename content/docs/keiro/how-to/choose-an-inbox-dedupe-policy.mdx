@@ -1,0 +1,80 @@
+---
+title: "Choose an inbox dedupe policy"
+description: "Pick the right InboxDedupePolicy for your consumer — messageId, source-event identity, Kafka offset, or a custom key — and use runInboxTransactionWithKey when none fits."
+---
+
+The inbox deduplicates on a key, and which key it uses is the `InboxDedupePolicy` you pass to
+`runInboxTransaction`. This guide helps you pick the right one.
+
+<Callout type="info">
+Assumes you have a working inbox consumer (see [Consume an integration
+event](/docs/keiro/tutorials/consume-an-integration-event)).
+</Callout>
+
+## Goal
+
+Choose the dedupe identity that matches how your producer mints and reissues messages, so genuine
+duplicates collapse and genuinely-new messages do not.
+
+## The four policies
+
+```haskell
+data InboxDedupePolicy
+  = PreferIntegrationMessageId   -- default: (source, messageId)
+  | PreferSourceEventIdentity    -- the producing private event's id / global position
+  | KafkaDeliveryIdentity        -- last resort: topic:partition:offset
+  | CustomDedupeKey !Text        -- caller-supplied key
+```
+
+- **`PreferIntegrationMessageId`** — the default and the right choice for almost everyone. The
+  `messageId` is minted once at the producer's outbox enqueue and is **stable across publish
+  retries**, so a redelivery carries the same key and collapses correctly.
+- **`PreferSourceEventIdentity`** — dedupe on the producing **private** event's id (or global
+  position). Use this when a producer may reissue the *same logical fact* under a **new**
+  `messageId` (e.g. a schema-upgrade republish) and you want those collapsed to one handler run.
+- **`KafkaDeliveryIdentity`** — dedupe on `topic:partition:offset`. **Last resort only**: the offset
+  is delivery metadata and changes on a rebalance or republish, so a redelivery at a new offset
+  would be treated as new. Use only when neither `messageId` nor source identity is available.
+- **`CustomDedupeKey k`** — you supply the key. Use when the identity scheme cannot be expressed by
+  the others — a key joined from several headers, or derived from the payload. Your service owns key
+  collision resistance.
+
+## Use `runInboxTransactionWithKey` for a fully custom key
+
+When you compute the key yourself, skip the policy and pass `source` + key directly:
+
+```haskell
+result <- runInboxTransactionWithKey "ordering" customKey event mKafka handler
+```
+
+This is the lower-level variant `runInboxTransaction` calls after resolving the policy; it returns
+the `InboxResult` directly (no `Either InboxError`, because there is no policy to be unsatisfied).
+
+## Handle the unsatisfied-policy case
+
+`dedupeKeyFor` (and therefore `runInboxTransaction`) returns `Left (DedupePolicyUnsatisfied policy)`
+when the chosen policy's field is absent — e.g. `PreferSourceEventIdentity` on an envelope with no
+`sourceEventId` *and* no `sourceGlobalPosition`, or `PreferIntegrationMessageId` on an envelope with
+an empty `messageId`:
+
+```haskell
+case result of
+  Left (DedupePolicyUnsatisfied p) -> deadLetter ("inbox: policy unsatisfied: " <> show p)
+  Right r                          -> handleResult r
+```
+
+Treat `DedupePolicyUnsatisfied` as a **poison message** (re-delivering will not add the missing
+field) and route it to a dead-letter / operator review.
+
+## Verify it worked
+
+Deliver an event whose `messageId` is fixed but whose Kafka offset differs between deliveries (a
+simulated rebalance). Under `PreferIntegrationMessageId` the second delivery is `InboxDuplicate`;
+under `KafkaDeliveryIdentity` it would be processed again — exactly the failure mode the default
+avoids.
+
+## Related
+
+- [The inbox pattern](/docs/keiro/explanation/the-inbox-pattern) — why the offset is not the identity.
+- [Inbox reference](/docs/keiro/reference/inbox) — `dedupeKeyFor`, `runInboxTransactionWithKey`.
+- [Wire a Kafka consumer to the inbox](/docs/keiro/how-to/wire-a-kafka-consumer-to-the-inbox).

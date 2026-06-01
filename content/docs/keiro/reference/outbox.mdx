@@ -1,0 +1,237 @@
+---
+title: "Outbox"
+description: "Reference for Keiro.Outbox: the outbox types, the producer helper, publishClaimedOutbox, the Schema primitives, the Kafka conversion, and the keiro_outbox table."
+---
+
+The types and functions on this page live in `Keiro.Outbox` (which re-exports
+`Keiro.Outbox.Types`), `Keiro.Outbox.Kafka`, and `Keiro.Outbox.Schema`. The outbox is the durable
+transactional handoff from "decided to publish" to "published". For the narrative, see [The outbox
+pattern](/docs/keiro/explanation/the-outbox-pattern).
+
+## `OutboxId`
+
+```haskell
+newtype OutboxId = OutboxId { unOutboxId :: UUID }
+```
+
+Primary key of a `keiro_outbox` row, stable across publish retries. Has `ToJSON`/`FromJSON`
+instances (as UUID text).
+
+## `OutboxStatus`
+
+```haskell
+data OutboxStatus = OutboxPending | OutboxPublishing | OutboxSent | OutboxFailed | OutboxDead
+```
+
+`OutboxPending` (never attempted), `OutboxPublishing` (held by a worker between claim and mark),
+`OutboxSent` (acked; terminal), `OutboxFailed` (will retry after `next_attempt_at`), `OutboxDead`
+(terminal failure after `maxAttempts`, kept for inspection).
+
+<Callout type="warn">
+A row stranded in `OutboxPublishing` by a worker crash is **not** automatically reclaimed: the
+claim query selects only `pending`/`failed`. Recovery is manual — see [Choose an outbox ordering
+policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy#recovering-stranded-publishing-rows).
+</Callout>
+
+## `OrderingPolicy`
+
+```haskell
+data OrderingPolicy = PerKeyHeadOfLine | PerSourceStream | StopTheLine | BestEffort
+```
+
+`PerKeyHeadOfLine` (default) preserves per-key order by blocking later same-key rows behind a
+non-terminal one (null-keyed rows bypass); `PerSourceStream` blocks across all keys in a source;
+`StopTheLine` halts the worker on the first failure; `BestEffort` never blocks. See [Choose an
+outbox ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
+
+## `BackoffSchedule` and `ExponentialBackoffOptions`
+
+```haskell
+data BackoffSchedule
+  = ConstantBackoff !NominalDiffTime
+  | ExponentialBackoff !ExponentialBackoffOptions
+
+data ExponentialBackoffOptions = ExponentialBackoffOptions
+  { initial :: !NominalDiffTime, maxDelay :: !NominalDiffTime, multiplier :: !Double }
+
+nextDelay :: BackoffSchedule -> Int -> NominalDiffTime
+```
+
+`nextDelay` computes the retry delay for a 1-based attempt number;
+`ExponentialBackoff` is `min maxDelay (initial * multiplier ^ (attempt - 1))`.
+
+## `OutboxMessage` and `OutboxRow`
+
+```haskell
+data OutboxMessage = OutboxMessage { outboxId :: !OutboxId, event :: !IntegrationEvent }
+
+data OutboxRow = OutboxRow
+  { outboxId :: !OutboxId, event :: !IntegrationEvent, status :: !OutboxStatus
+  , attemptCount :: !Int, nextAttemptAt :: !UTCTime, lastError :: !(Maybe Text)
+  , publishedAt :: !(Maybe UTCTime), createdAt :: !UTCTime, updatedAt :: !UTCTime }
+```
+
+## `OutboxPublishOptions` and `OutboxPublishSummary`
+
+```haskell
+data OutboxPublishOptions = OutboxPublishOptions
+  { batchSize :: !Int, maxAttempts :: !Int, backoff :: !BackoffSchedule
+  , orderingPolicy :: !OrderingPolicy, tracer :: !(Maybe Tracer) }
+
+data OutboxPublishSummary = OutboxPublishSummary
+  { claimed :: !Int, published :: !Int, retried :: !Int, dead :: !Int, haltedOn :: !(Maybe OutboxId) }
+```
+
+<TypeTable
+  type={{
+    batchSize:      { type: "Int", description: "Rows claimed per pass.", default: "32" },
+    maxAttempts:    { type: "Int", description: "Consecutive failures before a row goes dead.", default: "10" },
+    backoff:        { type: "BackoffSchedule", description: "Retry delay curve.", default: "ConstantBackoff 2" },
+    orderingPolicy: { type: "OrderingPolicy", description: "Claim-time ordering predicate.", default: "PerKeyHeadOfLine" },
+    tracer:         { type: "Maybe Tracer", description: "Optional OpenTelemetry producer-span tracer.", default: "Nothing" },
+  }}
+/>
+
+```haskell
+-- batch 32, maxAttempts 10, ConstantBackoff 2, PerKeyHeadOfLine, no tracer
+defaultPublishOptions :: OutboxPublishOptions
+```
+
+`published + retried + dead + (1 if halted)` equals `claimed`; `haltedOn` is populated only under
+`StopTheLine`.
+
+## Inline escape hatch
+
+```haskell
+freshOutboxId             :: (IOE :> es) => Eff es OutboxId
+enqueueIntegrationEventTx :: OutboxId -> IntegrationEvent -> Tx.Transaction ()
+```
+
+`enqueueIntegrationEventTx` enqueues an event from inside the caller's transaction (e.g. a saga
+running in `runCommandWithSqlEvents`). Supply a **stable** `OutboxId` so retried command attempts
+coalesce on the `(source, message_id)` unique constraint. See [Publish with the
+outbox](/docs/keiro/how-to/publish-with-the-outbox).
+
+## The producer helper
+
+```haskell
+data IntegrationProducer e = IntegrationProducer
+  { name :: !Text, source :: !Text, messageIdPrefix :: !Text
+  , mapEvent :: !(RecordedEvent -> e -> Maybe IntegrationEventDraft) }
+
+data IntegrationEventDraft = IntegrationEventDraft
+  { destination :: !Text, key :: !(Maybe Text), eventType :: !Text, schemaVersion :: !Int
+  , contentType :: !IntegrationContentType, schemaReference :: !(Maybe SchemaReference)
+  , sourceEventId :: !(Maybe EventId), sourceGlobalPosition :: !(Maybe GlobalPosition)
+  , payloadBytes :: !ByteString, occurredAt :: !UTCTime
+  , causationId :: !(Maybe EventId), correlationId :: !(Maybe EventId)
+  , traceContext :: !(Maybe TraceContext), attributes :: !(Maybe Value) }
+
+mintIntegrationEvent   :: (IOE :> es) => IntegrationProducer e -> IntegrationEventDraft -> Eff es IntegrationEvent
+draftToEvent           :: Text -> Text -> IntegrationEventDraft -> IntegrationEvent
+enqueueProducerEventTx :: (IOE :> es) => IntegrationProducer e -> OutboxId -> IntegrationEventDraft -> Eff es (Tx.Transaction ())
+```
+
+`IntegrationEventDraft` is `IntegrationEvent` minus `messageId` and `source`; the producer fills
+those in (`messageId` minted as a `messageIdPrefix`-prefixed TypeID). `mapEvent` returning
+`Nothing` skips an event without enqueuing a row.
+
+## `publishClaimedOutbox`
+
+```haskell
+data PublishOutcome = PublishSucceeded | PublishFailed !Text
+
+publishClaimedOutbox ::
+  (IOE :> es, Store :> es) =>
+  (OutboxRow -> Eff es PublishOutcome) -> OutboxPublishOptions -> Eff es OutboxPublishSummary
+```
+
+**One claim pass per call** — it claims a batch, calls your publish function per row, marks each
+sent/failed/dead, and returns. It does **not** loop; the application schedules it repeatedly (e.g.
+once per process-compose tick). Mark a row sent only after the broker acks (return
+`PublishSucceeded`); the inbox dedupes any double-send. See [Bridge the outbox to
+Kafka](/docs/keiro/how-to/bridge-the-outbox-to-kafka).
+
+## Schema primitives (`Keiro.Outbox.Schema`)
+
+```haskell
+enqueueOutboxTx   :: OutboxMessage -> Tx.Transaction ()                                   -- INSERT … ON CONFLICT (source, message_id) DO NOTHING
+claimOutboxBatch  :: (Store :> es) => OrderingPolicy -> Int -> UTCTime -> Eff es [OutboxRow]
+markOutboxSent    :: (Store :> es) => OutboxId -> UTCTime -> Eff es ()
+markOutboxFailedTx :: OutboxId -> Text -> Int -> NominalDiffTime -> UTCTime -> Tx.Transaction OutboxStatus
+lookupOutbox      :: (Store :> es) => OutboxId -> Eff es (Maybe OutboxRow)
+listOutbox        :: (Store :> es) => Text -> Eff es [OutboxRow]
+```
+
+`claimOutboxBatch` selects `WHERE status IN ('pending', 'failed') AND next_attempt_at <= now`,
+applies the ordering predicate, `ORDER BY created_at LIMIT n FOR UPDATE SKIP LOCKED`, and
+transitions claimed rows to `publishing` with `attempt_count + 1`. `markOutboxFailedTx` reads the
+attempt count: `>= maxAttempts` → `OutboxDead`, else `OutboxFailed` with `next_attempt_at = now +
+delay`.
+
+## Kafka conversion (`Keiro.Outbox.Kafka`)
+
+Pure; no librdkafka dependency.
+
+```haskell
+data KafkaProducerRecord = KafkaProducerRecord
+  { topic :: !Text, key :: !(Maybe ByteString), payload :: !ByteString, headers :: ![(ByteString, ByteString)] }
+
+outboxRowToKafkaRecord        :: OutboxRow -> KafkaProducerRecord
+integrationEventToKafkaRecord :: IntegrationEvent -> KafkaProducerRecord
+```
+
+`topic` is the envelope's `destination`; `key` and `headers` are UTF-8-encoded from the envelope.
+
+## The `keiro_outbox` table
+
+```sql
+CREATE TABLE IF NOT EXISTS keiro_outbox (
+  outbox_id UUID PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  message_key TEXT,
+  event_type TEXT NOT NULL,
+  schema_version BIGINT NOT NULL,
+  content_type TEXT NOT NULL,
+  schema_registry TEXT,
+  schema_subject TEXT,
+  schema_version_ref BIGINT,
+  schema_id BIGINT,
+  schema_fingerprint TEXT,
+  source_event_id UUID,
+  source_global_position BIGINT,
+  causation_id UUID,
+  correlation_id UUID,
+  traceparent TEXT,
+  tracestate TEXT,
+  payload_bytes BYTEA NOT NULL,
+  attributes JSONB,
+  occurred_at TIMESTAMPTZ NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempt_count BIGINT NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_error TEXT,
+  published_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (source, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS keiro_outbox_pending_idx
+  ON keiro_outbox (status, next_attempt_at, created_at);
+
+CREATE INDEX IF NOT EXISTS keiro_outbox_head_of_line_idx
+  ON keiro_outbox (source, message_key, created_at)
+  WHERE status NOT IN ('sent', 'dead') AND message_key IS NOT NULL;
+```
+
+The `UNIQUE (source, message_id)` constraint coalesces idempotent re-enqueues; the partial
+`keiro_outbox_head_of_line_idx` backs the per-key head-of-line predicate.
+
+<Cards>
+  <Card title="The outbox pattern" href="/docs/keiro/explanation/the-outbox-pattern" />
+  <Card title="Integration event reference" href="/docs/keiro/reference/integration-event" />
+  <Card title="Publish with the outbox" href="/docs/keiro/how-to/publish-with-the-outbox" />
+</Cards>

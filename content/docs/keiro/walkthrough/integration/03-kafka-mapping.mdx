@@ -1,0 +1,107 @@
+---
+title: "03 — Kafka mapping"
+description: "Reading the pure header⇄record boundary: integrationHeaders and integrationEventToKafkaRecord on the way out, integrationEventFromKafka on the way in."
+---
+
+This final chapter reads the pure boundary between a keiro envelope and a Kafka record:
+`keiro-core/src/Keiro/Integration/Event.hs`, `keiro/src/Keiro/Outbox/Kafka.hs`, and
+`keiro/src/Keiro/Inbox/Kafka.hs`. Read [02 — The
+outbox](/docs/keiro/walkthrough/integration/02-the-outbox) first. None of this code touches a
+broker library — keiro stays free of librdkafka; the integration package bridges these neutral
+records to the broker library's types in its own scope.
+
+## Out: `integrationHeaders` emits only populated headers
+
+```haskell
+-- keiro-core/src/Keiro/Integration/Event.hs
+integrationHeaders event =
+  concat
+    [ [ (headerMessageId, event ^. #messageId)
+      , (headerSource, event ^. #source)
+      , (headerDestination, event ^. #destination)
+      , (headerEventType, event ^. #eventType)
+      , (headerSchemaVersion, Text.pack (show (event ^. #schemaVersion)))
+      , (headerContentType, contentTypeText (event ^. #contentType))
+      ]
+    , … maybeHeader headerSourceEventId (fmap (UUID.toText . eventIdToUuid) (event ^. #sourceEventId))
+    , … case event ^. #traceContext of
+        Nothing -> []
+        Just tc -> (headerTraceParent, tc ^. #traceparent) : maybeHeader headerTraceState (tc ^. #tracestate)
+    ]
+  where maybeHeader name = maybe [] (\value -> [(name, value)])
+```
+
+The first six headers are always present; every optional header is emitted via `maybeHeader` only
+when its field is populated — a service that captures no trace context, causation, or schema
+reference pays no header for it. The header *names* are the canonical `keiro-*` constants (plus the
+W3C `traceparent` / `tracestate`).
+
+## Out: `integrationEventToKafkaRecord` UTF-8-encodes the neutral record
+
+```haskell
+-- keiro/src/Keiro/Outbox/Kafka.hs
+outboxRowToKafkaRecord row = integrationEventToKafkaRecord (row ^. #event)
+
+integrationEventToKafkaRecord event =
+  KafkaProducerRecord
+    { topic = event ^. #destination
+    , key = fmap TE.encodeUtf8 (event ^. #key)
+    , payload = integrationPayload event
+    , headers = [(TE.encodeUtf8 n, TE.encodeUtf8 v) | (n, v) <- integrationHeaders event]
+    }
+```
+
+`topic` is the envelope's `destination`; the key and every header are UTF-8-encoded to bytes
+(Kafka treats both as opaque bytes); the payload is passed through unchanged. `outboxRowToKafkaRecord`
+is just the row's event fed through the same function.
+
+## In: `integrationEventFromKafka` reconstructs from the canonical headers
+
+```haskell
+-- keiro/src/Keiro/Inbox/Kafka.hs
+integrationEventFromKafka record = do
+  let hs = record ^. #headers
+  source <- requireHeader hs headerSource
+  destination <- requireHeader hs headerDestination
+  eventType <- requireHeader hs headerEventType
+  schemaVersionText <- requireHeader hs headerSchemaVersion
+  schemaVersion <- parseInt headerSchemaVersion schemaVersionText
+  contentTypeRaw <- requireHeader hs headerContentType
+  messageId <- requireHeader hs headerMessageId
+  schemaReference <- buildSchemaReference hs
+  sourceEventId <- traverseLookup hs headerSourceEventId (fmap EventId . parseUuid headerSourceEventId)
+  …
+  pure (event, kafka)
+```
+
+The decode is the mirror image of the encode, and it is total in its error reporting:
+
+- the **six required** headers (`keiro-source`, `keiro-destination`, `keiro-event-type`,
+  `keiro-schema-version`, `content-type`, `keiro-message-id`) go through `requireHeader`, which
+  yields `MissingHeader name` if absent;
+- numeric headers (`schema-version`, `source-global-position`, `schema-id`, `schema-version-ref`)
+  go through `parseInt`, yielding `InvalidIntHeader name raw` on malformed input;
+- UUID headers (`source-event-id`, `causation-id`, `correlation-id`) go through `parseUuid`,
+  yielding `InvalidUuidHeader name raw`;
+- optional headers use `traverseLookup`, which returns `Nothing` when absent (no error).
+
+One asymmetry worth noting: the producer does not emit `occurredAt` as a canonical header, so the
+decoder sets `occurredAt = record ^. #receivedAt` and leaves `key`/`attributes` for the receiver to
+re-derive from the payload if needed. A decode error is a **poison message** — re-delivering will
+not supply the missing or malformed header — which is why [the consumer
+guide](/docs/keiro/how-to/wire-a-kafka-consumer-to-the-inbox) routes a `KafkaDecodeError` straight
+to the dead-letter.
+
+## What you have seen
+
+The integration path is three pure-or-transactional pieces: the inbox dedupes a delivery on a
+stable key inside one transaction; the outbox enqueues in the domain transaction and publishes
+at-least-once from a durable row under a head-of-line ordering policy; and this header mapping is
+the pure, broker-free boundary between a keiro envelope and a Kafka record. Together they give an
+exactly-once *effect* over an at-least-once broker.
+
+<Cards>
+  <Card title="Integration event reference" href="/docs/keiro/reference/integration-event" />
+  <Card title="The inbox pattern" href="/docs/keiro/explanation/the-inbox-pattern" />
+  <Card title="The outbox pattern" href="/docs/keiro/explanation/the-outbox-pattern" />
+</Cards>

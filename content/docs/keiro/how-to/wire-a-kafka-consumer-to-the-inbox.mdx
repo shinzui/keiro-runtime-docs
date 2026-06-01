@@ -1,0 +1,82 @@
+---
+title: "Wire a Kafka consumer to the inbox"
+description: "Bridge a broker record into KafkaInboundRecord, decode it with integrationEventFromKafka, run it through the inbox, and map the result to ack / retry / dead-letter."
+---
+
+This guide connects a real Kafka consumer to the inbox: turn each delivered record into a
+`KafkaInboundRecord`, decode it to an `IntegrationEvent`, run it through `runInboxTransaction`, and
+translate the outcome into a broker ack / retry / dead-letter decision.
+
+<Callout type="warn">
+**The shibuya Kafka adapter drops the `keiro-*` headers the inbox decoder needs**, so there is no
+turn-key shibuya→inbox path in keiro 0.1.0.0. Consume with `kafka-effectful` directly (the approach
+keiro's own cross-context test uses), or extend the adapter to preserve headers. The rest of this
+guide assumes you have the raw record **with its headers** in hand.
+</Callout>
+
+## Goal
+
+Drive the inbox from a Kafka consumer loop, decoding each record and acking only when the effect is
+durably recorded (or provably a duplicate).
+
+## Steps
+
+1. **Bridge the broker record into `KafkaInboundRecord`.** `keiro` does not depend on a broker
+   library; you map your consumer library's record (and its `[(Text, Text)]` headers) into the
+   neutral shape:
+
+   ```haskell
+   toInbound :: ConsumerRecord -> KafkaInboundRecord
+   toInbound cr = KafkaInboundRecord
+     { topic = crTopic cr, partition = crPartition cr, offset = crOffset cr
+     , key = crKey cr, payload = crValue cr
+     , headers = crHeaders cr            -- [(Text, Text)] — MUST include the keiro-* headers
+     , receivedAt = crTimestamp cr }
+   ```
+
+2. **Decode, run the inbox, and map the result.** `integrationEventFromKafka` reconstructs the
+   envelope from the canonical headers; a decode error is a poison message. Then
+   `runInboxTransaction` does the idempotent receive:
+
+   ```haskell
+   handleDelivery :: (IOE :> es, Store :> es) => KafkaInboundRecord -> Eff es Ack
+   handleDelivery record =
+     case integrationEventFromKafka record of
+       Left _decodeErr -> pure DeadLetter                   -- poison: missing/invalid headers
+       Right (event, kafka) -> do
+         result <- runInboxTransaction PreferIntegrationMessageId event (Just kafka) handler
+         pure $ case result of
+           Right (InboxProcessed _)        -> AckCommit
+           Right InboxDuplicate            -> AckCommit      -- safe: the handler already ran once
+           Right (InboxPreviouslyFailed _) -> AckCommit      -- + alert an operator
+           Right InboxInProgress           -> Retry          -- transient (async paths only)
+           Left  _policyErr                -> DeadLetter
+     where handler ev = Tx.statement () applyLocallyStmt
+   ```
+
+3. **Map outcomes to broker actions deliberately:**
+
+   | Outcome | Broker action | Why |
+   |---|---|---|
+   | `InboxProcessed _` | ack/commit offset | effect is durably recorded |
+   | `InboxDuplicate` | ack/commit offset | the effect already happened once |
+   | `InboxPreviouslyFailed _` | ack + alert operator | a prior attempt recorded a permanent failure |
+   | `InboxInProgress` | retry | transient; only reachable from async paths |
+   | `Left (DedupePolicyUnsatisfied _)` | dead-letter | poison: redelivery won't add the missing field |
+   | `KafkaDecodeError` (`MissingHeader`/`InvalidIntHeader`/`InvalidUuidHeader`) | dead-letter | poison: malformed/absent headers |
+
+   Commit the offset only after the inbox has committed. Because the dedupe key is the stable
+   `messageId`, committing late (and thus risking a redelivery on a crash) is safe — the redelivery
+   becomes an `InboxDuplicate`.
+
+## Verify it worked
+
+Produce a message, let the consumer apply it (`InboxProcessed`, offset committed), then force a
+redelivery (restart the consumer before the commit, or replay the offset). The redelivery returns
+`InboxDuplicate` and the local effect is unchanged.
+
+## Related
+
+- [Choose an inbox dedupe policy](/docs/keiro/how-to/choose-an-inbox-dedupe-policy).
+- [Inbox reference](/docs/keiro/reference/inbox) — `integrationEventFromKafka`, `KafkaDecodeError`.
+- [Integration event reference](/docs/keiro/reference/integration-event#canonical-header-names) — the headers the decoder requires.

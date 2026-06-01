@@ -1,0 +1,95 @@
+---
+title: "Publish with the outbox"
+description: "Two ways to enqueue integration events: the canonical IntegrationProducer subscription, and the inline escape hatch for sagas and process managers."
+---
+
+This guide shows the two ways to get an integration event into the `keiro_outbox` table: the
+canonical producer subscription (the common case) and the inline escape hatch (for sagas and
+process managers).
+
+<Callout type="info">
+Assumes you understand [the outbox pattern](/docs/keiro/explanation/the-outbox-pattern) and have a
+running service with the keiro migrations applied.
+</Callout>
+
+## Goal
+
+Enqueue integration events durably — in the same transaction as the domain change — then publish
+them with a scheduled worker.
+
+## Path A — the canonical `IntegrationProducer` subscription
+
+For the common case (publish a public event for each private domain event), define an
+`IntegrationProducer`. Its `mapEvent` turns a recorded private event into an
+`IntegrationEventDraft` (or `Nothing` to skip):
+
+```haskell
+orderingProducer :: IntegrationProducer OrderEvent
+orderingProducer = IntegrationProducer
+  { name = "ordering-integration-producer"   -- checkpoints its cursor under this name
+  , source = "ordering"                        -- written into keiro_outbox.source
+  , messageIdPrefix = "msg"                    -- TypeID prefix for the minted messageId
+  , mapEvent = \recorded event -> case event of
+      OrderSubmitted o -> Just IntegrationEventDraft
+        { destination = "billing.orders.v1"
+        , key = Just (orderIdText (orderId o))
+        , eventType = "OrderSubmitted"
+        , schemaVersion = 1
+        , contentType = ApplicationJson
+        , schemaReference = Nothing
+        , sourceEventId = Just (recorded ^. #eventId)
+        , sourceGlobalPosition = Just (recorded ^. #globalPosition)
+        , payloadBytes = encodeOrderSubmitted o
+        , occurredAt = recorded ^. #occurredAt
+        , causationId = Nothing
+        , correlationId = Nothing
+        , traceContext = Nothing
+        , attributes = Nothing
+        }
+      _ -> Nothing                             -- other events are not published
+  }
+```
+
+The subscription worker calls `enqueueProducerEventTx producer outboxId draft` per mapped event,
+which mints the `messageId` and inserts one row in the subscription's checkpoint transaction. Then
+schedule the publisher worker — **one pass per tick**:
+
+```haskell
+summary <- publishClaimedOutbox publish defaultPublishOptions
+-- run this repeatedly (e.g. once per process-compose tick); it does not loop itself
+```
+
+(The `publish` callback is the Kafka bridge — see [Bridge the outbox to
+Kafka](/docs/keiro/how-to/bridge-the-outbox-to-kafka).)
+
+## Path B — the inline escape hatch (sagas / process managers)
+
+A saga or process manager sometimes needs to emit an integration event with **no** intervening
+private domain event. Use `freshOutboxId` + `enqueueIntegrationEventTx` *inside* the command
+transaction opened by [`runCommandWithSqlEvents`](/docs/keiro/reference/command):
+
+```haskell
+outboxId <- freshOutboxId      -- or a STABLE id for idempotent retries
+runCommandWithSqlEvents options eventStream targetStream command $ \emitted appendResult -> do
+  -- ... your other in-transaction writes ...
+  enqueueIntegrationEventTx outboxId integrationEvent     -- enqueues in the SAME transaction
+```
+
+<Callout type="warn">
+For idempotent retries, reuse a **stable** `OutboxId` (e.g. derived deterministically from the
+command), not a fresh one each attempt. The `UNIQUE (source, message_id)` constraint coalesces
+duplicate enqueues, so a retried command attempt does not create a second outbox row.
+</Callout>
+
+## Verify it worked
+
+After enqueueing, `listOutbox "ordering"` shows the row in `pending`. After a publisher pass with a
+succeeding `publish`, the row is `sent` with a `published_at`. A double-enqueue with the same
+`(source, messageId)` leaves exactly one row.
+
+## Related
+
+- [The outbox pattern](/docs/keiro/explanation/the-outbox-pattern).
+- [Choose an outbox ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
+- [Bridge the outbox to Kafka](/docs/keiro/how-to/bridge-the-outbox-to-kafka).
+- [Outbox reference](/docs/keiro/reference/outbox) — `IntegrationProducer`, `publishClaimedOutbox`.

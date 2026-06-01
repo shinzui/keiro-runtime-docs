@@ -5,6 +5,7 @@ title: "Keiro integration-events documentation: inbox, outbox, and Kafka"
 kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
 ---
 
 # Keiro integration-events documentation: inbox, outbox, and Kafka
@@ -64,21 +65,22 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M0. Preconditions verified — toolchain present, `content/docs/keiro/` and its section
-      subdirectories exist, EP-7 foundation landed (overview/getting-started pages exist and
-      `docs/keiro-source-sync.md` exists), baseline `pnpm build` clean, keiro source readable
-      at the pinned commit for cross-checking.
-- [ ] M1. Explanation set authored (`explanation/integration-events.mdx`,
-      `explanation/the-inbox-pattern.mdx`, `explanation/the-outbox-pattern.mdx`).
-- [ ] M2. Reference set authored (`reference/integration-event.mdx`, `reference/inbox.mdx`,
-      `reference/outbox.mdx`).
-- [ ] M3. Tutorial authored (`tutorials/consume-an-integration-event.mdx`).
-- [ ] M4. How-to set authored (five guides under `how-to/`).
-- [ ] M5. Code walkthrough authored under `walkthrough/integration/` (00-start-here, 01-the-inbox,
-      02-the-outbox, 03-kafka-mapping) + its `meta.json`.
-- [ ] M6. Section `meta.json` files appended; `walkthrough/meta.json` lists `integration`;
-      `pnpm typecheck` clean; `pnpm build` exits 0 and prerenders every new page with zero
-      crawler warnings; every Haskell name used is present in the pinned keiro source.
+- [x] M0. Preconditions verified — toolchain present (pnpm 11.4.0, Node 22.22.3 on PATH),
+      `content/docs/keiro/` and its section subdirectories exist, EP-7/EP-8/EP-9/EP-10 landed,
+      `docs/keiro-source-sync.md` exists, baseline `pnpm build` clean, keiro source readable
+      at `3f5dc9c` for cross-checking. _(2026-06-01)_
+- [x] M1. Explanation set authored (`explanation/integration-events.mdx`,
+      `explanation/the-inbox-pattern.mdx`, `explanation/the-outbox-pattern.mdx`). _(2026-06-01)_
+- [x] M2. Reference set authored (`reference/integration-event.mdx` [OWNED], `reference/inbox.mdx`,
+      `reference/outbox.mdx`). _(2026-06-01)_
+- [x] M3. Tutorial authored (`tutorials/consume-an-integration-event.mdx`). _(2026-06-01)_
+- [x] M4. How-to set authored (five guides under `how-to/`). _(2026-06-01)_
+- [x] M5. Code walkthrough authored under `walkthrough/integration/` (00-start-here, 01-the-inbox,
+      02-the-outbox, 03-kafka-mapping) + its `meta.json`. _(2026-06-01)_
+- [x] M6. Section `meta.json` files appended; `walkthrough/meta.json` lists `integration`;
+      `pnpm typecheck` clean; `pnpm build` exits 0 with zero crawler warnings; `pnpm lint:links`
+      OK (141 files, no broken internal links); every Haskell name/SQL transcribed from the pinned
+      keiro source. _(2026-06-01)_
 
 
 ## Surprises & Discoveries
@@ -102,7 +104,25 @@ implementation. Provide concise evidence.
   present the manual recovery as an operational runbook item in
   `how-to/choose-an-outbox-ordering-policy.mdx`; they do not repeat the inaccurate Haddock.
 
-(Add further discoveries here as you author.)
+- **Re-verified the stale-`publishing`-row gap against the source while authoring** (2026-06-01).
+  `claimSql` in `keiro/src/Keiro/Outbox/Schema.hs` selects `WHERE r.status IN ('pending', 'failed')`
+  and both head-of-line predicates exclude only `('sent', 'dead')` — so a `publishing` row both
+  fails to be reclaimed AND head-of-line-blocks its key. The inaccurate `OutboxPublishing` Haddock
+  is in `Keiro/Outbox/Types.hs` (lines ~50-52). Documented honestly: the outbox-pattern explanation,
+  the outbox reference, and `how-to/choose-an-outbox-ordering-policy.mdx` all describe the shipped
+  behavior + the manual `UPDATE … SET status = 'pending'` recovery; none repeats the Haddock claim.
+
+- **EP-11 needed no parked landing links.** (Authoring, 2026-06-01.) All cross-subsystem references
+  point at pages that already exist: EP-8's `/docs/keiro/reference/command` and
+  `/docs/keiro/explanation/the-command-cycle`, EP-7's `/docs/keiro/tutorials/getting-started`, and
+  EP-11's own pages. The plan suggested linking a "migrations how-to" for the tutorial prereqs; none
+  exists yet (EP-12 owns ops/migrations docs), so the tutorial links the existing getting-started
+  tutorial instead. Bearing: EP-12 may add a migrations how-to and upgrade that prereq link.
+
+- **EP-8 owes a link to this plan's `reference/integration-event` (Integration Point #5).** EP-11
+  now owns and ships `reference/integration-event.mdx`. EP-12's finalization pass should confirm
+  EP-8's command-cycle pages link here (and do not re-document the envelope); EP-11's own
+  `reference/integration-event.mdx` notes the command-cycle docs link in rather than re-document.
 
 
 ## Decision Log
@@ -163,7 +183,31 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-01): complete and accepted.** All 16 pages plus
+`walkthrough/integration/meta.json` were authored against the keiro source at `3f5dc9c`: 3
+explanation pages, 3 reference pages (`integration-event` owned per Integration Point #5), 1
+tutorial, 5 how-to guides, and a 4-chapter walkthrough. Every `IntegrationEvent`/inbox/outbox
+signature, the `keiro_inbox`/`keiro_outbox` SQL, and the claim CTE / `ON CONFLICT` clauses were
+transcribed from the read-only source (`Keiro/Integration/Event.hs`, `Keiro/Inbox*.hs`,
+`Keiro/Outbox*.hs`, the two migrations), not from the divergent in-repo notes.
+
+Measured against Purpose:
+- **Builds & link-checks cleanly** — `pnpm typecheck` clean, `pnpm build` exits 0 with zero crawler
+  warnings, `pnpm lint:links` OK (141 files, no broken internal links), all cross-links absolute.
+- **Identity rule stated prominently** — every page that touches identity says `messageId` is the
+  canonical dedupe key and the Kafka offset is delivery metadata only.
+- **Exactly-once-effect framing** — the inbox explanation states "exactly-once effect =
+  at-least-once delivery + idempotent receive" and the single-transaction boundary.
+- **Honest gaps documented** — the shibuya-kafka-adapter header-drop gap (`wire-a-kafka-consumer-to-the-inbox`)
+  and the stale-`publishing`-row gap (`choose-an-outbox-ordering-policy`, with a manual recovery
+  runbook); neither repeats the inaccurate `OutboxPublishing` Haddock.
+- **Pipeline diagram present** — the producer→outbox→Kafka→inbox→consumer `mermaid` appears on the
+  outbox-pattern explanation and the walkthrough start page.
+
+Gaps / deferred to EP-12 (by design): the walkthrough hub `<Card>` for the integration tour is
+href-less (EP-12 adds it), the final whole-tree `meta.json` ordering is EP-12's, and a migrations
+how-to (if added) could replace the tutorial's getting-started prereq link. No content gaps in
+EP-11's own surface.
 
 
 ## Context and Orientation

@@ -1,0 +1,84 @@
+---
+title: "Bridge the outbox to Kafka"
+description: "Write the OutboxRow -> Eff es PublishOutcome callback: convert a row to a KafkaProducerRecord, produce it synchronously, and return PublishSucceeded only after the broker acks."
+---
+
+`publishClaimedOutbox` is transport-neutral — it hands you each claimed row and asks for a
+`PublishOutcome`. This guide shows how to write that callback for Kafka.
+
+<Callout type="info">
+Assumes you publish through the outbox (see [Publish with the
+outbox](/docs/keiro/how-to/publish-with-the-outbox)) and have a Kafka producer from your broker
+library (e.g. `hw-kafka-client` or `kafka-effectful`).
+</Callout>
+
+## Goal
+
+Implement the `OutboxRow -> Eff es PublishOutcome` publish function so the worker produces each row
+to Kafka and reflects the broker's acknowledgement back into the row's status.
+
+## keiro stays free of librdkafka
+
+`keiro` deliberately does not depend on a Kafka client library. `Keiro.Outbox.Kafka` gives you a
+**neutral** record, and your integration package bridges it to the broker library's record type in
+its own dependency scope:
+
+```haskell
+data KafkaProducerRecord = KafkaProducerRecord
+  { topic :: !Text, key :: !(Maybe ByteString), payload :: !ByteString, headers :: ![(ByteString, ByteString)] }
+
+outboxRowToKafkaRecord :: OutboxRow -> KafkaProducerRecord
+```
+
+`outboxRowToKafkaRecord` sets `topic` from the envelope's `destination`, UTF-8-encodes the `key`,
+copies the `payloadBytes`, and UTF-8-encodes the canonical headers.
+
+## Steps
+
+1. **Convert the row to a `KafkaProducerRecord`.** This is pure:
+
+   ```haskell
+   let rec = outboxRowToKafkaRecord row    -- :: KafkaProducerRecord
+   ```
+
+2. **Produce it synchronously and map the result.** Return `PublishSucceeded` **only after the
+   broker acks**; any failure is `PublishFailed err` (the worker will retry it after the backoff):
+
+   ```haskell
+   publishViaKafka :: (IOE :> es) => Producer -> OutboxRow -> Eff es PublishOutcome
+   publishViaKafka producer row = do
+     let rec = outboxRowToKafkaRecord row
+     result <- liftIO (produceSync producer (toBrokerRecord rec))   -- your library's record type
+     pure $ case result of
+       Right () -> PublishSucceeded
+       Left err -> PublishFailed (renderProduceError err)
+   ```
+
+   `toBrokerRecord` is the small adapter in your integration package that maps the neutral
+   `KafkaProducerRecord` (topic, key bytes, payload bytes, header bytes) to your broker library's
+   producer record.
+
+3. **Hand the callback to the worker.** Schedule it once per tick:
+
+   ```haskell
+   summary <- publishClaimedOutbox (publishViaKafka producer) defaultPublishOptions
+   ```
+
+<Callout type="warn">
+Produce **synchronously** (await the broker ack) before returning `PublishSucceeded`. If you
+fire-and-forget and return success prematurely, the worker marks the row `sent` for a publish that
+may not have landed — defeating the durability the outbox exists to provide. A late ack that races a
+crash just means the row is republished, which the consumer's inbox deduplicates.
+</Callout>
+
+## Verify it worked
+
+Point the producer at a test broker, enqueue a row, run one publisher pass, and confirm the row
+moves to `sent` and the message appears on the topic with its `keiro-*` headers intact. Make the
+broker reject a produce and confirm the row goes to `failed` with `next_attempt_at` in the future.
+
+## Related
+
+- [Publish with the outbox](/docs/keiro/how-to/publish-with-the-outbox).
+- [Outbox reference](/docs/keiro/reference/outbox) — `publishClaimedOutbox`, `KafkaProducerRecord`.
+- [Kafka mapping walkthrough](/docs/keiro/walkthrough/integration/03-kafka-mapping).

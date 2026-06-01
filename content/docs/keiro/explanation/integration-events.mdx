@@ -1,0 +1,101 @@
+---
+title: "Integration events"
+description: "What a keiro integration event is: a stable, public, cross-bounded-context message envelope, distinct from a private domain event, and the identity rules that make redelivery safe."
+---
+
+How does one keiro-backed service tell *another* service that something happened — reliably,
+across a message broker, without the two services sharing a database? Through an **integration
+event**: a stable, public message one bounded context publishes for another to consume.
+
+## Public messages, not private facts
+
+A **bounded context** is one service with its own database, its own event streams, and its own
+read models. Two bounded contexts never share a database; they communicate only by exchanging
+messages over a broker such as Kafka.
+
+keiro draws a sharp line between two kinds of "event":
+
+- A **private domain event** is kiroku's `RecordedEvent` — an internal fact of one event stream
+  inside one service. It is shaped for *that* service's model and never leaves it.
+- An **integration event** is `Keiro.Integration.Event.IntegrationEvent` — a public contract,
+  versioned independently of the private model, deliberately built to cross a context boundary.
+
+Keeping them separate means you can refactor a service's internal events freely without breaking
+the public contract other services depend on. The envelope is the contract.
+
+## The envelope
+
+The `IntegrationEvent` record carries identity, routing, the payload, and provenance:
+
+```haskell
+data IntegrationEvent = IntegrationEvent
+  { messageId            :: !Text                    -- producer-minted, time-ordered; the dedupe key
+  , source               :: !Text                    -- producing bounded context, e.g. "ordering"
+  , destination          :: !Text                    -- Kafka topic, e.g. "billing.orders.v1"
+  , key                  :: !(Maybe Text)            -- per-aggregate partition key
+  , eventType            :: !Text                    -- public event type, e.g. "OrderSubmitted"
+  , schemaVersion        :: !Int                     -- contract version
+  , contentType          :: !IntegrationContentType
+  , schemaReference      :: !(Maybe SchemaReference)
+  , sourceEventId        :: !(Maybe EventId)         -- the private event that produced this
+  , sourceGlobalPosition :: !(Maybe GlobalPosition)  -- $all position of that private event
+  , payloadBytes         :: !ByteString              -- the wire body
+  , occurredAt           :: !UTCTime
+  , causationId          :: !(Maybe EventId)
+  , correlationId        :: !(Maybe EventId)
+  , traceContext         :: !(Maybe TraceContext)
+  , attributes           :: !(Maybe Value)
+  }
+```
+
+See the [Integration event reference](/docs/keiro/reference/integration-event) for every field.
+
+### The payload is bytes, on purpose
+
+`payloadBytes` is a `ByteString`, not a typed value. JSON is the v1 encoding (and there are
+`encodeJsonIntegrationEvent` / `decodeJsonIntegrationEvent` helpers for it), but the envelope
+itself does not *commit* to JSON. A future schema-registry integration (Avro, Protobuf, JSON
+Schema) can populate `schemaReference` and ship binary bytes without a table or API migration —
+the envelope already speaks bytes.
+
+## Identity: `messageId` is the dedupe key
+
+<Callout type="info">
+**`messageId` is the canonical dedupe key.** It is a producer-minted, time-ordered id (a
+TypeID/UUIDv7) written into the outbox row, so it is **stable across publish retries**. The Kafka
+topic/partition/offset are **delivery metadata only** — they change on a rebalance or a
+republish and are *not* the dedupe key.
+</Callout>
+
+This identity rule is the foundation of the whole integration story. Because a broker only
+promises **at-least-once delivery**, the same message can arrive more than once; the consuming
+[inbox](/docs/keiro/explanation/the-inbox-pattern) deduplicates on `(source, messageId)` so the
+*effect* happens once. The `sourceEventId` / `sourceGlobalPosition` fields identify the private
+event that produced the integration event — useful when a producer reissues the same logical fact
+under a new `messageId` (e.g. a schema-upgrade republish) and the consumer wants those collapsed;
+that is the `PreferSourceEventIdentity` dedupe policy.
+
+## Routing and tracing
+
+`source` names the producing context; `destination` is the Kafka topic (conventionally
+version-suffixed, `billing.orders.v1`); `key` is the per-aggregate partition key, so a consumer
+sees events for one aggregate in producer order. `traceContext` carries W3C `traceparent` /
+`tracestate` so a trace started in the producing request continues in the consumer — these survive
+publish and consume as Kafka headers (see [Kafka
+mapping](/docs/keiro/walkthrough/integration/03-kafka-mapping)).
+
+## Trade-offs
+
+Treating the public contract as a separate, byte-oriented envelope costs you a mapping step (a
+private event must be *mapped* to an integration event by a producer) and a second representation
+to version. The payoff is decoupling: the two services share nothing but the envelope's shape and
+the topic name, and either can evolve its internals without coordinating a deploy. The remaining
+two pages explain how to deliver these envelopes reliably — the [inbox
+pattern](/docs/keiro/explanation/the-inbox-pattern) for idempotent receive and the [outbox
+pattern](/docs/keiro/explanation/the-outbox-pattern) for durable publish.
+
+<Cards>
+  <Card title="The inbox pattern" href="/docs/keiro/explanation/the-inbox-pattern" />
+  <Card title="The outbox pattern" href="/docs/keiro/explanation/the-outbox-pattern" />
+  <Card title="Integration event reference" href="/docs/keiro/reference/integration-event" />
+</Cards>
