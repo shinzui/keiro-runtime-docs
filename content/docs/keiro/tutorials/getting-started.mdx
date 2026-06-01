@@ -1,0 +1,203 @@
+---
+title: "Get started with keiro"
+description: "Open a store, define an event stream, run a command, and read the events back."
+---
+
+By the end of this tutorial you will have run a command through keiro's **Hydrate → Decide →
+Append** cycle: you will apply the schema, open a kiroku store, define a minimal `EventStream`,
+call `runCommand`, inspect the result, and read the resulting events back out of the stream. Every
+snippet uses keiro's real API as shipped at `0.1.0.0`.
+
+<Callout type="info">
+  This is a tutorial — a guided lesson. Follow every step in order. You do not need prior
+  experience with keiro beyond knowing that an *event* is an immutable record of something that
+  happened, and a *command* is a request to change a stream. By the end you will have appended and
+  read events through the command cycle.
+</Callout>
+
+## What you will build
+
+A one-stream order aggregate. You send it a command; `runCommand` hydrates the stream into state,
+runs the keiki transducer to decide which events the command produces, and appends those events to
+kiroku under optimistic concurrency. Then you read the stream back to see what was recorded.
+
+## Before you begin
+
+- **PostgreSQL 17+** running and reachable.
+- **GHC 9.12** (keiro is built and tested there).
+- The keiro packages available to your project: `keiro`, `keiro-core`, and `keiro-migrations`.
+- Optional but recommended: a clone of the keiro repository, so you can run the `just
+  jitsurei-fulfillment` payoff at the end against a real, complete example.
+
+keiro reads and writes every event through kiroku, and the store **never** runs DDL when you open
+it — so you apply the schema first, then point keiro at the migrated database.
+
+## Steps
+
+<Steps>
+<Step>
+
+### Apply the schema
+
+keiro's schema is installed by the `keiro-migrate` executable (package `keiro-migrations`), which
+runs embedded `codd` migrations and is driven by `CODD_*` environment variables. The invocation
+the jitsurei example uses:
+
+```bash
+KEIRO_MIGRATE_NO_CHECK=1 \
+  CODD_CONNECTION="host=$PGHOST dbname=jitsurei user=$PGUSER" \
+  CODD_MIGRATION_DIRS=unused-for-embedded-migrations \
+  CODD_EXPECTED_SCHEMA_DIR=.dev/codd-expected-schema \
+  CODD_SCHEMAS=kiroku \
+  cabal run keiro-migrate
+```
+
+`KEIRO_MIGRATE_NO_CHECK=1` skips the schema-equality verification; omit it to verify the applied
+schema against the expected-schema directory. The migrations install the `kiroku` schema (the
+event store) — your `public` schema stays free for your own tables.
+
+</Step>
+<Step>
+
+### Open a store
+
+`Store.withStore` acquires a connection pool and tears it down when the body returns. Build
+settings with `Store.defaultConnectionSettings` from a connection string, and run effectful
+programs with `Store.runStoreIO`, which yields `Either StoreError a` — a `Left` for store-level
+failures:
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedLabels  #-}
+import Keiro                                   -- runCommand, defaultRunCommandOptions, EventStream(..), Codec(..), Stream
+import qualified Keiro.Stream as Stream
+import Keiro.EventStream (SnapshotPolicy (Never))
+import qualified Kiroku.Store as Store
+import Kiroku.Store.Types (StreamName (..), StreamVersion (..), RecordedEvent (..))
+import Control.Lens ((^.))
+
+main :: IO ()
+main =
+  Store.withStore (Store.defaultConnectionSettings "host=localhost dbname=keiro") $ \store -> do
+    -- the store is open here; everything below runs against `store`
+    pure ()
+```
+
+</Step>
+<Step>
+
+### Define a minimal `EventStream`
+
+An `EventStream` marries a keiki transducer to a `Codec`, an initial state and registers, a name
+resolver, and a snapshot policy. For a first stream, set `resolveStreamName = Stream.streamName`
+(the stream's own name is its kiroku `StreamName`), `snapshotPolicy = Never`, and `stateCodec =
+Nothing`; pair it with a tiny `Codec` whose `schemaVersion = 1` and `upcasters = []`:
+
+```haskell
+-- the EventStream + Codec the command runs against (sketch; see jitsurei/src/Jitsurei/OrderStream.hs)
+orderEventStream :: EventStream phi rs OrderState OrderCommand OrderEvent
+orderEventStream = EventStream
+  { transducer        = orderTransducer        -- a keiki SymTransducer phi rs s ci co
+  , initialState      = NotStarted
+  , initialRegisters  = RNil
+  , eventCodec        = orderCodec
+  , resolveStreamName = Stream.streamName       -- the stream's own name is its kiroku StreamName
+  , snapshotPolicy    = Never
+  , stateCodec        = Nothing
+  }
+
+orderStream :: Text -> Stream (EventStream phi rs OrderState OrderCommand OrderEvent)
+orderStream = Stream.stream
+```
+
+The real, complete definition — with the actual order state machine and a codec that includes an
+upcaster chain — lives in `jitsurei/src/Jitsurei/OrderStream.hs`; copy from there when you build
+your own.
+
+</Step>
+<Step>
+
+### Run a command
+
+Call `runCommand defaultRunCommandOptions eventStream target command` inside `Store.runStoreIO`.
+This is the Hydrate → Decide → Append cycle: it reads the target stream into state, runs the
+transducer to turn the command into events, and appends them under optimistic concurrency.
+
+```haskell
+outcome <- Store.runStoreIO store $ do
+  result   <- runCommand defaultRunCommandOptions orderEventStream (orderStream "orders-1") placeOrder
+  recorded <- Store.readStreamForward (StreamName "orders-1") (StreamVersion 0) 100
+  pure (result, recorded)
+```
+
+`defaultRunCommandOptions` retries an optimistic-concurrency conflict up to `retryLimit` (default
+3), reads hydration in `pageSize`-event batches (default 256), and attaches no tracer or extra
+metadata.
+
+</Step>
+<Step>
+
+### Inspect the result
+
+There are two layers of `Either` to peel. The **outer** `Either StoreError` comes from
+`runStoreIO` (a store-level failure). The **inner** `Either CommandError (CommandResult …)` comes
+from `runCommand`:
+
+```haskell
+case outcome of
+  Left storeErr               -> putStrLn ("store error: " <> show storeErr)
+  Right (Left cmdErr, _)      -> putStrLn ("command rejected: " <> show cmdErr)
+  Right (Right res, recorded) -> do
+    putStrLn ("appended " <> show (res ^. #eventsAppended) <> " event(s)")
+    putStrLn ("stream version now " <> show (res ^. #streamVersion))
+    mapM_ (\e -> putStrLn (show (e ^. #eventType))) recorded
+```
+
+A `CommandResult` carries `target`, `streamVersion`, `globalPosition`, and `eventsAppended`. A
+`CommandError` is one of: `HydrationDecodeFailed`, `HydrationReplayFailed`, `CommandRejected` (the
+transducer rejected the command in the hydrated state), `EncodeFailed`, `StoreFailed`, or
+`RetryExhausted` (optimistic-concurrency retries ran out).
+
+</Step>
+<Step>
+
+### Read the stream back
+
+`Store.readStreamForward (StreamName name) (StreamVersion 0) 100` reads forward from the start.
+The cursor is **exclusive** — `StreamVersion 0` means "from the very beginning" — and the last
+argument is the page size. (In the snippet above this read already ran inside the same
+`runStoreIO` block, so `recorded` holds the events you just appended.)
+
+```haskell
+recorded <- Store.readStreamForward (StreamName "orders-1") (StreamVersion 0) 100
+mapM_ (\e -> putStrLn (show (e ^. #eventType))) recorded
+```
+
+You should see the event(s) your command produced, in append order.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Two things to internalise: the read cursor is **exclusive** (`StreamVersion 0` reads from the
+  start), and `runCommand` retries on optimistic-concurrency conflict up to `retryLimit` (default
+  3), surfacing `RetryExhausted` when exhausted rather than blocking on a lock.
+</Callout>
+
+## What you built
+
+You applied the schema, opened a store, defined an `EventStream`, ran a command through the
+Hydrate → Decide → Append cycle, inspected the `Either StoreError (Either CommandError
+(CommandResult …))`, and read the events back. To see all of this working end-to-end against a
+real aggregate, run the fulfillment demo in the keiro repository:
+
+```bash
+just jitsurei-fulfillment
+```
+
+From here:
+
+- See where this example fits in the bigger picture in
+  [The jitsurei example](/docs/keiro/explanation/the-jitsurei-example).
+- Understand how the cycle composes the lower libraries in
+  [The keiro stack](/docs/keiro/explanation/the-keiro-stack).

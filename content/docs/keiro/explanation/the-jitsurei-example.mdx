@@ -1,0 +1,113 @@
+---
+title: "The jitsurei example"
+description: "The worked-example package that threads through every keiro doc — its domains, module map, and how to run it."
+---
+
+Every page in this documentation set points at the same running example so the concepts read as
+one coherent story rather than a pile of disconnected snippets. That example is **jitsurei**.
+
+## What jitsurei is
+
+**jitsurei** (実例, "worked example") is the runnable example package shipped inside the keiro
+repository at `jitsurei/`. It builds one executable, `jitsurei-demo`, that runs small end-to-end
+demos against a local Postgres. It covers two domains:
+
+- **Order fulfillment** — an order aggregate driven through the command cycle, with an inline
+  read-model projection, a snapshot-backed variant of the order stream, and a fulfillment process
+  manager.
+- **Incident escalation** — an escalation process manager backed by durable timers, plus
+  content-based routing for paging and agent-qualification.
+
+Between them these two domains exercise every keiro subsystem this documentation set covers, which
+is why each conceptual page links into a specific jitsurei module rather than inventing a toy of
+its own.
+
+## The module map
+
+This is the **canonical** feature → module → `just` target map. Every keiro doc page links into
+the *same* `jitsurei/src/Jitsurei/*.hs` modules and `just jitsurei-*` targets named here:
+
+```text
+Order aggregate + command cycle + codec upcasting
+  -> jitsurei/src/Jitsurei/Domain.hs, jitsurei/src/Jitsurei/OrderStream.hs
+  -> just jitsurei-fulfillment        (command-cycle anchor; the getting-started "see it working" payoff)
+
+Inline projection + read model + consistency
+  -> jitsurei/src/Jitsurei/ReadModels.hs
+  -> (driven by jitsurei-fulfillment / jitsurei-all)   (read-side anchor)
+
+Snapshots
+  -> jitsurei/src/Jitsurei/Snapshots.hs (snapshotOrderEventStream)
+  -> just jitsurei-snapshots
+
+Process manager + dispatch; durable timers
+  -> jitsurei/src/Jitsurei/FulfillmentProcess.hs, jitsurei/src/Jitsurei/EscalationProcess.hs;
+     timers in jitsurei/src/Jitsurei/Timers.hs
+  -> just jitsurei-escalation          (workflow anchor)
+
+Content-based / effectful fan-out routers
+  -> jitsurei/src/Jitsurei/Paging.hs, jitsurei/src/Jitsurei/AgentQualRouter.hs,
+     with jitsurei/src/Jitsurei/Incident.hs, jitsurei/src/Jitsurei/OncallRoster.hs
+  -> just jitsurei-paging, just jitsurei-agent-qual
+
+Integration events (inbox / outbox)
+  -> keiro/src/Keiro/Inbox.hs, keiro/src/Keiro/Outbox.hs, and the keiro repo's
+     docs/guides/integration-events-with-kafka.md
+  -> NO jitsurei target (jitsurei ships no Kafka demo; the inbox/outbox pages document the API + the keiro guide)
+```
+
+A row at a time:
+
+- **Order aggregate + command cycle + codec upcasting.** `Jitsurei/Domain.hs` defines the order's
+  state, command, and event types and its transducer; `Jitsurei/OrderStream.hs` marries it to a
+  `Codec` (including an upcaster chain) in an `EventStream`. `just jitsurei-fulfillment` runs a
+  command through it — this is the payoff at the end of the getting-started tutorial.
+- **Inline projection + read model + consistency.** `Jitsurei/ReadModels.hs` defines the
+  `jitsurei_order_summary` read model updated transactionally inside the command cycle. It runs as
+  part of the fulfillment demo.
+- **Snapshots.** `Jitsurei/Snapshots.hs` exposes `snapshotOrderEventStream`, the order stream with
+  a snapshot policy; `just jitsurei-snapshots` exercises snapshot-backed hydration.
+- **Process manager + dispatch; durable timers.** `Jitsurei/FulfillmentProcess.hs` and
+  `Jitsurei/EscalationProcess.hs` are process managers that react to events by dispatching
+  commands; `Jitsurei/Timers.hs` schedules durable timers. `just jitsurei-escalation` runs the
+  escalation workflow.
+- **Content-based / effectful fan-out routers.** `Jitsurei/Paging.hs` and
+  `Jitsurei/AgentQualRouter.hs` (with `Jitsurei/Incident.hs` and `Jitsurei/OncallRoster.hs`) route
+  an event to one or more targets resolved from data; `just jitsurei-paging` and
+  `just jitsurei-agent-qual` run them.
+- **Integration events (inbox / outbox).** jitsurei ships **no** Kafka demo, so the inbox/outbox
+  documentation works from the keiro modules `Keiro.Inbox` / `Keiro.Outbox` and the keiro repo's
+  `docs/guides/integration-events-with-kafka.md` guide rather than a jitsurei target.
+
+## How to run it
+
+The demos talk to a local Postgres started from the keiro repo's `process-compose.yaml`. From the
+keiro repository root:
+
+1. **Start Postgres.** `just jitsurei` brings the database up via process-compose before running
+   the demos; if you are running sub-targets directly, start the database first.
+2. **Point at the database.** The demos read the `PG_CONNECTION_STRING` environment variable; it
+   defaults to `host=db dbname=jitsurei` and the `just` targets set
+   `host=$PGHOST dbname=jitsurei user=$PGUSER`.
+3. **Apply the schema.** `just jitsurei-migrate` runs the `keiro-migrate` migrations and creates
+   the `jitsurei_order_summary` read-model table. Every demo target depends on it, so it runs
+   automatically.
+4. **Run a demo.** `just jitsurei` (= `just jitsurei-all`) runs every demo, or run a single one:
+
+```bash
+just jitsurei                 # = jitsurei-all
+just jitsurei-all             # run every demo (fulfillment, snapshots, paging, escalation, agent-qual)
+just jitsurei-fulfillment     # order-fulfillment command cycle  (the getting-started anchor)
+just jitsurei-snapshots       # snapshot-backed order stream
+just jitsurei-paging          # content-based / effectful router fan-out (paging)
+just jitsurei-escalation      # incident-escalation process manager + durable timers
+just jitsurei-agent-qual      # agent-qualification routing
+just jitsurei-migrate         # apply migrations + create jitsurei_order_summary (a dependency of the above)
+```
+
+<Callout type="info">
+  These `just jitsurei-*` targets are the canonical ones every page in this set references.
+  jitsurei ships **no** Kafka demo: the [inbox](/docs/keiro/reference) and outbox documentation
+  works from the `Keiro.Inbox` / `Keiro.Outbox` API and the keiro repo's
+  `docs/guides/integration-events-with-kafka.md` guide instead of a runnable jitsurei target.
+</Callout>

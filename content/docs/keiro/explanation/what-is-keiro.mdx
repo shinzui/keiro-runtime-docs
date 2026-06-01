@@ -1,0 +1,103 @@
+---
+title: "What is keiro?"
+description: "keiro is a library — not a server — that unifies aggregates, process managers, and sagas under one formalism."
+---
+
+If you have built event-sourced systems before, you have probably written the same machinery
+three times: once for **aggregates** (decide how a command changes a single entity), once for
+**process managers** (react to events by issuing new commands), and once for **sagas**
+(coordinate a long-running, multi-step transaction with compensation). Each got its own types,
+its own persistence, and its own testing story. keiro's wager is that all three are the *same*
+thing wearing different clothes — and that writing them once, against one formalism, persisted to
+one substrate, is both simpler and more powerful.
+
+## The single formalism (the thesis)
+
+Every decision-making component in keiro is a **symbolic-register finite-state transducer**,
+keiki's `SymTransducer phi rs s ci co`. Read it as a state machine with typed memory:
+
+- `s` — the **control state** (the named states the machine moves between, e.g. `NotStarted`,
+  `Placed`, `Fulfilled`);
+- `rs` — the shape of a typed **register file** `RegFile rs`, the machine's working memory
+  (counters, accumulated ids, deadlines) carried alongside the control state;
+- `phi` — the **predicate algebra** over inputs: the carrier of the boolean conditions on a
+  transition's guard (`BoolAlg phi (RegFile rs, ci)` is what `runCommand` needs to evaluate a
+  guard against the current registers and the incoming command);
+- `ci` — the **command input** the machine consumes;
+- `co` — the **event output** the machine emits.
+
+An aggregate is such a transducer whose input is a command and whose output is domain events.
+A process manager is such a transducer whose input is an event (arriving from a subscription) and
+whose output is a command to dispatch elsewhere. A saga is the same again, with registers holding
+the in-flight step state. They differ only in what `ci` and `co` are bound to — not in their
+*kind*. keiro persists that one object to kiroku (your Postgres event store), so there is one
+audit trail, one replay story, and one mental model across all of them.
+
+In keiro a transducer is married to a codec, an initial state, a name resolver, and a snapshot
+policy by the `EventStream` record — this is the unit you hand to `runCommand`:
+
+```haskell
+data EventStream phi rs s ci co = EventStream
+  { transducer        :: !(SymTransducer phi rs s ci co)
+  , initialState      :: !s
+  , initialRegisters  :: !(RegFile rs)
+  , eventCodec        :: !(Codec co)
+  , resolveStreamName :: !(Stream (EventStream phi rs s ci co) -> StreamName)
+  , snapshotPolicy    :: !(SnapshotPolicy (s, RegFile rs))
+  , stateCodec        :: !(Maybe (StateCodec (s, RegFile rs)))
+  }
+```
+
+The `transducer <$> eventCodec` marriage is the whole idea in one line: the *pure* decision logic
+(`transducer`) and the *serialization* of its outputs (`eventCodec`) travel together, so the same
+definition decides and persists.
+
+## A library, not a server
+
+You `import Keiro`. There is no daemon to deploy, no separate cluster to operate, no control
+plane to scale. keiro runs **inside your process**, against **your** Postgres: it opens a kiroku
+store, runs the command cycle in-process, and (for the read side and workflows) drives shibuya
+subscriptions as worker threads in your application. The umbrella module `Keiro` re-exports the
+everyday command-side surface — the command runner (`Keiro.Command`), event codecs
+(`Keiro.Codec`), the `EventStream` definition (`Keiro.EventStream`), the content-based router
+(`Keiro.Router`), snapshot helpers (`Keiro.Snapshot`), and typed `Stream` handles
+(`Keiro.Stream`). Specialized subsystems are imported directly: `Keiro.ReadModel`,
+`Keiro.Projection`, `Keiro.ProcessManager`, `Keiro.Inbox`, `Keiro.Outbox`, `Keiro.Timer`,
+`Keiro.Telemetry`. `Keiro.version :: Text` is `"0.1.0.0"`.
+
+## When to choose keiro — and when not
+
+keiro is a strong fit when **several** of these hold:
+
+- Your application is event-sourced (or will be), and your workflow logic needs to consume and
+  emit domain events as first-class citizens rather than as external integrations.
+- Your team is Haskell-fluent and values type-checked workflow state.
+- Postgres is already in production and standing up a separate workflow cluster is unattractive.
+- Auditability requires workflow execution and domain events on **one** timeline, in one query.
+- Your workflows are state machines with named states, not free-form DAGs of opaque steps.
+- You prefer "a library you import" over "a platform you operate".
+
+Be honest about the trade-offs — keiro deliberately gives things up:
+
+- **It is pre-1.0.** keiro is `0.1.0.0`; the API surface may still move. Pin a version.
+- **It is Haskell-only.** There are no Java/Python/JS/Go/.NET SDKs and there will not be. A
+  polyglot service estate needs a language-agnostic workflow surface (Temporal, Restate, Inngest).
+- **It is Postgres-only and single-region.** If your correctness story requires synchronous global
+  ordering across regions, you need something built for that (Temporal Cloud, Restate).
+- **The v2 durable-execution engine is not shipped.** Today keiro ships event-sourced process
+  managers and durable timers — enough for sagas, choreography, and multi-stream coordination —
+  but not "write an imperative function and have it survive a crash mid-line". If imperative
+  durable functions are a launch blocker, look at DBOS or Temporal.
+- **There is no graphical workflow authoring.** Transducer definitions are Haskell source. For
+  BPM use cases where a business analyst owns the workflow in a visual designer, that is
+  disqualifying.
+- **The formalism has a learning curve.** Adopting keiro means learning `SymTransducer` — the
+  typed register file, the predicate carrier, the composition combinators — a richer API than a
+  4-field `Decider`. Teams writing only simple aggregates pay some of that cost without using its
+  workflow leverage.
+
+<Callout type="info">
+  Next: read [The keiro stack](/docs/keiro/explanation/the-keiro-stack) for how keiro composes
+  kiroku, keiki, and shibuya, then try it end-to-end in
+  [Get started with keiro](/docs/keiro/tutorials/getting-started).
+</Callout>

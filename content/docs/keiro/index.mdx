@@ -1,23 +1,53 @@
 ---
 title: keiro
-description: An event-sourcing framework and workflow engine — the top of the keiro runtime stack.
+description: "An event-sourcing framework and workflow engine — the top of the keiro runtime stack."
 ---
 
-keiro (経路, "route/path") is an event-sourcing framework and workflow engine. It is
-the top of the keiro runtime stack and depends on the other three libraries —
-kiroku for persistence, keiki for its pure semantic core, and shibuya for queue
-processing.
+**keiro** (経路, "route / path") is a Haskell **library you import** — not a server you operate —
+that composes three lower libraries into one event-sourcing and workflow framework:
+**kiroku** (記録, the append-only PostgreSQL event store), **keiki** (the pure symbolic-register
+finite-state transducer that is the decision core), and **shibuya** (the supervised
+subscription/worker substrate). Its thesis: aggregates, process managers, sagas, and the planned
+durable workflows are all the *same* mathematical object — keiki's `SymTransducer phi rs s ci co`
+— persisted to *one* substrate, your Postgres.
 
-<Callout type="info">
-  Documentation for keiro is in progress. This landing and its section skeletons exist so the
-  structure is ready; the written content arrives in a later plan.
+<Callout type="warn">
+  keiro is in **active development** (`0.1.0.0`). APIs may change; pin a version. The v2
+  durable-execution workflow engine is a roadmap item and is **not** documented here as if it
+  shipped.
 </Callout>
 
+## How it fits together
+
+A command runs through keiro's **Hydrate → Decide → Append** cycle: `runCommand` reads the
+target stream into state (Hydrate), runs the keiki transducer to turn the command into events
+(Decide), and appends them to kiroku under optimistic concurrency (Append), retrying on conflict.
+
+```mermaid
+flowchart LR
+  Cmd["Your command (ci)"]
+  RC["runCommand · Keiro.Command"]
+  Keiki["keiki transducer · Decide"]
+  Kiroku[("kiroku · PostgreSQL event store")]
+  Shibuya["shibuya · subscriptions / workers"]
+  Read["Your read models / process managers"]
+
+  Cmd --> RC
+  RC -->|"Hydrate: readStreamForward"| Kiroku
+  RC -->|"Decide"| Keiki
+  Keiki -->|"events (co)"| RC
+  RC -->|"Append: appendToStream (ExpectedVersion)"| Kiroku
+  Kiroku -->|"subscribe"| Shibuya
+  Shibuya --> Read
+```
+
+## Where to go next
+
 <Cards>
-  <Card title="Tutorials" href="/docs/keiro/tutorials" />
-  <Card title="How-To Guides" href="/docs/keiro/how-to" />
-  <Card title="Reference" href="/docs/keiro/reference" />
-  <Card title="Explanation" href="/docs/keiro/explanation" />
-  <Card title="Cookbook" href="/docs/keiro/cookbook" />
-  <Card title="Code Walkthrough" href="/docs/keiro/walkthrough" />
+  <Card title="Tutorials" href="/docs/keiro/tutorials" description="Run your first command through the Hydrate → Decide → Append cycle." />
+  <Card title="How-To Guides" href="/docs/keiro/how-to" description="Task-oriented recipes for the command cycle, read side, workflows, and integration events." />
+  <Card title="Reference" href="/docs/keiro/reference" description="Exact Haskell signatures and PostgreSQL schema for each subsystem." />
+  <Card title="Explanation" href="/docs/keiro/explanation" description="What keiro is, the stack it composes, and the jitsurei worked example." />
+  <Card title="Cookbook" href="/docs/keiro/cookbook" description="Short, copy-paste recipes for common problems." />
+  <Card title="Code Walkthrough" href="/docs/keiro/walkthrough" description="Ordered tours through keiro's real source." />
 </Cards>
