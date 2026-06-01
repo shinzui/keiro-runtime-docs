@@ -27,6 +27,24 @@ keiro 0.1.0.0
 
 - _(none yet — `3f5dc9c` is the baseline the keiro doc set was first authored against.)_
 
+### Known upstream drift since this pin
+
+The docs intentionally describe keiro **as released at `3f5dc9c` (0.1.0.0)**. keiro `master` has since
+advanced; the following changes are **not** reflected in the docs and should be folded in **only when
+they ship in a tagged release** (at which point bump the pin):
+
+- **OpenTelemetry 1.40 upgrade (keiro `master`, ~`c519f2a`).** `Keiro.Telemetry` now links
+  `hs-opentelemetry-semantic-conventions 1.40.0.0` and **imports** the `messaging.*` / `db.*`
+  `AttributeKey`s from `OpenTelemetry.SemanticConventions` (re-exporting them), instead of **vendoring**
+  them locally as it did at `0.1.0.0`. Wire-level attribute names are unchanged, so
+  `reference/telemetry.mdx`'s **attribute table** stays correct; only its **"Vendored attribute keys"**
+  section (the 0.1.0.0 vendoring rationale) will need rewording to "re-exported from
+  semantic-conventions 1.40" when this releases. The bespoke `keiro_*` keys remain locally defined
+  either way.
+- **Docs-driven comment fix (keiro `94c85e2`).** The `Keiro.Command` Haddock now names the middle
+  phase **"Transduce"** (was "Decide"), matching this doc set's Hydrate → Transduce → Append
+  terminology. Comment-only; no pin bump needed.
+
 ## Update procedure
 
 1. List what changed since the pointer:
