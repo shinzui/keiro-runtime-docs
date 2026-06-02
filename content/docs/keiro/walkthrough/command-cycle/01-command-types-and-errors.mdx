@@ -1,0 +1,189 @@
+---
+title: "01 — Command types and errors"
+description: "The vocabulary every later chapter uses: CommandResult, the six CommandError constructors, RunCommandOptions and its defaults, and the internal threading types Hydrated, Replay, and CommandPlan."
+---
+
+This chapter reads the result, error, options, and internal threading types in
+`keiro/src/Keiro/Command.hs`. They are the vocabulary every later chapter in this tour leans on, so we
+read them first — before any runner. Read
+[00 — Start here](/docs/keiro/walkthrough/command-cycle/00-start-here) for the overview picture.
+
+The public surface of `Keiro.Command` is small. The module exports exactly the result and error types,
+the options record and its defaults, and the three runners:
+
+```haskell
+-- keiro/src/Keiro/Command.hs
+module Keiro.Command
+  ( -- * Results and errors
+    CommandResult (..)
+  , CommandError (..)
+
+    -- * Options
+  , RunCommandOptions (..)
+  , defaultRunCommandOptions
+
+    -- * Running commands
+  , runCommand
+  , runCommandWithSql
+  , runCommandWithSqlEvents
+  )
+where
+```
+
+Everything else this tour quotes — `hydrate`, `prepareCommandPlan`, `appendOnce`, `retryOrFail`, and
+the types `Hydrated`, `Replay`, `CommandPlan` — is module-internal. We read those internals to explain
+the runners; they never appear in a caller's type.
+
+## `CommandResult`: the outcome of a handled command
+
+```haskell
+-- The outcome of a successfully handled command.
+data CommandResult target = CommandResult
+  { target :: !(Stream target)
+  , streamVersion :: !StreamVersion
+  , globalPosition :: !(Maybe GlobalPosition)
+  , eventsAppended :: !Int
+  }
+  deriving stock (Generic, Eq, Show)
+```
+
+<TypeTable
+  type={{
+    target: { type: "Stream target", description: "The typed stream handle the command was run against." },
+    streamVersion: { type: "StreamVersion", description: "The stream version after the append (the hydrated version for a no-op)." },
+    globalPosition: { type: "Maybe GlobalPosition", description: "The global log position the store assigned, when there is one." },
+    eventsAppended: { type: "Int", description: "How many events were appended; 0 marks a no-op command." },
+  }}
+/>
+
+Two fields repay a closer look. `eventsAppended = 0` is the signal for a **no-op** — a command the
+transducer accepted but which emitted no events, so nothing was written. And `globalPosition` is a
+`Maybe` precisely because a no-op carries the *hydrated* position back to the caller, which is `Nothing`
+on an empty stream (there is no committed event to point at). An append, by contrast, always sets
+`globalPosition` to `Just` the position of its last event.
+
+## `CommandError`: why a command did not complete
+
+```haskell
+-- Why a command did not complete.
+data CommandError
+  = HydrationDecodeFailed !CodecError    -- a stored event could not be decoded while rehydrating
+  | HydrationReplayFailed !StreamVersion -- replay stalled: the machine rejected a committed event
+  | CommandRejected                      -- the transducer rejected the command in the hydrated state
+  | EncodeFailed !CodecError             -- an emitted event could not be encoded for append
+  | StoreFailed !StoreError              -- the store rejected the append (non-retryable)
+  | RetryExhausted !Int !StoreError      -- optimistic-concurrency retries ran out (limit, last error)
+  deriving stock (Generic, Eq, Show)
+```
+
+The six constructors line up one-to-one with the three phases of the cycle:
+
+- **Hydrate** can fail two ways. `HydrationDecodeFailed` wraps a [`CodecError`](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary)
+  when a *stored* event will not decode during replay. `HydrationReplayFailed` carries the
+  `StreamVersion` at which replay stalled — the transducer rejected an event that was already committed,
+  which means the log and the machine have drifted apart (see
+  [02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration)).
+- **Transduce** fails exactly one way: `CommandRejected`, when the transducer refuses the command in
+  the hydrated state.
+- **Append** fails three ways. `EncodeFailed` wraps a `CodecError` from encoding an *emitted* event;
+  `StoreFailed` carries a non-retryable `StoreError`; and `RetryExhausted` carries the configured retry
+  limit and the last `StoreError` after optimistic-concurrency retries run out.
+
+<Callout type="warn">
+There are **three** caller-visible outcomes, not two, and they are easy to conflate:
+
+- a **rejection** is `Left CommandRejected`;
+- a **no-op** is a *successful* `Right CommandResult` with `eventsAppended = 0` — not an error;
+- a **store failure** is `Left (StoreFailed …)` or `Left (RetryExhausted …)`.
+
+A no-op is not a `Left`. Code that treats "no events appended" as a failure will misread accepted
+commands that simply had nothing to do.
+</Callout>
+
+## `RunCommandOptions` and `defaultRunCommandOptions`
+
+```haskell
+data RunCommandOptions = RunCommandOptions
+  { retryLimit :: !Int            -- rehydrate-and-replay attempts after a conflict
+  , pageSize :: !Int32            -- read-batch size during hydration
+  , eventIds :: ![EventId]        -- caller-supplied ids assigned to emitted events, in order
+  , beforeAppend :: !(IO ())      -- hook run immediately before each append attempt (test seam)
+  , tracer :: !(Maybe Tracer)     -- optional OpenTelemetry tracer; Nothing emits no spans
+  , metadata :: !(Maybe Value)    -- optional JSON merged into every event's metadata
+  }
+  deriving stock (Generic)
+
+-- 3 retries, 256-event read pages, no caller ids, no-op hook, no tracer, no metadata.
+defaultRunCommandOptions :: RunCommandOptions
+defaultRunCommandOptions = RunCommandOptions
+  { retryLimit = 3
+  , pageSize = 256
+  , eventIds = []
+  , beforeAppend = pure ()
+  , tracer = Nothing
+  , metadata = Nothing
+  }
+```
+
+<TypeTable
+  type={{
+    retryLimit: { type: "Int", default: "3", description: "Rehydrate-and-replay attempts after an optimistic-concurrency conflict." },
+    pageSize: { type: "Int32", default: "256", description: "Read-batch size when streaming the stream during hydration." },
+    eventIds: { type: "[EventId]", default: "[]", description: "Caller-supplied ids assigned positionally to the emitted events." },
+    beforeAppend: { type: "IO ()", default: "pure ()", description: "Hook run immediately before each append attempt." },
+    tracer: { type: "Maybe Tracer", default: "Nothing", description: "Optional OpenTelemetry tracer; Nothing emits no spans." },
+    metadata: { type: "Maybe Value", default: "Nothing", description: "Optional JSON merged into every event's metadata." },
+  }}
+/>
+
+Two fields earn a sentence. `beforeAppend` is a **test seam**: it runs immediately before every append
+attempt, so a test can inject a concurrent write there to exercise the conflict-retry loop. `metadata`
+is merged into every event's metadata for this invocation — but the codec's `schemaVersion` key always
+wins over any clashing key the caller supplies, so the version stamped on disk stays authoritative (we
+read that merge in [05 — The codec on the boundary](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary)).
+The full public surface is catalogued in the [Command reference](/docs/keiro/reference/command).
+
+## The internal threading types
+
+Three internal types carry `(state, registers, version)` from hydrate, through planning, into append.
+They never escape the module, but reading them makes the runner bodies legible.
+
+```haskell
+data Hydrated rs s = Hydrated
+  { state :: !s
+  , registers :: !(RegFile rs)
+  , streamVersion :: !StreamVersion
+  , globalPosition :: !(Maybe GlobalPosition)
+  }
+```
+
+`Hydrated` is the result of replay: the recovered control `state`, the register file `registers`, and
+the stream's current `streamVersion`/`globalPosition`. It is what [hydration](/docs/keiro/walkthrough/command-cycle/02-hydration)
+produces and what `appendOnce` reads its expected version from.
+
+```haskell
+data Replay rs s co = Replay
+  { replayHydrated :: !(Hydrated rs s)
+  , replayState :: !(Keiki.InFlight s co)   -- keiki's settled-or-in-flight replay state
+  , lastObservedStreamVersion :: !StreamVersion
+  }
+```
+
+`Replay` is the accumulator the hydration fold threads. Alongside the `Hydrated` it is building, it
+carries `replayState :: Keiki.InFlight s co` — keiki's settled-or-in-flight replay state — and the last
+version it observed. That `InFlight`/`Settled` distinction is the subtle invariant of hydration; we
+spend a paragraph on it in [02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration).
+
+```haskell
+data CommandPlan target rs s co
+  = CommandNoOp !(CommandResult target)              -- transducer emitted [] → append nothing
+  | CommandAppend !(Hydrated rs s) ![co] ![EventData] -- transducer emitted events → encode + append
+```
+
+`CommandPlan` is the decision the transduce-and-encode step hands to the append step. `CommandNoOp`
+already holds a finished `CommandResult` (the transducer emitted `[]`), so the runner returns it
+without touching the store. `CommandAppend` carries the `Hydrated` state, the emitted domain events
+(`[co]`), and their `EventData` encodings, ready to append. We watch this plan get built in
+[03 — The command processor](/docs/keiro/walkthrough/command-cycle/03-the-command-processor).
+
+Next: [02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration).

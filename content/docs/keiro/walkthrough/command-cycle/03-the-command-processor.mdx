@@ -1,0 +1,224 @@
+---
+title: "03 — The command processor"
+description: "Reading runCommand: the span and attempt loop, the telemetry bookends, prepareCommandPlan and the Transduce-then-encode step, appendOnce and the inline snapshot, and the bounded conflict retry loop."
+---
+
+This chapter reads `runCommand` and its post-hydrate helpers in `keiro/src/Keiro/Command.hs` — the
+append-only runner. [Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration) now lives in its
+own chapter, so here we pick the command up *after* state is rebuilt: transduce it, encode the result,
+append, and maybe snapshot. Read
+[02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration) first.
+
+## `runCommand`: span, attempt loop, outcome
+
+```haskell
+-- keiro/src/Keiro/Command.hs
+runCommand options eventStream targetStream command =
+  withCommandSpan (options ^. #tracer) (resolvedStreamName eventStream targetStream) Nothing $ \mSpan -> do
+    result <- attempt (options ^. #retryLimit)
+    recordCommandOutcome mSpan (^. #eventsAppended) result
+    pure result
+  where
+    attempt remaining = do
+      hydrated <- hydrate options eventStream targetStream
+      either (pure . Left) (runPlan remaining) hydrated
+```
+
+The body opens with the telemetry bookends — worth naming explicitly rather than skimming past.
+`withCommandSpan` opens an *optional* OpenTelemetry span: a `Nothing` tracer (the default) means no
+span and zero overhead; a `Just` tracer opens an internal-kind span named after the resolved stream.
+After the work, `recordCommandOutcome` stamps the outcome onto that span:
+
+```haskell
+recordCommandOutcome Nothing _ _ = pure ()
+recordCommandOutcome (Just sp) eventsOf result = do
+  addAttribute sp (unkey db_system_name) ("postgresql" :: Text)
+  case result of
+    Right v  -> addAttribute sp (unkey keiro_events_appended) (Prelude.fromIntegral (eventsOf v) :: Int64)
+    Left err -> do
+      addAttribute sp (unkey error_type) (commandErrorClass err)
+      setStatus sp (Error (Text.pack (show err)))
+```
+
+It is a pure no-op without a span. With one, success stamps `db.system.name` and
+`keiro.events.appended`; failure stamps a low-cardinality `error.type` from `commandErrorClass` and
+sets the span status to `Error` carrying the rendered `CommandError`:
+
+```haskell
+commandErrorClass = \case
+  HydrationDecodeFailed{} -> "hydration_decode_failed"
+  HydrationReplayFailed{} -> "hydration_replay_failed"
+  CommandRejected -> "command_rejected"
+  EncodeFailed{} -> "encode_failed"
+  StoreFailed{} -> "store_failed"
+  RetryExhausted{} -> "retry_exhausted"
+```
+
+Telemetry is cross-cutting; the [operations tour](/docs/keiro/walkthrough/operations/00-start-here) and the
+[telemetry reference](/docs/keiro/reference/telemetry) own the full span story. Here it is enough to
+know every runner is wrapped in these two bookends. Between them, `attempt` runs:
+[Hydrate](/docs/keiro/walkthrough/command-cycle/02-hydration) first, and a hydration error
+short-circuits to `Left`; otherwise control passes to `runPlan`.
+
+## `runPlan` → `prepareCommandPlan`: Transduce, then encode
+
+```haskell
+    runPlan remaining current =
+      case prepareCommandPlan options eventStream targetStream current command of
+        Left err -> pure (Left err)
+        Right (CommandNoOp result) -> pure (Right result)
+        Right (CommandAppend current' events encoded) ->
+          appendOnce remaining current' events encoded
+```
+
+`prepareCommandPlan` runs the **Transduce** phase and the encode step, producing the `CommandPlan` from
+chapter 01:
+
+```haskell
+prepareCommandPlan options eventStream targetStream current command =
+  case evaluateCommand eventStream current command of
+    Left err -> Left err
+    Right events -> toPlan events
+  where
+    toPlan [] = Right (CommandNoOp (noOpResult targetStream current))
+    toPlan events =
+      CommandAppend current events
+        . assignEventIds (options ^. #eventIds)
+        <$> encodeEvents (eventStream ^. #eventCodec) (options ^. #metadata) events
+```
+
+The Transduce step is `evaluateCommand`, which steps the keiki transducer with the command:
+
+```haskell
+evaluateCommand eventStream current command =
+  case Keiki.step (eventStream ^. #transducer) (state current, registers current) command of
+    Nothing -> Left CommandRejected
+    Just (_, _, events) -> Right events
+```
+
+This is where the **no-op vs. rejected** boundary lives, and it is precise. A *rejection* is a
+`Left CommandRejected` out of `evaluateCommand` — the transducer refused the command. A *no-op* is the
+opposite: `evaluateCommand` *succeeds* with `Right []`, and `toPlan []` turns that empty list into a
+successful `Right (CommandNoOp …)`. Same empty-handed feeling, opposite control flow.
+
+When events *are* emitted, `toPlan events` encodes them and assigns ids:
+
+```haskell
+encodeEvents :: Codec co -> Maybe Value -> [co] -> Either CommandError [EventData]
+encodeEvents codec md =
+  Prelude.mapM (mapLeft EncodeFailed . encodeForAppendWithMetadata codec md)
+
+-- Caller ids are assigned POSITIONALLY (zip-style). [] is identity.
+assignEventIds :: [EventId] -> [EventData] -> [EventData]
+assignEventIds [] events = events
+assignEventIds _ [] = []
+assignEventIds (supplied : suppliedRest) (event : eventRest) =
+  (event & #eventId .~ Just supplied) : assignEventIds suppliedRest eventRest
+```
+
+`encodeEvents` maps each emitted event through `encodeForAppendWithMetadata`, lifting any `CodecError`
+to `EncodeFailed` (the encode side of [chapter 05](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary)).
+`assignEventIds` then assigns the caller's `eventIds` **positionally** — the first supplied id to the
+first event, and so on — with `[]` as the identity (no ids supplied, events untouched). That positional
+assignment is the basis of idempotent appends: a deterministic id on the first emitted event lets a
+re-run be rejected as a duplicate rather than re-applied (see
+[Make commands idempotent](/docs/keiro/how-to/make-commands-idempotent)).
+
+## `appendOnce`: optimistic append, then maybe a snapshot
+
+```haskell
+    appendOnce remaining current events encoded = do
+      liftIO (options ^. #beforeAppend)
+      appended <- tryError @StoreError $
+        appendToStream
+          ((eventStream ^. #resolveStreamName) targetStream)
+          (expectedVersion (current ^. #streamVersion))
+          encoded
+      case appended of
+        Right appendResult -> do
+          writeSnapshotIfNeeded eventStream current events appendResult
+          pure (Right (appendedResult targetStream appendResult (Prelude.length encoded)))
+        Left (_, storeError) ->
+          retryOrFail options attempt remaining storeError
+```
+
+The append asserts an expected version derived from the hydrated version:
+
+```haskell
+expectedVersion :: StreamVersion -> ExpectedVersion
+expectedVersion (StreamVersion 0) = NoStream
+expectedVersion version = ExactVersion version
+```
+
+A hydrated version of `0` means "this stream does not exist yet," so the append asserts `NoStream`; any
+other version asserts `ExactVersion v`. `tryError @StoreError` *captures* the store error as a `Left`
+rather than throwing it, handing control to `retryOrFail`. On success, `writeSnapshotIfNeeded` runs
+**synchronously, inline in the command effect** — not on a background thread:
+
+```haskell
+writeSnapshotIfNeeded eventStream current events appendResult =
+  case eventStream ^. #stateCodec of
+    Nothing -> pure ()
+    Just codec ->
+      case Keiki.applyEvents (eventStream ^. #transducer) (state current, registers current) events of
+        Nothing -> pure ()
+        Just finalState -> do
+          let finalVersion = appendResult ^. #streamVersion
+              terminal = Keiki.isFinal (eventStream ^. #transducer) (Prelude.fst finalState)
+          when (shouldSnapshot (eventStream ^. #snapshotPolicy) terminal finalState finalVersion) $
+            writeSnapshot (appendResult ^. #streamId) finalVersion codec finalState
+```
+
+Walk the guard chain: a stream with `stateCodec = Nothing` snapshots never, so this returns
+immediately. Otherwise it re-folds the just-emitted events onto the hydrated state via
+`Keiki.applyEvents`, computes terminality with `Keiki.isFinal`, and writes a snapshot only when
+`shouldSnapshot` agrees given the policy, terminality, final state, and final version. The policy and
+codec mechanics belong to the [snapshot reference](/docs/keiro/reference/snapshot); this tour walks
+only the firing rule at the call site.
+
+Both exits return a `CommandResult` through one of two constructors — `appendedResult` after an append,
+`noOpResult` for the `CommandNoOp` branch above:
+
+```haskell
+noOpResult targetStream current = CommandResult
+  { target = targetStream, streamVersion = current ^. #streamVersion
+  , globalPosition = current ^. #globalPosition, eventsAppended = 0 }
+
+appendedResult targetStream appendResult count = CommandResult
+  { target = targetStream, streamVersion = appendResult ^. #streamVersion
+  , globalPosition = Just (appendResult ^. #globalPosition), eventsAppended = count }
+```
+
+`noOpResult` reports the *hydrated* version and position with `eventsAppended = 0`; `appendedResult`
+reports the *post-append* version and a `Just` position with the real count.
+
+## `retryOrFail` + `isRetryableConflict`: the bounded conflict loop
+
+On a store error, the conflict loop decides whether to retry:
+
+```haskell
+retryOrFail options retry remaining storeError
+  | isRetryableConflict storeError, remaining > 0 = retry (remaining - 1)
+  | isRetryableConflict storeError = pure (Left (RetryExhausted (options ^. #retryLimit) storeError))
+  | otherwise = pure (Left (StoreFailed storeError))
+```
+
+A retryable conflict with budget left re-enters `attempt` (which re-hydrates and re-transduces from the
+current head); a retryable conflict with no budget becomes `RetryExhausted` carrying the configured
+limit and the last error; anything else is `StoreFailed`. The retryable set is the sharp part:
+
+```haskell
+isRetryableConflict = \case
+  WrongExpectedVersion{} -> True
+  StreamAlreadyExists{} -> True   -- a lost new-stream race is RETRIED, not surfaced
+  _ -> False
+```
+
+<Callout type="warn">
+`StreamAlreadyExists` is **retryable**, so a lost race to *create* a new stream is silently retried —
+the re-hydrate now sees the stream exists and asserts `ExactVersion` instead — never surfaced to the
+caller as `StreamAlreadyExists`. Tune the budget with
+[Configure concurrency retries](/docs/keiro/how-to/configure-concurrency-retries).
+</Callout>
+
+Next: [04 — The transactional write path](/docs/keiro/walkthrough/command-cycle/04-the-transactional-write-path).

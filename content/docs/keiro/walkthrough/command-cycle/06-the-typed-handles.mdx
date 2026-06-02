@@ -1,0 +1,116 @@
+---
+title: "06 — The typed handles"
+description: "Reading EventStream's seven fields, SnapshotPolicy's four constructors, StateCodec's reuse gate, and the phantom-typed Stream a — the records every runner in this tour is parameterised over."
+---
+
+This chapter reads the records the runners are parameterised over —
+`keiro-core/src/Keiro/EventStream.hs` and `keiro-core/src/Keiro/Stream.hs`. Every earlier chapter has
+been threading an `EventStream` and a `Stream`; here we read their structure directly. Read
+[05 — The codec on the boundary](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary)
+first.
+
+## `EventStream`: the seven fields
+
+```haskell
+-- keiro-core/src/Keiro/EventStream.hs
+data EventStream phi rs s ci co = EventStream
+  { transducer :: !(SymTransducer phi rs s ci co)   -- the pure keiki decision machine
+  , initialState :: !s                              -- starting control state (empty-stream hydrate)
+  , initialRegisters :: !(RegFile rs)               -- starting register file
+  , eventCodec :: !(Codec co)                       -- serialize/migrate the emitted events
+  , resolveStreamName :: !(Stream (EventStream phi rs s ci co) -> StreamName)  -- typed handle → physical name
+  , snapshotPolicy :: !(SnapshotPolicy (s, RegFile rs))      -- when to snapshot the (state, registers) pair
+  , stateCodec :: !(Maybe (StateCodec (s, RegFile rs)))      -- how to serialize it; Nothing disables snapshotting
+  }
+  deriving stock (Generic)
+```
+
+<TypeTable
+  type={{
+    transducer: { type: "SymTransducer phi rs s ci co", description: "The pure keiki decision machine — the only purely-computational field." },
+    initialState: { type: "s", description: "Starting control state, used when hydrating an empty stream." },
+    initialRegisters: { type: "RegFile rs", description: "Starting register file for an empty stream." },
+    eventCodec: { type: "Codec co", description: "Serializes and migrates the emitted events to and from stored payloads." },
+    resolveStreamName: { type: "Stream (EventStream …) -> StreamName", description: "Maps the typed Stream handle to the physical store name." },
+    snapshotPolicy: { type: "SnapshotPolicy (s, RegFile rs)", description: "Decides, per append, whether to snapshot the (state, registers) pair." },
+    stateCodec: { type: "Maybe (StateCodec (s, RegFile rs))", description: "How to serialize a snapshot; Nothing disables snapshotting entirely." },
+  }}
+/>
+
+The key reading is that `EventStream` **marries** a pure keiki `SymTransducer` to the durable-store
+concerns around it. `transducer`, `initialState`, and `initialRegisters` are the pure half — the
+decision machine and its starting point. The other four are the persistence half: `eventCodec`
+serializes emitted events (chapter 05), `resolveStreamName` maps the typed handle to the physical store
+name, and `snapshotPolicy`/`stateCodec` govern snapshotting. Note that `stateCodec = Nothing` disables
+snapshotting **regardless of `snapshotPolicy`** — without a codec there is no way to serialize state, so
+the policy is moot (this is the `snapshotSeed = Nothing` short-circuit from
+[chapter 02](/docs/keiro/walkthrough/command-cycle/02-hydration) and the first guard in
+`writeSnapshotIfNeeded` from [chapter 03](/docs/keiro/walkthrough/command-cycle/03-the-command-processor)).
+
+## `SnapshotPolicy`: four constructors
+
+```haskell
+data SnapshotPolicy state
+  = Never                                  -- never snapshot; always replay the full log
+  | Every !Int                             -- snapshot when the version is a positive multiple of n
+  | OnTerminal                             -- snapshot only at a final state
+  | Custom !(state -> StreamVersion -> Bool)
+  deriving stock (Generic)
+```
+
+`Never` always rehydrates from the full event log. `Every n` snapshots when the stream version is a
+multiple of `n` (a non-positive interval disables it). `OnTerminal` snapshots only when the machine has
+reached a final state. `Custom` is an arbitrary predicate over the folded state and the current
+version. The evaluation rules — how `shouldSnapshot` combines the policy with terminality and version —
+live in the [snapshot reference](/docs/keiro/reference/snapshot).
+
+## `StateCodec`: the reuse gate
+
+```haskell
+data StateCodec state = StateCodec
+  { stateCodecVersion :: !Int   -- bumped when the snapshot encoding changes incompatibly
+  , shapeHash :: !Text          -- digest of the folded-state shape; guards snapshot reuse
+  , encode :: !(state -> Value)
+  , decode :: !(Value -> Either Text state)
+  }
+  deriving stock (Generic)
+```
+
+`stateCodecVersion` and `shapeHash` together **gate snapshot reuse**: a stored snapshot is only loaded
+when both match the current codec. Bump `stateCodecVersion` when the encoding changes incompatibly, and
+the `shapeHash` digest catches a folded-state shape that drifted without a version bump — either
+mismatch forces a clean rehydrate from events instead of loading a snapshot that no longer fits. The
+persistence story (where snapshots live, when they are read) is the read side's; see
+[Snapshots in the command and hydration path](/docs/keiro/walkthrough/read-side/02-snapshots-in-the-command-and-hydration-path).
+
+## `Stream a`: the phantom-typed handle
+
+```haskell
+-- keiro-core/src/Keiro/Stream.hs
+newtype Stream a = Stream { name :: StreamName }    -- phantom-typed handle
+  deriving stock (Generic, Eq, Ord, Show)
+
+stream :: Text -> Stream a               -- stream name = Stream { name = StreamName name }
+streamName :: Stream a -> StreamName     -- recover the underlying StreamName
+mapStreamName :: (StreamName -> StreamName) -> Stream a -> Stream a  -- transform name, keep the tag
+```
+
+`Stream` wraps a `StreamName` but carries a phantom type parameter `a` naming *which* aggregate the name
+belongs to. That phantom lets the framework demand a `Stream OrderEventStream` rather than a bare
+`StreamName`, so a name for one aggregate cannot be passed where another is expected. `stream`
+constructs a handle from raw text, `streamName` recovers the underlying name, and `mapStreamName`
+transforms the name (for namespacing or prefixing) while preserving the compile-time tag. (The design
+notes' old name for this type was `AggregateId a`; the shipped type is `Stream a` — trust the source.)
+
+## The jitsurei anchors
+
+jitsurei shows both ends of the snapshotting spectrum on one aggregate. `orderEventStream` uses
+`snapshotPolicy = Never` and `stateCodec = Nothing` — no snapshotting, always full replay.
+`snapshotOrderEventStream` reuses that record but overrides the two fields to
+`snapshotPolicy = Every 2` and `stateCodec = Just (defaultStateCodec @OrderRegs @OrderState 1)`. Both
+set `resolveStreamName = Stream.streamName`, `initialState = NotStarted`, and
+`initialRegisters = RNil`. The typed handle is built by `orderStream orderId = stream ("order-" <> orderIdText orderId)` —
+a `Stream OrderEventStream`, not a bare name. For the full handle catalogue see the
+[EventStream and Stream reference](/docs/keiro/reference/event-stream-and-stream).
+
+Next: [07 — The router](/docs/keiro/walkthrough/command-cycle/07-the-router).

@@ -1,0 +1,129 @@
+---
+title: "04 — The transactional write path"
+description: "Three runners over one primitive: runCommand, runCommandWithSql, and runCommandWithSqlEvents; one Hasql transaction for append plus callback; Tx.condemn on conflict; and arithmetic RecordedEvent reconstruction."
+---
+
+This chapter reads the transactional runner in `keiro/src/Keiro/Command.hs` — the primitive that inline
+projections, process managers, and the [router](/docs/keiro/walkthrough/command-cycle/07-the-router)
+all build on. Read
+[03 — The command processor](/docs/keiro/walkthrough/command-cycle/03-the-command-processor) first; the
+hydrate/transduce front-end is shared with the append-only runner you read there.
+
+## Three runners, one primitive
+
+`Keiro.Command` exposes three public runners, and the third is the only one that does real work — the
+other two are conveniences over it:
+
+```haskell
+runCommand ::
+  forall phi rs s ci co es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  RunCommandOptions ->
+  EventStream phi rs s ci co ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co)))
+
+runCommandWithSql ::
+  forall phi rs s ci co a es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  RunCommandOptions ->
+  EventStream phi rs s ci co ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  (AppendResult -> Tx.Transaction a) ->
+  Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co), Maybe a))
+
+runCommandWithSqlEvents ::
+  forall phi rs s ci co a es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  RunCommandOptions ->
+  EventStream phi rs s ci co ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  ([(co, RecordedEvent)] -> AppendResult -> Tx.Transaction a) ->
+  Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co), Maybe a))
+```
+
+`runCommand` appends only — we read it in [chapter 03](/docs/keiro/walkthrough/command-cycle/03-the-command-processor).
+`runCommandWithSql` adds an `afterAppend :: AppendResult -> Tx.Transaction a` action that runs in the
+*same* transaction as the append, so a read-model write commits atomically with the events.
+`runCommandWithSqlEvents` is the most general: its callback also receives `[(co, RecordedEvent)]` — every
+emitted domain event paired with the `RecordedEvent` the store persisted for it, in append order.
+
+And `runCommandWithSql` is literally a wrapper that discards that pairing:
+
+```haskell
+runCommandWithSql options eventStream targetStream command afterAppend =
+  runCommandWithSqlEvents options eventStream targetStream command
+    (\_ appendResult -> afterAppend appendResult)
+```
+
+One primitive, three ergonomic surfaces. Both `Maybe a`-returning runners return `Just` the callback's
+result on an append and `Nothing` for a no-op (the callback never runs when nothing is appended).
+
+## One transaction: append, then the callback
+
+`runCommandWithSqlEvents` shares hydrate/transduce with `runCommand`, but its append runs inside a
+single Hasql transaction together with the caller's callback:
+
+```haskell
+    appendWithSqlOnce remaining current events encoded = do
+      liftIO (options ^. #beforeAppend)
+      prepared <- prepareEventsIO encoded
+      now <- liftIO getCurrentTime
+      let streamName = (eventStream ^. #resolveStreamName) targetStream
+          expected = expectedVersion (current ^. #streamVersion)
+          body = do
+            appended <- appendToStreamTx streamName expected prepared now
+            case appended of
+              Left conflict ->
+                Tx.condemn $> Left (appendConflictToStoreError conflict)   -- roll the whole tx back
+              Right appendResult -> do
+                let recordeds = reconstructRecorded appendResult now prepared
+                userValue <- afterAppend (Prelude.zip events recordeds) appendResult
+                pure (Right (appendResult, userValue))
+      outcome <- tryError @StoreError (runTransaction body)
+      ...   -- on success: writeSnapshotIfNeeded then appendedResult; on conflict: retryOrFail
+```
+
+Two things to notice. First, on a conflict the code calls **`Tx.condemn`** — marking the Hasql
+transaction for rollback — and hands `appendConflictToStoreError conflict` to the same `retryOrFail`
+from chapter 03. Because the append and the callback share `body`, a conflict rolls back *both*: the
+read-model write never lands without its events. Second, on success the callback receives
+`Prelude.zip events recordeds` — each emitted domain event paired with its persisted `RecordedEvent` —
+so an inline projection can write a row keyed by the event's real `streamVersion`/`globalPosition`
+*inside* the same transaction. After the transaction commits, control returns to the effect, where
+`writeSnapshotIfNeeded` and `appendedResult` run exactly as in the append-only runner. The no-op branch
+short-circuits before any of this: it returns `(result, Nothing)`, and the callback never runs.
+
+## Why `reconstructRecorded` instead of a re-read
+
+The persisted identities are not re-read from the database; they are reconstructed arithmetically from
+the single `AppendResult`:
+
+```haskell
+-- Event i (0-based) of a count-event batch gets (last - count + 1 + i) for BOTH
+-- stream version and global position; derived from kiroku's WITH ORDINALITY numbering.
+reconstructRecorded appendResult now prepared =
+  Prelude.zipWith mk [0 ..] prepared
+  where
+    count = Prelude.length prepared
+    StreamVersion lastSv = appendResult ^. #streamVersion
+    GlobalPosition lastGp = appendResult ^. #globalPosition
+    firstSv = lastSv - Prelude.fromIntegral count + 1
+    firstGp = lastGp - Prelude.fromIntegral count + 1
+    mk i prepared' = RecordedEvent { ..., streamVersion = StreamVersion (firstSv + i)
+                                        , globalPosition = GlobalPosition (firstGp + i), ... }
+```
+
+The append returns only the *last* stream version and global position; event `i` (0-based) of a batch
+of `count` gets `last - count + 1 + i` for both counters. This is deliberate, tight coupling to
+kiroku's `WITH ORDINALITY` numbering: the batch is inserted as one contiguous, gap-free run, so each
+event's persisted version and position are derivable without a round-trip. It keeps the callback's view
+of each event's identity cheap — no second query inside the hot transaction. The
+[projection reference](/docs/keiro/reference/projection) is the inline-projection consumer of this
+pairing; [Run a command in a transaction](/docs/keiro/how-to/run-a-command-in-a-transaction) is the
+recipe.
+
+Next: [05 — The codec on the boundary](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary).
