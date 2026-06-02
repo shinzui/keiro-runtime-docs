@@ -51,10 +51,17 @@ A reader who lands on `/docs/keiro` can:
   `Keiro.ReadModel`, `Keiro.Snapshot`), the workflow engine (`Keiro.ProcessManager`,
   `Keiro.Timer`), and the integration-event surface (`Keiro.Inbox`, `Keiro.Outbox`,
   `Keiro.Integration.Event`);
-- read **code walkthroughs** — ordered tours over the real source — for the command
-  processor, the read side, the workflow engine, and the inbox/outbox integration path
-  (the user explicitly asked for walkthroughs of the inbox, outbox, and command
-  processor "and other critical features");
+- read **deep code walkthroughs** — ordered, source-faithful tours that cover *every* core
+  function, type, and SQL statement in each subsystem, written so a developer can contribute
+  to keiro or gain real confidence in how it works (not just skim a few excerpts). The tours
+  cover the keiro↔keiki **foundation** (the typed `EventStream`/`Stream` handles, the codec
+  boundary, and the `Keiki.step` transducer call that threads the transducer's
+  `(state, registers)` pair), the **command processor**, the **read side** — with snapshots
+  and **keiki's symbolic registers** given first-class, detailed treatment because the
+  snapshot codec is exactly what persists and restores that `(state, registers)` pair — the
+  **workflow engine**, the **inbox/outbox integration path** (the user explicitly asked for
+  walkthroughs of the inbox, outbox, and command processor "and other critical features"),
+  and the cross-cutting **operations** internals (telemetry spans and the migration runner);
 - complete focused **how-to** tasks (configure optimistic-concurrency retries, evolve an
   event schema, choose a consistency mode, run a process manager as a subscription, drive
   the timer worker, choose an inbox dedupe policy, bridge a Kafka producer to the outbox,
@@ -76,7 +83,26 @@ render interactively.
 
 **In scope:** all content under `content/docs/keiro/` plus a new
 `docs/keiro-source-sync.md` pointer (mirroring `docs/kiroku-source-sync.md`). The docs
-document keiro **as shipped at the pinned upstream commit** (`3f5dc9c`, keiro `0.1.0.0`).
+document keiro **as shipped at the pinned upstream commit** (`3f5dc9c`, keiro `0.1.0.0`;
+the telemetry page tracks the post-0.1.0.0 pin `94c85e2` — see the Decision Log).
+
+**Phase 4 — Walkthrough deepening (added 2026-06-02).** Phases 1–3 shipped the full Diátaxis
+set, but the **code walkthroughs landed thin**: four tours of four short chapters each, mostly
+one excerpt plus a paragraph (50–130 MDX lines per chapter), which is not enough for a
+developer to contribute to keiro or trust it. Phase 4 reopens the walkthrough tree and brings
+it to *contribution-grade depth*: every tour walks its subsystem's real source end to end —
+every exported function, the types and their fields, the SQL statements line by line, the
+error/retry/edge cases, and the keiki coupling — anchored to `jitsurei` where a runnable
+anchor exists. Phase 4 also **adds two new tours** that Phases 1–3 never gave a walkthrough:
+a **foundation** tour (`walkthrough/foundation/` — `EventStream`, `Stream`, `Codec`, and the
+keiki `SymTransducer`/`step` core, including what *symbolic registers* are and how state and
+registers are threaded) and an **operations** tour (`walkthrough/operations/` — the
+`Keiro.Telemetry` span helpers and the `Keiro.Migrations` runner). Snapshots and keiki's
+registers receive deliberate, detailed coverage across the foundation and read-side tours,
+because the snapshot codec (`Keiro.Snapshot.Codec`) is precisely what serializes and rehydrates
+the transducer's `(state, registers)` pair. The Diátaxis content authored in Phases 1–3
+(explanation/reference/how-to/tutorial/cookbook/FAQ) is **not** re-opened; Phase 4 deepens the
+`walkthrough/` tree only.
 
 **Out of scope:** building or modifying the docs app, the highlighter, the font, the
 Mermaid component, or the IA/template system — those are owned by MasterPlan #1's plans
@@ -132,6 +158,35 @@ subsystem, ~3–7 pages plus a walkthrough); EP-7 and EP-12 are deliberately the
 (setup and reconciliation) and are smaller in page count but carry the shared-convention
 and whole-tree-integrity responsibilities.
 
+**Phase 4 — Walkthrough deepening (EP-13 … EP-19).** After Phases 1–3 completed, the user
+judged the code walkthroughs "very thin … not enough for a developer to contribute or gain
+confidence in the system" and asked to expand them "to cover all core parts with great
+details," calling out **snapshots and keiki's registers** specifically. Phase 4 is decomposed
+the same way as Phase 2 — **by subsystem seam** — because deepening a tour means re-reading one
+coherent slice of the keiro source and is independently verifiable (the tour builds, links
+resolve, and a depth check confirms it covers that subsystem's whole public surface). The seven
+plans are: one deepening plan per existing tour (**EP-13** command-cycle, **EP-14** read-side,
+**EP-15** workflow, **EP-16** integration), one for each **new** tour the earlier phases never
+wrote (**EP-17** foundation — the keiki↔keiro core; **EP-18** operations — telemetry and
+migrations), and a **finalization** plan (**EP-19**) that owns the shared walkthrough hub and
+ordering and runs the whole-tree gate. The split-per-tour shape (rather than one consolidated
+deepening plan) was chosen so the six authoring plans parallelize and each reads a disjoint
+source slice and owns a disjoint `walkthrough/` subdirectory — exactly the collision-avoidance
+property Decision (disjoint walkthrough subdirs) established for Phase 2. A dedicated EP-19 is
+warranted for the same reason EP-12 owned finalization in Phase 3: the walkthrough hub
+(`walkthrough/index.mdx`) and `walkthrough/meta.json` are shared artifacts that all six
+authoring plans touch, so they need a single owner for the final ordering pass, the two new hub
+`<Card>`s (foundation, operations), and the post-expansion `pnpm build` + `lint:links` gate.
+
+Seven Phase-4 plans pushes the initiative to thirteen child plans total, above the
+two-to-seven single-phase guidance — which is exactly why the work is **phased**: Phase 4 is its
+own implementation wave, runs entirely after Phases 1–3 are Complete, and its six authoring
+plans run concurrently. **Snapshots and keiki's symbolic registers** are given deliberate weight
+in two plans: **EP-17** owns the *conceptual* register model (what a `SymTransducer`'s
+`registers` are, how `Keiki.step` threads `(state, registers)`), and **EP-14** owns the
+*persistence* of that pair (the snapshot codec that encodes and restores state **and**
+registers). The two cross-reference each other so the snapshot story reads as one thread.
+
 
 ## Exec-Plan Registry
 
@@ -143,6 +198,13 @@ and whole-tree-integrity responsibilities.
 | 10 | Keiro workflow documentation: process managers and timers | docs/plans/10-keiro-workflow-documentation-process-managers-and-timers.md | #7 | #8, #9 | 2 | Complete |
 | 11 | Keiro integration-events documentation: inbox, outbox, and Kafka | docs/plans/11-keiro-integration-events-documentation-inbox-outbox-and-kafka.md | #7 | #8 | 2 | Complete |
 | 12 | Keiro operations, FAQ, cookbook, and docs finalization | docs/plans/12-keiro-operations-faq-cookbook-and-docs-finalization.md | #7 | #8, #9, #10, #11 | 3 | Complete |
+| 13 | Deepen the keiro command-cycle code walkthrough | docs/plans/13-deepen-the-keiro-command-cycle-code-walkthrough.md | #7, #8 | #17 | 4 | Complete |
+| 14 | Deepen the keiro read-side walkthrough: snapshots and keiki registers | docs/plans/14-deepen-the-keiro-read-side-walkthrough-snapshots-and-keiki-registers.md | #7, #9 | #13, #17 | 4 | Complete |
+| 15 | Deepen the keiro workflow code walkthrough | docs/plans/15-deepen-the-keiro-workflow-code-walkthrough.md | #7, #10 | #13, #14 | 4 | Complete |
+| 16 | Deepen the keiro integration-events code walkthrough | docs/plans/16-deepen-the-keiro-integration-events-code-walkthrough.md | #7, #11 | #13 | 4 | Complete |
+| 17 | Keiro foundation code walkthrough (EventStream, Stream, Codec, keiki step) | docs/plans/17-keiro-foundation-code-walkthrough-eventstream-stream-codec-and-the-keiki-transducer-step.md | #7, #8 | — | 4 | Complete |
+| 18 | Keiro operations code walkthrough: telemetry and migrations | docs/plans/18-keiro-operations-code-walkthrough-telemetry-and-migrations.md | #7, #12 | — | 4 | Complete |
+| 19 | Keiro walkthrough finalization: hub, ordering, and whole-tree gate | docs/plans/19-keiro-walkthrough-finalization-hub-ordering-and-whole-tree-gate.md | #7 | #13, #14, #15, #16, #17, #18 | 4 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their `#` prefix (e.g., #7).
@@ -199,6 +261,43 @@ graph TD
   EP11 -.integration.-> EP12
 ```
 
+**Phase 4 (walkthrough deepening).** Each deepening plan **hard-depends** on the Phase-2/3 plan
+that originally authored the tour (or the pages) it reopens, because the tour's directory,
+chapters, and the surrounding reference/explanation pages its chapters link to must already
+exist: EP-13 → EP-8, EP-14 → EP-9, EP-15 → EP-10, EP-16 → EP-11, EP-17 → EP-7 + EP-8 (the
+foundation tour reads the `Keiro.EventStream`/`Stream`/`Codec` surface EP-8 documented and links
+the core-concepts pages EP-7 wrote), EP-18 → EP-7 + EP-12 (the operations tour reads the
+telemetry/migrations references EP-12 wrote). All of EP-8 … EP-12 are Complete, so every Phase-4
+plan is immediately implementable. The soft edges encode reading order and cross-links only:
+EP-14 soft-depends on EP-17 (the read-side snapshot chapters reference the foundation tour's
+register model) and EP-13; EP-15 and EP-16 soft-depend on EP-13 (later tours cross-link the
+command-cycle tour). EP-19 **integration-depends** on all six authoring plans: its finalization
+milestone (the two new hub `<Card>`s, the `walkthrough/meta.json` ordering pass, and the
+whole-tree build + link-check) must run **last**, after EP-13 … EP-18 have each created/expanded
+their subdirectory and appended its folder name to `walkthrough/meta.json`. EP-19 hard-depends on
+EP-7 (it finalizes the IA EP-7 set up).
+
+```mermaid
+graph TD
+  EP8c["EP-8 (done)"] --> EP13["EP-13 Command-cycle tour"]
+  EP9c["EP-9 (done)"] --> EP14["EP-14 Read-side tour (snapshots + registers)"]
+  EP10c["EP-10 (done)"] --> EP15["EP-15 Workflow tour"]
+  EP11c["EP-11 (done)"] --> EP16["EP-16 Integration tour"]
+  EP7c["EP-7 (done)"] --> EP17["EP-17 Foundation tour (new)"]
+  EP8c --> EP17
+  EP12c["EP-12 (done)"] --> EP18["EP-18 Operations tour (new)"]
+  EP17 -.soft.-> EP14
+  EP13 -.soft.-> EP14
+  EP13 -.soft.-> EP15
+  EP13 -.soft.-> EP16
+  EP13 -.integration.-> EP19["EP-19 Walkthrough finalize"]
+  EP14 -.integration.-> EP19
+  EP15 -.integration.-> EP19
+  EP16 -.integration.-> EP19
+  EP17 -.integration.-> EP19
+  EP18 -.integration.-> EP19
+```
+
 
 ## Integration Points
 
@@ -231,6 +330,22 @@ creates the subdir. EP-12 finalizes the hub `<Cards>` and the `walkthrough/meta.
 ordering. (This mirrors the kiroku site, which ships two sibling walkthrough trees,
 `walkthrough/` and `write-path/`; keiro groups its tours as subdirectories under one
 `walkthrough/` section.)
+
+**Phase-4 extension of this point (2026-06-02).** Phase 4 reopens the `walkthrough/` tree. The
+same disjoint-subdirectory ownership rule carries over so the six authoring plans never collide:
+EP-13 owns `walkthrough/command-cycle/`, EP-14 owns `walkthrough/read-side/`, EP-15 owns
+`walkthrough/workflow/`, EP-16 owns `walkthrough/integration/`, EP-17 owns the **new**
+`walkthrough/foundation/`, and EP-18 owns the **new** `walkthrough/operations/`. A deepening plan
+(EP-13 … EP-16) may **add, renumber, and rewrite chapters inside its own subdirectory** and must
+keep that subdir's `meta.json` `pages` array in sync with the files it ships, but it must not
+touch another subdir or the shared `walkthrough/index.mdx` / `walkthrough/meta.json` beyond
+**appending** its folder name (the two new tours only). The shared hub and the top-level
+`walkthrough/meta.json` ordering are owned by **EP-19**, which adds the two new hub `<Card>`s
+(`foundation`, `operations`), runs the final ordering pass over `walkthrough/meta.json`, and runs
+the post-expansion build + link-check. Per the hard-won crawler lesson (see Surprises), EP-17 and
+EP-18 create their subdir's `00-start-here.mdx` and real chapters and append the folder name to
+`walkthrough/meta.json` so the tour is sidebar-navigable, but they do **not** add their hub
+`<Card href>` — EP-19 does, once both tours exist, to keep every intermediate `pnpm build` clean.
 
 **3. The `jitsurei` worked-example module map.** EP-7 introduces the jitsurei package and
 publishes the canonical feature→module→target map; every other plan links to the **same**
@@ -270,6 +385,26 @@ signatures and cross-check the pinned source; keiro's in-repo `docs/research/*` 
 SQL columns, unimplemented features) — trust the source, not the notes. (c) Every fenced
 code block declares a language tag.
 
+**7. Snapshots and keiki's symbolic registers (Phase 4).** The single most important cross-plan
+concept in the deepening pass is how keiro persists a keiki transducer's runtime. keiki's decision
+core is a `SymTransducer phi rs s ci co`; stepping it (`Keiki.step`) threads a pair — the state
+`s` and the **symbolic registers** `rs` (keiki's auxiliary register bank, distinct from the
+folded state). The command path passes `(state current, registers current)` into `Keiki.step`,
+and a **snapshot** is what serializes and later restores that *whole pair* so hydration need not
+replay every event. Two Phase-4 plans share this concept and must agree:
+  - **EP-17 (foundation tour)** owns the **conceptual** treatment: what a `SymTransducer` is, what
+    `registers` (`rs`) are versus `state` (`s`), and how `Keiki.step` returns the next
+    `(state, registers, events)`. It is the canonical explanation the other tours link to.
+  - **EP-14 (read-side tour)** owns the **persistence** treatment: the snapshot codec
+    (`keiro/src/Keiro/Snapshot/Codec.hs`), the `keiro_snapshots` schema
+    (`keiro/src/Keiro/Snapshot/Schema.hs`), the snapshot policy
+    (`keiro-core/src/Keiro/Snapshot/Policy.hs`), and the synchronous inline write in the command
+    path — emphasizing that the codec encodes and rehydrates **both** `state` and `registers`, not
+    just the folded state. EP-14's snapshot chapters **link to EP-17's register model** rather than
+    re-deriving it; EP-17's transducer chapter **links forward to EP-14** for "how this pair is
+    persisted." Neither plan may describe registers in a way the other contradicts; both cite the
+    same source modules.
+
 
 ## Progress
 
@@ -289,6 +424,13 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 - [x] EP-11: Integration-events how-tos + `walkthrough/integration/` tour (inbox + outbox) authored. _(2026-06-01)_
 - [x] EP-12: Operations docs authored (telemetry, migrations, testing) + FAQ + cookbook. _(2026-06-01)_
 - [x] EP-12: Finalization — all meta.json ordered, section landings carry `<Cards>`, build + link-check pass over the keiro tree. _(2026-06-01)_
+- [x] EP-13: Command-cycle tour deepened — every `Keiro.Command` function (hydrate, prepareCommandPlan, evaluateCommand, appendOnce, retryOrFail, snapshot write), the codec boundary, and the router covered chapter by chapter. _(2026-06-02; 8 chapters)_
+- [x] EP-14: Read-side tour deepened — snapshot codec + schema + policy with **keiki registers** treated explicitly (state **and** registers persisted/restored); read-model query path and projections covered in full. _(2026-06-02; 5 chapters)_
+- [x] EP-15: Workflow tour deepened — `Keiro.ProcessManager` (dispatch, per-stream transactions), `Keiro.Timer` worker, and the timer schema covered in full. _(2026-06-02; 6 chapters)_
+- [x] EP-16: Integration tour deepened — `Keiro.Inbox` (dedupe policies, schema), `Keiro.Outbox` (claim CTE, ordering predicates, drain/backoff/dead-letter), and the Kafka mappings covered in full. _(2026-06-02; 6 chapters)_
+- [x] EP-17: Foundation tour authored (new `walkthrough/foundation/`) — `EventStream`/`Stream`, `Codec`, and the keiki `SymTransducer`/`step` core including the **symbolic register** model. _(2026-06-02; 6 chapters)_
+- [x] EP-18: Operations tour authored (new `walkthrough/operations/`) — `Keiro.Telemetry` span helpers and the `Keiro.Migrations` runner. _(2026-06-02; 4 chapters)_
+- [x] EP-19: Walkthrough finalization — two new hub `<Card>`s (foundation, operations), `walkthrough/meta.json` ordered, whole-tree `pnpm build` + `lint:links` gate green over the expanded tree. _(2026-06-02; gate green over 166 files)_
 
 
 ## Surprises & Discoveries
@@ -296,6 +438,25 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 Cross-plan insights, dependency changes, and scope adjustments discovered during the
 initiative. (Per-subsystem source findings live in each child plan; this records things
 that affect more than one plan.)
+
+- **The shipped code walkthroughs were too thin to build contributor confidence — Phase 4 added
+  (2026-06-02).** After the initiative was marked Complete, the user (keiro's author) reviewed the
+  `walkthrough/` tree and found it "very thin … not enough for a developer to contribute or gain
+  confidence in the system," asking to expand the tours "to cover all core parts with great
+  details" and calling out **snapshots and keiki's registers** specifically. Measured: the four
+  tours shipped as 4 chapters each, 50–130 MDX lines per chapter, typically one source excerpt plus
+  a paragraph — they sampled each subsystem rather than walking it. **Bearing:** a new **Phase 4**
+  (EP-13 … EP-19) reopens the `walkthrough/` tree to contribution-grade depth, adds two missing
+  tours (foundation, operations), and gives snapshots + keiki registers first-class coverage. This
+  does **not** reopen the Phase-1–3 Diátaxis pages, which the user did not fault. The original
+  Outcomes entry for Phases 1–3 still stands; it is annotated below to point here. See the Decision
+  Log entries of 2026-06-02.
+  - **Concept that drove the snapshot emphasis:** keiki's `Keiki.step` threads a
+    `(state, registers)` pair, and the snapshot codec (`keiro-core/src/Keiro/Snapshot/Codec.hs`) is
+    what persists/restores that *whole pair* — the symbolic registers `rs` are not a derived view of
+    the folded state `s`, so a snapshot that dropped them would corrupt hydration. This is the exact
+    detail a contributor needs and the old read-side tour glossed. Integration Point #7 now splits
+    its ownership: EP-17 owns the register *model*, EP-14 owns its *persistence*.
 
 - **Command-cycle phase renamed Decide → Transduce (post-completion, 2026-06-01).** The user
   flagged that "Decide" echoes keiki's legacy **Decider façade**, which must not appear in the docs
@@ -390,6 +551,25 @@ that affect more than one plan.)
     per EP-10's correction above. Evidence: `pnpm lint:links` clean over 148 files;
     `grep -rn "](/docs/keiro/reference)" content/docs/keiro` now returns nothing (all six upgraded).
 
+- **Phase-4 parallel authoring: chapter renumbering broke inbound links from the Phase-1–3 pages
+  (resolved during EP-19 finalization, 2026-06-02).** The six Phase-4 authoring tours were implemented
+  concurrently, each in its disjoint `walkthrough/<subdir>/` (the collision-avoidance property from
+  Integration Point #2 held — no two plans touched the same file). The deepening plans **renumbered**
+  chapters inside their own subdir (e.g. command-cycle `01-the-command-processor` → `03-…`, integration
+  `03-kafka-mapping` → `05-…`, read-side `02-the-read-model-query-path` → `03-…`). That silently broke
+  **five inbound links** that pre-existing Phase-1–3 pages (and one sibling tour) pointed at the *old*
+  chapter slugs: `reference/snapshot`, `explanation/integration-events`, `how-to/bridge-the-outbox-to-kafka`,
+  `walkthrough/workflow/00-start-here`, and one bare-directory link `…/operations/` (which the
+  doc-link checker rejects because no `operations/index.mdx` exists). **Bearing:** when a Phase-4 tour
+  renumbers a chapter, any inbound link to the old slug from *outside* its subdir must be upgraded —
+  the authoring plan cannot see those links (it owns only its subdir), so the **finalization plan
+  (EP-19) owns the inbound-link sweep**, exactly as EP-12 owned the parked-link upgrade in Phase 3.
+  Resolution: a shared canonical final-slug map was handed to every authoring agent up front (so
+  *cross-tour* links were authored against the final numbers), and EP-19's gate caught the five
+  remaining *inbound-from-Phase-1–3* breakages via `node scripts/check-doc-links.mjs`; each was
+  upgraded to the renumbered slug. Evidence: the checker went `✗ 5 broken` → `✓ doc links OK — checked
+  166 files` after the upgrades.
+
 
 ## Decision Log
 
@@ -446,12 +626,56 @@ that affect more than one plan.)
   attribute names are unchanged, so the attribute table and span helpers are untouched; only the
   vendoring rationale was reworded. The nuance is recorded in `docs/keiro-source-sync.md`.
   Date: 2026-06-01
+- Decision (2026-06-02): Add **Phase 4 — Walkthrough deepening** (EP-13 … EP-19) to reopen and
+  significantly expand the code walkthroughs, rather than treat the initiative as closed.
+  Rationale: the user judged the shipped tours too thin for a developer to contribute or gain
+  confidence; deepening is real, independently verifiable work that deserves tracked plans, not an
+  untracked edit. Phasing keeps the original six plans' Outcomes intact while the new wave runs.
+  Date: 2026-06-02
+- Decision (2026-06-02): Decompose Phase 4 **per tour** — one deepening plan per existing tour
+  (EP-13 … EP-16) plus one plan per new tour (EP-17 foundation, EP-18 operations) — not as a single
+  consolidated "deepen all walkthroughs" plan.
+  Rationale: per-tour plans read disjoint source slices and own disjoint `walkthrough/`
+  subdirectories, so the six authoring plans parallelize without colliding on chapter numbers or
+  shared files — the same property that made Phase 2 parallel-safe. The user chose this shape over
+  the consolidated alternative. Trade-off accepted: a consistent depth/voice across six plans now
+  depends on the shared authoring rules (Integration Point #6) and EP-19's review, not on one author.
+  Date: 2026-06-02
+- Decision (2026-06-02): Add **two new tours** the earlier phases never wrote — a **foundation**
+  tour (`walkthrough/foundation/`: `EventStream`, `Stream`, `Codec`, and the keiki
+  `SymTransducer`/`step` core) and an **operations** tour (`walkthrough/operations/`: telemetry
+  spans, the migration runner).
+  Rationale: "cover all core parts" includes the keiki↔keiro foundation (the typed handles and the
+  transducer step every command goes through) and the operational internals a contributor must
+  understand to run and observe keiro — neither had a source tour. The user selected the
+  "deepen + add foundation & ops tours" scope.
+  Date: 2026-06-02
+- Decision (2026-06-02): Give **snapshots and keiki's symbolic registers** deliberate, split
+  ownership — EP-17 owns the register *model*, EP-14 owns its *persistence via the snapshot codec* —
+  recorded as Integration Point #7.
+  Rationale: the user called this out specifically. `Keiki.step` threads a `(state, registers)` pair
+  and the snapshot codec persists/restores the whole pair; splitting concept from persistence lets
+  each tour go deep on its half while cross-linking so the snapshot story reads as one thread, and
+  avoids two plans describing registers inconsistently.
+  Date: 2026-06-02
+- Decision (2026-06-02): Add a dedicated finalization plan **EP-19** rather than folding
+  finalization into one authoring plan.
+  Rationale: the walkthrough hub (`walkthrough/index.mdx`) and `walkthrough/meta.json` are shared
+  artifacts every authoring plan touches; a single owner for the two new hub `<Card>`s, the ordering
+  pass, and the post-expansion whole-tree gate prevents the merge churn and premature-`<Card href>`
+  crawler failures documented in this log's Surprises — exactly the role EP-12 played for Phase 3.
+  Date: 2026-06-02
 
 
 ## Outcomes & Retrospective
 
-**Outcome (2026-06-01): the initiative is complete — all six child plans (EP-7 … EP-12) are
-Complete and the Vision & Scope is met.**
+> **Status update (2026-06-02): the initiative was reopened with Phase 4.** The outcome below
+> records Phases 1–3 (EP-7 … EP-12), which remain Complete and are not being re-litigated. Phase 4
+> (EP-13 … EP-19) deepens the code walkthroughs the user judged too thin; its own outcome will be
+> recorded here when that wave completes. See the Decision Log and Surprises entries of 2026-06-02.
+
+**Outcome (2026-06-01): Phases 1–3 are complete — all six child plans (EP-7 … EP-12) are
+Complete and the original Vision & Scope (a full Diátaxis set) is met.**
 
 A reader landing on `/docs/keiro` now finds a full Diátaxis set under `content/docs/keiro/`:
 - **Foundation (EP-7):** the overview/landing, core-concepts explanation, getting-started tutorial,
@@ -484,3 +708,61 @@ whole-tree build was clean on the first finalization run.
 **Gaps / honest notes:** keiro's telemetry instrumentation is genuinely partial (publish/consume/
 command spans done; hydration/snapshot/projection/timer deferred) and the reference says so rather
 than implying full coverage; the doc set documents only what ships at `3f5dc9c`.
+
+**Phase 4 outcome (Complete, 2026-06-02): the walkthrough tree is deepened to contribution-grade and
+both new tours exist — all seven child plans (EP-13 … EP-19) are Complete.**
+
+The `walkthrough/` tree now holds **six** tours totalling **35 chapters** (was four tours of four
+thin chapters). The four existing tours were deepened to walk their subsystem's real source end to
+end — command cycle (8 chapters: types/errors, hydration, the processor + telemetry seam, the
+transactional write path, the codec boundary, the typed handles, the router), read side (5: the
+snapshot codec and the register pair, snapshots in the command/hydration path, the read-model query
+path, projections + rebuild), workflow (6: the dispatch loop, the separate-transaction model, the
+types/config, the timer schema, the timer worker), and integration (6: the IntegrationEvent envelope,
+the inbox, the outbox enqueue/claim, the outbox drain/dead-letter, the Kafka mapping). Two **new**
+tours were authored: **foundation** (6: the typed `Stream` handle, the `EventStream`, the `Codec`
+boundary, the keiki `SymTransducer`/`step` core, and threading `(state, registers)`) and
+**operations** (4: the tracer seam + span helpers, the attribute keys + command-outcome seam, the
+migration runner). **Snapshots and keiki's symbolic registers** received the deliberate split
+treatment Integration Point #7 specified: EP-17's foundation tour owns the conceptual register model,
+EP-14's read-side tour owns the snapshot codec's persistence of **both** state and registers, and the
+two **cross-link each other bidirectionally** so the story reads as one thread. EP-19 finalized the
+shared hub (six `<Card href>`s in pedagogical order, foundation first / operations last), ordered the
+top-level `walkthrough/meta.json` to `[index, foundation, command-cycle, read-side, workflow,
+integration, operations]`, upgraded the four parked foundation forward-links to the read-side snapshot
+chapter, and swept the five inbound links the renumbering broke.
+
+**Verification at Phase-4 completion:** `pnpm typecheck` clean; `pnpm build` prerenders the entire
+expanded tree with **zero** crawler / `unhandledRejection` warnings; `pnpm lint:links` exits 0 over
+**166** files (up from the Phase-3 baseline of 148) with no broken or relative internal links; no v2
+`Keiro.Workflow` API is presented as shipped. Every Haskell/SQL snippet was cross-checked against the
+pinned source (`3f5dc9c`; telemetry tracks `94c85e2`) and the keiki dependency.
+
+**What worked:** the disjoint-subdirectory ownership rule let all six authoring tours be implemented
+**concurrently** with zero file collisions; a shared canonical final-slug map handed to every author
+up front kept cross-tour links pointing at the final (post-renumber) chapter numbers; and centralising
+the build/link gate and the inbound-link sweep in one finalization pass (EP-19) caught the only class
+of breakage the parallel authors structurally could not see — inbound links from the Phase-1–3 pages
+to renumbered chapters. **Honest note:** keiro's telemetry instrumentation remains genuinely partial
+and the operations tour says so; the timer worker ships no backoff/recovery path and the workflow tour
+documents that gap rather than implying completeness.
+
+---
+
+**Revision note (2026-06-02) — Phase 4 added.** Triggered by the user's `/master-plan update`:
+"The code walkthroughs for keiro are very thin and they don't provide enough for a developer to
+contribute or gain confidence in the system. they should significantly be expanded to cover all
+core parts with great details," refined in-session to emphasize "snapshots especially the keiki's
+registers." What changed: added **Phase 4 (EP-13 … EP-19)** — four per-tour deepening plans (command
+cycle, read side, workflow, integration), two new-tour plans (foundation, operations), and a
+walkthrough-finalization plan. Updated Vision & Scope (deep-walkthrough bullet + Phase-4 scope
+paragraph), Decomposition Strategy (Phase-4 rationale), the Exec-Plan Registry (seven new rows),
+the Dependency Graph (Phase-4 prose + diagram), Integration Points (#2 extended for the new subdirs
+and Phase-4 ownership; new #7 for snapshots + keiki registers), Progress (seven Phase-4 milestones),
+Surprises (the thin-walkthroughs finding + the snapshot/register concept), the Decision Log (five
+2026-06-02 decisions), and the Outcomes header (reopened note + Phase-4 target). The seven child
+ExecPlans were created under `docs/plans/13` … `docs/plans/19` and fleshed out per
+`agents/skills/exec-plan/PLANS.md`. Phases 1–3 were not modified; the `walkthrough/` tree is the
+only content reopened. Why: the walkthroughs are the artifact a would-be contributor reads to trust
+the system, and at four thin chapters per tour they sampled rather than explained — closing that gap
+is worth tracking as its own implementation wave.
