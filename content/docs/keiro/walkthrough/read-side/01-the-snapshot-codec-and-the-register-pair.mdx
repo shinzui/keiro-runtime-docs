@@ -1,0 +1,257 @@
+---
+title: "01 — The snapshot codec and the register pair"
+description: "Reading Keiro.Snapshot.Codec line by line: how defaultStateCodec serializes the (state, registers) pair as JSON, why both halves are persisted, and how the shape hash and codec version gate which snapshots are eligible to load."
+---
+
+This chapter is the centerpiece of the read-side tour. It reads
+`keiro/src/Keiro/Snapshot/Codec.hs` and the supporting types in
+`keiro-core/src/Keiro/EventStream.hs` and `keiro/src/Keiro/Snapshot.hs`, and answers the question the
+tour is built around: **what, exactly, does a snapshot persist, and why?** Read
+[00 — Start here](/docs/keiro/walkthrough/read-side/00-start-here) first.
+
+## A one-paragraph reminder: the register pair
+
+A keiki `SymTransducer` carries two pieces of runtime as events apply: the **control state** `s`
+(the vertex) and the **register file** `RegFile rs` (a typed bank of named slots the machine reads
+and writes on its edges). The registers are **independent runtime** — they are *not* a view of `s`.
+Stepping the machine threads the pair:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+step
+  :: BoolAlg phi (RegFile rs, ci)
+  => SymTransducer phi rs s ci co
+  -> (s, RegFile rs)              -- the pair: control state AND registers
+  -> ci                          -- the command input
+  -> Maybe (s, RegFile rs, [co]) -- next state, next registers, emitted events
+```
+
+For the full model — what `SymTransducer`, `RegFile`, and `step` are — see the foundation tour's
+[The SymTransducer and step](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step) and
+[Threading state and registers](/docs/keiro/walkthrough/foundation/05-threading-state-and-registers).
+That reminder is the load-bearing fact for everything below: **because the registers are independent
+runtime, a snapshot must persist them too.**
+
+## `defaultStateCodec`: a codec over the pair
+
+`Keiro.Snapshot.Codec.defaultStateCodec` builds a `StateCodec` for the **pair** `(s, RegFile rs)`:
+
+```haskell
+-- keiro/src/Keiro/Snapshot/Codec.hs
+defaultStateCodec ::
+  forall rs s.
+  (FromJSON s, KnownRegFileShape rs, RegFileToJSON rs, ToJSON s) =>
+  Int ->
+  StateCodec (s, RegFile rs)
+defaultStateCodec version = StateCodec
+  { stateCodecVersion = version
+  , shapeHash = regFileShapeHash (Proxy @rs)
+  , encode = \(state, registers) ->
+      object
+        [ "state" Aeson..= state
+        , "registers" Aeson..= regFileToJSON registers
+        ]
+  , decode = decodeSnapshotValue
+  }
+```
+
+Read the `encode` field closely. It receives the **pair** and produces a single JSON object with
+**two** keys:
+
+```json
+{ "state": "…the control state…", "registers": "…the register file…" }
+```
+
+- The **`state`** half uses the domain type's own `ToJSON`/`FromJSON` instances (hence the
+  `FromJSON s`/`ToJSON s` constraints).
+- The **`registers`** half uses keiki's register-file JSON encoding, `regFileToJSON` (from
+  `Keiki.Codec.JSON` at `keiki-codec-json/src/Keiki/Codec/JSON.hs`), keyed by the `RegFileToJSON rs`
+  constraint.
+
+This is the whole point of the chapter: **both halves are serialized, because the registers are
+independent runtime.** A codec that wrote only `state` would resume the machine with empty registers
+and corrupt hydration.
+
+## `decodeSnapshotValue`: read both halves back
+
+The `decode` field is `decodeSnapshotValue`, which parses the same two-key object back into the pair:
+
+```haskell
+-- keiro/src/Keiro/Snapshot/Codec.hs
+decodeSnapshotValue ::
+  forall rs s.
+  (FromJSON s, RegFileToJSON rs) =>
+  Value ->
+  Either Text (s, RegFile rs)
+decodeSnapshotValue value =
+  case parseEither parser value of
+    Left message -> Left (Text.pack message)
+    Right pair -> Right pair
+  where
+    parser = withObject "Keiro snapshot" $ \objectValue -> do
+      stateValue <- objectValue .: "state"
+      registerValue <- objectValue .: "registers"
+      state <- case Aeson.fromJSON stateValue of
+        Error message -> fail ("state: " <> message)
+        Success decoded -> pure decoded
+      registers <- case regFileFromJSON @rs registerValue of
+        Left message -> fail ("registers: " <> message)
+        Right decoded -> pure decoded
+      pure (state, registers)
+```
+
+Two things to notice:
+
+- It decodes **both** keys symmetrically — `state` through `Aeson.fromJSON`, `registers` through
+  keiki's `regFileFromJSON @rs`. If either fails, the whole decode fails.
+- The result type is `Either Text (s, RegFile rs)` — a `Left` message, **not** an exception. As the
+  next chapter shows, the hydration path treats a `Left` as a *benign miss* (replay from the
+  beginning) rather than a crash. Decode never poisons a command.
+
+<Callout type="info">
+`decodeSnapshotValue` is an internal helper — `Keiro.Snapshot.Codec` exports only `defaultStateCodec`
+(and `Keiro.Snapshot` re-exports that). You wire snapshots by passing `defaultStateCodec` as your
+`stateCodec`; you do not call `decodeSnapshotValue` directly.
+</Callout>
+
+## The two gates: `shapeHash` and `stateCodecVersion`
+
+The codec carries two values that decide whether a stored snapshot is even *eligible* to load:
+
+- `shapeHash = regFileShapeHash (Proxy @rs)` is a **SHA-256 over the register-file *shape***, from
+  `Keiki.Shape` (`regFileShapeHash :: KnownRegFileShape rs => Proxy rs -> Text`). It is computed from
+  the **type-level** slot list, so any change to the register layout — adding, removing, or retyping
+  a slot — changes the hash.
+- `stateCodecVersion` is the caller-supplied `Int`. Bump it when the encoding changes in a way the
+  shape hash does not capture — for example, when the *state's* JSON shape changes (the shape hash
+  only covers the registers).
+
+Both values are stored alongside every snapshot row, and (as the next chapter shows) the lookup
+query filters on them in SQL. So a shape change or a version bump means old snapshots are simply
+**not found** — keiro never decodes stale bytes; it falls back to a full replay. The gating is
+conservative by construction.
+
+## The `StateCodec` record it builds
+
+The record `defaultStateCodec` constructs is defined in `Keiro.EventStream`:
+
+```haskell
+-- keiro-core/src/Keiro/EventStream.hs
+data StateCodec state = StateCodec
+  { stateCodecVersion :: !Int
+  , shapeHash :: !Text
+  , encode :: !(state -> Value)
+  , decode :: !(Value -> Either Text state)
+  }
+```
+
+The codec is generic over `state`; `defaultStateCodec` instantiates it at `state ~ (s, RegFile rs)`.
+The per-stream snapshot configuration also lives on the `EventStream`, and both fields are over the
+**pair**:
+
+```haskell
+-- keiro-core/src/Keiro/EventStream.hs
+data SnapshotPolicy state
+  = Never
+  | Every !Int
+  | OnTerminal
+  | Custom !(state -> StreamVersion -> Bool)
+
+data EventStream phi rs s ci co = EventStream
+  { transducer :: !(SymTransducer phi rs s ci co)
+  , initialState :: !s
+  , initialRegisters :: !(RegFile rs)
+  , eventCodec :: !(Codec co)
+  , resolveStreamName :: !(Stream (EventStream phi rs s ci co) -> StreamName)
+  , snapshotPolicy :: !(SnapshotPolicy (s, RegFile rs))
+  , stateCodec :: !(Maybe (StateCodec (s, RegFile rs)))
+  }
+```
+
+Note `stateCodec :: Maybe (StateCodec (s, RegFile rs))`: **`Nothing` disables snapshotting entirely**,
+regardless of `snapshotPolicy`. Snapshots are opt-in per stream.
+
+## `SnapshotSeed`: the decoded pair, plus its version
+
+Reading a snapshot back produces a `SnapshotSeed`, defined in `Keiro.Snapshot`:
+
+```haskell
+-- keiro/src/Keiro/Snapshot.hs
+data SnapshotSeed rs s = SnapshotSeed
+  { state :: !s
+  , registers :: !(RegFile rs)
+  , streamVersion :: !StreamVersion
+  }
+```
+
+It is the decoded **pair** (`state` and `registers`) plus the `streamVersion` the snapshot captured —
+exactly what hydration needs to resume the transducer and then fold only the *newer* events forward.
+
+`hydrateWithSnapshot` produces it, returning `Nothing` (a benign miss → "replay from the beginning")
+in **three** cases:
+
+```haskell
+-- keiro/src/Keiro/Snapshot.hs
+hydrateWithSnapshot ::
+  (Store :> es) =>
+  StreamName ->
+  StateCodec (s, RegFile rs) ->
+  Eff es (Maybe (SnapshotSeed rs s))
+hydrateWithSnapshot streamName codec = do
+  streamId <- lookupStreamId streamName
+  case streamId of
+    Nothing -> pure Nothing
+    Just foundStreamId -> do
+      row <- lookupSnapshot foundStreamId (codec ^. #stateCodecVersion) (codec ^. #shapeHash)
+      pure $ do
+        snapshot <- row
+        (state, registers) <- either (const Nothing) Just ((codec ^. #decode) (snapshot ^. #state))
+        pure SnapshotSeed
+          { state = state
+          , registers = registers
+          , streamVersion = snapshot ^. #streamVersion
+          }
+```
+
+The three benign-miss cases:
+
+1. the stream has no id yet (`lookupStreamId` is `Nothing`);
+2. `lookupSnapshot` found no *compatible* row (the version/shape gates rule it out);
+3. `decode` failed — the `either (const Nothing) Just` line swallows a `Left` into `Nothing`.
+
+In all three, hydration just replays from zero. **A snapshot can never make hydration wrong; at worst
+it is ignored.**
+
+## `writeSnapshot`: encode the pair, upsert the row
+
+The write side encodes the pair through the same codec and upserts it:
+
+```haskell
+-- keiro/src/Keiro/Snapshot.hs
+writeSnapshot ::
+  (Store :> es) =>
+  StreamId ->
+  StreamVersion ->
+  StateCodec state ->
+  state ->
+  Eff es ()
+writeSnapshot streamId streamVersion codec state =
+  writeSnapshotRow SnapshotWrite
+    { streamId = streamId
+    , streamVersion = streamVersion
+    , state = (codec ^. #encode) state
+    , stateCodecVersion = codec ^. #stateCodecVersion
+    , regfileShapeHash = codec ^. #shapeHash
+    }
+```
+
+`(codec ^. #encode) state` is the `{ "state", "registers" }` object from above; the row also stamps
+`stateCodecVersion` and `regfileShapeHash` so the next reader's gates can match. The next chapter
+follows where `writeSnapshot` and `hydrateWithSnapshot` fire in the command path, reads the
+`keiro_snapshots` schema, and proves the monotonicity guard.
+
+For a lookup table of every snapshot signature, see the
+[Snapshot reference](/docs/keiro/reference/snapshot); to wire snapshots onto a stream, see
+[Add a snapshot](/docs/keiro/how-to/add-a-snapshot).
+
+Next: [02 — Snapshots in the command and hydration path](/docs/keiro/walkthrough/read-side/02-snapshots-in-the-command-and-hydration-path).

@@ -1,0 +1,116 @@
+---
+title: "04 — Projections and the rebuild path"
+description: "Reading Keiro.Projection and Keiro.ReadModel.Rebuild: the in-transaction inline path, the bare-Tx async boundary with no shipped worker, and the skeleton rebuild status transitions."
+---
+
+This final chapter reads `keiro/src/Keiro/Projection.hs` — the two projection flavors — and
+`keiro/src/Keiro/ReadModel/Rebuild.hs`, the rebuild status transitions. It is honest about what keiro
+ships versus what you must wire yourself. Read
+[03 — The read-model query path](/docs/keiro/walkthrough/read-side/03-the-read-model-query-path)
+first.
+
+## The two projection types
+
+```haskell
+-- keiro/src/Keiro/Projection.hs
+data InlineProjection co = InlineProjection
+  { name  :: !Text
+  , apply :: !(co -> RecordedEvent -> Tx.Transaction ())
+  }
+
+data AsyncProjection = AsyncProjection
+  { name             :: !Text
+  , subscriptionName :: !Text
+  , applyRecorded    :: !(RecordedEvent -> Tx.Transaction ())
+  , idempotencyKey   :: !(RecordedEvent -> EventId)
+  }
+```
+
+An `InlineProjection` folds an emitted event into a read-model table; an `AsyncProjection` carries the
+extra machinery (a `subscriptionName` cursor and an `idempotencyKey`) needed to be driven off the
+event log out of band.
+
+## Inline: a thin wrapper over the transactional runner
+
+`runCommandWithProjections` is built directly on `runCommandWithSqlEvents` (the command cycle's
+transactional write path):
+
+```haskell
+-- keiro/src/Keiro/Projection.hs
+runCommandWithProjections options eventStream targetStream command projections = do
+  result <-
+    runCommandWithSqlEvents options eventStream targetStream command
+      ( \pairs _appendResult ->
+          traverse_
+            ( \projection ->
+                traverse_
+                  (\(event, recorded) -> (projection ^. #apply) event recorded)
+                  pairs
+            )
+            projections
+      )
+  pure (fmap Prelude.fst result)
+```
+
+The callback runs **inside the append transaction**. For each emitted `(event, recorded)` pair and
+each projection, it calls the projection's `apply`. Because this is the same transaction as the
+append, the read-model rows and the events commit **atomically** — an exception in any `apply` rolls
+back the whole command. The final `fmap Prelude.fst` discards the callback's unit result so the public
+type matches plain `runCommand`. This is why a `Strong` read after a successful *inline* command
+already sees the row: it committed with the events. (Contrast the async case, where `Strong` does not
+wait — see chapter 03.) For the transaction this rides inside, see
+[The transactional write path](/docs/keiro/walkthrough/command-cycle/04-the-transactional-write-path).
+
+## Async: a bare transaction, and nothing else
+
+The async flavor is deliberately minimal:
+
+```haskell
+-- keiro/src/Keiro/Projection.hs
+applyAsyncProjection :: AsyncProjection -> RecordedEvent -> Tx.Transaction ()
+applyAsyncProjection projection recorded =
+  (projection ^. #applyRecorded) recorded
+```
+
+That is the *entire* runtime keiro ships for async projections — a function that hands you the
+`Tx.Transaction ()` for one event. There is no subscription loop, no checkpoint advance, no dedupe.
+
+<Callout type="warn">
+keiro ships **no async-projection worker**. You drive `applyAsyncProjection` from your own kiroku
+subscription, run the returned `Tx`, and advance the projection's `subscriptionName` checkpoint
+yourself. Because delivery is at-least-once, your `applyRecorded` must be idempotent (keyed off
+`idempotencyKey`); see
+[Make an async projection idempotent](/docs/keiro/how-to/make-an-async-projection-idempotent).
+</Callout>
+
+The contrast is the whole point: the inline flavor buys you strong consistency for free by riding the
+command's transaction; the async flavor trades that for decoupling, and hands you the wiring to do.
+
+## The rebuild path: skeleton status transitions only
+
+When a read model's schema drifts (chapter 03's `ReadModelStaleSchema`), you rebuild it. keiro's
+rebuild API is three thin wrappers over the registry's status transitions:
+
+```haskell
+-- keiro/src/Keiro/ReadModel/Rebuild.hs
+rebuild        :: (Store :> es) => ReadModel q r -> Eff es ReadModelMetadata  -- -> markRebuilding
+promote        :: (Store :> es) => ReadModel q r -> Eff es ReadModelMetadata  -- -> markLive
+abandonRebuild :: (Store :> es) => ReadModel q r -> Eff es ReadModelMetadata  -- -> markAbandoned
+```
+
+Each just threads the model's `name`/`version`/`shapeHash` into `markRebuilding`/`markLive`/
+`markAbandoned` from `Keiro.ReadModel.Schema`. While the model is not `Live` (between `rebuild` and
+`promote`), `runQuery` rejects with `ReadModelNotLive` — exactly the guard from chapter 03.
+
+<Callout type="warn">
+**The rebuild path is a skeleton, and this is an honest gap.** There is **no shadow-table swap** and
+**no automated replay**. Repopulating the table from the event log between `rebuild` and `promote` is
+*the caller's job* — `rebuild`/`promote`/`abandonRebuild` only flip the registry status. The
+eight-step rebuild protocol described in keiro's research notes is **not** implemented at the pinned
+commit; the shipped surface is exactly these three status transitions. See
+[Rebuild a read model](/docs/keiro/how-to/rebuild-a-read-model) for the manual procedure.
+</Callout>
+
+That closes the read-side tour. Back to
+[00 — Start here](/docs/keiro/walkthrough/read-side/00-start-here), or on to the
+[Projection reference](/docs/keiro/reference/projection).
