@@ -1,0 +1,109 @@
+---
+title: "05 — Threading state and registers"
+description: "The real keiro call site: how evaluateCommand passes both halves of the hydrated (state, registers) pair into Keiki.step, and why both must be carried."
+---
+
+<Callout type="info">
+  This is part of an ordered walkthrough. If you are new, start at
+  [00 — Start here](/docs/keiro/walkthrough/foundation/00-start-here).
+</Callout>
+
+## What this part covers
+
+`keiro/src/Keiro/Command.hs` — the real call site that runs the
+[transducer step](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step) from the previous
+chapter against a hydrated stream. This is the linchpin the whole tour builds to: it shows *both* halves
+of the `(state, registers)` pair being passed into `Keiki.step`.
+
+## The hydrated record
+
+When keiro hydrates a stream it produces a `Hydrated` record holding the recovered machine
+configuration plus bookkeeping:
+
+```haskell
+-- keiro/src/Keiro/Command.hs
+data Hydrated rs s = Hydrated
+  { state          :: !s
+  , registers      :: !(RegFile rs)
+  , streamVersion  :: !StreamVersion
+  , globalPosition :: !(Maybe GlobalPosition)
+  }
+  deriving stock (Generic)
+```
+
+The two fields that matter here are `state` and `registers` — the same `(s, RegFile rs)` pair the
+transducer steps on. `streamVersion` and `globalPosition` are the store coordinates the append path
+uses; they are not part of the machine's configuration.
+
+## The call site
+
+```haskell
+-- keiro/src/Keiro/Command.hs
+evaluateCommand ::
+  BoolAlg phi (RegFile rs, ci) =>
+  EventStream phi rs s ci co ->
+  Hydrated rs s ->
+  ci ->
+  Either CommandError [co]
+evaluateCommand eventStream current command =
+  case Keiki.step (eventStream ^. #transducer) (state current, registers current) command of
+    Nothing             -> Left CommandRejected
+    Just (_, _, events) -> Right events
+```
+
+This is the line the tour exists to explain:
+
+```haskell
+Keiki.step (eventStream ^. #transducer) (state current, registers current) command
+```
+
+It reads the `transducer` out of the `EventStream`, builds the pair `(state current, registers
+current)` from the hydrated record — **both halves** — and passes the command. The result maps
+directly onto `step`'s return shape from the previous chapter:
+
+- `Nothing` becomes `Left CommandRejected` — no edge's guard was satisfied.
+- `Just (_, _, events)` becomes `Right events` — the emitted events to encode and append. (The next
+  state and next registers in the first two slots are discarded *here*; they are recomputed on the
+  write path when a snapshot needs to be written.)
+
+## Why both halves must be carried
+
+The registers are **not recoverable from the control state** — the point established in the
+[previous chapter](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step). Two streams at the
+same vertex can hold different register values, so knowing the vertex tells you nothing about the
+register file. That single fact forces the whole pair through every stage:
+
+- **Hydration** replays the stored events to rebuild *both* the state and the registers (via keiki's
+  `applyEventStreaming`), producing the `Hydrated` record above.
+- **The step** consumes the whole pair: `(state current, registers current)`.
+- **A snapshot** must persist the whole pair, because a snapshot that stored only the state could never
+  reconstruct the registers.
+
+If keiro carried only the state, a transition whose guard reads a register — or whose `output` is built
+from a register — would have nothing to read. So the command cycle hydrates and carries registers, not
+just state, all the way through.
+
+## Where the pair is persisted
+
+How those emitted events get encoded, appended at the expected version, and how a snapshot of the
+`(state, registers)` pair is *persisted* are jobs for the command-cycle and read-side tours
+respectively. The snapshot persistence — the snapshot codec, the `keiro_snapshots` table, the policy
+evaluation — is covered by the **read-side** tour's snapshot chapters, reachable from the
+[snapshot codec chapter](/docs/keiro/walkthrough/read-side/01-the-snapshot-codec-and-the-register-pair).
+
+## Where this fits in the bigger picture
+
+This chapter walked the *foundation* call site in isolation. To see it embedded in the full write path
+— hydration, the no-op case, encoding, the transactional append under optimistic concurrency, retries,
+and the snapshot write — read the command cycle:
+
+<Cards>
+  <Card title="The command cycle" href="/docs/keiro/walkthrough/command-cycle/00-start-here" description="The full write path that wraps this transducer step: hydrate, transduce, append." />
+</Cards>
+
+That closes the foundation tour: you can now name and resolve a
+[stream handle](/docs/keiro/walkthrough/foundation/01-the-stream-handle), read an
+[EventStream](/docs/keiro/walkthrough/foundation/02-the-event-stream) field by field, trace the
+[codec boundary](/docs/keiro/walkthrough/foundation/03-the-codec), explain a
+[SymTransducer and `Keiki.step`](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step), and
+read the real call site that threads `(state, registers)` through it all.

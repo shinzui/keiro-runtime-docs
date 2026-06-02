@@ -1,0 +1,104 @@
+---
+title: "01 — The typed Stream handle"
+description: "Keiro.Stream: a phantom-typed newtype over kiroku's StreamName, and how a typed handle becomes a physical stream name."
+---
+
+<Callout type="info">
+  This is part of an ordered walkthrough. If you are new, start at
+  [00 — Start here](/docs/keiro/walkthrough/foundation/00-start-here).
+</Callout>
+
+## What this part covers
+
+`keiro-core/src/Keiro/Stream.hs` — the whole file, forty lines. It defines the **typed handle** every
+command targets: a `Stream a`. Everything else in the foundation (the `EventStream`, the command cycle)
+takes one of these handles and resolves it to the physical stream the event store reads and appends to.
+
+## The newtype
+
+```haskell
+-- keiro-core/src/Keiro/Stream.hs
+-- | A 'StreamName' tagged with the phantom type @a@ of the stream it names.
+newtype Stream a = Stream
+  { name :: StreamName
+  }
+  deriving stock (Generic, Eq, Ord, Show)
+```
+
+A `Stream a` is *nothing but* a `StreamName` (kiroku's `Kiroku.Store.Types.StreamName`) wrapped in a
+`newtype` — a zero-cost wrapper that vanishes at runtime. What it adds is the **phantom type
+parameter** `a`. "Phantom" means `a` appears in the type but never in a field: there is no value of
+type `a` anywhere in the record. It exists purely so the type checker can demand, say, a
+`Stream OrderEventStream` rather than a bare `StreamName`, so a name built for one aggregate cannot be
+passed where a name for another is expected. The wrapper is otherwise transparent — at runtime a
+`Stream a` *is* its `StreamName`.
+
+## The three functions
+
+The module exports exactly one constructor and two accessors:
+
+```haskell
+-- keiro-core/src/Keiro/Stream.hs
+-- | Build a 'Stream' handle from a raw stream-name 'Text'.
+stream :: Text -> Stream a
+stream name = Stream { name = StreamName name }
+
+-- | Recover the underlying 'StreamName' from a 'Stream' handle.
+streamName :: Stream a -> StreamName
+streamName value = value ^. #name
+
+-- | Transform the underlying 'StreamName' while preserving the phantom type.
+mapStreamName :: (StreamName -> StreamName) -> Stream a -> Stream a
+mapStreamName f value = value & #name %~ f
+```
+
+Read them in order:
+
+- `stream` builds a handle from a raw `Text`. Note the phantom `a` is *free* in the result type — the
+  caller decides which tag the handle carries, usually by a type annotation on the binding it feeds
+  (see `orderStream` below).
+- `streamName` recovers the underlying `StreamName`. This is the projection the runtime uses when it
+  needs the physical name to hand to the store.
+- `mapStreamName` rewrites the name *while keeping the same phantom tag* — handy for namespacing or
+  prefixing a stream name without losing the compile-time `a`. Because the tag is preserved, a
+  prefixed `Stream OrderEventStream` is still an `OrderEventStream` handle.
+
+The implementations are tiny because the type is the whole point: the work is at compile time, in the
+tag `a`, not at runtime.
+
+## The jitsurei anchor
+
+The worked example (`jitsurei/src/Jitsurei/OrderStream.hs`) builds a handle for an order aggregate:
+
+```haskell
+-- jitsurei/src/Jitsurei/OrderStream.hs
+orderStream :: OrderId -> Stream OrderEventStream
+orderStream orderId = stream ("order-" <> orderIdText orderId)
+```
+
+`orderStream` takes a domain `OrderId`, renders it into a `Text` name (`"order-…"`), and tags the
+resulting handle as a `Stream OrderEventStream`. From here on the type checker treats this handle as
+*the order stream's* — you cannot accidentally pass it where a different aggregate's handle is
+expected.
+
+## How a handle becomes a physical name
+
+A `Stream a` is a *typed* handle. The store, however, reads and appends to a physical `StreamName`.
+The bridge is the `EventStream`'s `resolveStreamName` field, walked in the
+[next chapter](/docs/keiro/walkthrough/foundation/02-the-event-stream): it is a function
+`Stream (EventStream …) -> StreamName` that maps the typed handle to the physical name. For the order
+stream it is simply `Stream.streamName` — the projection above — so the handle's name *is* the physical
+name.
+
+<Callout type="info">
+  keiro's older design notes called this handle `AggregateId a`. The **shipped** type is `Stream a` —
+  trust the source. The reference page
+  [EventStream and Stream](/docs/keiro/reference/event-stream-and-stream) documents the same surface as
+  an API reference.
+</Callout>
+
+## Next
+
+[02 — The EventStream](/docs/keiro/walkthrough/foundation/02-the-event-stream) — the record that
+marries a transducer to a codec, a snapshot policy, and the `resolveStreamName` function this chapter
+pointed forward to.

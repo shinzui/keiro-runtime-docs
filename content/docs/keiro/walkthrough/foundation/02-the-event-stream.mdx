@@ -1,0 +1,179 @@
+---
+title: "02 — The EventStream"
+description: "Keiro.EventStream field by field: marrying a keiki SymTransducer to a Codec, a SnapshotPolicy, and a StateCodec over the (state, registers) pair."
+---
+
+<Callout type="info">
+  This is part of an ordered walkthrough. If you are new, start at
+  [00 — Start here](/docs/keiro/walkthrough/foundation/00-start-here).
+</Callout>
+
+## What this part covers
+
+`keiro-core/src/Keiro/EventStream.hs` — the record that, in the module's own words, "marries a pure
+keiki `SymTransducer` … with everything keiro needs to run it against a durable event store." We read
+its seven fields, then the two helper types it carries: `SnapshotPolicy` and `StateCodec`.
+
+## The marriage, field by field
+
+```haskell
+-- keiro-core/src/Keiro/EventStream.hs
+data EventStream phi rs s ci co = EventStream
+  { transducer :: !(SymTransducer phi rs s ci co)
+  , initialState :: !s
+  , initialRegisters :: !(RegFile rs)
+  , eventCodec :: !(Codec co)
+  , resolveStreamName :: !(Stream (EventStream phi rs s ci co) -> StreamName)
+  , snapshotPolicy :: !(SnapshotPolicy (s, RegFile rs))
+  , stateCodec :: !(Maybe (StateCodec (s, RegFile rs)))
+  }
+  deriving stock (Generic)
+```
+
+The five type parameters thread straight through from the underlying transducer:
+
+<TypeTable
+  type={{
+    phi: { description: "The guard / predicate alphabet the transducer branches on.", type: "kind" },
+    rs: { description: "The register set; RegFile rs holds the live register values.", type: "[Slot]" },
+    s: { description: "The control state — the vertex the machine sits at.", type: "kind" },
+    ci: { description: "The command input the machine consumes.", type: "kind" },
+    co: { description: "The event output the machine emits (what eventCodec serializes).", type: "kind" },
+  }}
+/>
+
+And the seven fields:
+
+<TypeTable
+  type={{
+    transducer: { description: "The pure keiki state machine that turns a command into emitted events. The decision core.", type: "SymTransducer phi rs s ci co" },
+    initialState: { description: "The machine's starting control state, used when hydrating an empty stream.", type: "s" },
+    initialRegisters: { description: "The machine's starting register file, used when hydrating an empty stream.", type: "RegFile rs" },
+    eventCodec: { description: "Serializes and migrates the emitted events (co) to and from stored payloads.", type: "Codec co" },
+    resolveStreamName: { description: "Maps a typed Stream handle to the physical StreamName read and appended to in the store.", type: "Stream (EventStream …) -> StreamName" },
+    snapshotPolicy: { description: "Decides, per append, whether to persist a snapshot of the (state, registers) pair.", type: "SnapshotPolicy (s, RegFile rs)" },
+    stateCodec: { description: "How to serialize that snapshot. Nothing disables snapshotting regardless of snapshotPolicy.", type: "Maybe (StateCodec (s, RegFile rs))" },
+  }}
+/>
+
+The first three fields *seed* a fresh machine; `eventCodec` is the [serialization
+boundary](/docs/keiro/walkthrough/foundation/03-the-codec); `resolveStreamName` turns the
+[typed handle](/docs/keiro/walkthrough/foundation/01-the-stream-handle) into a physical name; and the
+last two govern snapshotting.
+
+Look closely at `snapshotPolicy` and `stateCodec`. Both are parameterized over **`(s, RegFile rs)`** —
+the *pair* of folded control state and register file, not just `s`. That is the structural proof,
+visible right in the type, that a snapshot concerns **both** halves of the machine: where it sits *and*
+its working memory. The next two chapters explain why the registers are a separate bank that cannot be
+recovered from the state alone.
+
+## SnapshotPolicy — when to snapshot
+
+```haskell
+-- keiro-core/src/Keiro/EventStream.hs
+data SnapshotPolicy state
+  = Never
+  | Every !Int
+  | OnTerminal
+  | Custom !(state -> StreamVersion -> Bool)
+  deriving stock (Generic)
+```
+
+<TypeTable
+  type={{
+    Never: { description: "Never snapshot; always rehydrate from the full event log.", type: "constructor" },
+    Every: { description: "Snapshot whenever the stream version is a multiple of n. A non-positive interval disables snapshotting.", type: "!Int" },
+    OnTerminal: { description: "Snapshot only when the machine has reached a final state.", type: "constructor" },
+    Custom: { description: "An arbitrary predicate over the folded state and the current StreamVersion.", type: "!(state -> StreamVersion -> Bool)" },
+  }}
+/>
+
+## StateCodec — how to serialize a snapshot
+
+```haskell
+-- keiro-core/src/Keiro/EventStream.hs
+data StateCodec state = StateCodec
+  { stateCodecVersion :: !Int
+  , shapeHash :: !Text
+  , encode :: !(state -> Value)
+  , decode :: !(Value -> Either Text state)
+  }
+  deriving stock (Generic)
+```
+
+<TypeTable
+  type={{
+    stateCodecVersion: { description: "Bumped when the snapshot encoding changes incompatibly.", type: "!Int" },
+    shapeHash: { description: "A digest of the folded-state shape; protects against silently loading a snapshot whose structure no longer matches.", type: "!Text" },
+    encode: { description: "JSON serialization of the (state, registers) pair.", type: "!(state -> Value)" },
+    decode: { description: "JSON deserialization of the (state, registers) pair.", type: "!(Value -> Either Text state)" },
+  }}
+/>
+
+The Haddock states the load-bearing rule: `stateCodecVersion` and `shapeHash` **together** gate
+snapshot reuse. A stored snapshot is loaded only when *both* match the current codec, so changing the
+snapshot encoding or the shape of the folded state invalidates older snapshots and forces a clean
+rehydration from events. That is what protects you from silently decoding a snapshot whose structure no
+longer matches the code.
+
+## The two load-bearing facts
+
+1. **`stateCodec = Nothing` disables snapshotting — regardless of `snapshotPolicy`.** The type makes
+   the dependency explicit: `stateCodec` is a `Maybe`. With no codec there is no way to serialize a
+   snapshot, so even an aggressive `snapshotPolicy` like `Every 1` writes nothing. To turn snapshotting
+   on you must set *both* a firing policy *and* a `Just` state codec.
+2. **Snapshots are about the pair.** Because `snapshotPolicy` and `stateCodec` are both over
+   `(s, RegFile rs)`, the persisted blob always carries the control state *and* the registers.
+
+## The jitsurei anchor — both ends
+
+The order example shows both configurations side by side
+(`jitsurei/src/Jitsurei/OrderStream.hs`). First, the no-snapshot marriage:
+
+```haskell
+-- jitsurei/src/Jitsurei/OrderStream.hs
+orderEventStream :: OrderEventStream
+orderEventStream = EventStream
+  { transducer = orderTransducer
+  , initialState = NotStarted
+  , initialRegisters = RNil               -- OrderRegs = '[]: an empty register file
+  , eventCodec = orderCodec
+  , resolveStreamName = Stream.streamName
+  , snapshotPolicy = Never
+  , stateCodec = Nothing
+  }
+```
+
+where `type OrderEventStream = EventStream (HsPred OrderRegs OrderCommand) OrderRegs OrderState
+OrderCommand OrderEvent` and `type OrderRegs = '[]`. The order aggregate carries *no* registers
+(`RNil`), so it is the cleanest place to see the wiring without register noise. It also opts out of
+snapshotting on both counts: `snapshotPolicy = Never` and `stateCodec = Nothing`.
+
+Then the same stream with snapshotting switched on — note it overrides *both* fields:
+
+```haskell
+-- jitsurei/src/Jitsurei/OrderStream.hs
+snapshotOrderEventStream :: OrderEventStream
+snapshotOrderEventStream =
+  orderEventStream
+    { snapshotPolicy = Every 2
+    , stateCodec = Just (defaultStateCodec @OrderRegs @OrderState 1)
+    }
+```
+
+`Every 2` fires the policy on even versions, and `Just (defaultStateCodec @OrderRegs @OrderState 1)`
+supplies the codec. Setting one without the other would be a silent no-op — which is exactly why both
+appear together.
+
+<Callout type="info">
+  This chapter documents the `EventStream` **fields**. The snapshot *runtime* mechanics —
+  `defaultStateCodec`, `writeSnapshot`, `hydrateWithSnapshot`, the policy evaluation `shouldSnapshot`,
+  and the `keiro_snapshots` table — are documented in the
+  [snapshot reference](/docs/keiro/reference/snapshot) and walked in depth by the **read-side** tour's
+  snapshot chapters, reachable from the [snapshot codec chapter](/docs/keiro/walkthrough/read-side/01-the-snapshot-codec-and-the-register-pair).
+</Callout>
+
+## Next
+
+[03 — The Codec boundary](/docs/keiro/walkthrough/foundation/03-the-codec) — the `eventCodec` field
+seen here, walked as the stream's serialization boundary.
