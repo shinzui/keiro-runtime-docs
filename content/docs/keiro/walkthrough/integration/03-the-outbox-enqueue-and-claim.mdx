@@ -1,0 +1,235 @@
+---
+title: "03 — The outbox: enqueue and claim"
+description: "Reading how an outbox row gets in (the two enqueue surfaces, the producer mint, the prefixed-TypeID message id, ON CONFLICT) and how the worker claims it (the claim CTE, FOR UPDATE SKIP LOCKED, the four ordering predicates), plus the stale-publishing gap."
+---
+
+This chapter reads the outbox enqueue and claim paths in `keiro/src/Keiro/Outbox.hs`,
+`keiro/src/Keiro/Outbox/Types.hs`, and `keiro/src/Keiro/Outbox/Schema.hs`. The **outbox** is the
+pattern that makes *publishing* durable: the message is written into the same database transaction
+as the domain change, then published later from that durable row. Read [02 — The
+inbox](/docs/keiro/walkthrough/integration/02-the-inbox) first.
+
+## Two ways to enqueue
+
+```haskell
+-- keiro/src/Keiro/Outbox.hs
+data IntegrationProducer e = IntegrationProducer
+  { name :: !Text                 -- subscription name (checkpoint cursor)
+  , source :: !Text               -- written into keiro_outbox.source
+  , messageIdPrefix :: !Text      -- TypeID prefix (1-63 lowercase letters)
+  , mapEvent :: !(RecordedEvent -> e -> Maybe IntegrationEventDraft) }  -- Nothing skips the event
+  deriving stock (Generic)
+
+data IntegrationEventDraft = IntegrationEventDraft
+  { destination :: !Text, key :: !(Maybe Text), eventType :: !Text, schemaVersion :: !Int
+  , contentType :: !IntegrationContentType, schemaReference :: !(Maybe SchemaReference)
+  , sourceEventId :: !(Maybe EventId), sourceGlobalPosition :: !(Maybe GlobalPosition)
+  , payloadBytes :: !ByteString, occurredAt :: !UTCTime, causationId :: !(Maybe EventId)
+  , correlationId :: !(Maybe EventId), traceContext :: !(Maybe TraceContext), attributes :: !(Maybe Value) }
+  deriving stock (Generic, Eq, Show)
+
+freshOutboxId :: (IOE :> es) => Eff es OutboxId
+freshOutboxId = fmap OutboxId (liftIO V7.genUUID)
+
+enqueueIntegrationEventTx :: OutboxId -> IntegrationEvent -> Tx.Transaction ()
+enqueueIntegrationEventTx outboxId event =
+  enqueueOutboxTx (OutboxMessage {outboxId, event})
+```
+
+There are two surfaces:
+
+- The canonical **producer subscription** (`IntegrationProducer`) reads its private event stream and,
+  via `mapEvent`, maps each recorded private event to an `IntegrationEventDraft` (an
+  `IntegrationEvent` minus `messageId` and `source`, which the mint fills in). Returning `Nothing`
+  skips the event. It writes one outbox row per mapped event. The private event this draft is minted
+  from is recorded by a command — see the [command-cycle
+  tour](/docs/keiro/walkthrough/command-cycle/00-start-here) for the Hydrate → Transduce → Append
+  write path.
+- The inline **escape hatch** (`enqueueIntegrationEventTx`) lets a saga or process manager enqueue
+  directly inside its own command transaction (`freshOutboxId` mints the id when there is no stable
+  one to reuse). It supplies a **stable `OutboxId`** so retried command attempts coalesce on the
+  `(source, message_id)` unique constraint. The command transaction it runs inside is documented in
+  the [command reference](/docs/keiro/reference/command).
+
+For the end-to-end producer setup, see [Publish with the
+outbox](/docs/keiro/how-to/publish-with-the-outbox).
+
+## Minting the message id: `mintIntegrationEvent`, `draftToEvent`, `enqueueProducerEventTx`
+
+```haskell
+mintIntegrationEvent :: (IOE :> es) => IntegrationProducer e -> IntegrationEventDraft -> Eff es IntegrationEvent
+mintIntegrationEvent producer draft = do
+  typeId <- liftIO (TypeID.genTypeID (producer ^. #messageIdPrefix))
+  pure (draftToEvent (producer ^. #source) (TypeID.toText typeId) draft)
+
+draftToEvent :: Text -> Text -> IntegrationEventDraft -> IntegrationEvent   -- pure assembly
+
+enqueueProducerEventTx producer outboxId draft = do
+  event <- mintIntegrationEvent producer draft     -- mints a prefixed TypeID as messageId
+  pure (enqueueOutboxTx (OutboxMessage {outboxId, event}))
+```
+
+`enqueueProducerEventTx` is the primitive a subscription worker calls per event.
+`mintIntegrationEvent` mints a fresh `messageId` as a **TypeID** — a UUIDv7 with the producer's
+`messageIdPrefix` (1–63 lowercase Latin letters) — then `draftToEvent` purely assembles the full
+envelope from `source` + the minted id + the draft. That `messageId` is the envelope field [chapter
+01](/docs/keiro/walkthrough/integration/01-the-integration-event-envelope) called the canonical
+dedupe key.
+
+<Callout type="warn">
+The TypeID is minted *before* the insert. If the transaction rolls back, the id is discarded and the
+next attempt mints a different one — so **row-level idempotency hinges on a stable `OutboxId`, not on
+the minted message id**. That is why the escape hatch asks the caller for a deterministic `OutboxId`.
+</Callout>
+
+## `enqueueOutboxTx`: idempotent insert
+
+```sql
+-- keiro/src/Keiro/Outbox/Schema.hs (enqueueOutboxStmt; 22-column INSERT, column list abridged)
+INSERT INTO keiro_outbox
+  ( outbox_id, message_id, source, … , occurred_at )
+VALUES
+  ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+ON CONFLICT (source, message_id) DO NOTHING
+```
+
+`enqueueOutboxTx` inserts the row inside the caller's transaction. The `ON CONFLICT (source,
+message_id) DO NOTHING`, backed by the table's `UNIQUE (source, message_id)` constraint, is what
+coalesces duplicate retries: a re-run of the same logical enqueue with the same stable `OutboxId`
+hits the conflict and does nothing.
+
+## The row lifecycle
+
+A row moves through the five `OutboxStatus` states: `OutboxPending` (never attempted, the insert
+default) → `OutboxPublishing` (held by a worker between claim and mark) → `OutboxSent` (terminal,
+broker acknowledged), or `OutboxFailed` (retryable after `next_attempt_at`) → `OutboxDead` (terminal
+after `maxAttempts`). The claim below moves `pending`/`failed` rows into `publishing`; the marks in
+[chapter 04](/docs/keiro/walkthrough/integration/04-the-outbox-drain-and-dead-letter) move them on to
+`sent`, `failed`, or `dead`. `lookupOutbox` and `listOutbox` are the test/inspection helpers that
+read rows back.
+
+## `claimOutboxBatch`: the claim CTE
+
+```sql
+-- keiro/src/Keiro/Outbox/Schema.hs (claimSql, ordering predicate spliced into the AND ( … ) slot)
+WITH ready AS (
+  SELECT r.outbox_id FROM keiro_outbox r
+  WHERE r.status IN ('pending', 'failed')
+    AND r.next_attempt_at <= $2
+    AND ( <ordering predicate> )
+  ORDER BY r.created_at
+  LIMIT $1
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE keiro_outbox kt
+SET status = 'publishing', attempt_count = kt.attempt_count + 1, updated_at = $2
+WHERE kt.outbox_id IN (SELECT outbox_id FROM ready)
+RETURNING <row columns>
+```
+
+Three load-bearing facts:
+
+1. The candidate set is `status IN ('pending', 'failed')` — **`publishing` is not selected** (this
+   is the gap below).
+2. `FOR UPDATE SKIP LOCKED` lets many workers claim disjoint batches concurrently without blocking
+   on each other.
+3. The claim atomically flips the claimed rows to `publishing` and bumps `attempt_count`, all in the
+   one statement, so a row is never claimed twice.
+
+## The four ordering predicates
+
+```haskell
+policyPredicate = \case
+  PerKeyHeadOfLine -> perKeyPredicate
+  PerSourceStream  -> perSourcePredicate
+  StopTheLine      -> perKeyPredicate     -- same claim predicate; halts at the worker level
+  BestEffort       -> "TRUE"
+```
+
+```sql
+-- perKeyPredicate: skip a row if an EARLIER same-key row is still non-terminal.
+( r.message_key IS NULL OR NOT EXISTS (
+    SELECT 1 FROM keiro_outbox earlier
+    WHERE earlier.source = r.source
+      AND earlier.message_key = r.message_key
+      AND earlier.created_at < r.created_at
+      AND earlier.status NOT IN ('sent', 'dead') ) )
+
+-- perSourcePredicate: skip a row if ANY earlier row in the same source is still non-terminal.
+NOT EXISTS ( SELECT 1 FROM keiro_outbox earlier
+  WHERE earlier.source = r.source
+    AND earlier.created_at < r.created_at
+    AND earlier.status NOT IN ('sent', 'dead') )
+```
+
+The four `OrderingPolicy` constructors splice a different predicate into the claim:
+
+- `PerKeyHeadOfLine` (the default) uses `perKeyPredicate`: a non-terminal row blocks every later row
+  *with the same key* in the same `source`; null-keyed rows bypass the check (Kafka does not promise
+  cross-key order for null keys). One stuck aggregate cannot stall traffic on other aggregates.
+- `PerSourceStream` uses `perSourcePredicate`: *any* earlier non-terminal row in the source blocks —
+  total ordering across keys (rare).
+- `StopTheLine` claims with `perKeyPredicate` but **halts at the worker level** on the first failure
+  — see [04 — The outbox: drain and
+  dead-letter](/docs/keiro/walkthrough/integration/04-the-outbox-drain-and-dead-letter).
+- `BestEffort` is `"TRUE"`: no blocking; failed rows do not hold up their key.
+
+Note both head-of-line predicates exclude only `('sent', 'dead')`, so **`publishing` counts as
+non-terminal** — a row mid-publish blocks its key. That is intended while a worker is healthy, but it
+sets up the gap below. For picking a policy, see [Choose an outbox ordering
+policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
+
+## The stale-`publishing` gap
+
+<Callout type="warn">
+Because the claim selects only `pending`/`failed` and the head-of-line predicates treat `publishing`
+as non-terminal, a worker that crashes **between** the claim (which set `status = 'publishing'`) and
+the later mark strands the row in `publishing` with **no automatic recovery** — and under
+`PerKeyHeadOfLine` / `PerSourceStream` that stranded row also head-of-line-blocks its key. This is
+the shipped behavior; recover it with the manual runbook in [Recovering stranded publishing
+rows](/docs/keiro/how-to/choose-an-outbox-ordering-policy#recovering-stranded-publishing-rows).
+</Callout>
+
+## The `keiro_outbox` table
+
+```sql
+-- keiro-migrations/sql-migrations/2026-05-17-01-00-00-keiro-outbox.sql
+CREATE TABLE IF NOT EXISTS keiro_outbox (
+  outbox_id UUID PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  message_key TEXT,
+  event_type TEXT NOT NULL,
+  schema_version BIGINT NOT NULL,
+  content_type TEXT NOT NULL,
+  schema_registry TEXT, schema_subject TEXT, schema_version_ref BIGINT, schema_id BIGINT, schema_fingerprint TEXT,
+  source_event_id UUID, source_global_position BIGINT, causation_id UUID, correlation_id UUID,
+  traceparent TEXT, tracestate TEXT,
+  payload_bytes BYTEA NOT NULL,
+  attributes JSONB,
+  occurred_at TIMESTAMPTZ NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempt_count BIGINT NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_error TEXT,
+  published_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (source, message_id)
+);
+CREATE INDEX IF NOT EXISTS keiro_outbox_pending_idx ON keiro_outbox (status, next_attempt_at, created_at);
+CREATE INDEX IF NOT EXISTS keiro_outbox_head_of_line_idx ON keiro_outbox (source, message_key, created_at)
+  WHERE status NOT IN ('sent', 'dead') AND message_key IS NOT NULL;
+```
+
+The `outbox_id UUID PRIMARY KEY` is the stable per-row id retries reuse; `UNIQUE (source,
+message_id)` is the dedupe the `ON CONFLICT` rides on. `status` defaults to `'pending'`,
+`attempt_count` to `0`, `next_attempt_at` to `now()`. `keiro_outbox_pending_idx` serves the claim's
+`status` / `next_attempt_at` / `created_at` lookups; the **partial**
+`keiro_outbox_head_of_line_idx … WHERE status NOT IN ('sent','dead') AND message_key IS NOT NULL`
+serves the head-of-line predicates' `NOT EXISTS` sub-queries. For the full column reference, see the
+[outbox reference](/docs/keiro/reference/outbox).
+
+Next: [04 — The outbox: drain and
+dead-letter](/docs/keiro/walkthrough/integration/04-the-outbox-drain-and-dead-letter).

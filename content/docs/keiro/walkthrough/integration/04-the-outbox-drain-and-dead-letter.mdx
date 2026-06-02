@@ -1,0 +1,159 @@
+---
+title: "04 — The outbox: drain and dead-letter"
+description: "Reading how claimed outbox rows are published, retried, and dead-lettered: publishClaimedOutbox's one-pass-per-call drain, markOutboxFailedTx's OutboxDead-vs-OutboxFailed decision, the backoff curve, and the StopTheLine halt with haltedOn."
+---
+
+This chapter reads the second outbox half — how claimed rows are published, retried, and
+dead-lettered — in `keiro/src/Keiro/Outbox.hs` and `keiro/src/Keiro/Outbox/Types.hs`. Read [03 — The
+outbox: enqueue and
+claim](/docs/keiro/walkthrough/integration/03-the-outbox-enqueue-and-claim) first.
+
+## `publishClaimedOutbox`: one pass per call
+
+```haskell
+-- keiro/src/Keiro/Outbox.hs
+data PublishOutcome = PublishSucceeded | PublishFailed !Text
+  deriving stock (Generic, Eq, Show)
+
+publishClaimedOutbox :: (IOE :> es, Store :> es) => (OutboxRow -> Eff es PublishOutcome) -> OutboxPublishOptions -> Eff es OutboxPublishSummary
+publishClaimedOutbox publish options = do
+  now <- liftIO getCurrentTime
+  rows <- claimOutboxBatch (options ^. #orderingPolicy) (options ^. #batchSize) now
+  drainBatch rows OutboxPublishSummary {claimed = 0, published = 0, retried = 0, dead = 0, haltedOn = Nothing}
+  where
+    …
+```
+
+<Callout type="info">
+`publishClaimedOutbox` processes **one claimed batch and returns** — it does NOT loop. The
+application schedules it repeatedly (e.g. once per process-compose tick). It is also
+transport-neutral: it takes a caller-supplied `publish :: OutboxRow -> Eff es PublishOutcome`, so the
+broker library never appears in keiro itself.
+</Callout>
+
+It claims a batch under the active `OrderingPolicy`, seeds an empty `OutboxPublishSummary`, and hands
+the batch to the `drainBatch` worker loop.
+
+## `drainBatch`: publish, then mark
+
+```haskell
+drainBatch [] acc = pure acc
+drainBatch (row : rest) acc = do
+  outcome <- withProducerSpan (options ^. #tracer) (row ^. #event) (outboxRowToKafkaRecord row) $ \mSpan -> do
+    out <- publish row
+    … -- on PublishFailed with a span: addAttribute error_type "publish_failed"; setStatus (Error errMsg)
+    pure out
+  now <- liftIO getCurrentTime
+  case outcome of
+    PublishSucceeded -> do
+      markOutboxSent (row ^. #outboxId) now
+      drainBatch rest (acc & #claimed +~ 1 & #published +~ 1)
+    PublishFailed errMsg -> do
+      let attempt = row ^. #attemptCount
+          delay = nextDelay (options ^. #backoff) attempt
+      resultStatus <- runTransaction $
+        markOutboxFailedTx (row ^. #outboxId) errMsg (options ^. #maxAttempts) delay now
+      let bumped = acc & #claimed +~ 1
+          acc' = case resultStatus of { OutboxDead -> bumped & #dead +~ 1; _ -> bumped & #retried +~ 1 }
+      case options ^. #orderingPolicy of
+        StopTheLine -> pure (acc' & #haltedOn ?~ row ^. #outboxId)
+        _           -> drainBatch rest acc'
+```
+
+For each claimed row the worker calls your `publish` inside `withProducerSpan` — the optional
+OpenTelemetry producer span (present only when `tracer` is set; see the [telemetry
+reference](/docs/keiro/reference/telemetry)). Then it reflects the outcome:
+
+- `PublishSucceeded` → `markOutboxSent`, and bump `claimed`/`published`;
+- `PublishFailed errMsg` → compute the backoff `delay`, call `markOutboxFailedTx`, and bump `dead` or
+  `retried` per its result.
+
+<Callout type="warn">
+Publish is **at-least-once**: mark a row sent only *after* the broker acknowledges. A crash after the
+broker ack but before `markOutboxSent` re-publishes the row on the next pass — the consumer's inbox
+([chapter 02](/docs/keiro/walkthrough/integration/02-the-inbox)) dedupes the double-send on the
+stable `messageId`.
+</Callout>
+
+## `markOutboxFailedTx`: the dead-letter decision
+
+```haskell
+-- keiro/src/Keiro/Outbox/Schema.hs
+markOutboxFailedTx :: OutboxId -> Text -> Int -> NominalDiffTime -> UTCTime -> Tx.Transaction OutboxStatus
+markOutboxFailedTx outboxId errMsg maxAttempts delay now = do
+  currentAttempt <- Tx.statement (unOutboxId outboxId) readAttemptCountStmt
+  let attempt = fromMaybe 0 currentAttempt
+      shouldDie = attempt >= maxAttempts
+      nextStatus = if shouldDie then OutboxDead else OutboxFailed
+      nextAttempt = addUTCTime delay now
+  Tx.statement (unOutboxId outboxId, statusText nextStatus, errMsg, nextAttempt, now) markFailedStmt
+  pure nextStatus
+```
+
+```sql
+-- markSentStmt
+UPDATE keiro_outbox SET status = 'sent', published_at = $2, last_error = NULL, updated_at = $2 WHERE outbox_id = $1
+-- markFailedStmt
+UPDATE keiro_outbox SET status = $2, last_error = $3, next_attempt_at = $4, updated_at = $5 WHERE outbox_id = $1
+```
+
+`markOutboxFailedTx` reads the row's current `attempt_count`: `>= maxAttempts` → `OutboxDead`
+(terminal; the row stays in the table for operator inspection), otherwise `OutboxFailed` with
+`next_attempt_at = now + delay` (so the claim picks it up again after the backoff). It runs inside the
+caller's transaction so the "read count → write status" pair is atomic across concurrent workers. It
+returns the resulting `OutboxStatus` so `drainBatch` can update its counters. `markOutboxSent` is the
+success counterpart: `status = 'sent'`, `published_at`, cleared `last_error`.
+
+## Backoff: `BackoffSchedule`, `nextDelay`, `ExponentialBackoffOptions`
+
+```haskell
+-- keiro/src/Keiro/Outbox/Types.hs
+data ExponentialBackoffOptions = ExponentialBackoffOptions
+  { initial :: !NominalDiffTime, maxDelay :: !NominalDiffTime, multiplier :: !Double }
+  deriving stock (Generic, Eq, Show)
+
+data BackoffSchedule = ConstantBackoff !NominalDiffTime | ExponentialBackoff !ExponentialBackoffOptions
+  deriving stock (Generic, Eq, Show)
+
+nextDelay :: BackoffSchedule -> Int -> NominalDiffTime
+nextDelay (ConstantBackoff delay) _ = delay
+nextDelay (ExponentialBackoff opts) attempt =
+  let raw = (opts ^. #initial) * realToFrac ((opts ^. #multiplier) ** fromIntegral (max 0 (attempt - 1)))
+   in min (opts ^. #maxDelay) raw
+
+defaultPublishOptions :: OutboxPublishOptions
+defaultPublishOptions = OutboxPublishOptions
+  { batchSize = 32, maxAttempts = 10, backoff = ConstantBackoff 2, orderingPolicy = PerKeyHeadOfLine, tracer = Nothing }
+```
+
+`ConstantBackoff` is a fixed delay between retries. `ExponentialBackoff` grows as `min maxDelay
+(initial * multiplier ^ (attempt - 1))`, with `attempt` 1-based (`1` = first failure, so the first
+retry waits `initial`). `defaultPublishOptions` ships a batch of 32, ten attempts, a two-second
+constant backoff, and per-key head-of-line ordering. For tuning, see [Choose an outbox ordering
+policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
+
+## `StopTheLine` and the summary
+
+```haskell
+data OutboxPublishOptions = OutboxPublishOptions
+  { batchSize :: !Int, maxAttempts :: !Int, backoff :: !BackoffSchedule
+  , orderingPolicy :: !OrderingPolicy, tracer :: !(Maybe Tracer) }
+  deriving stock (Generic)
+
+data OutboxPublishSummary = OutboxPublishSummary
+  { claimed :: !Int, published :: !Int, retried :: !Int, dead :: !Int, haltedOn :: !(Maybe OutboxId) }
+  deriving stock (Generic, Eq, Show)
+```
+
+Under `StopTheLine`, `drainBatch` halts on the first `PublishFailed`, records the offending row in
+`haltedOn`, and returns without touching the rest of the batch; every other policy continues
+draining. The summary's invariant is `published + retried + dead + halted == claimed`, where
+`halted` is the one row named by `haltedOn` (populated only by `StopTheLine`).
+
+A crash anywhere in this drain — after the claim flipped a row to `publishing` but before the mark —
+is exactly how a row gets stranded in `publishing`; recover it with the [stranded-row
+runbook](/docs/keiro/how-to/choose-an-outbox-ordering-policy#recovering-stranded-publishing-rows)
+linked from [chapter
+03](/docs/keiro/walkthrough/integration/03-the-outbox-enqueue-and-claim).
+
+Next: [05 — Kafka mapping](/docs/keiro/walkthrough/integration/05-kafka-mapping).
