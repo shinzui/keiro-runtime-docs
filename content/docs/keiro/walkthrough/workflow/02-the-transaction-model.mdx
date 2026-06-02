@@ -1,0 +1,158 @@
+---
+title: "02 — The transaction model"
+description: "The separate-transaction reality vs. the atomic myth: what commits together, what does not, why deterministic ids make replay a no-op, and the PMCommandFailed hazard."
+---
+
+<Callout type="info">
+  Part of the [workflow code walkthrough](/docs/keiro/walkthrough/workflow/00-start-here).
+  Read [the previous chapter](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop)
+  first.
+</Callout>
+
+This is the headline chapter. [Chapter 01](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop)
+walked the *control flow* of `runProcessManagerOnce`; here we answer the question that flow
+leaves open: **what commits together, and what does not?** The answer matters because keiro's own
+in-repo design notes (under its `docs/research/*` and `docs/plans/*`) describe **one atomic
+multi-stream commit** — and the shipped code does **not** do that.
+
+The source is `keiro/src/Keiro/ProcessManager.hs`.
+
+## The shipped reality: separate transactions
+
+`runProcessManagerOnce` uses **separate transactions**. There are two distinct call sites, and
+they commit differently.
+
+**One transaction for the manager append + its timers.** The manager-state command is run with
+`runCommandWithSql`, and the timers are armed by composing `scheduleTimerTx` into the *same*
+transaction:
+
+```haskell
+-- keiro/src/Keiro/ProcessManager.hs
+      managerOutcome <-
+        runCommandWithSql
+          managerOptions
+          (manager ^. #eventStream)
+          managerStream
+          (action ^. #command)
+          (\_ -> traverse_ scheduleTimerTx (action ^. #timers))
+```
+
+`scheduleTimerTx` has type `TimerRequest -> Tx.Transaction ()` — it is a *Hasql transaction
+fragment*, not a standalone effect. `runCommandWithSql` runs the manager append and this
+fragment in **one** Hasql transaction. So "advance my state **and** arm my timers" is **atomic
+together**: either the manager event and every timer row land, or none of them do.
+
+**A separate transaction per dispatched command.** Each `PMCommand` is dispatched by
+`dispatchCommand` using `runCommandWithProjections`, once per command:
+
+```haskell
+-- keiro/src/Keiro/ProcessManager.hs
+          outcome <-
+            runCommandWithProjections
+              targetOptions
+              (manager ^. #targetEventStream)
+              targetStream
+              (command ^. #command)
+              ((manager ^. #targetProjections) (command ^. #target))
+```
+
+`runCommandWithProjections` appends the target's events **and** runs that target's inline
+projections in **its own** transaction. The dispatch loop calls it once per command via
+`traverse … (zip [0 ..] commands)`, so **N dispatched commands are N separate commits**.
+
+State it plainly: the manager append (Tx 1) and each dispatch (Tx 2, Tx 3, …) are **separate
+transactions**. This is **not** one atomic multi-stream commit. A crash can land Tx 1 (the
+manager state and its timers) and *not* land a later dispatch.
+
+```mermaid
+sequenceDiagram
+  participant R as runProcessManagerOnce
+  participant DB as Postgres
+  R->>DB: Tx1 — append manager state + scheduleTimerTx (all timers)
+  Note over R,DB: atomic together
+  R->>DB: Tx2 — dispatch PMCommand[0] (+ inline projections)
+  R->>DB: Tx3 — dispatch PMCommand[1] (+ inline projections)
+  Note over R,DB: each dispatch is its own commit; deterministic ids make replay a no-op
+```
+
+## Why replay is still safe — without atomicity
+
+If the writes are not atomic, why is the worker crash-safe under at-least-once delivery? Because
+every write is **idempotent by construction**, and the reaction is **re-run in full** on replay.
+Three facts combine:
+
+1. **Every write id is deterministic.** Each write is keyed by
+   `deterministicCommandId(name, correlationId, sourceEventId, emitIndex)` — a v5 UUID that is
+   *identical* on every replay of the same source event (the manager append at `emitIndex = -1`,
+   the dispatches at `0, 1, 2, …`). Re-running the reaction recomputes the very same ids.
+
+2. **Each write is pre-checked and the store rejects duplicates.** Before each append,
+   `eventAlreadyIn` scans the target stream for that id; and even under a race the store's event-
+   id uniqueness constraint surfaces a `DuplicateEvent`, which the runner folds into a benign
+   `PMStateDuplicate` / `PMCommandDuplicate` rather than an error.
+
+3. **The dispatch loop runs even on a duplicate manager append.** This is the keystone. Look
+   again at the manager-append classification:
+
+   ```haskell
+   -- keiro/src/Keiro/ProcessManager.hs
+       managerAlreadyProcessed <- eventAlreadyIn options managerStreamName managerEventId
+       if managerAlreadyProcessed
+         then finish correlationId (PMStateDuplicate managerEventId) action
+         else do
+           managerOutcome <- runCommandWithSql ...
+           case managerOutcome of
+             Left (StoreFailed (DuplicateEvent (Just duplicateId))) | duplicateId == managerEventId ->
+               finish correlationId (PMStateDuplicate managerEventId) action
+             Left (StoreFailed (DuplicateEvent Nothing)) ->
+               finish correlationId (PMStateDuplicate managerEventId) action
+             Left err -> pure (Left err)
+             Right (managerResult, _) ->
+               finish correlationId (PMStateAppended managerResult) action
+   ```
+
+   Whether the manager append is fresh **or** a duplicate, the runner calls `finish` — and
+   `finish` runs the **whole** `dispatchCommands` loop. So consider the crash this transaction
+   model permits: Tx 1 (manager state + timers) commits, then the process dies before dispatch
+   `k` commits. On redelivery, the manager append is now a `PMStateDuplicate`, but `finish` still
+   re-runs **every** dispatch. Dispatches `0 … k-1` are recognized as `PMCommandDuplicate` (their
+   ids already exist) and are no-ops; dispatch `k` — which never landed — is appended this time.
+
+The system **converges** on replay: re-running the whole reaction appends only what is missing.
+That convergence, not a single atomic commit, is what makes the engine crash-safe. For what a
+single command's transaction actually does, see
+[the transactional write path](/docs/keiro/walkthrough/command-cycle/04-the-transactional-write-path);
+for what `targetProjections` run inside each dispatch, see
+[read-side projections](/docs/keiro/walkthrough/read-side/04-projections-and-the-rebuild-path).
+
+## The `PMCommandFailed` hazard
+
+Idempotent replay rescues a *crash*. It does **not** rescue a dispatch that the target aggregate
+genuinely **rejects**.
+
+<Callout type="warn">
+  A non-duplicate `CommandError` from a dispatched command becomes `PMCommandFailed`. If a worker
+  (or any higher-level loop) inspects `commandResults` and treats `PMCommandFailed` as fatal, it
+  will halt and **retry the source event forever** — every replay re-runs the same rejected
+  command, which fails the same way. There is no backoff and no dead-letter. The fix is **not** in
+  the workflow engine: target aggregates must model benign rejections as **total** transitions, so
+  a "wrong-state" command is a no-op success rather than an error.
+</Callout>
+
+jitsurei's `Incident.hs` is the worked example of the discipline: `AcknowledgeIncident` and
+`EscalateIncident` are legal **only from `Triaging`** (the state flow is `Unreported → Triaging →
+Acknowledged | Escalated → Resolved`). Whichever of acknowledge/escalate arrives first wins; the
+loser hits a state that does not accept it and is rejected as a **benign `CommandRejected`**, not
+a fatal error. That is what keeps the escalation-timer-vs-ack race safe and keeps the worker from
+wedging. Read [keep target commands total](/docs/keiro/how-to/keep-target-commands-total) for the
+full rule.
+
+Note the placement from [chapter 01](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop):
+`PMCommandFailed` is reported *inside* a `Right`'s `commandResults`, so the shipped
+`runProcessManagerWorker` (which acks on any `Right`) does **not** itself halt on it — but it also
+does not retry the failed dispatch. Either way, totality at the target is the property you want.
+
+## Next
+
+[03 — The ProcessManager types and config](/docs/keiro/walkthrough/workflow/03-the-types-and-config):
+every field of every type the engine uses, tied to how the jitsurei managers wire them.

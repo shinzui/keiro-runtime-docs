@@ -1,0 +1,280 @@
+---
+title: "03 — The ProcessManager types and config"
+description: "Every field of every type the engine uses — ProcessManager, the action, the three result types, and the timer types — tied to how the jitsurei managers wire them."
+---
+
+<Callout type="info">
+  Part of the [workflow code walkthrough](/docs/keiro/walkthrough/workflow/00-start-here).
+  Read [the previous chapter](/docs/keiro/walkthrough/workflow/02-the-transaction-model) first.
+</Callout>
+
+[Chapters 01](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop) and
+[02](/docs/keiro/walkthrough/workflow/02-the-transaction-model) walked the runner; this chapter is
+the **data dictionary**. One subsection per type, each with its verbatim definition and a field-
+by-field table, and each tied to how jitsurei's two process managers — `fulfillmentProcessManager`
+and `escalationProcessManager` — actually populate it. The dry signature reference lives at
+[reference / process manager](/docs/keiro/reference/process-manager) and
+[reference / timers](/docs/keiro/reference/timers); this chapter shows the values flowing in.
+
+The types are in `keiro/src/Keiro/ProcessManager.hs`, `keiro/src/Keiro/Timer/Types.hs`, and
+`keiro/src/Keiro/Timer/Schema.hs`.
+
+## `ProcessManager` — the configuration record
+
+The whole engine is configured by one record with **seven** fields:
+
+```haskell
+-- keiro/src/Keiro/ProcessManager.hs
+data ProcessManager input phi rs s ci co targetPhi targetRs targetState targetCi targetCo = ProcessManager
+  { name              :: !Text
+  , correlate         :: !(input -> Text)
+  , eventStream       :: !(EventStream phi rs s ci co)
+  , streamFor         :: !(Text -> Stream (EventStream phi rs s ci co))
+  , targetEventStream :: !(EventStream targetPhi targetRs targetState targetCi targetCo)
+  , targetProjections :: !(Stream targetCi -> [InlineProjection targetCo])
+  , handle            :: !(input -> ProcessManagerAction ci targetCi)
+  }
+```
+
+<TypeTable
+  type={{
+    name: { type: "Text", description: "Stable identity; part of every deterministic write id. jitsurei: \"jitsurei-fulfillment\" / \"jitsurei-escalation\"." },
+    correlate: { type: "input -> Text", description: "Derives the correlation key, selecting which manager instance handles the event. jitsurei: orderIdText . eventOrderId / incidentIdText . escalationInputIncidentId." },
+    eventStream: { type: "EventStream phi rs s ci co", description: "The manager's OWN EventStream; its events record the saga's progress. jitsurei: fulfillmentEventStream / escalationEventStream." },
+    streamFor: { type: "Text -> Stream (EventStream phi rs s ci co)", description: "Maps a correlation key to the manager's Stream handle. jitsurei: fulfillmentStream . OrderId (fulfillment-<id>) / escalationStream . IncidentId (esc-<id>)." },
+    targetEventStream: { type: "EventStream targetPhi targetRs targetState targetCi targetCo", description: "The aggregate dispatched commands are sent to. jitsurei: orderEventStream / incidentEventStream." },
+    targetProjections: { type: "Stream targetCi -> [InlineProjection targetCo]", description: "Inline projections run in the same transaction as each dispatched command's append. jitsurei: const [orderSummaryInlineProjection] / const []." },
+    handle: { type: "input -> ProcessManagerAction ci targetCi", description: "The pure reaction: the manager-state command, the target commands, and the timers to schedule." },
+  }}
+/>
+
+The eleven type parameters split into the **manager's own** aggregate (`phi rs s ci co`: its
+predicate algebra, registers, state, command, event) and the **target** aggregate (`targetPhi
+targetRs targetState targetCi targetCo`), plus the `input` event type the manager reacts to. You
+never spell them by hand; jitsurei fixes them with a `type` alias (e.g.
+`FulfillmentProcessManager`).
+
+### The jitsurei record literal
+
+To see real values flow into all seven fields, here is `fulfillmentProcessManager` verbatim:
+
+```haskell
+-- keiro/jitsurei/src/Jitsurei/FulfillmentProcess.hs
+fulfillmentProcessManager :: FulfillmentProcessManager
+fulfillmentProcessManager = ProcessManager
+  { name = "jitsurei-fulfillment"
+  , correlate = orderIdText . eventOrderId
+  , eventStream = fulfillmentEventStream
+  , streamFor = fulfillmentStream . OrderId
+  , targetEventStream = orderEventStream
+  , targetProjections = const [orderSummaryInlineProjection]
+  , handle = \event ->
+      let orderId = eventOrderId event
+          status = fulfillmentStatus event
+       in ProcessManagerAction
+            { command =
+                ObserveFulfillmentEvent ObserveFulfillmentEventData
+                  { orderId = orderId
+                  , status = status
+                  }
+            , commands =
+                case event of
+                  PaymentApproved{} ->
+                    [ PMCommand
+                        { target = orderCommandStream orderId
+                        , command = MarkPacked (MarkPackedData orderId)
+                        }
+                    ]
+                  _ -> []
+            , timers = []
+            }
+  }
+```
+
+Note how `handle` **always** advances the manager's own state (`command =
+ObserveFulfillmentEvent …`) and, **only on `PaymentApproved`**, dispatches one `MarkPacked` to the
+order; it schedules no timers. The escalation manager is the mirror image: it schedules a timer on
+`IncidentReported` and dispatches a command on `ResponderAcked` (see
+[chapter 05](/docs/keiro/walkthrough/workflow/05-the-timer-worker)).
+
+## `ProcessManagerAction` — what `handle` returns
+
+```haskell
+-- keiro/src/Keiro/ProcessManager.hs
+data ProcessManagerAction ci targetCi = ProcessManagerAction
+  { command  :: !ci
+  , commands :: ![PMCommand targetCi]
+  , timers   :: ![TimerRequest]
+  }
+```
+
+<TypeTable
+  type={{
+    command: { type: "ci", description: "The command applied to the manager's OWN event stream to advance its state. Always present." },
+    commands: { type: "[PMCommand targetCi]", description: "Zero or more commands dispatched to target aggregates (in order)." },
+    timers: { type: "[TimerRequest]", description: "Zero or more durable timers to schedule, armed in the manager-append transaction." },
+  }}
+/>
+
+## `PMCommand` — one addressed dispatch
+
+```haskell
+-- keiro/src/Keiro/ProcessManager.hs
+data PMCommand targetCi = PMCommand
+  { target  :: !(Stream targetCi)
+  , command :: !targetCi
+  }
+```
+
+<TypeTable
+  type={{
+    target: { type: "Stream targetCi", description: "The target aggregate stream the command is dispatched to (retargeted via coerce; see chapter 01)." },
+    command: { type: "targetCi", description: "The command to run against that target through the command cycle." },
+  }}
+/>
+
+## `PMCommandResult` — the outcome of one dispatch
+
+```haskell
+-- keiro/src/Keiro/ProcessManager.hs
+data PMCommandResult target
+  = PMCommandAppended  !(CommandResult target)  -- the dispatch appended events
+  | PMCommandDuplicate !EventId                 -- idempotent replay; id already existed
+  | PMCommandFailed    !CommandError            -- fatal: a non-duplicate CommandError
+```
+
+<TypeTable
+  type={{
+    PMCommandAppended: { type: "CommandResult target", description: "The dispatch appended events; carries the command's result. The happy path." },
+    PMCommandDuplicate: { type: "EventId", description: "The command id already existed (pre-check hit or a DuplicateEvent) — an idempotent no-op." },
+    PMCommandFailed: { type: "CommandError", description: "Any other CommandError. The PMCommandFailed hazard (chapter 02): make target commands total to avoid it." },
+  }}
+/>
+
+## `PMStateResult` — the outcome of the manager append
+
+```haskell
+-- keiro/src/Keiro/ProcessManager.hs
+data PMStateResult target
+  = PMStateAppended  !(CommandResult target)
+  | PMStateDuplicate !EventId
+```
+
+<TypeTable
+  type={{
+    PMStateAppended: { type: "CommandResult target", description: "The manager-state append landed; carries its result." },
+    PMStateDuplicate: { type: "EventId", description: "The manager append id already existed — a benign replay. finish still runs the whole dispatch loop." },
+  }}
+/>
+
+There is **no failure constructor**. A manager-state append that genuinely errors does not become
+a `PMStateResult`; it aborts the whole reaction via the outer `Left CommandError`
+([chapter 01](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop)).
+
+## `ProcessManagerResult` — the whole reaction's result
+
+```haskell
+-- keiro/src/Keiro/ProcessManager.hs
+data ProcessManagerResult managerTarget commandTarget = ProcessManagerResult
+  { managerResult   :: !(PMStateResult managerTarget)
+  , commandResults  :: ![PMCommandResult commandTarget]
+  , timersScheduled :: !Int
+  }
+```
+
+<TypeTable
+  type={{
+    managerResult: { type: "PMStateResult managerTarget", description: "How the manager's own state advanced (appended or duplicate)." },
+    commandResults: { type: "[PMCommandResult commandTarget]", description: "The outcome of each dispatched command, in dispatch order. PMCommandFailed lives here, inside a Right." },
+    timersScheduled: { type: "Int", description: "How many timers were scheduled (length of action.timers)." },
+  }}
+/>
+
+## The timer types
+
+### `TimerId`
+
+```haskell
+-- keiro/src/Keiro/Timer/Types.hs
+newtype TimerId = TimerId UUID
+```
+
+A caller-chosen UUID. Because the schedule SQL upserts on `timer_id`, **choosing the id
+deterministically is what makes scheduling idempotent** — jitsurei's `escalationTimerRequest`
+derives it as a UUIDv5 of the incident id, so a redelivered `IncidentReported` re-arms the *same*
+row instead of duplicating it.
+
+### `TimerRequest`
+
+```haskell
+-- keiro/src/Keiro/Timer/Types.hs
+data TimerRequest = TimerRequest
+  { timerId            :: !TimerId
+  , processManagerName :: !Text
+  , correlationId      :: !Text
+  , fireAt             :: !UTCTime
+  , payload            :: !Value
+  }
+```
+
+<TypeTable
+  type={{
+    timerId: { type: "TimerId", description: "Stable id; rescheduling the same id is idempotent (upsert-while-Scheduled)." },
+    processManagerName: { type: "Text", description: "Identifies the saga the timer belongs to, so its firing can be routed back. jitsurei: \"jitsurei-escalation\" / \"jitsurei-fulfillment\"." },
+    correlationId: { type: "Text", description: "The manager instance key — e.g. the incident id — used by the worker to address the dispatch." },
+    fireAt: { type: "UTCTime", description: "The earliest time the timer becomes due. jitsurei derives it from severity (escalationDeadline)." },
+    payload: { type: "Value", description: "Opaque JSON carried through to the fire action; keiro never inspects it." },
+  }}
+/>
+
+### `TimerStatus`
+
+```haskell
+-- keiro/src/Keiro/Timer/Schema.hs
+data TimerStatus = Scheduled | Firing | Fired | Cancelled
+```
+
+<TypeTable
+  type={{
+    Scheduled: { type: "TimerStatus", description: "Waiting for its fireAt; claimable. The default for a new row." },
+    Firing: { type: "TimerStatus", description: "Claimed by a worker and being processed; re-claimable if the worker crashes." },
+    Fired: { type: "TimerStatus", description: "Successfully fired; terminal." },
+    Cancelled: { type: "TimerStatus", description: "Withdrawn before firing — AND the decode fallback for any unrecognized stored status string. No SQL ships to set it (chapter 04)." },
+  }}
+/>
+
+### `TimerRow`
+
+The stored shape: the request's five fields plus three lifecycle columns.
+
+```haskell
+-- keiro/src/Keiro/Timer/Schema.hs
+data TimerRow = TimerRow
+  { timerId            :: !TimerId
+  , processManagerName :: !Text
+  , correlationId      :: !Text
+  , fireAt             :: !UTCTime
+  , payload            :: !Value
+  , status             :: !TimerStatus
+  , attempts           :: !Int
+  , firedEventId       :: !(Maybe EventId)
+  }
+```
+
+<TypeTable
+  type={{
+    timerId: { type: "TimerId", description: "Primary key; same as the request's id." },
+    processManagerName: { type: "Text", description: "From the request; used by the worker to recognize its own timers." },
+    correlationId: { type: "Text", description: "From the request; the manager instance the firing routes to." },
+    fireAt: { type: "UTCTime", description: "From the request; the due time the claim SQL compares against now." },
+    payload: { type: "Value", description: "From the request; handed to the fire action." },
+    status: { type: "TimerStatus", description: "The live lifecycle state, decoded via statusFromText (chapter 04)." },
+    attempts: { type: "Int", description: "Incremented on every claim. Recorded but nothing acts on it — no max-attempts cutoff ships." },
+    firedEventId: { type: "Maybe EventId", description: "Null until markTimerFired records the id of the event the firing produced." },
+  }}
+/>
+
+## Next
+
+[04 — The timer schema and claim SQL](/docs/keiro/walkthrough/workflow/04-the-timer-schema): the
+`keiro_timers` table, the claim CTE, the re-arm guard, the decoder, and the honest gaps.

@@ -1,0 +1,228 @@
+---
+title: "04 — The timer schema and claim SQL"
+description: "The keiro_timers table, the claim CTE with FOR UPDATE SKIP LOCKED, the re-arm ON CONFLICT guard, markTimerFired, the row decoder, and the honest no-cancellation / no-backoff gaps."
+---
+
+<Callout type="info">
+  Part of the [workflow code walkthrough](/docs/keiro/walkthrough/workflow/00-start-here).
+  Read [the previous chapter](/docs/keiro/walkthrough/workflow/03-the-types-and-config) first.
+</Callout>
+
+This chapter walks the **storage layer** for durable timers: the `keiro_timers` table and the
+three SQL statements in `keiro/src/Keiro/Timer/Schema.hs` that operate on it — schedule, claim,
+and mark-fired — plus the row decoder. The worker that *drives* this storage is
+[chapter 05](/docs/keiro/walkthrough/workflow/05-the-timer-worker). The dry reference is
+[reference / timers](/docs/keiro/reference/timers).
+
+## The `keiro_timers` table
+
+The table is created by the bootstrap migration:
+
+```sql
+-- keiro-migrations/sql-migrations/2026-05-17-00-00-00-keiro-bootstrap.sql
+CREATE TABLE IF NOT EXISTS keiro_timers (
+  timer_id UUID PRIMARY KEY,
+  process_manager_name TEXT NOT NULL,
+  correlation_id TEXT NOT NULL,
+  fire_at TIMESTAMPTZ NOT NULL,
+  payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'scheduled',
+  attempts BIGINT NOT NULL DEFAULT 0,
+  fired_event_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS keiro_timers_due_idx
+  ON keiro_timers (status, fire_at, process_manager_name);
+```
+
+Column by column:
+
+- **`timer_id UUID PRIMARY KEY`** — the caller-chosen `TimerId`. Being the primary key is what
+  makes the schedule upsert (below) idempotent.
+- **`process_manager_name`, `correlation_id`** — the routing fields from the `TimerRequest`; the
+  worker reads them to address the firing back to the right saga instance.
+- **`fire_at TIMESTAMPTZ NOT NULL`** — the due time the claim compares against `now`.
+- **`payload JSONB NOT NULL`** — opaque JSON carried to the `fire` action; keiro never inspects
+  it.
+- **`status TEXT NOT NULL DEFAULT 'scheduled'`** — the lifecycle string (`scheduled`, `firing`,
+  `fired`, `cancelled`); a new row starts `scheduled`.
+- **`attempts BIGINT NOT NULL DEFAULT 0`** — incremented on every claim. Recorded, but nothing
+  acts on it (see the gaps below).
+- **`fired_event_id UUID`** — nullable; set when the timer fires.
+- **`created_at`, `updated_at`** — bookkeeping; `updated_at` is bumped to `now()` by every
+  mutation.
+
+The **`keiro_timers_due_idx (status, fire_at, process_manager_name)`** index is leading-keyed for
+exactly the claim query's predicate (`status = 'scheduled' AND fire_at <= …`), so finding the next
+due timer is an index range scan, not a sequential scan.
+
+## `scheduleTimerStmt` — the idempotent re-arm
+
+Scheduling is an **upsert** keyed on `timer_id`:
+
+```sql
+-- keiro/src/Keiro/Timer/Schema.hs
+INSERT INTO keiro_timers
+  (timer_id, process_manager_name, correlation_id, fire_at, payload, status)
+VALUES
+  ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (timer_id) DO UPDATE
+  SET process_manager_name = EXCLUDED.process_manager_name,
+      correlation_id = EXCLUDED.correlation_id,
+      fire_at = EXCLUDED.fire_at,
+      payload = EXCLUDED.payload,
+      status = EXCLUDED.status,
+      updated_at = now()
+  WHERE keiro_timers.status = 'scheduled'
+```
+
+The first time, it inserts a fresh `scheduled` row. On a conflicting `timer_id`, the
+`ON CONFLICT (timer_id) DO UPDATE … WHERE keiro_timers.status = 'scheduled'` clause re-arms the
+row **only while it is still `scheduled`**. The `WHERE` guard is the whole point:
+
+- a row that has already moved to `firing`, `fired`, or `cancelled` is **not** touched — a timer
+  that already fired (or is mid-fire) is never resurrected by a redelivered schedule;
+- a still-`scheduled` row is updated in place (new `fire_at`, `payload`, etc.) instead of
+  duplicated.
+
+This is what makes "reschedule the same `timerId`" safe. jitsurei leans on it directly:
+`escalationTimerRequest` sets `timerId = TimerId (namedUuid ("jitsurei-escalation-timer:" <>
+incidentId))`, a UUIDv5 of the incident id, precisely so that a redelivered `IncidentReported`
+re-arms the same row rather than scheduling a second escalation. Recall from
+[chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model) that `scheduleTimerTx`
+runs this statement **inside the manager-append transaction** — arming the timer is atomic with
+the state change that decided to arm it.
+
+## `claimDueTimerStmt` — claim one due timer with `FOR UPDATE SKIP LOCKED`
+
+Claiming a timer is a single statement: a CTE that locks one candidate row, then an `UPDATE` that
+moves it to `firing` and returns it.
+
+```sql
+-- keiro/src/Keiro/Timer/Schema.hs
+WITH due AS (
+  SELECT timer_id
+  FROM keiro_timers
+  WHERE status = 'scheduled'
+    AND fire_at <= $1
+  ORDER BY fire_at, timer_id
+  LIMIT 1
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE keiro_timers kt
+SET status = 'firing',
+    attempts = kt.attempts + 1,
+    updated_at = now()
+FROM due
+WHERE kt.timer_id = due.timer_id
+RETURNING kt.timer_id, kt.process_manager_name, kt.correlation_id, kt.fire_at,
+  kt.payload, kt.status, kt.attempts, kt.fired_event_id
+```
+
+The `due` CTE:
+
+- **`WHERE status = 'scheduled' AND fire_at <= $1`** — only timers that are armed and whose due
+  time has passed `now` (the `$1` parameter).
+- **`ORDER BY fire_at, timer_id`** — earliest-due first, with `timer_id` as a deterministic
+  tie-break, so the pick is stable and fair.
+- **`LIMIT 1`** — claim **at most one** timer per call. The worker handles one timer per tick.
+- **`FOR UPDATE SKIP LOCKED`** — the keystone for concurrency. `FOR UPDATE` locks the selected
+  row; **`SKIP LOCKED`** tells PostgreSQL to *skip* any row another transaction already holds
+  locked and take the next eligible one instead. So two workers running this query at the same
+  moment never claim the *same* timer, and neither **blocks** waiting on the other — they grab
+  disjoint rows and proceed. The `keiro_timers_due_idx` keeps the lock-and-skip cheap.
+
+The outer `UPDATE … FROM due` then atomically transitions the claimed row to `status = 'firing'`,
+bumps `attempts`, and `RETURNING …` hands back the full row, decoded by `timerRowDecoder`. Because
+the select-lock and the update are one statement in one transaction, the claim is atomic: a row is
+either yours (now `firing`) or not.
+
+## `markTimerFiredStmt` — record completion
+
+Once a firing produces an event, the worker records it:
+
+```sql
+-- keiro/src/Keiro/Timer/Schema.hs
+UPDATE keiro_timers
+SET status = 'fired',
+    fired_event_id = $2,
+    updated_at = now()
+WHERE timer_id = $1
+```
+
+It flips the row to `fired` and stores the produced `fired_event_id`. After this, the row is
+terminal — the claim query's `status = 'scheduled'` predicate will never select it again.
+
+## `timerRowDecoder` and `statusFromText`
+
+The `RETURNING` columns are decoded back into a `TimerRow`:
+
+```haskell
+-- keiro/src/Keiro/Timer/Schema.hs
+timerRowDecoder :: D.Row TimerRow
+timerRowDecoder =
+  TimerRow
+    <$> (TimerId <$> D.column (D.nonNullable D.uuid))
+    <*> D.column (D.nonNullable D.text)
+    <*> D.column (D.nonNullable D.text)
+    <*> D.column (D.nonNullable D.timestamptz)
+    <*> D.column (D.nonNullable D.jsonb)
+    <*> (statusFromText <$> D.column (D.nonNullable D.text))
+    <*> (fromIntegral <$> D.column (D.nonNullable D.int8))
+    <*> (fmap EventId <$> D.column (D.nullable D.uuid))
+```
+
+The decoder maps each column in order to a `TimerRow` field: the `uuid` becomes a `TimerId`, the
+`int8` count is narrowed to an `Int`, and the nullable `fired_event_id` becomes a `Maybe EventId`.
+The `status` text passes through `statusFromText`:
+
+```haskell
+-- keiro/src/Keiro/Timer/Schema.hs
+statusFromText :: Text -> TimerStatus
+statusFromText = \case
+  "scheduled" -> Scheduled
+  "firing"    -> Firing
+  "fired"     -> Fired
+  "cancelled" -> Cancelled
+  _           -> Cancelled
+```
+
+Four known strings map to their constructor; **any unrecognized string falls back to
+`Cancelled`**. So `Cancelled` carries two meanings: "deliberately withdrawn" and "I could not
+recognize this stored status." This defensive default never spontaneously revives a timer — a
+`Cancelled` row is not `scheduled`, so the claim query ignores it.
+
+## Honest gaps
+
+This storage layer is deliberately minimal. Three things you might expect are **not** here.
+
+<Callout type="warn">
+  **No cancellation SQL ships.** There is no `cancelTimer` function and no statement that sets
+  `status = 'cancelled'`. The `Cancelled` constructor exists only as a `TimerStatus` value and as
+  the decode fallback above. A `cancelled` row can therefore arise only from a corrupt/unknown
+  stored status or a future migration — not from any shipped keiro call.
+</Callout>
+
+<Callout type="warn">
+  **No backoff.** There is no `next_attempt_at` column and no delay schedule. `attempts` is
+  incremented on each claim but nothing throttles a retry: a row left `firing` (by a crash, or by
+  a `fire` that returned `Nothing` —
+  [chapter 05](/docs/keiro/walkthrough/workflow/05-the-timer-worker)) is **immediately
+  re-claimable** on the next pass once it is `scheduled` again. Note: a `firing` row is *not*
+  selected by the claim query (which requires `status = 'scheduled'`); re-claim depends on a
+  recovery path putting it back to `scheduled`. As shipped, there is no backoff timing either way.
+</Callout>
+
+<Callout type="warn">
+  **No dead-letter, no max-attempts.** Nothing acts on `attempts`. A poison timer — one whose
+  `fire` always fails — is retried indefinitely (the timer-side analog of the `PMCommandFailed`
+  hazard from [chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model)). The
+  operator must watch the `attempts` column; keiro 0.1.0.0 will not give up on its own.
+</Callout>
+
+## Next
+
+[05 — The timer worker](/docs/keiro/walkthrough/workflow/05-the-timer-worker): `runTimerWorker`
+line by line, at-least-once firing, and how `fire` rejoins the command cycle.

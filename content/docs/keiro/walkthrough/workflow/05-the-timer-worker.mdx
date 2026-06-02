@@ -1,0 +1,156 @@
+---
+title: "05 — The timer worker"
+description: "runTimerWorker line by line, at-least-once firing via Firing-then-reclaim, the Just-marks-fired rule, the bare-worker reality, and how fire rejoins the command cycle in jitsurei."
+---
+
+<Callout type="info">
+  Part of the [workflow code walkthrough](/docs/keiro/walkthrough/workflow/00-start-here).
+  Read [the previous chapter](/docs/keiro/walkthrough/workflow/04-the-timer-schema) first.
+</Callout>
+
+The last chapter. [Chapter 04](/docs/keiro/walkthrough/workflow/04-the-timer-schema) walked the
+`keiro_timers` storage; here we walk the **worker** that drives it — `runTimerWorker` in
+`keiro/src/Keiro/Timer.hs` — and show how its `fire` action rejoins the command cycle, using
+jitsurei's escalation and payment-timeout workers as the worked example.
+
+## `runTimerWorker` — the whole body
+
+The worker is nine lines:
+
+```haskell
+-- keiro/src/Keiro/Timer.hs
+runTimerWorker now fire = do
+  due <- claimDueTimer now
+  case due of
+    Nothing -> pure Nothing
+    Just timer -> do
+      fired <- fire timer
+      for_ fired (markTimerFired (timer ^. #timerId))
+      pure (Just timer)
+```
+
+Its signature:
+
+```haskell
+-- keiro/src/Keiro/Timer.hs
+runTimerWorker :: (Store :> es) => UTCTime -> (TimerRow -> Eff es (Maybe EventId)) -> Eff es (Maybe TimerRow)
+```
+
+Line by line:
+
+1. **`due <- claimDueTimer now`** — claim **at most one** due timer using the
+   `FOR UPDATE SKIP LOCKED` CTE from
+   [chapter 04](/docs/keiro/walkthrough/workflow/04-the-timer-schema). This atomically moves the
+   claimed row to `firing` and bumps `attempts`.
+2. **`Nothing -> pure Nothing`** — nothing was due. The worker returns immediately; the caller's
+   loop typically sleeps until the next tick.
+3. **`Just timer -> do`** — a timer was claimed; run the caller's reaction.
+4. **`fired <- fire timer`** — hand the whole `TimerRow` (with its `processManagerName`,
+   `correlationId`, and `payload`) to the caller-supplied `fire`. `fire` returns `Maybe EventId`:
+   `Just` the id of the event its firing produced, or `Nothing` if it did nothing.
+5. **`for_ fired (markTimerFired (timer ^. #timerId))`** — `markTimerFired` runs **only when
+   `fire` returned `Just`**. `for_` over a `Maybe` is a no-op on `Nothing`, so a `fire` that
+   returns `Nothing` leaves the row `firing` and does **not** mark it `fired`.
+6. **`pure (Just timer)`** — return the claimed row (so the caller can log/inspect it),
+   regardless of whether `fire` produced an event.
+
+## At-least-once firing
+
+The `Just`-marks-fired rule (step 5) is exactly what gives **at-least-once** semantics:
+
+- if `fire` returns `Nothing`, the row stays `firing` and is never marked `fired`;
+- if the process **crashes** after the claim but before `markTimerFired`, the row is left `firing`
+  too.
+
+In both cases the work was not durably completed, so a later recovery puts the row back to
+`scheduled` and it becomes claimable again — the timer fires again rather than being silently
+lost. The cost is that a `fire` action may run **more than once** for the same logical timer, so
+**`fire` must be idempotent** (the firing typically dispatches a command through the command
+cycle, where the target's totality guard absorbs the repeat — below). For the conceptual treatment
+see [Understanding durable timers](/docs/keiro/explanation/durable-timers).
+
+## The bare-worker reality
+
+<Callout type="info">
+  `runTimerWorker` is **bare by design**: no loop, no clock, and no supervisor. It claims and
+  fires **one** timer for the `now` you pass and returns. The *caller* owns the schedule — it
+  decides `now`, how often to tick, and how to back off when `claimDueTimer` returns `Nothing`.
+  See [drive the timer worker](/docs/keiro/how-to/drive-the-timer-worker) for the polling loop you
+  wrap around it.
+</Callout>
+
+This is why the signature takes `now :: UTCTime` rather than reading a clock, and why it returns
+after one timer rather than looping: keiro ships the *mechanism* (claim-fire-mark) and leaves the
+*policy* (cadence, concurrency, backoff) to you. Running several copies of the loop concurrently is
+safe — `FOR UPDATE SKIP LOCKED` guarantees they claim disjoint timers.
+
+## How `fire` rejoins the command cycle
+
+The `fire` action is where a timer rejoins the rest of keiro. jitsurei shows two shapes.
+
+**The full shape — `runEscalationTimerWorker`.** When an escalation timer fires, the worker
+dispatches `EscalateIncident` to the incident aggregate through the command cycle:
+
+```haskell
+-- keiro/jitsurei/src/Jitsurei/EscalationProcess.hs
+runEscalationTimerWorker options now =
+  runTimerWorker now $ \timer ->
+    case incidentIdFromTimer timer of
+      Nothing -> pure Nothing
+      Just incidentId -> do
+        _ <-
+          runCommand
+            options
+            incidentEventStream
+            (incidentStream incidentId)
+            (EscalateIncident (EscalateIncidentData {incidentId = incidentId}))
+        pure (Just (EventId (namedUuid ("jitsurei-escalation-fired:" <> incidentIdText incidentId))))
+```
+
+`incidentIdFromTimer` reconstructs the target from the timer's own `processManagerName` and
+`correlationId` — the worker needs **no extra state**, because the routing fields ride along on the
+row. It then dispatches the command via `runCommand` and returns a **deterministic** fired event
+id (a UUIDv5 of the incident id), so `markTimerFired` records a stable id even across retries.
+
+**The minimal shape — `runPaymentTimeoutWorker`.** The smallest possible `fire` just returns a
+fixed `Just`:
+
+```haskell
+-- keiro/jitsurei/src/Jitsurei/Timers.hs
+runPaymentTimeoutWorker now =
+  runTimerWorker now (\_ -> pure (Just (EventId paymentTimeoutEventId)))
+```
+
+It ignores the row and always reports `Just`, so the timer is marked `fired` on the first
+successful pass. (`paymentTimeoutRequest` builds the matching `TimerRequest` for
+`"jitsurei-fulfillment"`.)
+
+Two properties to take away:
+
+- **Routing.** The timer carries its own `processManagerName`, `correlationId`, and `payload`, so
+  `fire` can address the dispatch with nothing but the claimed `TimerRow` — no side table, no
+  in-memory map.
+- **Idempotency.** Because `fire` dispatches through the command cycle, the target's totality
+  guard makes a *late* or *repeated* firing safe. In jitsurei, `EscalateIncident` is legal only
+  from `Triaging`; if the incident was already acknowledged, a late escalate is a benign
+  `CommandRejected`, so the escalation-timer-vs-ack race is safe and the at-least-once retry is
+  harmless. This is the same discipline as the dispatch loop — see
+  [keep target commands total](/docs/keiro/how-to/keep-target-commands-total).
+
+## Recap
+
+You have now read keiro's workflow engine end to end. A process manager reacts to one event by
+appending its own state and arming its timers in **one** transaction
+([chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model)) and dispatching each
+target command in **its own** ([chapter 01](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop)) —
+crash-safe not through atomicity but through **deterministic write ids** that make replay a no-op.
+A separate, caller-driven worker claims due timers with `FOR UPDATE SKIP LOCKED`
+([chapter 04](/docs/keiro/walkthrough/workflow/04-the-timer-schema)) and fires them at-least-once,
+the firing rejoining the command cycle through a `fire` action you supply. And you have seen the
+honest gaps: no cancellation SQL, no backoff, no dead-letter, and a bare worker.
+
+<Cards>
+  <Card title="Process managers and sagas" href="/docs/keiro/explanation/process-managers-and-sagas" description="The conceptual companion: what a process manager is, the separate-transaction model, and the PMCommandFailed caveat." />
+  <Card title="Durable timers" href="/docs/keiro/explanation/durable-timers" description="The timer lifecycle and at-least-once firing, explained from first principles." />
+  <Card title="Drive the timer worker" href="/docs/keiro/how-to/drive-the-timer-worker" description="The polling loop and clock you wrap around the bare runTimerWorker." />
+</Cards>
