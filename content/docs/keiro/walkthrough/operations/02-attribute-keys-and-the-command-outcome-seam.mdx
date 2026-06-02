@@ -1,0 +1,206 @@
+---
+title: "02 — Attribute keys and the command-outcome seam"
+description: "Reading the attribute keys keiro sets — the imported/re-exported semantic-convention AttributeKeys vs. the three bespoke keiro.* keys — the W3C TraceContext bridge, and the recordCommandOutcome / commandErrorClass seam that closes the command span."
+---
+
+This chapter continues in `keiro/src/Keiro/Telemetry.hs` and crosses into
+`keiro/src/Keiro/Command.hs`. Read [01 — The tracer seam and span
+helpers](/docs/keiro/walkthrough/operations/01-the-tracer-seam-and-span-helpers) first. Here we cover
+**what** the spans say (the attribute keys), the W3C bridge an adapter can call, and the seam that
+attaches the command outcome.
+
+## Two kinds of attribute key: imported vs. bespoke
+
+An `AttributeKey a` is a typed name for a span attribute; its wire form is a dotted string like
+`"messaging.operation.type"`. keiro draws its keys from two places.
+
+The standard `messaging.*` / `db.*` keys are **imported and re-exported** from
+`OpenTelemetry.SemanticConventions` — keiro does **not** hand-type them. Since the OpenTelemetry 1.40
+upgrade (`hs-opentelemetry-semantic-conventions` `1.40.0.0`, generated from spec `v1.40`), every
+convention key the keiro audit cites is imported from the spec-generated module and surfaced from
+`Keiro.Telemetry`:
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs (import + re-export, abridged)
+import "hs-opentelemetry-semantic-conventions" OpenTelemetry.SemanticConventions
+  ( messaging_system
+  , messaging_operation_type
+  , messaging_operation_name
+  , messaging_destination_name
+  , messaging_destination_partition_id
+  , messaging_consumer_group_name
+  , messaging_client_id
+  , messaging_message_id
+  , messaging_kafka_message_key
+  , messaging_kafka_offset
+  , db_system_name
+  , db_namespace
+  , db_collection_name
+  , db_operation_name
+  )
+```
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs (module export list, abridged)
+module Keiro.Telemetry
+  ( …
+    -- * Re-exported semantic-convention 'AttributeKey's
+  , messaging_operation_type
+  , messaging_operation_name
+  , messaging_destination_partition_id
+  , messaging_consumer_group_name
+  , messaging_client_id
+  , messaging_kafka_offset
+  , db_system_name
+  , db_namespace
+  , db_collection_name
+  , db_operation_name
+    -- * Bespoke keiro 'AttributeKey's
+  , keiro_stream_name
+  , keiro_retry_attempt
+  , keiro_events_appended
+  )
+```
+
+**Why import rather than vendor.** Anchoring each convention name to the spec-generated module means
+the wire string can never drift from the standard through a typo, and a semconv bump flows in by
+upgrading the dependency rather than editing strings by hand. Re-exporting them keeps
+`Keiro.Telemetry` the one-stop telemetry import for the rest of the library — code reaches for one
+module, not two. (Earlier keiro design notes describe these keys as *vendored*; that framing is
+**historical** — the shipped source imports them.)
+
+Only the three `keiro.*` keys are defined locally, because they are bespoke to keiro and have no
+upstream equivalent:
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs
+keiro_stream_name :: AttributeKey Text
+keiro_stream_name = AttributeKey "keiro.stream.name"
+
+keiro_retry_attempt :: AttributeKey Int64
+keiro_retry_attempt = AttributeKey "keiro.retry.attempt"
+
+keiro_events_appended :: AttributeKey Int64
+keiro_events_appended = AttributeKey "keiro.events.appended"
+```
+
+## What each setter writes
+
+The two messaging setters are private to the module. `setProducerAttributes` writes, for the publish
+span:
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs (setProducerAttributes)
+addAttribute sp (unkey messaging_system) ("kafka" :: Text)
+addAttribute sp (unkey messaging_operation_type) ("publish" :: Text)
+addAttribute sp (unkey messaging_operation_name) ("send" :: Text)
+addAttribute sp (unkey messaging_destination_name) (event ^. #destination)
+addAttribute sp (unkey messaging_message_id) (event ^. #messageId)
+case event ^. #key of
+  Nothing -> pure ()
+  Just k -> addAttribute sp (unkey messaging_kafka_message_key) k
+```
+
+`setConsumerAttributes` writes the mirror set for the consume span: `messaging.system = "kafka"`,
+`messaging.operation.type = "process"`, `messaging.operation.name = "process"`, the topic as
+`messaging.destination.name`, the partition as `messaging.destination.partition.id`,
+`messaging.kafka.offset`, the message key when present, the consumer group when given, and
+`messaging.message.id` only when the envelope decoded (the `Just event` branch). Both setters guard
+the optional attributes with a `case … of Nothing -> pure ()` so a missing key or group simply omits
+the attribute.
+
+## The W3C TraceContext bridge
+
+Three exported helpers convert between an in-memory span and the keiro `TraceContext` record stored
+on `IntegrationEvent` envelopes and outbox rows:
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs (signatures)
+traceContextFromCurrentSpan :: (MonadIO m) => m (Maybe TraceContext)
+traceContextFromHeaders     :: [(Text, Text)] -> Maybe TraceContext
+injectTraceContext          :: (MonadIO m) => [(Text, Text)] -> m [(Text, Text)]
+```
+
+`traceContextFromCurrentSpan` reads the thread-local span and formats it via `encodeSpanContext` into
+a `TraceContext` (returning `Nothing` when no span is active). `traceContextFromHeaders` lifts a
+`TraceContext` out of a flat header list *without* validating the `traceparent` format — the W3C
+propagator's parser does that at consume time. `injectTraceContext` appends the current span's
+`traceparent` / `tracestate` to a header list, or returns it unchanged when no span is active.
+
+<Callout type="info">
+These three are the **public bridge an adapter author calls** — for example a custom outbox publisher
+that wants the active span's context on its wire headers. Internally, only `withConsumerSpan` exercises
+the bridge (via the private `withRemoteParent` / `decodeSpanContext`); the command and outbox paths do
+not call `injectTraceContext` / `traceContextFromHeaders` themselves in the shipped tree.
+</Callout>
+
+## The command-outcome seam — `recordCommandOutcome`
+
+`withCommandSpan` opens the span and sets `keiro.stream.name`; the **outcome** is attached after the
+runner returns, by `recordCommandOutcome` in `Command.hs`. This is the only place a command span
+gets `db.system.name`, `keiro.events.appended`, or `error.type`. Note these two convention keys are
+imported in `Command.hs` straight from `OpenTelemetry.SemanticConventions`, while
+`keiro_events_appended` comes from `Keiro.Telemetry`:
+
+```haskell
+-- keiro/src/Keiro/Command.hs (imports)
+import OpenTelemetry.SemanticConventions (db_system_name, error_type)
+import OpenTelemetry.Trace.Core (Span, Tracer, addAttribute, setStatus, SpanStatus (..))
+import Keiro.Telemetry (keiro_events_appended, withCommandSpan)
+```
+
+```haskell
+-- keiro/src/Keiro/Command.hs
+recordCommandOutcome
+  :: (IOE :> es)
+  => Maybe Span
+  -> (a -> Int)
+  -> Either CommandError a
+  -> Eff es ()
+recordCommandOutcome Nothing _ _ = pure ()
+recordCommandOutcome (Just sp) eventsOf result = do
+  addAttribute sp (unkey db_system_name) ("postgresql" :: Text)
+  case result of
+    Right v ->
+      addAttribute sp (unkey keiro_events_appended) (Prelude.fromIntegral (eventsOf v) :: Int64)
+    Left err -> do
+      addAttribute sp (unkey error_type) (commandErrorClass err)
+      setStatus sp (Error (Text.pack (show err)))
+```
+
+Read the seam top to bottom. The `Nothing` equation is the no-tracer pass-through (no span, nothing
+to record). With a live span it **always** sets `db.system.name = "postgresql"`. Then it branches on
+the `Either CommandError a` the runner returned: on `Right`, it records `keiro.events.appended` —
+the count is pulled out with the `eventsOf` projection the caller passes (`(^. #eventsAppended)`),
+so the same seam serves both the plain and the SQL-callback runners. On `Left`, it sets
+`error.type` to a **low-cardinality** class string and sets the span status to `Error`, carrying the
+fully-rendered `CommandError` as the status description (high-cardinality detail goes in the
+description, not the metric-friendly `error.type`).
+
+The classifier maps each `CommandError` constructor to a stable string:
+
+```haskell
+-- keiro/src/Keiro/Command.hs
+commandErrorClass :: CommandError -> Text
+commandErrorClass = \case
+  HydrationDecodeFailed{} -> "hydration_decode_failed"
+  HydrationReplayFailed{} -> "hydration_replay_failed"
+  CommandRejected         -> "command_rejected"
+  EncodeFailed{}          -> "encode_failed"
+  StoreFailed{}           -> "store_failed"
+  RetryExhausted{}        -> "retry_exhausted"
+```
+
+Six cases, six stable values — exactly the right cardinality for an `error.type` attribute you want
+to group and alert on. For the errors themselves, read [Command types and
+errors](/docs/keiro/walkthrough/command-cycle/01-command-types-and-errors).
+
+<Callout type="warn">
+**Instrumentation coverage is partial.** The seams above cover **command run** (this chapter),
+**outbox publish**, and **inbox consume** (chapter 01). Hydration, snapshot reads, projection writes,
+and the timer worker are **not yet instrumented** — those spans are deferred. Enabling a tracer does
+not give full coverage of the framework's internals today. (Same note as the
+[Telemetry reference](/docs/keiro/reference/telemetry).)
+</Callout>
+
+Next: [03 — The migration runner](/docs/keiro/walkthrough/operations/03-the-migration-runner).

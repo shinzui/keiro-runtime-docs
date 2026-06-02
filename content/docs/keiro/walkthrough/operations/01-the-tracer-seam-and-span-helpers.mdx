@@ -1,0 +1,223 @@
+---
+title: "01 — The tracer seam and span helpers"
+description: "Reading Keiro.Telemetry: the Maybe Tracer opt-in, inSpan', and the three span helpers — withProducerSpan, withConsumerSpan (with the W3C remote-parent join), and withCommandSpan — with their call sites."
+---
+
+This chapter reads `keiro/src/Keiro/Telemetry.hs` — the **single** module where keiro touches
+`hs-opentelemetry-api` — together with the two in-tree call sites in `keiro/src/Keiro/Outbox.hs`
+and `keiro/src/Keiro/Command.hs`. By the end you will know exactly how a span is opened, what shape
+the opt-in takes, and where each helper is invoked.
+
+## One module, one OpenTelemetry surface
+
+The module Haddock states the design constraint up front: `Keiro.Telemetry` is the only place keiro
+reaches for `hs-opentelemetry-api` and `hs-opentelemetry-semantic-conventions`. Callers configure a
+`Tracer` application-side and thread it through keiro's publisher / consumer / command surfaces:
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs (module Haddock, abridged)
+-- This module is the single place keiro reaches for @hs-opentelemetry-api@
+-- and @hs-opentelemetry-semantic-conventions@. Callers configure a 'Tracer'
+-- on the application side (typically via @hs-opentelemetry-sdk@'s
+-- 'OpenTelemetry.Trace.makeTracer'), then pass it through to keiro's
+-- publisher / consumer / command surfaces.
+```
+
+Concentrating every span and every attribute name here means the rest of the framework never imports
+an OpenTelemetry module directly — it imports `Keiro.Telemetry`. (Chapter 02 covers the one
+exception: `Command.hs` and `Outbox.hs` import `error_type` / `db_system_name` straight from
+`OpenTelemetry.SemanticConventions` because they set those on the live span themselves.)
+
+## The `Maybe Tracer` opt-in
+
+Every span helper takes a `Maybe Tracer` as its first argument. The first equation of each helper
+matches `Nothing` and runs the body **unwrapped** — no span object, no tracer call, just `body
+Nothing`. This is the pass-through the Haddock promises: an application that has not yet wired
+OpenTelemetry pays "one `Maybe` branch":
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs
+withProducerSpan Nothing _ _ body = body Nothing
+```
+
+Under `Just tracer` the helper calls `inSpan'` from `OpenTelemetry.Trace.Core` to open the span, sets
+attributes on it, then runs the body with `Just sp` so the caller can keep recording on the live
+span. The span **kind** is chosen by overriding the `kind` field of `defaultSpanArguments`:
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs (the shared opening shape)
+inSpan' tracer name args $ \sp -> do
+  -- set attributes on sp …
+  body (Just sp)
+  where
+    args = defaultSpanArguments {kind = Producer}   -- or Consumer / Internal
+```
+
+Three kinds appear: `Producer` for the outbox publish, `Consumer` for the inbox consume, and
+`Internal` for the command run.
+
+## `withProducerSpan` — the outbox publish span
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs
+withProducerSpan
+  :: (MonadUnliftIO m, HasCallStack)
+  => Maybe Tracer
+  -> IntegrationEvent
+  -> KafkaProducerRecord
+  -> (Maybe Span -> m a)
+  -> m a
+withProducerSpan Nothing _ _ body = body Nothing
+withProducerSpan (Just tracer) event record body =
+  inSpan' tracer name args $ \sp -> do
+    setProducerAttributes sp event record
+    body (Just sp)
+  where
+    name = "send " <> (event ^. #destination)
+    args = defaultSpanArguments {kind = Producer}
+```
+
+The span is `Producer`-kind and named `"send " <> destination` — the destination is read off the
+`IntegrationEvent`, so a publish to `billing.orders.v1` opens a span named `send billing.orders.v1`.
+`setProducerAttributes` populates the messaging attributes (chapter 02 lists them).
+
+**Call site — `Outbox.hs`.** `publishClaimedOutbox`'s inner `drainBatch` wraps each claimed row's
+publish in the helper, passing the option-record tracer and the row's event/record. On a
+`PublishFailed` outcome it records `error.type = "publish_failed"` and span status `Error` on the
+live span:
+
+```haskell
+-- keiro/src/Keiro/Outbox.hs (drainBatch, abridged)
+outcome <-
+  withProducerSpan
+    (options ^. #tracer)
+    (row ^. #event)
+    (outboxRowToKafkaRecord row)
+    $ \mSpan -> do
+      out <- publish row
+      case (mSpan, out) of
+        (Just sp, PublishFailed errMsg) -> do
+          addAttribute sp (unkey error_type) ("publish_failed" :: Text)
+          setStatus sp (Error errMsg)
+        _ -> pure ()
+      pure out
+```
+
+Note the pattern that recurs everywhere: the helper hands back `Maybe Span`, and the caller only
+records on it under `Just sp` — so the failure-recording code is itself a no-op when no tracer is
+configured. For the full outbox path, read the
+[integration tour](/docs/keiro/walkthrough/integration/00-start-here).
+
+## `withConsumerSpan` — the inbox consume span, joined to the upstream trace
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs
+withConsumerSpan
+  :: (MonadUnliftIO m, HasCallStack)
+  => Maybe Tracer
+  -> Maybe Text                 -- ^ consumer group name (optional)
+  -> KafkaInboundRecord
+  -> Maybe IntegrationEvent     -- ^ decoded envelope; 'Nothing' on a decode-failure path
+  -> (Maybe Span -> m a)
+  -> m a
+withConsumerSpan Nothing _ _ _ body = body Nothing
+withConsumerSpan (Just tracer) consumerGroup record mEvent body =
+  withRemoteParent (record ^. #headers) $
+    inSpan' tracer name args $ \sp -> do
+      setConsumerAttributes sp consumerGroup record mEvent
+      body (Just sp)
+  where
+    name = "process " <> (record ^. #topic)
+    args = defaultSpanArguments {kind = Consumer}
+```
+
+The span is `Consumer`-kind and named `"process " <> topic`. Two things differ from the producer
+helper. First, the body receives the raw broker `KafkaInboundRecord` *and* a `Maybe IntegrationEvent`
+— the latter is `Nothing` on the decode-failure path, so the helper can still open a span for a
+message it could not parse. Second, the whole `inSpan'` is wrapped in `withRemoteParent`, which joins
+this span to the producer's span in the upstream process.
+
+### `withRemoteParent` — the W3C remote-parent join
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs
+withRemoteParent
+  :: (MonadUnliftIO m) => [(Text, Text)] -> m a -> m a
+withRemoteParent hs body =
+  case parentSpanContext hs of
+    Nothing -> body
+    Just spanCtx -> withRunInIO $ \runInIO -> do
+      ctx <- getContext
+      let newCtx = insertSpan (wrapSpanContext spanCtx) ctx
+      bracket
+        (attachContext newCtx)
+        detachContext
+        (const (runInIO body))
+  where
+    parentSpanContext hsList =
+      let tp = fmap TE.encodeUtf8 (Prelude.lookup headerTraceParent hsList)
+          ts = fmap TE.encodeUtf8 (Prelude.lookup headerTraceState hsList)
+       in decodeSpanContext tp ts
+```
+
+`parentSpanContext` looks up the `traceparent` / `tracestate` headers on the inbound record (by the
+keiro header names `headerTraceParent` / `headerTraceState`) and hands them to `decodeSpanContext`
+from `hs-opentelemetry-propagator-w3c`. When no parent is present (or the headers do not parse), the
+body runs **unwrapped** — the helper is safe to call unconditionally. When a parent *is* present,
+`bracket attachContext detachContext` installs the parent context for the duration of the body, so
+the consumer span opens **inside** the upstream context and becomes a *child* of the producer span,
+joining the two traces by trace id.
+
+**Call site.** The consumer span is opened by the inbox/Kafka consumer surface, walked in the
+[integration tour](/docs/keiro/walkthrough/integration/00-start-here). This tour walks the
+**helper**.
+
+## `withCommandSpan` — the command-run span
+
+```haskell
+-- keiro/src/Keiro/Telemetry.hs
+withCommandSpan
+  :: (MonadUnliftIO m, HasCallStack)
+  => Maybe Tracer
+  -> Text             -- ^ resolved stream name
+  -> Maybe Int64      -- ^ retry attempt (1-based); 'Nothing' to omit
+  -> (Maybe Span -> m a)
+  -> m a
+withCommandSpan Nothing _ _ body = body Nothing
+withCommandSpan (Just tracer) streamName retryAttempt body =
+  inSpan' tracer streamName args $ \sp -> do
+    addAttribute sp (unkey keiro_stream_name) streamName
+    case retryAttempt of
+      Nothing -> pure ()
+      Just n -> addAttribute sp (unkey keiro_retry_attempt) n
+    body (Just sp)
+  where
+    args = defaultSpanArguments {kind = Internal}
+```
+
+This span is `Internal`-kind — a command run is local work, not a message send or receive. It is
+named after the **resolved stream name** (the span name *is* the stream identifier, e.g.
+`order-7f3a…`). Unlike the messaging helpers, `withCommandSpan` sets its attributes inline rather
+than through a private setter: `keiro.stream.name` always, and `keiro.retry.attempt` only when the
+caller supplies a `Just n`. The body adds `keiro.events.appended` (on success) afterward — chapter 02
+walks that seam.
+
+**Call site — `Command.hs`.** `runCommand` (and the SQL variants) wrap the whole Hydrate → Transduce
+→ Append run in the helper, passing the tracer from `RunCommandOptions` and the resolved stream name,
+then record the outcome on the returned span:
+
+```haskell
+-- keiro/src/Keiro/Command.hs (runCommand, abridged)
+withCommandSpan (options ^. #tracer) (resolvedStreamName eventStream targetStream) Nothing $ \mSpan -> do
+  result <- attempt (options ^. #retryLimit)
+  recordCommandOutcome mSpan (^. #eventsAppended) result
+  pure result
+```
+
+`resolvedStreamName` renders the target stream as plain `Text` (it pattern-matches the `StreamName`
+out of the resolver), giving the span its name. The retry argument is `Nothing` here at the top-level
+call; the per-attempt retry bookkeeping is internal. For the command run itself, read
+[The command processor](/docs/keiro/walkthrough/command-cycle/03-the-command-processor).
+
+Next: [02 — Attribute keys and the command-outcome
+seam](/docs/keiro/walkthrough/operations/02-attribute-keys-and-the-command-outcome-seam).

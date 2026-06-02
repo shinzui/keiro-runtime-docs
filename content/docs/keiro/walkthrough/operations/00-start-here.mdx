@@ -1,0 +1,66 @@
+---
+title: "00 — Start here"
+description: "An ordered tour of keiro's operations internals: the OpenTelemetry span helpers in Keiro.Telemetry and the embedded migration runner in Keiro.Migrations."
+---
+
+This is an **ordered source tour** of keiro's two cross-cutting **operations** internals: how
+`Keiro.Telemetry` wraps work in OpenTelemetry spans, and how `Keiro.Migrations` embeds and applies
+keiro's SQL schema. It reads the real Haskell in `keiro/src/Keiro/Telemetry.hs`,
+`keiro/src/Keiro/Command.hs`, `keiro/src/Keiro/Outbox.hs`, and
+`keiro-migrations/src/Keiro/Migrations.hs`, and explains *why* the code is shaped the way it is. Read
+the chapters in order.
+
+## The design in one picture
+
+Telemetry is **opt-in** through a `Maybe Tracer`: with `Nothing` every helper is a pass-through
+(zero spans, one `Maybe` branch of cost); with `Just tracer` it opens a span. Three sites open spans
+today. The migration runner embeds three SQL files at compile time and applies kiroku's then keiro's
+schema in one idempotent codd ledger.
+
+```mermaid
+flowchart TD
+  subgraph Telemetry["Keiro.Telemetry (Maybe Tracer)"]
+    P["withProducerSpan -> Producer 'send (dest)'"]
+    C["withConsumerSpan -> Consumer 'process (topic)' (child of upstream via W3C)"]
+    Cmd["withCommandSpan -> Internal '(stream)'"]
+    Cmd --> Seam["recordCommandOutcome: keiro.events.appended | error.type + status Error"]
+  end
+  subgraph Migrations["Keiro.Migrations (codd, embedded SQL)"]
+    Embed["embedDir 'sql-migrations' (Template Haskell)"] --> Parse["parseAddedSqlMigration"]
+    Parse --> All["allKeiroMigrations: kiroku THEN keiro (load-bearing)"]
+    All --> Apply["runCoddLogger + applyMigrations (idempotent ledger)"]
+  end
+```
+
+## The chapters
+
+<Cards>
+  <Card title="01 — The tracer seam and span helpers" href="/docs/keiro/walkthrough/operations/01-the-tracer-seam-and-span-helpers" description="The Maybe Tracer opt-in, inSpan', and withProducerSpan / withConsumerSpan / withCommandSpan with their call sites." />
+  <Card title="02 — Attribute keys and the command-outcome seam" href="/docs/keiro/walkthrough/operations/02-attribute-keys-and-the-command-outcome-seam" description="Imported vs. bespoke AttributeKeys, the W3C bridge, recordCommandOutcome / commandErrorClass, and the honest partial-coverage note." />
+  <Card title="03 — The migration runner" href="/docs/keiro/walkthrough/operations/03-the-migration-runner" description="embedDir, parseAddedSqlMigration, the kiroku-then-keiro order, the four runners, the keiro-migrate CLI, and the five tables." />
+</Cards>
+
+The source files this tour reads:
+
+```text
+keiro/src/Keiro/Telemetry.hs              -- the three span helpers, the W3C bridge, the keys
+keiro/src/Keiro/Command.hs                -- withCommandSpan + recordCommandOutcome / commandErrorClass
+keiro/src/Keiro/Outbox.hs                 -- withProducerSpan call site (publish)
+keiro-migrations/src/Keiro/Migrations.hs  -- the migration runner
+keiro-migrations/app/Main.hs              -- the keiro-migrate CLI
+keiro-migrations/sql-migrations/*.sql     -- the three embedded files (five tables)
+```
+
+<Callout type="warn">
+**Instrumentation coverage is partial.** Today three sites emit spans: **outbox publish**, **inbox
+consume**, and **command run**. Hydration, snapshot reads, projection writes, and the timer worker
+are **not yet instrumented** — those spans are deferred. Enabling a tracer does not give full
+coverage of the framework's internals today. (Same note as the
+[Telemetry reference](/docs/keiro/reference/telemetry).)
+</Callout>
+
+For the look-up version of this material, read the
+[Telemetry reference](/docs/keiro/reference/telemetry) and the
+[Migrations and schema reference](/docs/keiro/reference/migrations-and-schema); for the wiring task,
+the how-tos [Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) and
+[Run the migrations](/docs/keiro/how-to/run-migrations).
