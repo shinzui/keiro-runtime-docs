@@ -1,0 +1,105 @@
+---
+title: "Run the workflow resume worker"
+description: "Build a WorkflowRegistry, run resumeWorkflowsOnce on a polling loop, read the ResumeSummary, and drain workflow-sleep timers so suspended workflows recover after waits and crashes."
+---
+
+A suspended workflow does not resume itself — its function is no longer running; it is a journal in
+the database. The **resume worker** is what notices: each pass it discovers workflows whose journal
+lacks a terminal marker and re-invokes each so it proceeds past a now-resolved wait or a crash. This
+guide wires it into a production loop. For the API, see the [resume-worker
+reference](/docs/keiro/reference/durable-workflows#the-resume-worker).
+
+## Build the registry
+
+The worker discovers a workflow's *name* and *id* from the database, but a workflow's body is
+application code. So you supply a **`WorkflowRegistry`**: a map from each `WorkflowName` to a
+`WorkflowDef` that rebuilds the body from an id alone.
+
+```haskell
+import Keiro.Workflow.Resume
+import qualified Data.Map.Strict as Map
+
+appRegistry :: (Store :> es, IOE :> es) => WorkflowRegistry es
+appRegistry = Map.fromList
+  [ (orderFulfillmentWorkflowName, WorkflowDef (\wid -> orderFulfillmentWorkflow (orderIdFromWf wid)))
+  , (shipOrderWorkflowName,        WorkflowDef (\wid -> shipOrderWorkflow (orderIdFromWf wid)))
+  ]
+```
+
+<Callout type="warn">
+**Register every workflow name still in flight — including children.** `spawnChild` does not run a
+child inline; the resume worker drives it from the registry, so a child's name *must* be present. A
+discovered workflow whose name is absent is surfaced as `unknownName` in the summary (and logged to
+stderr), never silently dropped — but it will not make progress until you register it.
+</Callout>
+
+## Run one pass, then loop
+
+`resumeWorkflowsOnce` is the single, testable pass; `runWorkflowResumeWorker` loops it forever on the
+poll interval. In a real deployment, run the loop as a background process alongside your other workers:
+
+```haskell
+-- The whole production loop:
+runWorkflowResumeWorker appRegistry
+
+-- Or drive passes yourself (e.g. to inspect each summary):
+summary <- resumeWorkflowsOnce defaultWorkflowResumeOptions appRegistry
+```
+
+keiro does not supervise OS processes — use your normal process manager or orchestrator, the same way
+you run the [timer](/docs/keiro/how-to/drive-the-timer-worker) and outbox workers.
+
+## Read the summary
+
+Each pass returns a `ResumeSummary`. Log or meter it to see the worker's health:
+
+```haskell
+data ResumeSummary = ResumeSummary
+  { discovered     :: Int   -- unfinished workflows found this pass
+  , resumed        :: Int   -- re-invoked (name found in the registry)
+  , completed      :: Int   -- re-invocations that reached Completed
+  , stillSuspended :: Int   -- re-invocations still parked on a wait
+  , unknownName    :: Int   -- discovered but absent from the registry (skipped + logged)
+  }
+```
+
+A steady non-zero `unknownName` means a deployed-then-removed workflow still has live instances —
+re-add it to the registry. A `discovered` count that never drains to zero means some wake source is
+not resolving (a sleep timer no worker drains, an awakeable no one signals).
+
+## Drain the sleep timers too
+
+The resume worker discovers and re-invokes; it does **not** fire timers. A workflow parked on a
+`sleepNamed` only advances once a **timer worker** journals the sleep's completion. Run
+`runWorkflowTimerWorker` on your timer loop — it handles both workflow sleeps and ordinary
+process-manager timers in one pass:
+
+```haskell
+import Keiro.Workflow.Sleep (runWorkflowTimerWorker)
+
+now <- getCurrentTime
+-- workflow-only deployment: the fallback fire action returns Nothing
+_ <- runWorkflowTimerWorker mMetrics now (\_ -> pure Nothing)
+-- mixed deployment: pass your existing process-manager fire action as the fallback
+_ <- runWorkflowTimerWorker mMetrics now myProcessManagerFireAction
+```
+
+## Tune and observe
+
+- **Poll interval and run options.** Use `runWorkflowResumeWorkerWith` with a `WorkflowResumeOptions`
+  to set the `pollInterval` (microseconds) and thread `runOptions` (snapshot policy + telemetry) into
+  every re-invocation.
+- **Metrics.** Thread a `Just KeiroMetrics` through `runOptions` (`opts & #runOptions . #metrics .~ Just m`).
+  The worker then records `keiro.workflow.resumed` per re-invocation and samples
+  `keiro.workflow.awakeables.pending` once per pass. See the [workflow
+  instruments](/docs/keiro/reference/telemetry#workflow-instruments).
+- **Concurrency is safe by construction.** You may run several resume-worker processes: deterministic
+  journal ids and step short-circuiting make two workers racing the same workflow converge to the same
+  journal, each side effect at most once. The `useAdvisoryLock` field is reserved and has no effect.
+
+<Cards>
+  <Card title="Write a durable workflow" href="/docs/keiro/how-to/write-a-durable-workflow" />
+  <Card title="Drive the timer worker" href="/docs/keiro/how-to/drive-the-timer-worker" />
+  <Card title="Durable workflows reference" href="/docs/keiro/reference/durable-workflows" />
+  <Card title="The durable-execution walkthrough" href="/docs/keiro/walkthrough/durable-execution/07-the-resume-worker" />
+</Cards>

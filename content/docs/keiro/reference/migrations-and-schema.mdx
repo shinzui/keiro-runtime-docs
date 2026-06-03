@@ -1,10 +1,10 @@
 ---
 title: "Migrations and schema"
-description: "Reference for Keiro.Migrations: the migration accessors, the four runners, the keiro-migrate CLI, and the five tables keiro owns."
+description: "Reference for Keiro.Migrations: the migration accessors, the four runners, the keiro-migrate CLI, and the eight tables keiro owns."
 ---
 
 The functions on this page live in `Keiro.Migrations` (package `keiro-migrations`); the CLI is the
-`keiro-migrate` executable. keiro's schema ships as **embedded codd migrations** — four SQL files
+`keiro-migrate` executable. keiro's schema ships as **embedded codd migrations** — seven SQL files
 under `keiro-migrations/sql-migrations/`, baked into the binary with Template Haskell and applied in
 filename-timestamp order. For the task narrative, see
 [Run the migrations](/docs/keiro/how-to/run-migrations).
@@ -55,30 +55,39 @@ difference is whether codd verifies the schema afterward. The environment variab
 
 ## Tables keiro owns
 
-All five tables live in the **`kiroku` schema**, created by the bootstrap/outbox/inbox migrations (a
-fourth migration alters `keiro_timers`). Field
-detail lives on the owning subsystem's reference page; this is the map.
+All eight tables live in the **`kiroku` schema**. The first five come from the
+bootstrap/outbox/inbox/timer-recovery migrations; the last three are the
+[durable-workflow](/docs/keiro/reference/durable-workflows) tables. Field detail lives on the owning
+subsystem's reference page; this is the map.
 
 | Table | Migration | Purpose | Owning reference |
 |---|---|---|---|
 | `keiro_snapshots` | bootstrap | Per-stream aggregate snapshots for fast hydration | [Snapshot](/docs/keiro/reference/snapshot) |
 | `keiro_read_models` | bootstrap | Read-model registry (version, shape hash, build status) | [Read model](/docs/keiro/reference/read-model) |
-| `keiro_timers` | bootstrap (+ timer-recovery) | Durable timers for process managers | [Keiro.Timer](/docs/keiro/reference/timers) |
+| `keiro_timers` | bootstrap (+ timer-recovery) | Durable timers for process managers and workflow sleeps | [Keiro.Timer](/docs/keiro/reference/timers) |
 | `keiro_outbox` | outbox | Transactional outbox rows awaiting publish | [Outbox](/docs/keiro/reference/outbox) |
 | `keiro_inbox` | inbox | Inbound dedupe ledger keyed by `(source, dedupe_key)` | [Inbox](/docs/keiro/reference/inbox) |
+| `keiro_workflow_steps` | workflow-steps | Step-lookup index backing replay and unfinished-workflow discovery | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
+| `keiro_awakeables` | awakeables | Pending external completions (durable promises) | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
+| `keiro_workflow_children` | workflow-children | Durable parent→child workflow links | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 
-The four migration files, applied in this order:
+The seven migration files, applied in this order:
 
 ```text
-2026-05-17-00-00-00-keiro-bootstrap.sql        -- keiro_snapshots, keiro_read_models, keiro_timers
-2026-05-17-01-00-00-keiro-outbox.sql           -- keiro_outbox
-2026-05-17-02-00-00-keiro-inbox.sql            -- keiro_inbox
-2026-05-17-03-00-00-keiro-timer-recovery.sql   -- ALTER keiro_timers: add last_error, re-index for recovery
+2026-05-17-00-00-00-keiro-bootstrap.sql           -- keiro_snapshots, keiro_read_models, keiro_timers
+2026-05-17-01-00-00-keiro-outbox.sql              -- keiro_outbox
+2026-05-17-02-00-00-keiro-inbox.sql               -- keiro_inbox
+2026-05-17-03-00-00-keiro-timer-recovery.sql      -- ALTER keiro_timers: add last_error, re-index for recovery
+2026-06-03-00-00-00-keiro-workflow-steps.sql      -- keiro_workflow_steps
+2026-06-03-01-00-00-keiro-awakeables.sql          -- keiro_awakeables
+2026-06-03-02-00-00-keiro-workflow-children.sql   -- keiro_workflow_children
 ```
 
 The timer-recovery migration adds the `last_error` column (populated only for dead-lettered timers)
 and narrows `keiro_timers_due_idx` to active (`scheduled`/`firing`) rows so it also serves the
-[stuck-row recovery queries](/docs/keiro/reference/timers#recovery-operations).
+[stuck-row recovery queries](/docs/keiro/reference/timers#recovery-operations). The three workflow
+migrations add no columns to existing tables — a workflow sleep reuses `keiro_timers` unchanged,
+routing entirely on its JSON payload discriminator.
 
 <Cards>
   <Card title="Run the migrations" href="/docs/keiro/how-to/run-migrations" />

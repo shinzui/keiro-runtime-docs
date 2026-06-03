@@ -1,0 +1,143 @@
+---
+title: "06 — Child workflows"
+description: "Keiro.Workflow.Child: spawnChild as a journaled parent step plus a link row, awaitChild over awaitStep, cancelChild's two-marker dance, and how runChildWorkflow / childCompletionHook wake the parent."
+---
+
+`keiro/src/Keiro/Workflow/Child.hs` is the third wake source, and the one that composes workflows: a
+**parent** spawns a **child** (a second workflow with its own journal), waits for its result, and may
+cancel it. The whole relationship survives a crash because the spawn is journaled in the parent and the
+link is a durable row in `keiro_workflow_children`.
+
+## The handle and the two reserved step names
+
+```haskell
+data ChildHandle a = ChildHandle { childName :: !WorkflowName, childWfId :: !WorkflowId }
+
+childSpawnStepName  (WorkflowId wid) = childStepPrefix <> wid              -- "child:<childId>"
+childResultStepName (WorkflowId wid) = childStepPrefix <> wid <> ":result" -- "child:<childId>:result"
+```
+
+A child contributes **two** entries to the *parent's* journal: a `child:<id>` spawn record and a
+`child:<id>:result` completion the parent awaits. The handle's phantom `a` records the child's result
+type so `awaitChild` decodes without an annotation; the handle itself carries only name and id.
+
+## `spawnChild`: a journaled step that registers a link
+
+```haskell
+spawnChild childNm childWid _childDef = do
+  (parentNm, parentWid) <- currentWorkflow
+  let spawnStep = StepName (childSpawnStepName childWid)
+      resultStep = childResultStepName childWid
+  _ <- step spawnStep $ do
+         runTransaction $ registerChildTx (unWorkflowId childWid) (unWorkflowName childNm)
+                                          (unWorkflowId parentWid) (unWorkflowName parentNm) resultStep
+         pure ()
+  pure (ChildHandle childNm childWid)
+```
+
+The spawn body runs **inside a `step`** in the parent journal, so a parent replay short-circuits it and
+**never re-spawns**; `registerChildTx` is an `INSERT ... ON CONFLICT (child_id, child_name) DO NOTHING`,
+so even a raced spawn collapses. Note what `spawnChild` does **not** do: it does not run the child
+inline. The `_childDef` argument is taken purely for authoring ergonomics; the module header is
+explicit that the registry is the source of truth:
+
+> the EP-42 resume worker drives the child to completion from the application's `WorkflowRegistry`, so
+> **a child's `WorkflowName` must be registered there**.
+
+## `awaitChild`: `awaitStep` on the result step
+
+```haskell
+awaitChild (ChildHandle childNm childWid) = do
+  let resultStep = StepName (childResultStepName childWid)
+      arm = do
+        mrow <- lookupChild (unWorkflowId childWid) (unWorkflowName childNm)
+        case mrow of
+          Just row | (row ^. #status) == ChildCancelled -> throwIO (WorkflowChildCancelled childNm childWid)
+          _ -> pure ()                                   -- the spawn already registered the link
+  raw <- awaitStep resultStep arm
+  if isCancelledSentinel raw
+    then throwIO (WorkflowChildCancelled childNm childWid)
+    else case Aeson.fromJSON raw of Aeson.Success a -> pure a; Aeson.Error e -> error (...)
+```
+
+The parent suspends on `child:<id>:result` until the child's completion is journaled into the *parent's*
+journal. Cancellation is detected on **both** edges: the arm throws `WorkflowChildCancelled` if the
+child row is already `cancelled` (the suspend path), and the hit path throws if the journaled result is
+the `{"cancelled": true}` sentinel. The mirror of EP-40's awakeable-cancelled exception:
+
+```haskell
+data WorkflowChildCancelled = WorkflowChildCancelled WorkflowName WorkflowId
+  deriving stock (Eq, Show)
+instance Exception WorkflowChildCancelled
+```
+
+## `cancelChild`: the two-marker dance
+
+Cancelling a child must stop *both* sides: the child must stop running, and the suspended parent must
+stop waiting. So a successful cancel writes two durable markers:
+
+```haskell
+cancelChild (ChildHandle childNm childWid) = do
+  cancelled <- runTransaction $ markChildCancelledTx (unWorkflowId childWid) (unWorkflowName childNm)
+  when cancelled $ do
+    now <- liftIO getCurrentTime
+    -- 1) cancellation marker in the CHILD journal -> the child's next resume short-circuits:
+    appendJournalEntry childNm childWid (WorkflowCancelled { recordedAt = now })
+    -- 2) cancellation sentinel as the parent's await-step result -> awaitChild throws:
+    mrow <- lookupChild (unWorkflowId childWid) (unWorkflowName childNm)
+    for_ mrow $ \row -> appendJournalEntry (WorkflowName (row ^. #parentName)) (WorkflowId (row ^. #parentId))
+                          StepRecorded { stepName = row ^. #awaitStep, result = cancelledSentinel, recordedAt = now }
+  pure cancelled
+```
+
+`markChildCancelledTx` flips a still-`running` row to `cancelled` (returning `False` for an
+already-resolved child, so a retried cancel is a no-op). Marker (1) is the `WorkflowCancelled` event
+that makes `runWorkflowWith`'s cancellation short-circuit
+([chapter 02](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop)) fire on the
+child's next resume. Marker (2) is the `{"cancelled": true}` sentinel written under the parent's stored
+`await_step`, so a suspended parent's `awaitChild` wakes and throws. Both appends use deterministic ids,
+so the whole operation is idempotent.
+
+## Waking the parent: `runChildWorkflow` and `childCompletionHook`
+
+A finished child must propagate its result to the parent. That is *not* part of a bare
+`runWorkflowWith` — it is added by `runChildWorkflow`, which the resume worker selects for any workflow
+that is some parent's child:
+
+```haskell
+runChildWorkflow opts childNm childWid action = do
+  outcome <- runWorkflowWith opts childNm childWid action
+  case outcome of
+    Completed result -> do childCompletionHook childNm childWid (toJSON result); pure (Completed result)
+    other -> pure other
+
+childCompletionHook childNm childWid resultValue = do
+  now <- liftIO getCurrentTime
+  _ <- runTransaction $ markChildResultTx (unWorkflowId childWid) (unWorkflowName childNm) resultValue now
+  mrow <- lookupChild (unWorkflowId childWid) (unWorkflowName childNm)
+  for_ mrow $ \row -> appendJournalEntry (WorkflowName (row ^. #parentName)) (WorkflowId (row ^. #parentId))
+                        StepRecorded { stepName = row ^. #awaitStep, result = resultValue, recordedAt = now }
+```
+
+On `Completed`, the hook flips the child row to `completed` (storing the result) and appends the
+`child:<id>:result` `StepRecorded` to the **parent's** journal — exactly the wake source `awaitChild`
+resolves on. It is idempotent and crash-safe: it always re-looks-up the link and re-appends, treating a
+duplicate as success, so a crash between the child completing and the parent being notified self-heals
+on the next drive. A `Suspended` or `Cancelled` child propagates nothing — it has no result yet.
+
+## The discovery seed for zero-step children
+
+```sql
+-- findRunningChildIds
+SELECT child_id, child_name FROM keiro_workflow_children WHERE status = 'running'
+```
+
+A freshly-spawned child has a `running` link row but **no step rows yet**, so
+`findUnfinishedWorkflowIds` ([chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery))
+would not find it. `findRunningChildIds` is the second discovery source the resume worker unions in, so
+a zero-step child is still driven to its first run — covered next.
+
+<Cards>
+  <Card title="← 05 — Awakeables" href="/docs/keiro/walkthrough/durable-execution/05-awakeables" />
+  <Card title="07 — The resume worker →" href="/docs/keiro/walkthrough/durable-execution/07-the-resume-worker" />
+</Cards>

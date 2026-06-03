@@ -1,0 +1,94 @@
+---
+title: "00 — Start here"
+description: "An ordered source tour of keiro's durable-execution runtime: the Workflow effect, the journal-and-replay loop, the step index, durable sleep, awakeables, child workflows, the resume worker, and snapshots/telemetry."
+---
+
+This is an **ordered source tour** of keiro's **durable-execution runtime** — the `Keiro.Workflow`
+module family that lets you write a long-running process as an ordinary function whose **named**
+checkpoints are journaled, so it can pause across a crash, a redeploy, or an idle wait and resume by
+re-invoking it from the top.
+
+If you have not met the concept, read [Understanding durable
+execution](/docs/keiro/explanation/durable-execution) first; for the dry signatures, the [durable
+workflows reference](/docs/keiro/reference/durable-workflows). This tour reads the real source and
+explains *why* it is shaped the way it is.
+
+## The one idea: journal-and-replay over named steps
+
+Everything in this runtime falls out of one mechanism. Each instance owns a kiroku stream named
+`wf:<name>-<id>` — its **journal**. A `step name action` either runs `action` and journals its result,
+or — on a re-run where `name` is already journaled — returns the recorded result **without running the
+action again**. A wait suspends the run after arming an external wake source; the wake source later
+appends the awaited step's completion; a later run **replays**, short-circuiting finished steps and
+running only the un-journaled tail.
+
+So "resume" is not a special code path — it is **the same function, run again**. The journal makes
+re-running it cheap and side-effect-safe. The four authoring primitives (`step`, `sleepNamed`,
+`awakeableNamed`, child workflows) and the suspension waits are all built on two effect operations:
+`step` (run-once-and-journal) and `awaitStep` (arm-and-suspend, or return-if-resolved).
+
+## Two facts to get right up front
+
+**1. Identity is the step name, not the call position.** Replay matches on the `StepName` string, so
+inserting or reordering unrelated code never corrupts an in-flight instance. This is deliberate — it
+avoids the positional-history replay nondeterminism that ordinary code movement causes in some
+durable-execution systems. The ordinal convenience forms (`sleep`, `awakeable`) trade that safety for
+brevity.
+
+**2. The journal stream is the source of truth; the tables are derived.** Three tables
+(`keiro_workflow_steps`, `keiro_awakeables`, `keiro_workflow_children`) are fast-lookup indexes and
+operator-visible state, kept in sync **inside the same transaction** as each journal append. Replay
+always folds the journal stream; the index exists so the hot path and the resume worker can ask "does
+this step exist?" / "which workflows are unfinished?" without rescanning streams.
+
+## The design in one picture
+
+```mermaid
+flowchart TD
+  Run["runWorkflowWith name id action"] --> Load["loadJournal: fold wf:name-id (or snapshot + tail) into a step map"]
+  Load --> Handler["interpret the Workflow effect"]
+  Handler -->|"Step hit"| Replay["return recorded result (no action)"]
+  Handler -->|"Step miss"| Exec["run action -> appendJournalTx (StepRecorded) -> index row"]
+  Handler -->|"Await hit"| Replay
+  Handler -->|"Await miss"| Suspend["run idempotent arm -> throw WorkflowSuspend -> Suspended"]
+  Exec --> Complete["body returns -> appendCompletion (WorkflowCompleted) -> Completed"]
+  Wake["wake source: timer fire / signalAwakeable / child finish"] --> Append["appendJournalEntry (StepRecorded under sleep:/awk:/child:)"]
+  Append -.-> Load
+  Worker["resume worker: findUnfinishedWorkflowIds -> re-invoke"] -.-> Run
+```
+
+## The modules this tour reads
+
+```text
+keiro/src/Keiro/Workflow/Types.hs        -- identity, the journal codec, reserved step names
+keiro/src/Keiro/Workflow.hs              -- the Workflow effect, runWorkflowWith, the replay loop
+keiro/src/Keiro/Workflow/Schema.hs       -- the keiro_workflow_steps index + discovery SQL
+keiro/src/Keiro/Workflow/Sleep.hs        -- durable sleep on the keiro_timers table
+keiro/src/Keiro/Workflow/Awakeable.hs    -- awakeables (+ Awakeable/Schema.hs)
+keiro/src/Keiro/Workflow/Child.hs        -- child workflows (+ Child/Schema.hs)
+keiro/src/Keiro/Workflow/Resume.hs       -- the resume / crash-recovery worker
+keiro/src/Keiro/Workflow/Snapshot.hs     -- the workflow snapshot codec + Keiro.Telemetry instruments
+```
+
+## The chapters
+
+<Cards>
+  <Card title="01 — The types and the journal codec" href="/docs/keiro/walkthrough/durable-execution/01-the-types-and-journal-codec" description="WorkflowName/Id/StepName, workflowStreamName, the WorkflowJournalEvent sum and its self-describing codec, the reserved sleep:/awk:/child: prefixes, WorkflowState, and WorkflowOutcome." />
+  <Card title="02 — The effect and the replay loop" href="/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop" description="The Workflow effect, step/awaitStep, runWorkflowWith top to bottom: loadJournal, the hit/miss handler, the WorkflowSuspend sentinel, appendJournalTx, and the deterministic journal id." />
+  <Card title="03 — The step index and discovery" href="/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery" description="keiro_workflow_steps, recordStepTx's ON CONFLICT DO NOTHING, stepExists, and the findUnfinishedWorkflowIds anti-join the resume worker is built on." />
+  <Card title="04 — Durable sleep" href="/docs/keiro/walkthrough/durable-execution/04-durable-sleep" description="The payload discriminator, the deterministic sleepTimerId, sleepNamed as an awaitStep arm that schedules a keiro_timers row, workflowSleepFireAction, and runWorkflowTimerWorker." />
+  <Card title="05 — Awakeables" href="/docs/keiro/walkthrough/durable-execution/05-awakeables" description="The deterministic AwakeableId, awaitCancellable, and the idempotent, crash-safe signalAwakeable — why it re-appends the journal entry whenever the row is completed." />
+  <Card title="06 — Child workflows" href="/docs/keiro/walkthrough/durable-execution/06-child-workflows" description="spawnChild as a journaled parent step + link row, awaitChild over awaitStep, cancelChild's two-marker dance, and runChildWorkflow/childCompletionHook waking the parent." />
+  <Card title="07 — The resume worker" href="/docs/keiro/walkthrough/durable-execution/07-the-resume-worker" description="The registry, resumeWorkflowsOnce's discovery union and per-workflow advance, child routing, the ResumeSummary, and why no advisory lock is needed." />
+  <Card title="08 — Snapshots and telemetry" href="/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry" description="The fixed-shape-hash workflowStateCodec, tail replay from a snapshot seed, and the six keiro.workflow.* instruments plus the withWorkflowSpan run span." />
+</Cards>
+
+## What this tour assumes
+
+It assumes the [command-cycle tour](/docs/keiro/walkthrough/command-cycle/00-start-here) (the
+Hydrate → Transduce → Append loop and the codec boundary) and the [workflow-engine
+tour](/docs/keiro/walkthrough/workflow/00-start-here) (process managers and the `keiro_timers` table
+durable sleep reuses). The durable-execution runtime layers on both: it journals to kiroku streams via
+the same codec machinery, and a workflow sleep is a `keiro_timers` row routed by a payload
+discriminator. The runnable worked example throughout is jitsurei's
+`orderFulfillmentWorkflow` (`cabal run jitsurei:exe:jitsurei-demo -- workflow`).

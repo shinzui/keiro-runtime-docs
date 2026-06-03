@@ -1,76 +1,86 @@
 ---
 title: "The keiro workflow roadmap: v1 and v2"
-description: "What keiro's workflow engine is today (process managers + durable timers, shipped) and what a future durable-execution model might add (roadmap, not shipped)."
+description: "What keiro's workflow engine is today: the v1 process-manager + durable-timer substrate, and the v2 durable-execution runtime (named-step workflows) that now ships on top of it."
 ---
 
-<Callout type="warn">
-This page describes a **roadmap**. Everything in the "v2" section below is *design intent only* —
-it is **not shipped** in keiro 0.1.0.0 (the version these docs describe). There is no
-durable-execution module, no named-step API, and no extra tables in the source tree. Do not write
-code against anything in the v2 section; nothing there compiles.
-</Callout>
-
-keiro's "workflow engine" is a deliberately small idea: aggregates, process managers, and sagas
-are all the *same* mathematical object (a keiki `SymTransducer`) persisted to *one* substrate
-(your Postgres). This page separates what that gives you **today** from a direction the project
-may explore **later**, so you can build on the former without mistaking it for the latter.
-
-## v1 — shipped today
-
-Everything you need to coordinate multi-step, event-driven work ships in keiro 0.1.0.0:
-
-- **Process managers** (`Keiro.ProcessManager`) — stateful coordinators that fold the events they
-  have seen into their own event-sourced state, dispatch commands to target aggregates, and
-  schedule timers. See [Understanding process managers and
-  sagas](/docs/keiro/explanation/process-managers-and-sagas).
-- **Sagas** — the same primitive used for compensation; there is no separate type. See [Write a
-  saga with compensation](/docs/keiro/how-to/write-a-saga-with-compensation).
-- **Durable timers** (`Keiro.Timer`) — `keiro_timers` rows fired by a bare, caller-driven worker
-  with at-least-once semantics and `FOR UPDATE SKIP LOCKED` claiming, plus a stuck-row **recovery
-  API** (`findStuckTimers` → `requeueStuckTimer` / `cancelTimer` / `deadLetterTimer`) and an optional
-  `maxAttempts` auto-dead-letter ceiling. See [Understanding durable
-  timers](/docs/keiro/explanation/durable-timers).
-- **Worker observability** (`Keiro.Telemetry`) — an opt-in `KeiroMetrics` instrument set covering the
-  outbox, inbox, timer, and projection workers (backlog, lag, fire-lag, duplicates, dead-letters,
-  stuck timers, wait-timeouts), alongside the OpenTelemetry command/producer/consumer spans. See the
-  [Telemetry reference](/docs/keiro/reference/telemetry#metrics-surface).
-
-This is enough to express timeouts, escalations, retries, and compensating transactions — the
-jitsurei order-fulfillment and incident-escalation domains are built entirely on it. The model's
-strength is its honesty: every effect is an ordinary command-cycle write, keyed by a deterministic
-id, replay-safe under at-least-once delivery. There is no hidden runtime to operate.
-
-## v2 — planned (not shipped)
-
-The v1 model asks you to express a workflow as a *reaction per event*: each incoming event is
-handled independently, and the manager's progress lives in its state stream. That is powerful, but
-some workflows read more naturally as a *sequence* — "do this, then sleep for an hour, then do
-that, waiting for an external signal in between". Expressing such a sequence as a pile of
-per-event reactions can obscure the control flow.
-
-A future direction — **durable execution** — would let you write a workflow as ordinary-looking
-sequential code whose steps are individually durable: a step would run at most once and its result
-would be checkpointed, a sleep would suspend the workflow for a duration without holding a thread,
-and an *awaitable* signal would let an external event resume it. Conceptually this is the same idea
-as today's process manager (durable, replay-safe progress), but with the framework — rather than
-your `handle` function — tracking *where in the sequence* each instance is.
+keiro's "workflow engine" comes in two layers, both **shipped**. The **v1** layer treats aggregates,
+process managers, and sagas as the *same* mathematical object (a keiki `SymTransducer`) persisted to
+*one* substrate (your Postgres). The **v2** layer — **durable execution** — adds journaled named-step
+workflows *on top of* v1, for processes that read more naturally as a sequence than as a pile of
+per-event reactions. This page separates the two so you can pick the right tool.
 
 <Callout type="info">
-None of this exists yet. If a future release adds durable execution it would likely introduce a
-new module and supporting tables, but their names, signatures, and storage are **undecided** and
-deliberately **not** shown here as code. Treat any such names you may see in the keiro repo's
-internal `docs/research/*` or `docs/plans/*` notes as historical design exploration, not as a
-shipped or stable API.
+An earlier version of this page described v2 as a *roadmap idea, not shipped*. That is now out of
+date: the durable-execution runtime (`Keiro.Workflow`) has landed with real, compilable signatures.
+See the [durable workflows reference](/docs/keiro/reference/durable-workflows) and
+[Understanding durable execution](/docs/keiro/explanation/durable-execution).
 </Callout>
 
-## What to build on today
+## v1 — the process-manager + timer substrate
 
-Build on v1. Process managers and timers are the supported, shipped way to coordinate work across
-aggregates in keiro, and they cover the great majority of workflow needs. If and when a
-durable-execution model lands, it will be documented here as a first-class, shipped feature — with
-real, compilable signatures — not as a roadmap.
+Everything you need to coordinate multi-step, event-driven work:
+
+- **Process managers** (`Keiro.ProcessManager`) — stateful coordinators that fold the events they
+  have seen into their own event-sourced state, dispatch commands to target aggregates, and schedule
+  timers. See [Understanding process managers and sagas](/docs/keiro/explanation/process-managers-and-sagas).
+- **Sagas** — the same primitive used for compensation; there is no separate type. See [Write a saga
+  with compensation](/docs/keiro/how-to/write-a-saga-with-compensation).
+- **Durable timers** (`Keiro.Timer`) — `keiro_timers` rows fired by a bare, caller-driven worker with
+  at-least-once semantics and `FOR UPDATE SKIP LOCKED` claiming, plus a stuck-row **recovery API**
+  (`findStuckTimers` → `requeueStuckTimer` / `cancelTimer` / `deadLetterTimer`) and an optional
+  `maxAttempts` auto-dead-letter ceiling. See [Understanding durable timers](/docs/keiro/explanation/durable-timers).
+- **Worker observability** (`Keiro.Telemetry`) — an opt-in `KeiroMetrics` instrument set covering the
+  outbox, inbox, timer, and projection workers, alongside the OpenTelemetry command/producer/consumer
+  spans. See the [Telemetry reference](/docs/keiro/reference/telemetry#metrics-surface).
+
+This expresses timeouts, escalations, retries, and compensating transactions — the jitsurei
+order-fulfillment and incident-escalation domains are built entirely on it. The model's strength is
+its honesty: every effect is an ordinary command-cycle write, keyed by a deterministic id, replay-safe
+under at-least-once delivery. There is no hidden runtime to operate.
+
+## v2 — durable execution (named-step workflows)
+
+The v1 model asks you to express a workflow as a *reaction per event*: each incoming event is handled
+independently and the manager's progress lives in its state stream. That is powerful, but some
+workflows read more naturally as a *sequence* — "do this, then sleep for an hour, then wait for an
+external signal, then do that". Expressing such a sequence as a pile of per-event reactions can
+obscure the control flow.
+
+**Durable execution** (`Keiro.Workflow`) lets you write that workflow as ordinary sequential code
+whose checkpoints are individually durable:
+
+| Feature | Shipped v2 shape |
+|---|---|
+| Authoring model | an ordinary `Eff (Workflow : es) a` function |
+| Durable side effects | `step "name" action` journals a result under an explicit name; a replay returns it without re-running |
+| Sleep | `sleepNamed` / `sleep`, backed by the v1 `keiro_timers` table |
+| External completion | `awakeableNamed` + `signalAwakeable` / `cancelAwakeable` — durable promises (`keiro_awakeables`) |
+| Child workflows | `spawnChild` / `awaitChild` / `cancelChild` (`keiro_workflow_children`) |
+| Journal storage | one kiroku stream per instance, `wf:<name>-<id>` |
+| Crash recovery | `resumeWorkflowsOnce` discovers and re-invokes unfinished workflows from a registry |
+| Snapshots | `runWorkflowWith` + `snapshotPolicy` compact long journals |
+| Observability | the `keiro.workflow.*` instruments and a `workflow <name>` span |
+
+The key design decision is **named steps, not positional history**: step identity is an explicit
+string, stable across source reordering, which avoids the Temporal-style replay nondeterminism that
+ordinary code movement can otherwise cause. See
+[Understanding durable execution](/docs/keiro/explanation/durable-execution) for why this matters.
+
+Two pieces are deliberately **deferred** (cleanly additive): continue-as-new journal rotation for
+unbounded histories, and a versioning / patch API for changing a workflow's logic while instances are
+in flight.
+
+## Which layer to build on
+
+They are complementary. Reach for a **process manager** when the work reads as *"whenever X happens,
+react"*; reach for a **durable workflow** when it reads as *one long-running function with in-line
+waits*. A process manager is effectively a workflow whose steps are explicit event-driven reactions;
+v2 reuses v1's command cycle, timers, snapshots, codecs, and migration story. The
+[when-to-use comparison](/docs/keiro/explanation/durable-execution#when-to-use-a-workflow-vs-a-process-manager)
+has the full table.
 
 <Cards>
+  <Card title="Understanding durable execution" href="/docs/keiro/explanation/durable-execution" />
   <Card title="Understanding process managers and sagas" href="/docs/keiro/explanation/process-managers-and-sagas" />
   <Card title="Understanding durable timers" href="/docs/keiro/explanation/durable-timers" />
 </Cards>

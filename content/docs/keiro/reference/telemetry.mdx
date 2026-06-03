@@ -62,6 +62,19 @@ Opens an `Internal`-kind span named after the resolved stream. Sets `keiro.strea
 `Maybe Int64` retry attempt is given, `keiro.retry.attempt`. The caller adds `keiro.events.appended`
 on the returned span after a successful append.
 
+### `withWorkflowSpan`
+
+```haskell
+withWorkflowSpan
+  :: (MonadUnliftIO m, HasCallStack)
+  => Maybe Tracer -> WorkflowName -> WorkflowId -> Maybe StepName -> (Maybe Span -> m a) -> m a
+```
+
+Opens an `Internal`-kind span named `"workflow " <> name` around a [durable-workflow](/docs/keiro/reference/durable-workflows)
+run. Sets `keiro.workflow.name`, `keiro.workflow.id`, and — when a `StepName` is supplied —
+`keiro.workflow.step`. `runWorkflowWith` calls it once per run with the tracer from
+`WorkflowRunOptions.tracer`, so a `Nothing` tracer makes the whole run untraced.
+
 ## The W3C TraceContext bridge
 
 W3C TraceContext is the web standard for propagating a trace across processes via the
@@ -102,6 +115,9 @@ bespoke to keiro.
 | `keiro.stream.name` | command | the resolved stream name |
 | `keiro.retry.attempt` | command | the 1-based retry attempt, when given |
 | `keiro.events.appended` | command | events appended (added by the caller after append) |
+| `keiro.workflow.name` | workflow | the workflow definition name |
+| `keiro.workflow.id` | workflow | the workflow instance id |
+| `keiro.workflow.step` | workflow | the step name, when a per-step span is opened |
 
 ## Attribute keys
 
@@ -131,15 +147,20 @@ Only the bespoke `keiro.*` keys have no upstream equivalent, so they are **defin
 keiro_stream_name                  -- "keiro.stream.name"
 keiro_retry_attempt                -- "keiro.retry.attempt"
 keiro_events_appended              -- "keiro.events.appended"
+keiro_workflow_name                -- "keiro.workflow.name"
+keiro_workflow_id                  -- "keiro.workflow.id"
+keiro_workflow_step                -- "keiro.workflow.step"
 ```
 
 <Callout type="warn">
-**Span coverage is partial; metric coverage is broad.** Three sites emit **spans** today:
-**outbox publish**, **inbox consume**, and **command run**. Hydration and snapshot reads are still
-**not traced**. The four background workers — outbox, inbox, timer, and projection — instead carry
-the **metric** instruments documented in [Metrics surface](#metrics-surface) below, so their backlog,
-lag, and outcome counts are observable even though they emit no spans. Both surfaces are tracked in
-the keiro repo's `docs/research/opentelemetry-semconv-audit.md`.
+**Span coverage is partial; metric coverage is broad.** Four sites emit **spans** today:
+**outbox publish**, **inbox consume**, **command run**, and a **durable-workflow run**
+(`withWorkflowSpan`). Hydration and snapshot reads are still **not traced**. The four background
+workers — outbox, inbox, timer, and projection — instead carry the **metric** instruments documented
+in [Metrics surface](#metrics-surface) below, so their backlog, lag, and outcome counts are observable
+even though they emit no spans. The durable-workflow runtime carries both a span and the
+[`keiro.workflow.*` instruments](#workflow-instruments). Both surfaces are tracked in the keiro repo's
+`docs/research/opentelemetry-semconv-audit.md`.
 </Callout>
 
 ## Metrics surface
@@ -184,6 +205,12 @@ data KeiroMetrics = KeiroMetrics
   , timerStuck             :: Gauge Int64
   , projectionLag          :: Gauge Int64
   , projectionWaitTimeouts :: Counter Int64
+  , workflowStepsExecuted     :: Counter Int64
+  , workflowStepsReplayed     :: Counter Int64
+  , workflowResumed           :: Counter Int64
+  , workflowActive            :: Gauge Int64
+  , workflowJournalLength     :: Histogram
+  , workflowAwakeablesPending :: Gauge Int64
   }
 
 newKeiroMetrics :: (MonadIO m) => Meter -> m KeiroMetrics
@@ -223,7 +250,28 @@ per pass and per transaction; and the projection path exposes
 call on its drain loop. See [Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) for the
 end-to-end wiring.
 
+### Workflow instruments
+
+The six `keiro.workflow.*` instruments cover the [durable-workflow runtime](/docs/keiro/reference/durable-workflows).
+They are recorded only when a `KeiroMetrics` handle is threaded through `WorkflowRunOptions.metrics`
+(directly, or via `WorkflowResumeOptions.runOptions` for a resumed run); the two per-pass gauges below
+are sampled by the resume worker. The `*Name` `Text` bindings and `record*` helpers are exported from
+`Keiro.Telemetry`.
+
+| Wire name | Kind | Unit | Record helper | Emitted by |
+|---|---|---|---|---|
+| `keiro.workflow.steps.executed` | Counter | `{step}` | `recordWorkflowStepExecuted` | A `step`/`awaitStep` **miss** — the action ran and was journaled. |
+| `keiro.workflow.steps.replayed` | Counter | `{step}` | `recordWorkflowStepReplayed` | A `step`/`awaitStep` **hit** — the recorded result was returned without running the action. |
+| `keiro.workflow.resumed` | Counter | `{workflow}` | `recordWorkflowResumed` | The resume worker — one increment per re-invocation of a registered workflow. |
+| `keiro.workflow.active` | Gauge | `{workflow}` | `recordWorkflowActive` | The runtime — workflow runs currently in progress in this process (sampled on run entry and exit). |
+| `keiro.workflow.journal.length` | Histogram | `{event}` | `recordWorkflowJournalLength` | The runtime — a completing run's journal event count (the `Completed` path only). |
+| `keiro.workflow.awakeables.pending` | Gauge | `{awakeable}` | `recordWorkflowAwakeablesPending` | The resume worker, once per pass — `pending` rows in `keiro_awakeables`. |
+
+The `steps.executed` vs `steps.replayed` split is the live-execution vs journal-replay signal: a
+healthy resume after a crash is mostly replays plus a small executed tail.
+
 <Cards>
+  <Card title="Durable workflows reference" href="/docs/keiro/reference/durable-workflows" />
   <Card title="Enable OpenTelemetry" href="/docs/keiro/how-to/enable-opentelemetry" />
   <Card title="Command reference" href="/docs/keiro/reference/command" />
   <Card title="Outbox reference" href="/docs/keiro/reference/outbox" />

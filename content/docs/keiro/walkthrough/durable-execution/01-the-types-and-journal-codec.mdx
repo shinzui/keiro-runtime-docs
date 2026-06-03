@@ -1,0 +1,126 @@
+---
+title: "01 — The types and the journal codec"
+description: "Keiro.Workflow.Types: the identity newtypes, the wf:<name>-<id> stream naming, the self-describing WorkflowJournalEvent codec, the reserved sleep:/awk:/child: prefixes, WorkflowState, and WorkflowOutcome."
+---
+
+`keiro/src/Keiro/Workflow/Types.hs` is the leaf module the whole runtime builds on: the identity
+newtypes, the journal stream naming, the journal-event sum and its codec, the accumulated-state alias,
+the run outcome, and the reserved step-name conventions. It imports no telemetry and no sibling
+workflow module, so it stays cycle-free.
+
+## Three identity newtypes
+
+```haskell
+newtype WorkflowName = WorkflowName { unWorkflowName :: Text }   -- the definition, e.g. "order-fulfillment"
+newtype WorkflowId   = WorkflowId   { unWorkflowId   :: Text }   -- one instance (a UUID-as-text or any stable string)
+newtype StepName     = StepName     { unStepName     :: Text }   -- a checkpoint label
+```
+
+A `WorkflowName` names a *definition* and is part of every journal stream name and every deterministic
+journal-event id, so **it must not change for a given definition across deploys**. A `WorkflowId`
+names one *instance*. A `StepName` is the replay key — the comment on it states the load-bearing
+property plainly:
+
+> Replay matches on this label, not on source position, so reordering code between deploys does not
+> corrupt an in-flight workflow.
+
+## The stream name: `wf:<name>-<id>`
+
+```haskell
+workflowStreamName :: WorkflowName -> WorkflowId -> StreamName
+workflowStreamName (WorkflowName name) (WorkflowId wid) =
+  StreamName ("wf:" <> name <> "-" <> wid)
+```
+
+Every instance owns exactly one kiroku stream. The `:` and `-` are **structural** — names and ids must
+not make the boundary ambiguous, the same caveat the v1 process-manager `pm:<name>-<correlationId>`
+convention carries. There is no separate "history table"; the stream *is* the history.
+
+## The journal event sum
+
+```haskell
+data WorkflowJournalEvent
+  = StepRecorded      { stepName :: !Text, result :: !Aeson.Value, recordedAt :: !UTCTime }
+  | WorkflowCompleted { recordedAt :: !UTCTime }
+  | WorkflowCancelled { recordedAt :: !UTCTime }
+  | WorkflowFailed    { reason :: !Text, recordedAt :: !UTCTime }
+```
+
+The crucial design move is that **the suspension primitives do not add event types**. A fired sleep, a
+signalled awakeable, and a finished child all journal their completions as ordinary `StepRecorded`
+events — distinguished only by a reserved prefix on `stepName`. The comment in the source spells out
+why:
+
+> the replay loop stays uniform because there is no separate event type.
+
+`WorkflowCompleted` is the terminal marker; `WorkflowCancelled` (written to a child's journal by
+`cancelChild`) makes a run short-circuit to `Cancelled`; `WorkflowFailed` carries a reason for a
+permanently-failed run. The last three are additive within `schemaVersion = 1` — new wire tags on the
+codec's `eventTypes`, with no upcaster, because old journals never carry them.
+
+## A self-describing codec
+
+```haskell
+workflowJournalCodec :: Codec WorkflowJournalEvent
+workflowJournalCodec =
+  Codec
+    { eventTypes = "StepRecorded" :| ["WorkflowCompleted", "WorkflowCancelled", "WorkflowFailed"]
+    , eventType = \case StepRecorded{} -> "StepRecorded"; ...
+    , schemaVersion = 1
+    , encode = encodeJournalEvent
+    , decode = decodeJournalEvent
+    , upcasters = []
+    }
+```
+
+Each encoded payload carries a `"kind"` discriminator (`encodeJournalEvent` writes it;
+`decodeJournalEvent` switches on it), so `decode` reconstructs the constructor from the payload alone.
+This is an ordinary [keiro `Codec`](/docs/keiro/reference/codec) — the same machinery aggregates use —
+so the journal rides the normal kiroku append/read path with no special casing.
+
+## The reserved step names
+
+Two kinds of reserved names back replay. The **terminal markers** are sentinels whose presence (as an
+index row) means "this workflow has reached an end state":
+
+```haskell
+completedStepName = "__workflow_completed__"
+cancelledStepName = "__workflow_cancelled__"
+failedStepName    = "__workflow_failed__"
+```
+
+The comment is explicit that these literals are an integration contract: `findUnfinishedWorkflowIds`'s
+SQL hard-codes `'__workflow_completed__'` and `'__workflow_cancelled__'`, so **the literal here must
+match the literal in that SQL** ([chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery)).
+
+The **prefixes** are how the three waits journal their completions without new event types:
+
+```haskell
+sleepStepPrefix     = "sleep:"   -- a durable sleep's completion
+awakeableStepPrefix = "awk:"     -- an awakeable's completion
+childStepPrefix     = "child:"   -- a child spawn record and its :result completion
+```
+
+Each is an integration contract its owning module must use exactly. You will see them again in
+chapters 04–06.
+
+## The folded state and the outcome
+
+```haskell
+type WorkflowState = Map Text Aeson.Value   -- step name -> recorded JSON result
+
+data WorkflowOutcome a = Completed a | Suspended | Cancelled
+  deriving stock (Eq, Show, Functor)
+```
+
+`WorkflowState` is "exactly the value the journal carries, folded into a map" — the integration
+contract the snapshot machinery ([chapter 08](/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry))
+consumes, so it must stay a `Map Text Value` with dynamic step-name keys. `WorkflowOutcome` is the
+result of a run: `Completed a` (ran to the end, marker journaled), `Suspended` (parked at an unresolved
+wait), or `Cancelled` (the journal carried a cancellation marker). The next chapter shows how
+`runWorkflowWith` produces each.
+
+<Cards>
+  <Card title="← 00 — Start here" href="/docs/keiro/walkthrough/durable-execution/00-start-here" />
+  <Card title="02 — The effect and the replay loop →" href="/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop" />
+</Cards>

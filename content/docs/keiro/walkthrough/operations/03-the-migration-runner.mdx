@@ -1,6 +1,6 @@
 ---
 title: "03 — The migration runner"
-description: "Reading Keiro.Migrations: embedDir at compile time, parseAddedSqlMigration, the kiroku-then-keiro order, the four runners over codd's idempotent ledger, the keiro-migrate CLI, and the four SQL files that create (and alter) the five tables."
+description: "Reading Keiro.Migrations: embedDir at compile time, parseAddedSqlMigration, the kiroku-then-keiro order, the four runners over codd's idempotent ledger, the keiro-migrate CLI, and the seven SQL files that create (and alter) the eight tables."
 ---
 
 This chapter reads `keiro-migrations/src/Keiro/Migrations.hs` (the runner),
@@ -144,21 +144,27 @@ otherwise it runs the verifying path with `LaxCheck`. Both apply the **full** ki
 5-second connect timeout (`secondsToDiffTime 5`). For the invocation, read [Run the
 migrations](/docs/keiro/how-to/run-migrations).
 
-## The four files, the five tables
+## The seven files, the eight tables
 
 The embedded files apply in filename-timestamp order; each creates (or alters) tables in the `kiroku`
 schema:
 
 ```text
-2026-05-17-00-00-00-keiro-bootstrap.sql       -> keiro_snapshots, keiro_read_models, keiro_timers
-2026-05-17-01-00-00-keiro-outbox.sql          -> keiro_outbox
-2026-05-17-02-00-00-keiro-inbox.sql           -> keiro_inbox
-2026-05-17-03-00-00-keiro-timer-recovery.sql  -> ALTER keiro_timers (add last_error; re-index)
+2026-05-17-00-00-00-keiro-bootstrap.sql          -> keiro_snapshots, keiro_read_models, keiro_timers
+2026-05-17-01-00-00-keiro-outbox.sql             -> keiro_outbox
+2026-05-17-02-00-00-keiro-inbox.sql              -> keiro_inbox
+2026-05-17-03-00-00-keiro-timer-recovery.sql     -> ALTER keiro_timers (add last_error; re-index)
+2026-06-03-00-00-00-keiro-workflow-steps.sql     -> keiro_workflow_steps
+2026-06-03-01-00-00-keiro-awakeables.sql         -> keiro_awakeables
+2026-06-03-02-00-00-keiro-workflow-children.sql  -> keiro_workflow_children
 ```
 
-Because `embedDir` embeds **every** `.sql` under `sql-migrations/`, adding the fourth file was all it
-took to ship the timer-recovery schema — the runner picks it up with no code change. Each table's
-purpose, with a cross-link to the subsystem that owns it:
+Because `embedDir` embeds **every** `.sql` under `sql-migrations/`, adding the three durable-workflow
+files was all it took to ship their schema — the runner picks them up with no code change. (One build
+gotcha the runtime's own source flags: `embedDir` is a Template Haskell directory read GHC's
+recompilation checker does not track per-file, so after adding a `.sql` you must touch
+`Keiro.Migrations` or `cabal clean` before the new file is embedded.) Each table's purpose, with a
+cross-link to the subsystem that owns it:
 
 - **`keiro_snapshots`** — the latest persisted state per stream, keyed by `stream_id`, with a
   compatibility index (`keiro_snapshots_compat_idx`) on the codec version and shape hash. See
@@ -173,6 +179,13 @@ purpose, with a cross-link to the subsystem that owns it:
   and a per-key head-of-line index. See [Outbox](/docs/keiro/reference/outbox).
 - **`keiro_inbox`** — the consumer-side dedupe ledger keyed by `(source, dedupe_key)`. See
   [Inbox](/docs/keiro/reference/inbox).
+- **`keiro_workflow_steps`** — the durable-workflow step-lookup index (PK `(workflow_id, step_name)`)
+  backing replay and unfinished-workflow discovery. See
+  [Durable workflows](/docs/keiro/reference/durable-workflows#tables).
+- **`keiro_awakeables`** — pending external completions for workflow awakeables
+  (`pending`/`completed`/`cancelled`). See [Durable workflows](/docs/keiro/reference/durable-workflows#tables).
+- **`keiro_workflow_children`** — durable parent→child workflow links
+  (`running`/`completed`/`cancelled`). See [Durable workflows](/docs/keiro/reference/durable-workflows#tables).
 
 For the column-level detail of every table, read the
 [Migrations and schema reference](/docs/keiro/reference/migrations-and-schema) — this tour names the

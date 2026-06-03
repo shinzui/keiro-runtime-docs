@@ -1,0 +1,163 @@
+---
+title: "Understanding durable execution"
+description: "What a durable workflow is, why keiro uses named steps instead of positional history, how the journal-and-replay model works, and when to reach for a workflow rather than a process manager."
+---
+
+A **durable workflow** lets you write a long-running, multi-step process as an *ordinary imperative
+function* — `do this, then wait, then do that` — and have the runtime make it survive a crash, a
+redeploy, or an hour-long idle wait. The function's named checkpoints are recorded ("journaled"), so
+when the process comes back the workflow **resumes by re-invoking it from the top** while
+short-circuiting the steps it already finished. This is keiro's **v2** layer; it lives in the
+`Keiro.Workflow` module family and sits *on top of* the v1 event-sourcing and process-manager
+substrate without replacing it.
+
+<Callout type="info">
+This is a **shipped** feature with real, compilable signatures. (Earlier docs described durable
+execution as a roadmap idea; it has since landed — see [the workflow roadmap](/docs/keiro/explanation/workflow-roadmap)
+for the v1/v2 split.) For the API, see the [durable workflows reference](/docs/keiro/reference/durable-workflows);
+for the source, [the walkthrough](/docs/keiro/walkthrough/durable-execution/00-start-here).
+</Callout>
+
+## The shape of the problem
+
+Some processes read most naturally as a *sequence with waits in the middle*:
+
+> Reserve inventory. Wait out a cooling-off period. Wait for the payment webhook. Charge the card.
+> Ship the order. Return the tracking number.
+
+You *can* express that as a [process manager](/docs/keiro/explanation/process-managers-and-sagas) —
+a coordinator that reacts to one event at a time and folds its progress into its own state stream.
+But a process manager turns a linear story into a pile of per-event reactions: each wait becomes "emit
+a timer / await an event, then on the next delivery figure out where we were". The control flow that
+was obvious in a paragraph is now scattered across handler branches keyed on manager state.
+
+A durable workflow keeps the paragraph. You write the waits *in line*:
+
+```haskell
+orderFulfillmentWorkflow :: (Workflow :> es, Store :> es, IOE :> es) => OrderId -> Eff es Text
+orderFulfillmentWorkflow orderId = do
+  _reservation <- step (StepName "reserve-inventory") (reserveInventory orderId)
+  sleepNamed (StepName "cooling-off") coolingOffDelay
+  (_awkId, awaitPayment) <- awakeableNamed (StepName "payment-webhook")
+  payment <- awaitPayment
+  _charge <- step (StepName "charge") (chargeCard orderId payment)
+  childHandle <- spawnChild shipOrderWorkflowName (shipChildId orderId) (shipOrderWorkflow orderId)
+  awaitChild childHandle
+```
+
+Read top to bottom, that is the whole order-fulfillment process — including a durable two-second wait,
+a wait for an external webhook, and a child workflow — as one function.
+
+## Journal-and-replay, in one idea
+
+The runtime makes that function durable with one mechanism: a **journal** per instance (a kiroku
+stream named `wf:<name>-<id>`) plus **replay**.
+
+- Each `step name action` either **runs** `action` and journals its result, or — on a re-run where
+  `name` is already journaled — **returns the recorded result without running the action again**. A
+  side effect happens at most once.
+- A wait (`sleepNamed`, `awaitPayment`, `awaitChild`) **suspends**: the function stops, an external
+  wake source is armed (a timer row, a pending awakeable, a child link), and `runWorkflow` returns
+  `Suspended`. Nothing after the wait has run.
+- When the wake source resolves it appends the awaited step's completion to the journal. A later
+  `runWorkflow` of the same instance **replays**: each finished step short-circuits to its recorded
+  result, the now-resolved wait returns immediately, and only the un-journaled tail runs for real.
+
+So "resume" is not a special code path — it is *the same function, run again*. The journal is what
+makes re-running it cheap and safe. A `runWorkflow` returns one of three [outcomes](/docs/keiro/reference/durable-workflows#running-a-workflow):
+`Completed a`, `Suspended`, or `Cancelled`.
+
+## Named steps, not positional history
+
+The single most important design decision is that a step's identity is its **name**, not its position
+in the call sequence.
+
+Some durable-execution systems (Temporal's original model, for instance) identify the *N*th recorded
+operation by call order. That makes the workflow function *non-deterministic under ordinary code
+movement*: insert a log line that happens to perform a recorded operation, or reorder two steps, and
+an in-flight instance's replay no longer lines up with its history — a subtle, dangerous class of bug.
+
+keiro identifies a step by an explicit `StepName`. Inserting code elsewhere, reordering independent
+steps, or adding a branch does **not** corrupt an in-flight instance, because replay matches on the
+name string, not on "the 4th thing that ran". This is the same robustness argument keiro makes for
+[explicit codec event types](/docs/keiro/explanation/codec-and-schema-evolution) over positional
+encodings. The cost is that *you* name the checkpoints — which is also the benefit: the journal reads
+as a list of named facts an operator can scan.
+
+The ordinal convenience forms (`sleep`, `awakeable`) derive a name from a per-run counter and are
+*conditionally* deterministic — fine when call order is stable, fragile across edits. Prefer the
+`*Named` forms for anything that must survive a code change mid-flight.
+
+## The four primitives
+
+Everything above is built from four authoring primitives (the [reference](/docs/keiro/reference/durable-workflows#the-four-primitives)
+has the signatures):
+
+- **`step`** — a named, journaled, replay-skipping checkpoint. The workhorse: wrap any side-effecting
+  action so it runs at most once.
+- **`sleepNamed` / `sleep`** — a durable delay backed by the existing [`keiro_timers`](/docs/keiro/explanation/durable-timers)
+  table. The pause's only durable state is one timer row, so it survives a restart with no external
+  scheduler and no in-memory timer thread. A timer worker fires it and journals the completion.
+- **`awakeableNamed` / `awakeable`** — a durable promise an *external* system resolves: a webhook, a
+  human approval, an LLM tool call. The workflow gets a deterministic id and suspends; an external
+  `signalAwakeable` records the payload and the next run continues. `signalAwakeable` is idempotent and
+  crash-safe.
+- **child workflows (`spawnChild` / `awaitChild` / `cancelChild`)** — fan-out / fan-in. A parent spawns
+  a child (a second workflow with its own journal), waits for its result, and may cancel it. The spawn
+  is journaled in the parent, so a parent replay never re-spawns.
+
+The three waits are all thin wrappers over one internal suspension primitive (`awaitStep`), and they
+all journal their completions as ordinary `StepRecorded` events under reserved prefixes (`sleep:`,
+`awk:`, `child:`) — never new event types — so the replay loop stays uniform.
+
+## Who turns the crank: the resume worker
+
+A suspended workflow does not resume itself — its function is not running any more; it is a journal in
+a database. A background **resume worker** is what notices. Each pass it asks the database "which
+workflows have steps but no terminal marker?" and re-invokes each so it proceeds past a now-resolved
+wait or a crash.
+
+Because a workflow's *body* is application code while only its *journal* is in the database, the
+worker needs the application to supply a **registry**: a map from each `WorkflowName` to a function
+that rebuilds the body from an id. This is the exact analogue of the `fire` action the
+[timer worker](/docs/keiro/explanation/durable-timers) takes — the worker owns discovery and database
+access; the application owns the domain behaviour. Discovery is a plain index query with **no upstream
+subscription dependency**, and a discovered workflow whose name is missing from the registry is
+surfaced (as `unknownName`), never silently lost.
+
+## When to use a workflow vs a process manager
+
+They are complementary, not competitors.
+
+| Reach for a **durable workflow** when… | Reach for a **process manager** when… |
+|---|---|
+| The process reads as *one long-running function with in-line waits* — "do this, then wait, then do that". | The process reads as *"whenever X happens, react"* — independent reactions to a stream of events. |
+| You want the control flow visible top-to-bottom in one place. | Progress is naturally event-driven and lives in an event-sourced state stream. |
+| You need a durable sleep, an external callback, or a child job *in the middle of* a sequence. | You are coordinating across aggregates by dispatching commands and scheduling timers. |
+
+A process manager is effectively a workflow whose steps are explicit event-driven reactions; a durable
+workflow layers journaled *named* steps on the same kiroku event log and reuses the command cycle,
+timers, snapshots, codecs, and migration story. If you are writing a [saga with
+compensation](/docs/keiro/how-to/write-a-saga-with-compensation) that is fundamentally reactive, a
+process manager is still the clearer tool.
+
+## Snapshots and the boundaries
+
+For a workflow with a long journal, re-reading the whole stream on every run is wasteful. A
+[snapshot policy](/docs/keiro/reference/durable-workflows#snapshots) persists the folded step-result
+map so a resume hydrates from the snapshot plus the journal tail. Snapshots are advisory — a stale or
+corrupt one degrades to a full replay, never to a wrong answer.
+
+Two pieces are deliberately **deferred** (cleanly additive):
+
+- **Continue-as-new journal rotation** for unbounded-length histories. A workflow that journals
+  millions of steps has no compaction story yet beyond snapshots.
+- **A versioning / patch API** for changing a workflow's logic while instances are in flight. Named
+  steps make *additive* edits safe; structurally changing a step's meaning still needs care.
+
+<Cards>
+  <Card title="Durable workflows reference" href="/docs/keiro/reference/durable-workflows" />
+  <Card title="Your first durable workflow" href="/docs/keiro/tutorials/your-first-durable-workflow" />
+  <Card title="The durable-execution walkthrough" href="/docs/keiro/walkthrough/durable-execution/00-start-here" />
+  <Card title="Process managers and sagas" href="/docs/keiro/explanation/process-managers-and-sagas" />
+</Cards>

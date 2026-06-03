@@ -1,0 +1,126 @@
+---
+title: "04 — Durable sleep"
+description: "Keiro.Workflow.Sleep: the payload discriminator that routes a keiro_timers row, the deterministic sleepTimerId, sleepNamed as an awaitStep arm, workflowSleepFireAction, and the dual-purpose runWorkflowTimerWorker."
+---
+
+`keiro/src/Keiro/Workflow/Sleep.hs` is the first wake source, and the cleanest illustration of the
+`awaitStep` contract: a durable `sleep` that **reuses the existing `keiro_timers` table** with no
+schema change. The arm schedules a timer and suspends; the timer worker's fire journals the sleep's
+completion; a later run replays past it.
+
+## Routing without a schema change
+
+A workflow sleep and an ordinary process-manager timer are both rows in `keiro_timers`. They are
+distinguished entirely by a JSON payload discriminator:
+
+```haskell
+workflowSleepKind = "keiro.workflow.sleep"
+
+sleepTimerPayload fullStep = object ["kind" .= workflowSleepKind, "step" .= fullStep]
+
+parseSleepPayload = \case
+  Object o | KeyMap.lookup "kind" o == Just (String workflowSleepKind) ->
+    case KeyMap.lookup "step" o of Just (String s) -> Just s; _ -> Nothing
+  _ -> Nothing
+```
+
+`parseSleepPayload` returns `Just fullStep` for a payload this module wrote and `Nothing` for anything
+else. The module header makes the consequence explicit:
+
+> Routing is entirely a function of the caller-supplied fire action and the JSON payload; this module
+> owns no migration.
+
+## The deterministic timer id
+
+```haskell
+sleepTimerId name wid fullStep =
+  TimerId $ UUID.V5.generateNamed UUID.V5.namespaceURL $ ...
+    Text.intercalate ":" ["keiro", "workflow-sleep", unWorkflowName name, unWorkflowId wid, fullStep]
+```
+
+A v5 UUID over `("keiro":"workflow-sleep":name:id:fullStep)`. The step name is part of the key, so two
+distinct sleeps in one workflow get distinct timers. Determinism is what makes the arm idempotent:
+every resume that re-enters the not-yet-resolved sleep computes the *same* id, and
+`scheduleTimerTx`'s `ON CONFLICT` re-arms only a still-`Scheduled` row, so the repeat collapses to a
+no-op — exactly the idempotent arming `awaitStep` requires.
+
+## `sleepNamed`: an `awaitStep` whose arm schedules a timer
+
+```haskell
+sleepNamed userStep delta = do
+  (name, wid) <- currentWorkflow
+  let full = sleepStepName userStep            -- "sleep:" <> suffix
+      armedStep = StepName full
+  void . awaitValue armedStep $ do
+    now <- liftIO getCurrentTime
+    let request = TimerRequest
+          { timerId = sleepTimerId name wid full
+          , processManagerName = unWorkflowName name   -- (= workflow name)
+          , correlationId = unWorkflowId wid            -- (= workflow id)
+          , fireAt = addUTCTime delta now
+          , payload = sleepTimerPayload full
+          }
+    runTransaction (scheduleTimerTx request)
+```
+
+This is the whole primitive: name the step `sleep:<suffix>`, then `awaitStep` on it with an arm that
+inserts a `keiro_timers` row. On the **first** encounter the step is not journaled, so the arm runs
+(schedules the timer) and the run suspends. On a **resume** before the timer fires, the step is still
+not journaled, so the arm runs again — but the deterministic id makes it a no-op. Once the timer fires
+and journals `sleep:<suffix>`, the step *is* journaled, so `awaitStep` takes the hit path and returns
+immediately.
+
+Notice the reuse of the `TimerRequest` fields: `processManagerName` carries the workflow **name** and
+`correlationId` carries the workflow **id**, so the fire action can reconstruct the workflow identity
+from the row. `awaitValue` is `awaitStep` specialised to `Value` — the recorded completion is JSON
+`null`, and `Value`'s `FromJSON` is the identity, which decouples the sleep from a `FromJSON ()`
+instance.
+
+`sleep delta` is the ordinal convenience: `freshOrdinal "sleep"` gives `sleep:0`, `sleep:1`, … Its
+determinism is conditional (reordering sleeps shifts the ordinals), so the module steers you to
+`sleepNamed` for anything that must survive a code change mid-flight.
+
+## `workflowSleepFireAction`: the fire that journals the completion
+
+```haskell
+workflowSleepFireAction row =
+  case parseSleepPayload (row ^. #payload) of
+    Nothing -> pure Nothing
+    Just full -> do
+      now <- liftIO getCurrentTime
+      let name = WorkflowName (row ^. #processManagerName)
+          wid  = WorkflowId (row ^. #correlationId)
+      eid <- appendJournalEntryReturningId name wid (StepRecorded { stepName = full, result = Null, recordedAt = now })
+      pure (Just eid)
+```
+
+For a row whose payload is a workflow sleep, it reconstructs the identity, appends the
+`sleep:<suffix>` completion to the workflow journal, and returns the appended `EventId` so the timer
+worker marks the row `Fired`. For any non-sleep row it returns `Nothing`, so a mixed worker can
+delegate to its process-manager fire action. Because `appendJournalEntryReturningId` pre-checks the
+step and returns the same deterministic id on a re-fire, **at-least-once timer firing yields
+exactly-once journaling**.
+
+## One worker for both kinds of timer
+
+```haskell
+runWorkflowTimerWorker metrics now pmFire =
+  runTimerWorker metrics now $ \row -> do
+    handled <- workflowSleepFireAction row
+    case handled of
+      Just eid -> pure (Just eid)
+      Nothing  -> pmFire row
+```
+
+A single `runTimerWorker` pass that tries the sleep fire first and falls back to the supplied
+process-manager fire action. A workflow-only deployment passes `\_ -> pure Nothing`; a mixed deployment
+passes its existing PM fire action so **one worker drains both kinds**. Because a sleep is just a
+`keiro_timers` row, it inherits the timer subsystem's [stuck-row recovery
+API](/docs/keiro/reference/timers#recovery-operations) (`findStuckTimers` / `requeueStuckTimer` /
+`deadLetterTimer`) for free — and a sleep whose timer no worker ever drains simply stays suspended
+until an operator intervenes.
+
+<Cards>
+  <Card title="← 03 — The step index and discovery" href="/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery" />
+  <Card title="05 — Awakeables →" href="/docs/keiro/walkthrough/durable-execution/05-awakeables" />
+</Cards>

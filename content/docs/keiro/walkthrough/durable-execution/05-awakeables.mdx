@@ -1,0 +1,148 @@
+---
+title: "05 — Awakeables"
+description: "Keiro.Workflow.Awakeable: the deterministic AwakeableId, awaitCancellable's arm, the keiro_awakeables row lifecycle, and the idempotent, crash-safe signalAwakeable that re-appends the journal entry whenever the row is completed."
+---
+
+`keiro/src/Keiro/Workflow/Awakeable.hs` is the second wake source: a durable promise an **external**
+system resolves — a webhook, a human approver, an LLM tool call. The workflow allocates an id, hands
+it out, and suspends; an external `signalAwakeable` records the result and the next run continues.
+Where a sleep's wake source is a timer the framework drains, an awakeable's wake source is *someone
+else's code*, which puts the weight on the id being deterministic and the signal being crash-safe.
+
+## The deterministic id
+
+```haskell
+newtype AwakeableId = AwakeableId UUID
+  deriving stock (Eq, Show, Generic)
+  deriving newtype (ToJSON, FromJSON)
+
+deterministicAwakeableId (WorkflowName name) (WorkflowId wid) label =
+  AwakeableId $ UUID.V5.generateNamed UUID.V5.namespaceURL $ ...
+    Text.intercalate ":" ["keiro", "awakeable", name, wid, label]
+```
+
+A v5 UUID over `("keiro":"awakeable":name:id:label)` — the same recipe as the sleep timer id. The
+module header pins down why determinism is non-negotiable:
+
+> a resumed workflow re-runs from the top and must allocate the *same* id it already handed out and
+> journaled, so the `await` hit path matches.
+
+The `ToJSON`/`FromJSON` instances are over the inner UUID, so a workflow can journal the id with `step`
+and a webhook payload can carry it. Crucially, the external signaller computes the same id *without
+reading the journal back* — `deterministicAwakeableId name id label` is a pure function the application
+can call from its webhook handler.
+
+## `awakeableNamed`: allocate id + await
+
+```haskell
+awakeableNamed (StepName label) = do
+  (name, wid) <- currentWorkflow
+  let aid = deterministicAwakeableId name wid label
+      stepNm = StepName (awakeableStepPrefix <> awakeableIdText aid)   -- "awk:<uuid>"
+      await = awaitCancellable name wid aid stepNm
+  pure (aid, await)
+```
+
+It returns the id (hand it to the external system) and an `await` action. The journaled step name is
+`awk:<uuid>` — the awakeable id, not the label, so two awakeables never collide. `awakeable` is the
+ordinal convenience (`ord:N` labels) the module steers you away from.
+
+## `awaitCancellable`: the arm that registers a pending row
+
+```haskell
+awaitCancellable name wid aid stepNm =
+  awaitStep stepNm $ do
+    existing <- lookupAwakeable (awakeableIdToUuid aid)
+    case existing of
+      Just row | row ^. #status == Cancelled -> throwIO (WorkflowAwakeableCancelled aid)
+      _ -> runTransaction $ registerAwakeableTx (awakeableIdToUuid aid) (unWorkflowName name) (unWorkflowId wid)
+```
+
+This is `awaitStep` with a richer arm. Because `awaitStep` runs `arm` only on the miss path and re-runs
+it on every resume until the step is journaled, the arm does two jobs each time it runs: (1) if the
+awakeable was **cancelled**, throw `WorkflowAwakeableCancelled` instead of suspending forever; (2)
+otherwise (re-)insert the idempotent `pending` row and suspend. On the **hit** path (the signal already
+journaled the result) the arm never runs — so a signalled-then-cancelled race still returns the
+signalled value: a resolved promise cannot be un-resolved.
+
+```haskell
+newtype WorkflowAwakeableCancelled = WorkflowAwakeableCancelled AwakeableId
+  deriving stock (Eq, Show)
+instance Exception WorkflowAwakeableCancelled
+```
+
+The author can `catch` this for compensation, and the resume worker records the run as a failure.
+
+## The table and its `pending`-guarded transitions
+
+```sql
+CREATE TABLE IF NOT EXISTS keiro_awakeables (
+  awakeable_id        UUID PRIMARY KEY,
+  owner_workflow_name TEXT NOT NULL,
+  owner_workflow_id   TEXT NOT NULL,
+  status              TEXT NOT NULL DEFAULT 'pending',  -- pending | completed | cancelled
+  payload             JSONB,
+  ...
+);
+```
+
+`Keiro.Workflow.Awakeable.Schema` owns the row type and three transitions. `registerAwakeableTx` is an
+`INSERT ... ON CONFLICT (awakeable_id) DO NOTHING` (the idempotent arm). Both transitions guard on
+`status = 'pending'` and report whether they actually moved a row, via `rowsAffected`:
+
+```sql
+-- completeAwakeableTx
+UPDATE keiro_awakeables SET status = 'completed', payload = $2, completed_at = $3, updated_at = now()
+WHERE awakeable_id = $1 AND status = 'pending'
+-- cancelAwakeableTx
+UPDATE keiro_awakeables SET status = 'cancelled', updated_at = now()
+WHERE awakeable_id = $1 AND status = 'pending'
+```
+
+So `completeAwakeableTx` returns `True` only on the genuine `pending → completed` transition; a second
+signal matches no `pending` row and returns `False`.
+
+## `signalAwakeable`: idempotent *and* crash-safe
+
+This is the subtlest function in the module. It must both record the payload **and** append the
+journal entry — two writes that a crash could split. It heals that split:
+
+```haskell
+signalAwakeable aid result = do
+  mrow <- lookupAwakeable (awakeableIdToUuid aid)
+  case mrow of
+    Nothing -> pure False
+    Just row -> do
+      now <- liftIO getCurrentTime
+      transitioned <- runTransaction $ completeAwakeableTx (awakeableIdToUuid aid) (toJSON result) now
+      let journalled
+            | transitioned = Just (toJSON result)                 -- we just wrote it
+            | row ^. #status == Completed = row ^. #payload        -- already completed: re-append stored payload
+            | otherwise = Nothing                                  -- pending->cancelled race, or already cancelled
+      case journalled of
+        Just payload -> appendJournalEntry (WorkflowName (row ^. #ownerWorkflowName))
+                                           (WorkflowId (row ^. #ownerWorkflowId))
+                                           StepRecorded { stepName = awakeableStepPrefix <> awakeableIdText aid
+                                                        , result = payload, recordedAt = now }
+        Nothing -> pure ()
+      pure transitioned
+```
+
+The key insight is the middle guard. The journal entry is **(re-)appended whenever the row is
+`completed`** — using the value just written, or, for an *already*-completed row whose journal append
+never happened (a crash between the row update and the append), the **stored payload**. So a signal
+that finds a completed-but-unjournaled awakeable repairs it. `appendJournalEntry` is itself idempotent
+(deterministic id, duplicate treated as success), so the re-append collapses to a no-op once the entry
+is present. The consequence the Haddock flags:
+
+> A `False` return therefore does not mean "nothing happened": the journal may still have been repaired.
+
+`cancelAwakeable` is the simple counterpart — flip a still-`pending` row to `cancelled`, write **no**
+journal entry (there is no result to record), and let the next resume's arm throw. The pending-row
+count behind the `keiro.workflow.awakeables.pending` gauge comes from `countPendingAwakeables`
+(`SELECT count(*) ... WHERE status = 'pending'`), which the resume worker samples each pass.
+
+<Cards>
+  <Card title="← 04 — Durable sleep" href="/docs/keiro/walkthrough/durable-execution/04-durable-sleep" />
+  <Card title="06 — Child workflows →" href="/docs/keiro/walkthrough/durable-execution/06-child-workflows" />
+</Cards>

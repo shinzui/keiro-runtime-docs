@@ -1,0 +1,207 @@
+---
+title: "02 — The effect and the replay loop"
+description: "Keiro.Workflow: the Workflow effect, step and awaitStep, runWorkflowWith top to bottom — loadJournal, the hit/miss handler, the WorkflowSuspend sentinel, appendJournalTx, and the deterministic journal id."
+---
+
+`keiro/src/Keiro/Workflow.hs` is the engine: the `Workflow` effect, its interpreter
+`runWorkflowWith`, and the journal-append helpers wake sources call. This is where journal-and-replay
+actually happens.
+
+## The effect: two primitives plus two services
+
+```haskell
+data Workflow :: Effect where
+  Step    :: (Aeson.ToJSON a, Aeson.FromJSON a) => StepName -> m a -> Workflow m a
+  Await   :: (Aeson.FromJSON a) => StepName -> m () -> Workflow m a
+  CurrentWorkflow :: Workflow m (WorkflowName, WorkflowId)
+  FreshOrdinal    :: Text -> Workflow m Int
+```
+
+Only two operations carry the durability semantics. `step` runs an action and journals its result;
+`awaitStep` is the suspension primitive every wake source builds on. The module header states the
+contract that keeps the surface small:
+
+> Add new primitives (sleep, awakeable, child) as functions that go *through* this effect so a single
+> import stays the workflow surface.
+
+`awaitStep`'s Haddock is the most important paragraph in the module — note the idempotency demand:
+
+> it returns a journaled result if present, otherwise runs an idempotent *arming* action once and
+> suspends the run. The arming action MUST be idempotent — a suspended-then-resumed workflow re-enters
+> `awaitStep` from the top on every resume until the result is journaled, so it re-runs `arm` each time.
+
+`CurrentWorkflow` exposes the running identity (to key wake sources), and `FreshOrdinal` is the
+per-run counter behind the ordinal convenience forms.
+
+## `runWorkflowWith`: the cancellation short-circuit
+
+```haskell
+runWorkflowWith options name wid action = do
+  cancelled <- stepExists wid cancelledStepName
+  if cancelled
+    then pure Cancelled
+    else runActive
+```
+
+Before doing anything, the runner checks whether the journal already carries a cancellation marker (a
+single index existence check, keyed under `cancelledStepName`). If so it returns `Cancelled` and
+**never runs the user action** — the basis for `cancelChild`
+([chapter 06](/docs/keiro/walkthrough/durable-execution/06-child-workflows)).
+
+## Pre-load: fold the journal into a step map
+
+`runActive` first folds the journal stream into the in-memory `step name -> result` map:
+
+```haskell
+loadJournal options name wid = do
+  let journalName = workflowStreamName name wid
+  mSeed <- loadWorkflowSnapshot journalName
+  let (seedMap, fromVersion) = case mSeed of
+        Just (m, v) -> (m, v)
+        Nothing -> (Map.empty, StreamVersion 0)
+      events = readStreamForwardStream journalName fromVersion (options ^. #pageSize)
+  Streamly.fold (Fold.foldlM' accumulate (pure seedMap)) events
+  where
+    accumulate journal recorded =
+      case decodeRecorded workflowJournalCodec recorded of
+        Right (StepRecorded key value _) -> pure (Map.insert key value journal)
+        Right (WorkflowCompleted _) -> pure journal
+        ...
+```
+
+A `StepRecorded` inserts into the map; the terminal markers contribute nothing. If a compatible
+snapshot exists, the map is **seeded from it** and only events *after* the snapshot version are read —
+"tail replay" — and the comment guarantees the result is byte-for-byte what a full version-0 replay
+would produce ([chapter 08](/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry)). A
+missing or undecodable snapshot collapses to a full replay from version 0.
+
+## The handler: hit returns, miss runs-and-journals
+
+The map is held in an `IORef`; `interpret` over the effect threads it through every operation. The
+`Step` case is the heart of the runtime:
+
+```haskell
+Step (StepName key) act -> do
+  journal <- liftIO (readIORef journalRef)
+  case Map.lookup key journal of
+    Just stored -> do
+      recordWorkflowStepReplayed mMetrics 1          -- HIT: a replay
+      decodeStored key stored                        --   return the recorded result; act never runs
+    Nothing -> do
+      a <- localSeqUnlift env (\unlift -> unlift act) -- MISS: run the action for real
+      let encoded = Aeson.toJSON a
+      appendResult <- recordStep name wid (StepName key) encoded
+      recordWorkflowStepExecuted mMetrics 1
+      newMap <- liftIO (atomicModifyIORef' journalRef (\m -> let m' = Map.insert key encoded m in (m', m')))
+      when (shouldSnapshot (options ^. #snapshotPolicy) False newMap (appendResult ^. #streamVersion))
+        (writeWorkflowSnapshot (appendResult ^. #streamId) (appendResult ^. #streamVersion) newMap)
+      pure a
+```
+
+A **hit** returns the stored result and records a `keiro.workflow.steps.replayed` — the action never
+runs. A **miss** runs the action, journals its JSON result (`recordStep` → `appendJournalTx`), records
+`keiro.workflow.steps.executed`, updates the in-memory map, and evaluates the snapshot policy on the
+post-append version (`False` = "this is not the terminal marker"). The `steps.executed`/`steps.replayed`
+split is exactly the live-vs-replay observability signal.
+
+`Await` is the same shape, but the miss path **arms and suspends** instead of running-and-journaling:
+
+```haskell
+Await (StepName key) arm -> do
+  journal <- liftIO (readIORef journalRef)
+  case Map.lookup key journal of
+    Just stored -> do
+      recordWorkflowStepReplayed mMetrics 1   -- HIT: the wake source already resolved this step
+      decodeStored key stored
+    Nothing -> do
+      localSeqUnlift env (\unlift -> unlift arm) -- MISS: run the idempotent arm...
+      throwIO WorkflowSuspend                     -- ...then unwind the whole run
+```
+
+## The suspension sentinel
+
+```haskell
+data WorkflowSuspend = WorkflowSuspend deriving stock (Show)
+instance Exception WorkflowSuspend
+```
+
+A miss on `Await` throws `WorkflowSuspend`, an internal exception caught at the top of the run:
+
+```haskell
+outcome <- (Completed <$> runHandler) `catch` \WorkflowSuspend -> pure Suspended
+```
+
+This is how a deeply-nested `awaitStep` unwinds the entire `do`-block in one move: the exception
+short-circuits everything between the wait and `runWorkflowWith`, and the `catch` turns it into
+`Suspended`. No code after the wait runs, and nothing is half-committed — each completed `step` already
+committed its own journal append in its own transaction.
+
+## Completion and the idempotent terminal append
+
+When the body returns, the `Completed` arm appends the terminal marker — but only if it is not already
+present:
+
+```haskell
+appendCompletion name wid now = do
+  let event = WorkflowCompleted now; key = journalKey event
+  exists <- stepExists wid key
+  if exists then pure Nothing else Just . snd <$> appendJournalTx name wid event
+```
+
+So replaying an already-completed workflow appends nothing (and takes no terminal snapshot); a fresh
+completion appends the marker and records the `keiro.workflow.journal.length` histogram. This
+idempotence is what makes "just run it again" safe even for a finished workflow.
+
+## The core append and the deterministic id
+
+Every journal write goes through one transaction-scoped helper:
+
+```haskell
+appendJournalTx name wid event = do
+  let key = journalKey event
+      entryId = deterministicJournalId name wid key
+  ...
+  runTransactionAppending (workflowStreamName name wid) AnyVersion [entry]
+    (\appendResult -> appendResult <$ recordStepTx row)
+```
+
+Two things commit together: the journal event (appended under `entryId`) and the
+`keiro_workflow_steps` index row (`recordStepTx`, [chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery)).
+The id is deterministic:
+
+```haskell
+deterministicJournalId (WorkflowName name) (WorkflowId wid) key =
+  EventId $ UUID.V5.generateNamed UUID.V5.namespaceURL $ ...
+    Text.intercalate ":" ["keiro", "workflow", name, wid, key]
+```
+
+A v5 UUID over `("keiro":"workflow":name:id:stepName)` — the same recipe as
+[`deterministicCommandId`](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop). The
+same inputs always yield the same id, so a re-append of the same step collapses to the same row. This
+is what makes the wake-source helpers (`appendJournalEntry` / `appendJournalEntryReturningId`)
+idempotent: they pre-check `stepExists` and, on a hit, return the would-be id without appending. That
+deterministic-id-plus-pre-check pattern is why two resume workers can race the same workflow and
+converge ([chapter 07](/docs/keiro/walkthrough/durable-execution/07-the-resume-worker)).
+
+## Run options and the active-count gauge
+
+`WorkflowRunOptions` carries the snapshot policy, page size, and the opt-in metrics/tracer handles;
+`defaultWorkflowRunOptions` is `Never` / page 100 / no telemetry, so a default-options run "replays and
+behaves exactly as it did" before telemetry existed. The whole run is bracketed to maintain a
+process-global live-run gauge:
+
+```haskell
+bracket_
+  (liftIO (atomicModifyIORef' activeCountRef (\n -> (n + 1, ()))) >> sampleActive)
+  (liftIO (atomicModifyIORef' activeCountRef (\n -> (n - 1, ()))) >> sampleActive)
+  (withWorkflowSpan mTracer name wid Nothing (\_sp -> interpreted))
+```
+
+`activeCountRef` is a `NOINLINE` process-global `IORef` backing `keiro.workflow.active`; the
+`withWorkflowSpan` wraps the run in a `workflow <name>` span when a tracer is present (both covered in
+[chapter 08](/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry)).
+
+<Cards>
+  <Card title="← 01 — The types and the journal codec" href="/docs/keiro/walkthrough/durable-execution/01-the-types-and-journal-codec" />
+  <Card title="03 — The step index and discovery →" href="/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery" />
+</Cards>

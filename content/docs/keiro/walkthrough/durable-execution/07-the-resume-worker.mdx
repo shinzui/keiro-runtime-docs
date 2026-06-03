@@ -1,0 +1,123 @@
+---
+title: "07 — The resume worker"
+description: "Keiro.Workflow.Resume: the WorkflowRegistry, resumeWorkflowsOnce's discovery union and per-workflow advance, child routing through runChildWorkflow, the ResumeSummary, and why no advisory lock is needed."
+---
+
+`keiro/src/Keiro/Workflow/Resume.hs` is what makes a suspended workflow actually resume. Nothing in the
+runtime *notices* that a workflow exists, has steps, and lacks a terminal marker — that it crashed
+mid-run, or is parked on a wait whose source has since resolved. This module notices: a background
+worker that each pass asks the database "which workflows are unfinished?" and re-invokes each so it
+proceeds.
+
+## Why a registry
+
+A workflow's *body* is application Haskell; only its *journal* lives in the database. To re-invoke a
+workflow the worker must turn a stored name into a function `WorkflowId -> Eff (Workflow : es) a` — and
+there is no way to materialize a closure from a string. So the application supplies one:
+
+```haskell
+data WorkflowDef es = forall a. (Aeson.ToJSON a) => WorkflowDef { runDef :: WorkflowId -> Eff (Workflow : es) a }
+type WorkflowRegistry es = Map WorkflowName (WorkflowDef es)
+```
+
+The result type `a` is **existential** — the worker discards it (it cares only `Completed` vs
+`Suspended`), so one registry holds workflows of different return types. The module frames this as the
+resume-worker analogue of the `fire` action `runTimerWorker` takes:
+
+> the worker owns the discovery loop and the database access; the application owns the domain behaviour.
+
+## `resumeWorkflowsOnce`: one discover-and-reinvoke pass
+
+```haskell
+resumeWorkflowsOnce opts registry = do
+  pending <- countPendingAwakeables                       -- EP-44 gauge sample, once per pass
+  recordWorkflowAwakeablesPending mMetrics (fromIntegral pending)
+  unfinished <- findUnfinishedWorkflowIds                 -- steps but no terminal marker
+  runningChildren <- findRunningChildIds                  -- freshly-spawned, zero-step children
+  let pairs = nub (unfinished <> runningChildren)
+      seed = emptyResumeSummary { discovered = length pairs }
+  foldM advance seed pairs
+```
+
+Discovery **unions two sources**: the unfinished-workflow anti-join from
+[chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery), and the
+running-children query from [chapter 06](/docs/keiro/walkthrough/durable-execution/06-child-workflows)
+— so a child with a link row but no step rows yet is still driven. `nub` collapses a child that appears
+in both. The comment names the discovery boundary that gives this surface zero upstream dependency:
+
+> Discovery is the `findUnfinishedWorkflowIds` index query only — **no kiroku `wf:` prefix
+> subscription** is used or needed.
+
+## `advance`: registry lookup, child routing, re-invoke
+
+```haskell
+advance acc (widText, wnameText) =
+  case Map.lookup (WorkflowName wnameText) registry of
+    Nothing -> do
+      liftIO $ hPutStrLn stderr ("keiro resume worker: no registry entry for workflow " <> ... <> "; skipping")
+      pure acc { unknownName = unknownName acc + 1 }
+    Just (WorkflowDef runDef) -> do
+      let wid = WorkflowId widText; name = WorkflowName wnameText
+      mChild <- lookupChild widText wnameText
+      outcome <- case mChild of
+        Just _  -> runChildWorkflow (runOptions opts) name wid (runDef wid)   -- a child: propagate its result
+        Nothing -> runWorkflowWith  (runOptions opts) name wid (runDef wid)   -- a top-level workflow
+      recordWorkflowResumed mMetrics 1
+      pure (bumpForOutcome outcome acc)
+```
+
+Three things to notice. **(1)** A name absent from the registry is surfaced as `unknownName` and logged
+to stderr — never silently dropped — so a deploy that removed a workflow while instances were in flight
+is visible. **(2)** A workflow that is some parent's child is driven through `runChildWorkflow` (so its
+result propagates to the parent on completion), everything else through bare `runWorkflowWith`. **(3)**
+Re-invocation threads `runOptions` (the snapshot and telemetry options), so a resumed run honours the
+same options as its first run, and the per-re-invocation `keiro.workflow.resumed` counter ticks.
+
+```haskell
+bumpForOutcome outcome acc = case outcome of
+  Completed _ -> acc { resumed = resumed acc + 1, completed = completed acc + 1 }
+  Suspended   -> acc { resumed = resumed acc + 1, stillSuspended = stillSuspended acc + 1 }
+  Cancelled   -> acc { resumed = resumed acc + 1 }
+```
+
+## The summary
+
+```haskell
+data ResumeSummary = ResumeSummary
+  { discovered :: !Int, resumed :: !Int, completed :: !Int, stillSuspended :: !Int, unknownName :: !Int }
+```
+
+The per-pass observability record. A steady non-zero `unknownName` means an unregistered workflow has
+live instances; a `discovered` that never drains to zero means some wake source is not resolving.
+
+## The loop, and why it is correct under concurrency
+
+```haskell
+runWorkflowResumeWorkerWith opts registry = forever $ do
+  _summary <- resumeWorkflowsOnce opts registry
+  liftIO (threadDelay (pollInterval opts))
+```
+
+The poll loop is deliberately trivial — `resumeWorkflowsOnce` is the testable unit, the loop just
+repeats it (mirroring how an application schedules `runTimerWorker`). The interesting design decision is
+the **absence** of locking. The `useAdvisoryLock` field exists but is documented as *reserved and not
+wired*, and the reasoning is worth reading in full:
+
+> the kiroku `Store` is connection-*pooled*, and a re-invocation spans several transactions (one per
+> step append), so a transaction-scoped advisory lock cannot be held across a whole `runWorkflowWith`
+> run … Concurrency is instead safe by construction: EP-38 journals each step under a deterministic id
+> and short-circuits already-journaled steps, so two workers racing the same workflow converge to the
+> same journal with each side effect run at most once.
+
+So you can run several resume-worker processes for throughput or redundancy without coordination — the
+deterministic-id-plus-replay discipline from [chapter 02](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop)
+is what makes the race benign. `resumeWorkflowsOnce` is also idempotent across passes: a workflow that
+completes gets a `__workflow_completed__` row and drops out of discovery, so it is never re-invoked.
+
+The [how-to](/docs/keiro/how-to/run-the-workflow-resume-worker) wires this into a production deployment
+(registry, poll interval, and draining the sleep timers the worker depends on).
+
+<Cards>
+  <Card title="← 06 — Child workflows" href="/docs/keiro/walkthrough/durable-execution/06-child-workflows" />
+  <Card title="08 — Snapshots and telemetry →" href="/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry" />
+</Cards>

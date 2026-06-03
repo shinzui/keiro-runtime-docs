@@ -1,0 +1,131 @@
+---
+title: "08 — Snapshots and telemetry"
+description: "Keiro.Workflow.Snapshot's fixed-shape-hash workflowStateCodec and tail-replay seeding, and the six keiro.workflow.* instruments plus the withWorkflowSpan run span in Keiro.Telemetry."
+---
+
+The final chapter covers the two cross-cutting concerns that ride on the replay loop: **snapshots**
+(so a long-journal resume does not re-read the whole stream) and **telemetry** (so a workflow's live
+execution, replay, and backlog are observable).
+
+## Why a workflow needs its own snapshot codec
+
+`keiro/src/Keiro/Workflow/Snapshot.hs` reuses keiro's [snapshot machinery](/docs/keiro/walkthrough/read-side/01-the-snapshot-codec-and-the-register-pair),
+but it cannot reuse the *codec*. An aggregate snapshot derives its `shapeHash` from a statically-known
+keiki register-file slot list (`regFileShapeHash`). A workflow's `WorkflowState` is a
+`Map Text Value` whose keys are **dynamic runtime step names** — there is no static slot list. The
+module's answer is a fixed sentinel:
+
+```haskell
+workflowStateShapeHash :: Text
+workflowStateShapeHash = "keiro.workflow.stepmap.v1"
+
+workflowStateCodec :: StateCodec WorkflowState
+workflowStateCodec = StateCodec
+  { stateCodecVersion = workflowStateCodecVersion        -- 1
+  , shapeHash = workflowStateShapeHash
+  , encode = toJSON
+  , decode = \value -> case fromJSON value of Success m -> Right m; Error msg -> Left (Text.pack msg)
+  }
+```
+
+The accumulated state is "always a JSON object of step-name strings to self-describing JSON values; its
+*shape* never varies with which steps ran", so the shape hash is constant. Per-step result-type
+evolution stays each step's own `ToJSON`/`FromJSON` concern — surfaced at the `step` decode in
+[chapter 02](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop), not here. The
+distinct hash is intentional: it keeps workflow snapshots from ever colliding with aggregate snapshots
+in `keiro_snapshots`.
+
+## Advisory load, tail replay
+
+```haskell
+loadWorkflowSnapshot journalName = do
+  mStreamId <- lookupStreamId journalName
+  case mStreamId of
+    Nothing -> pure Nothing
+    Just streamId -> do
+      mRow <- lookupSnapshot streamId workflowStateCodecVersion workflowStateShapeHash
+      pure $ do row <- mRow
+                state <- either (const Nothing) Just ((workflowStateCodec ^. #decode) (row ^. #state))
+                pure (state, row ^. #streamVersion)
+```
+
+A snapshot is **advisory, never a source of truth**. `loadWorkflowSnapshot` returns `Nothing` — meaning
+"replay from version 0" — when the stream has no id yet, no matching snapshot, or an *undecodable*
+snapshot. That `Nothing` is what `loadJournal` ([chapter 02](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop))
+falls back on. When a snapshot *is* found, `loadJournal` seeds the step map from it and reads only the
+events after the snapshot version — "tail replay" — and the result is byte-for-byte what a full
+version-0 replay would produce, because every `StepRecorded` at or before the snapshot version is
+already in the seed. So a stale or corrupt snapshot degrades performance at worst, never correctness.
+
+`writeWorkflowSnapshot` is the write side, called from the `step` miss path and the completion site with
+the `AppendResult`'s `streamId` and post-append `streamVersion`; the underlying upsert keeps only the
+highest version per stream, so a re-fire at an already-snapshotted version is a harmless no-op. The
+snapshot *policy* (when to write) is `WorkflowRunOptions.snapshotPolicy`, evaluated by `shouldSnapshot`
+on each append.
+
+## The six `keiro.workflow.*` instruments
+
+`Keiro.Telemetry` gained six workflow instruments, all opt-in under the `Maybe KeiroMetrics` no-op
+idiom the other workers use:
+
+```haskell
+data KeiroMetrics = KeiroMetrics
+  { ...
+  , workflowStepsExecuted     :: Counter Int64    -- keiro.workflow.steps.executed
+  , workflowStepsReplayed     :: Counter Int64    -- keiro.workflow.steps.replayed
+  , workflowResumed           :: Counter Int64    -- keiro.workflow.resumed
+  , workflowActive            :: Gauge   Int64    -- keiro.workflow.active
+  , workflowJournalLength     :: Histogram        -- keiro.workflow.journal.length
+  , workflowAwakeablesPending :: Gauge   Int64    -- keiro.workflow.awakeables.pending
+  }
+```
+
+You met each at its recording site in the earlier chapters:
+
+| Instrument | Recorded where |
+|---|---|
+| `steps.executed` | the `step`/`awaitStep` **miss** path — the action ran (ch. 02) |
+| `steps.replayed` | the `step`/`awaitStep` **hit** path — a recorded result returned (ch. 02) |
+| `journal.length` | the `Completed` path — one observation per completing run (ch. 02) |
+| `active` | the run bracket — a process-global `IORef` gauge, sampled on entry and exit (ch. 02) |
+| `resumed` | `resumeWorkflowsOnce`'s `advance` — per re-invocation (ch. 07) |
+| `awakeables.pending` | `resumeWorkflowsOnce` — `countPendingAwakeables`, once per pass (ch. 07) |
+
+The `executed` vs `replayed` split is the signal that distinguishes *live execution* from *journal
+replay*: a healthy crash recovery is mostly replays plus a small executed tail.
+
+## The run span
+
+```haskell
+withWorkflowSpan Nothing _ _ _ body = body Nothing
+withWorkflowSpan (Just tracer) name wid mStep body =
+  inSpan' tracer ("workflow " <> unWorkflowName name) args $ \sp -> do
+    addAttribute sp (unkey keiro_workflow_name) (unWorkflowName name)
+    addAttribute sp (unkey keiro_workflow_id)   (unWorkflowId wid)
+    case mStep of Nothing -> pure (); Just s -> addAttribute sp (unkey keiro_workflow_step) (unStepName s)
+    body (Just sp)
+```
+
+`runWorkflowWith` wraps the whole run in this `Internal`-kind span (named `workflow <name>`, carrying
+the bespoke `keiro.workflow.{name,id,step}` attributes) when a tracer is present. Like every other
+keiro span helper, a `Nothing` tracer makes it a pass-through, so the runtime is safe to call
+unconditionally. See the [Telemetry reference](/docs/keiro/reference/telemetry#workflow-instruments)
+for the wire catalogue and [Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) for the
+end-to-end wiring.
+
+## That is the runtime
+
+You have now read the whole durable-execution runtime: the [types and codec](/docs/keiro/walkthrough/durable-execution/01-the-types-and-journal-codec),
+the [effect and replay loop](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop),
+the [step index](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery), the three
+wake sources ([sleep](/docs/keiro/walkthrough/durable-execution/04-durable-sleep),
+[awakeables](/docs/keiro/walkthrough/durable-execution/05-awakeables),
+[children](/docs/keiro/walkthrough/durable-execution/06-child-workflows)), the
+[resume worker](/docs/keiro/walkthrough/durable-execution/07-the-resume-worker), and snapshots and
+telemetry. Every piece is journal-and-replay over named steps; the rest is wiring.
+
+<Cards>
+  <Card title="← 07 — The resume worker" href="/docs/keiro/walkthrough/durable-execution/07-the-resume-worker" />
+  <Card title="Durable workflows reference" href="/docs/keiro/reference/durable-workflows" />
+  <Card title="Understanding durable execution" href="/docs/keiro/explanation/durable-execution" />
+</Cards>

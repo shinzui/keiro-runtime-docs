@@ -1,0 +1,414 @@
+---
+title: "Durable workflows"
+description: "Reference for the Keiro.Workflow module family: the Workflow effect, the four primitives (step, sleep, awakeable, child), the run options, the resume worker, the journal codec, snapshots, and the workflow tables."
+---
+
+The types and functions on this page live in the **`Keiro.Workflow`** module family. A *durable
+workflow* is an ordinary `effectful` computation whose side effects are recorded ("journaled") at
+**named** checkpoints, so it can pause — across a crash, a redeploy, or an idle wait — and resume by
+re-invoking it from the top while short-circuiting the steps it already completed. For the concept
+and the design rationale, read [Understanding durable execution](/docs/keiro/explanation/durable-execution);
+for the source tour, read [the durable-execution walkthrough](/docs/keiro/walkthrough/durable-execution/00-start-here).
+
+The umbrella `Keiro` module does **not** re-export the workflow surface. Import `Keiro.Workflow*`
+directly, the same way you import `Keiro.Timer` or `Keiro.Outbox`:
+
+```haskell
+import Keiro.Workflow           -- the effect, step, runWorkflow/runWorkflowWith, the journal codec
+import Keiro.Workflow.Sleep     -- sleepNamed / sleep, runWorkflowTimerWorker
+import Keiro.Workflow.Awakeable -- awakeableNamed / awakeable, signalAwakeable, cancelAwakeable
+import Keiro.Workflow.Child     -- spawnChild, awaitChild, cancelChild
+import Keiro.Workflow.Resume    -- resumeWorkflowsOnce, the registry, the resume worker
+import Keiro.Workflow.Snapshot  -- workflowStateCodec (the snapshot discriminant)
+```
+
+## The effect and the authoring surface
+
+`Keiro.Workflow` defines one effect, `Workflow`, interpreted by `runWorkflowWith`. You rarely send
+its operations directly; the four primitives below are built on them. The two primitive operations
+are `step` (run-once-and-journal) and `awaitStep` (the suspension primitive every wake source builds
+on).
+
+```haskell
+data Workflow :: Effect
+
+step          :: (Workflow :> es, ToJSON a, FromJSON a) => StepName -> Eff es a -> Eff es a
+awaitStep     :: (Workflow :> es, FromJSON a)           => StepName -> Eff es () -> Eff es a
+currentWorkflow :: (Workflow :> es) => Eff es (WorkflowName, WorkflowId)
+freshOrdinal  :: (Workflow :> es) => Text -> Eff es Int
+```
+
+- **`step name action`** runs `action` once and journals its JSON-encoded result. On a replay where
+  `name` is already journaled, the recorded result is returned and `action` is **not** run again — so
+  the side effect happens at most once. Identity is the **name**, not the source position, so
+  inserting or reordering code elsewhere in the workflow never corrupts an in-flight instance.
+- **`awaitStep name arm`** returns `name`'s journaled result if a wake source has recorded it;
+  otherwise it runs the idempotent `arm` action once and **suspends** the run (`runWorkflow` returns
+  `Suspended`). `arm` **must be idempotent** — a resumed run re-enters `awaitStep` from the top on
+  every resume until the result is journaled, so it re-runs `arm` each time. The sleep, awakeable, and
+  child primitives are all thin wrappers over `awaitStep`.
+- **`currentWorkflow`** returns the running instance's `(WorkflowName, WorkflowId)` — used to key wake
+  sources deterministically.
+- **`freshOrdinal namespace`** is a per-run, per-namespace counter (from 0) backing the ordinal
+  convenience forms (`sleep`, `awakeable`); ordinal names are only stable if call order does not
+  change across deploys.
+
+## Identity and the journal
+
+`Keiro.Workflow.Types` owns the identity newtypes, the stream naming, and the journal codec
+(`Keiro.Workflow` re-exports all of it).
+
+```haskell
+newtype WorkflowName = WorkflowName { unWorkflowName :: Text }   -- the definition (e.g. "order-fulfillment")
+newtype WorkflowId   = WorkflowId   { unWorkflowId   :: Text }   -- one instance
+newtype StepName     = StepName     { unStepName     :: Text }   -- a checkpoint label
+
+workflowStreamName :: WorkflowName -> WorkflowId -> StreamName   -- "wf:<name>-<id>"
+```
+
+Every instance owns one kiroku stream named **`wf:<name>-<id>`**. `:` and `-` are structural — names
+and ids must not make the boundary ambiguous (the same caveat as the process-manager
+`pm:<name>-<correlationId>` convention).
+
+```haskell
+data WorkflowJournalEvent
+  = StepRecorded     { stepName :: Text, result :: Value, recordedAt :: UTCTime }
+  | WorkflowCompleted { recordedAt :: UTCTime }
+  | WorkflowCancelled { recordedAt :: UTCTime }
+  | WorkflowFailed    { reason :: Text, recordedAt :: UTCTime }
+
+workflowJournalCodec :: Codec WorkflowJournalEvent   -- schemaVersion 1, no upcasters
+```
+
+Each `step` appends a `StepRecorded`; the terminal `WorkflowCompleted` closes the journal. The
+suspension primitives journal their completions as the **same** `StepRecorded` event under reserved
+step-name prefixes — never as new event types — so the replay loop stays uniform:
+
+| Reserved binding | Value | Used by |
+|---|---|---|
+| `sleepStepPrefix` | `"sleep:"` | a durable sleep's completion |
+| `awakeableStepPrefix` | `"awk:"` | an awakeable's completion |
+| `childStepPrefix` | `"child:"` | a child spawn record and its `:result` completion |
+| `completedStepName` | `"__workflow_completed__"` | the terminal completion marker (index row) |
+| `cancelledStepName` | `"__workflow_cancelled__"` | the terminal cancellation marker (index row) |
+| `failedStepName` | `"__workflow_failed__"` | the terminal failure marker (index row) |
+
+```haskell
+type WorkflowState = Map Text Value   -- the accumulated step-name -> result map a run folds
+```
+
+## Running a workflow
+
+```haskell
+data WorkflowOutcome a = Completed a | Suspended | Cancelled
+
+runWorkflow     :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
+runWorkflowWith :: (IOE :> es, Store :> es) => WorkflowRunOptions -> WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
+```
+
+`runWorkflowWith` is the **single canonical entry point**; `runWorkflow` is it with
+`defaultWorkflowRunOptions`. The resume worker re-invokes through `runWorkflowWith`, so a resumed run
+honours the same options. The outcome is:
+
+<TypeTable
+  type={{
+    "Completed a": { type: "—", description: "The computation ran to its end; a WorkflowCompleted marker is journaled." },
+    Suspended: { type: "—", description: "The run parked at an unresolved awaitStep (a sleep, awakeable, or child wait); a wake source was armed and a later resume continues." },
+    Cancelled: { type: "—", description: "The journal already carries a WorkflowCancelled marker (a child cancelled by its parent); the run short-circuited and executed nothing." },
+  }}
+/>
+
+Running the same `(name, id)` again replays the journal and short-circuits completed steps. If the
+journal already carries a `WorkflowCancelled` marker the run short-circuits to `Cancelled` without
+executing any step.
+
+### `WorkflowRunOptions`
+
+```haskell
+data WorkflowRunOptions = WorkflowRunOptions
+  { snapshotPolicy :: SnapshotPolicy WorkflowState
+  , pageSize       :: Int32
+  , metrics        :: Maybe KeiroMetrics
+  , tracer         :: Maybe Tracer
+  }
+
+defaultWorkflowRunOptions :: WorkflowRunOptions
+```
+
+<TypeTable
+  type={{
+    snapshotPolicy: { type: "SnapshotPolicy WorkflowState", default: "Never", description: "When to snapshot the accumulated step-result map so a resume hydrates from a snapshot plus the journal tail instead of replaying every step." },
+    pageSize: { type: "Int32", default: "100", description: "Page size for the journal pre-load read." },
+    metrics: { type: "Maybe KeiroMetrics", default: "Nothing", description: "When Just, records the keiro.workflow.* instruments. Nothing is the no-op default." },
+    tracer: { type: "Maybe Tracer", default: "Nothing", description: "When Just, opens a workflow <name> Internal span around the run. Nothing runs the body unwrapped." },
+  }}
+/>
+
+<Callout type="warn">
+Set option fields with the **generic-lens label**, not a bare record update:
+
+```haskell
+defaultWorkflowRunOptions & #snapshotPolicy .~ Every 2
+                          & #metrics .~ Just m
+```
+
+A bare record update on `snapshotPolicy` is ambiguous — the name collides with keiki's `EventStream`
+field of the same name.
+</Callout>
+
+### Errors
+
+```haskell
+data WorkflowError
+  = WorkflowStepDecodeError   Text Text   -- a journaled step result didn't decode into the replaying type (step name, message)
+  | WorkflowJournalDecodeError Text        -- a journal event didn't decode during pre-load
+  | WorkflowJournalEncodeError Text        -- a journal event didn't encode for append
+  | WorkflowJournalAppendError Text        -- a journal append failed for a non-conflict reason
+```
+
+All four surface through `throwIO`, so they propagate through the surrounding store/IO error channel.
+A `WorkflowStepDecodeError` is a programmer error: a step's result type changed incompatibly.
+
+## The four primitives
+
+`step` is the first primitive (above). The other three are wrappers over `awaitStep`, each in its own
+module.
+
+### Durable sleep
+
+In `Keiro.Workflow.Sleep`:
+
+```haskell
+sleepNamed :: (Workflow :> es, Store :> es, IOE :> es) => StepName -> NominalDiffTime -> Eff es ()
+sleep      :: (Workflow :> es, Store :> es, IOE :> es) => NominalDiffTime -> Eff es ()
+```
+
+`sleepNamed name delta` arms a deterministic row in the existing `keiro_timers` table and suspends.
+When a timer worker fires the row it appends a `sleep:<name>` completion to the journal, so a later
+run continues past the sleep. The wait survives a restart with **no external scheduler and no
+in-memory timer thread** — its only durable state is one `keiro_timers` row. `sleep delta` is the
+ordinal convenience form (`sleep:0`, `sleep:1`, …); prefer `sleepNamed` for anything that must survive
+a code edit mid-flight.
+
+A workflow-sleep timer row carries `{"kind":"keiro.workflow.sleep","step":"sleep:<suffix>"}` in its
+`payload`, which is how one timer worker distinguishes a workflow sleep from an ordinary
+process-manager timer. **A worker must drain the timers** for a sleep ever to fire:
+
+```haskell
+workflowSleepFireAction :: (Store :> es, IOE :> es) => TimerRow -> Eff es (Maybe EventId)
+runWorkflowTimerWorker  :: (IOE :> es, Store :> es) => Maybe KeiroMetrics -> UTCTime -> (TimerRow -> Eff es (Maybe EventId)) -> Eff es (Maybe TimerRow)
+```
+
+`runWorkflowTimerWorker` is one `runTimerWorker` pass that handles **both** workflow sleeps and
+ordinary timers: for each claimed timer it tries `workflowSleepFireAction`, and falls back to the
+supplied process-manager fire action when the row is not a sleep. A workflow-only deployment passes
+`\_ -> pure Nothing` as the fallback. Firing is idempotent (the journal append uses a deterministic id
+and pre-checks the step), so at-least-once timer firing yields exactly-once journaling. Workflow sleeps
+inherit the timer subsystem's [stuck-row recovery API](/docs/keiro/reference/timers#recovery-operations)
+for free. Helpers: `sleepTimerId`, `sleepStepName`, `sleepTimerPayload`, `parseSleepPayload`,
+`workflowSleepKind`.
+
+### Awakeables
+
+In `Keiro.Workflow.Awakeable` — a durable promise an external system resolves: a webhook, a human
+approver, an LLM tool call.
+
+```haskell
+newtype AwakeableId = AwakeableId UUID   -- deriving ToJSON/FromJSON over the inner UUID
+
+awakeableNamed :: (Workflow :> es, Store :> es, FromJSON a) => StepName -> Eff es (AwakeableId, Eff es a)
+awakeable      :: (Workflow :> es, Store :> es, FromJSON a) => Eff es (AwakeableId, Eff es a)
+
+signalAwakeable :: (IOE :> es, Store :> es, ToJSON r) => AwakeableId -> r -> Eff es Bool
+cancelAwakeable :: (Store :> es) => AwakeableId -> Eff es Bool
+
+deterministicAwakeableId :: WorkflowName -> WorkflowId -> Text -> AwakeableId
+```
+
+`awakeableNamed label` returns a deterministic `AwakeableId` (hand it to the external system) and an
+`await` action; the workflow suspends on `await` until `signalAwakeable aid payload` records the
+payload in the journal. The id is a v5 UUID over `("keiro":"awakeable":name:id:label)` — determinism
+is essential, because a resumed workflow re-allocates the **same** id it already handed out.
+`deterministicAwakeableId` computes it externally so a signaller never reads the journal back.
+`awakeable` is the ordinal convenience form (label `ord:N`); prefer `awakeableNamed`.
+
+- **`signalAwakeable`** is idempotent and crash-safe. It returns `True` only on the
+  `pending → completed` transition; a second signal returns `False` and leaves the stored payload
+  unchanged. It **re-appends** the journal entry whenever the row is `completed` (the value just
+  written, or the stored payload), so a crash between the row update and the journal append heals on a
+  later signal. A `False` return therefore does not mean "nothing happened". Returns `False` for an
+  unknown id.
+- **`cancelAwakeable`** abandons a still-`pending` promise (returns `True` on the transition). A
+  workflow that later re-enters the awakeable's `await` then throws `WorkflowAwakeableCancelled`, which
+  the author can `catch` for compensation and the resume worker records as a failure.
+
+```haskell
+newtype WorkflowAwakeableCancelled = WorkflowAwakeableCancelled AwakeableId
+```
+
+Helpers: `awakeableIdToUuid`, `awakeableIdText`.
+
+### Child workflows
+
+In `Keiro.Workflow.Child` — fan-out / fan-in: a parent spawns a child (a second workflow with its own
+journal), waits for its result, and may cancel it.
+
+```haskell
+data ChildHandle a = ChildHandle { childName :: WorkflowName, childWfId :: WorkflowId }
+
+spawnChild  :: (Workflow :> es, Store :> es) => WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (ChildHandle a)
+awaitChild  :: (Workflow :> es, Store :> es, FromJSON a) => ChildHandle a -> Eff es a
+cancelChild :: (IOE :> es, Store :> es) => ChildHandle a -> Eff es Bool
+```
+
+- **`spawnChild name id def`** records a `child:<id>` `StepRecorded` in the **parent's** journal (so a
+  replay never re-spawns) and inserts a `running` row in `keiro_workflow_children`. It does **not** run
+  the child inline — the resume worker drives the child to completion from the registry, so the
+  child's `WorkflowName` **must be registered there**. The `def` argument is taken for authoring
+  ergonomics; the registry is the source of truth for the child body.
+- **`awaitChild handle`** suspends the parent (an `awaitStep` on `child:<id>:result`) until the child
+  completes, then decodes and returns its result. Throws `WorkflowChildCancelled` if the child was
+  cancelled.
+- **`cancelChild handle`** flips the child row to `cancelled`, writes a `WorkflowCancelled` marker to
+  the **child** journal (so the child's next resume short-circuits), and writes a `{"cancelled": true}`
+  sentinel as the parent's await-step result (so a suspended parent's `awaitChild` throws).
+
+<Callout type="warn">
+**A parent and its child must use distinct `WorkflowId`s.** The resume worker's unfinished-workflow
+discovery groups by `workflow_id` alone, so a parent and child sharing an id would let the child's
+terminal marker mask the parent's incompleteness. Give the child a derived id, e.g.
+`WorkflowId (parentId <> "-ship")`.
+</Callout>
+
+The resume worker drives any workflow that is some parent's child through `runChildWorkflow` (rather
+than bare `runWorkflowWith`) so a finished child wakes its waiting parent:
+
+```haskell
+runChildWorkflow    :: (IOE :> es, Store :> es, ToJSON a) => WorkflowRunOptions -> WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
+childCompletionHook :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> Value -> Eff es ()
+
+newtype WorkflowChildCancelled = WorkflowChildCancelled WorkflowName WorkflowId
+```
+
+`runChildWorkflow` runs `runWorkflowWith` and, on `Completed`, calls `childCompletionHook`, which
+flips the child row to `completed` and appends the `child:<id>:result` `StepRecorded` to the parent's
+journal. Both are idempotent. Helpers: `childSpawnStepName`, `childResultStepName`.
+
+## The resume worker
+
+In `Keiro.Workflow.Resume` — a background worker that, each pass, discovers workflows whose journal
+lacks a terminal marker and
+re-invokes each so it proceeds (past a now-resolved wait, or after a crash).
+
+```haskell
+data WorkflowDef es = forall a. (ToJSON a) => WorkflowDef { runDef :: WorkflowId -> Eff (Workflow : es) a }
+type WorkflowRegistry es = Map WorkflowName (WorkflowDef es)
+
+resumeWorkflowsOnce         :: (IOE :> es, Store :> es) => WorkflowResumeOptions -> WorkflowRegistry es -> Eff es ResumeSummary
+runWorkflowResumeWorker     :: (IOE :> es, Store :> es) => WorkflowRegistry es -> Eff es ()
+runWorkflowResumeWorkerWith :: (IOE :> es, Store :> es) => WorkflowResumeOptions -> WorkflowRegistry es -> Eff es ()
+```
+
+A workflow's body is application code; only its journal lives in the database. So the application
+supplies a **`WorkflowRegistry`** mapping each `WorkflowName` to a `WorkflowDef` that rebuilds the
+body from an id alone — the resume-worker analogue of the `fire` action `runTimerWorker` takes.
+
+`resumeWorkflowsOnce` is the single, testable pass; `runWorkflowResumeWorker(With)` loops it on a poll
+interval. Discovery unions `findUnfinishedWorkflowIds` (steps but no terminal marker) with
+`findRunningChildIds` (freshly-spawned, zero-step children), so a child with no steps yet is still
+driven. **No kiroku `wf:` prefix subscription is used** — discovery is the index query alone, so this
+surface has zero upstream dependency. A discovered workflow whose name is absent from the registry is
+surfaced as `unknownName`, never silently dropped.
+
+```haskell
+data ResumeSummary = ResumeSummary
+  { discovered :: Int, resumed :: Int, completed :: Int, stillSuspended :: Int, unknownName :: Int }
+
+data WorkflowResumeOptions = WorkflowResumeOptions
+  { runOptions :: WorkflowRunOptions, pollInterval :: Int, useAdvisoryLock :: Bool }
+
+defaultWorkflowResumeOptions :: WorkflowResumeOptions   -- defaultWorkflowRunOptions, 1s poll, no lock
+emptyResumeSummary          :: ResumeSummary
+```
+
+<TypeTable
+  type={{
+    runOptions: { type: "WorkflowRunOptions", default: "defaultWorkflowRunOptions", description: "Threaded into runWorkflowWith / runChildWorkflow, so a resumed run honours the same snapshot and telemetry options as its first run. The metrics handle here also backs the per-pass keiro.workflow.awakeables.pending and keiro.workflow.resumed instruments." },
+    pollInterval: { type: "Int", default: "1_000_000", description: "Microseconds the loop driver sleeps between passes." },
+    useAdvisoryLock: { type: "Bool", default: "False", description: "Reserved and not wired — kept for forward compatibility; setting it has no effect. Concurrency is safe by construction: deterministic ids and step short-circuiting make two workers racing the same workflow converge to the same journal, each side effect at most once." },
+  }}
+/>
+
+## Snapshots
+
+In `Keiro.Workflow.Snapshot`. For long journals, set a `snapshotPolicy` so a resume does not replay
+every step.
+
+```haskell
+workflowStateCodec        :: StateCodec WorkflowState
+workflowStateShapeHash    :: Text   -- the fixed sentinel "keiro.workflow.stepmap.v1"
+workflowStateCodecVersion :: Int    -- 1
+loadWorkflowSnapshot      :: (Store :> es) => StreamName -> Eff es (Maybe (WorkflowState, StreamVersion))
+writeWorkflowSnapshot     :: (Store :> es) => StreamId -> StreamVersion -> WorkflowState -> Eff es ()
+```
+
+The accumulated step-result map snapshots via `workflowStateCodec`. Its shape hash is a **fixed
+sentinel** — distinct from the `regFileShapeHash` used by aggregate snapshots, because workflow step
+names are dynamic runtime strings with no static slot list. A snapshot is advisory: a missing,
+mismatched, or undecodable snapshot collapses to a full version-0 replay, so a stale snapshot degrades
+performance at worst, never correctness. Per-step result-type evolution stays each step's own
+`ToJSON`/`FromJSON` concern, surfaced at the `step` decode.
+
+## The step index and discovery
+
+`Keiro.Workflow` re-exports the `keiro_workflow_steps` index helpers from `Keiro.Workflow.Schema`. The
+journal stream is the source of truth for replay; this table is a derived fast-lookup view kept in
+sync inside the same transaction as each journal append.
+
+```haskell
+data WorkflowStepRow = WorkflowStepRow
+  { workflowId :: Text, workflowName :: Text, stepName :: Text, result :: Value, recordedAt :: UTCTime }
+
+recordStepTx            :: WorkflowStepRow -> Tx.Transaction ()        -- INSERT ... ON CONFLICT DO NOTHING
+loadStepIndex           :: (Store :> es) => WorkflowId -> Eff es (Map Text Value)
+stepExists              :: (Store :> es) => WorkflowId -> Text -> Eff es Bool
+findUnfinishedWorkflowIds :: (Store :> es) => Eff es [(Text, Text)]    -- (workflow_id, workflow_name) lacking a terminal marker
+```
+
+## Journal append helpers
+
+Used by wake-source code (a fired timer, `signalAwakeable`, a finishing child) to record an awaited
+step's resolution. The append uses a deterministic event id over
+`("keiro":"workflow":name:id:stepName)`, so concurrent or retried writes collapse to one row.
+
+```haskell
+appendJournalEntry           :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> WorkflowJournalEvent -> Eff es ()
+appendJournalEntryReturningId :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> WorkflowJournalEvent -> Eff es EventId
+```
+
+## Tables
+
+Three tables in the **`kiroku` schema**, added by the workflow migrations. The journal streams
+(`wf:<name>-<id>`) remain the source of truth for replay; these tables are derived indexes plus
+operator-visible state.
+
+| Table | Migration | Purpose |
+|---|---|---|
+| `keiro_workflow_steps` | `keiro-workflow-steps` | Step-lookup index backing replay and unfinished-workflow discovery; PK `(workflow_id, step_name)`. |
+| `keiro_awakeables` | `keiro-awakeables` | Pending external completions (`pending`/`completed`/`cancelled`), keyed by `awakeable_id`. |
+| `keiro_workflow_children` | `keiro-workflow-children` | Durable parent→child links (`running`/`completed`/`cancelled`), PK `(child_id, child_name)`. |
+
+See [Migrations and schema](/docs/keiro/reference/migrations-and-schema) for the full table map.
+
+## Observability
+
+When you thread a `KeiroMetrics`/`Tracer` through `WorkflowRunOptions`, the runtime records six
+instruments under `keiro.workflow.*` and opens a `workflow <name>` span. See the
+[Telemetry reference](/docs/keiro/reference/telemetry#workflow-instruments).
+
+<Cards>
+  <Card title="Understanding durable execution" href="/docs/keiro/explanation/durable-execution" />
+  <Card title="Write a durable workflow" href="/docs/keiro/how-to/write-a-durable-workflow" />
+  <Card title="Run the workflow resume worker" href="/docs/keiro/how-to/run-the-workflow-resume-worker" />
+  <Card title="The durable-execution walkthrough" href="/docs/keiro/walkthrough/durable-execution/00-start-here" />
+</Cards>
