@@ -41,17 +41,25 @@ stateDiagram-v2
   [*] --> Scheduled: scheduleTimerTx
   Scheduled --> Firing: claimDueTimer (fire_at <= now)
   Firing --> Fired: markTimerFired (fire returned Just eventId)
-  Firing --> Scheduled: worker crashed / fire returned Nothing (re-claimable)
-  Scheduled --> Cancelled: (decode fallback only — no cancel SQL ships)
+  Firing --> Scheduled: worker crash / fire returned Nothing, then requeueStuckTimer
+  Scheduled --> Cancelled: cancelTimer
+  Firing --> Cancelled: cancelTimer
+  Firing --> Dead: deadLetterTimer / maxAttempts ceiling
+  Scheduled --> Dead: deadLetterTimer
   Fired --> [*]
+  Cancelled --> [*]
+  Dead --> [*]
 ```
 
 - **`Scheduled`** — waiting for its `fireAt`; claimable.
 - **`Firing`** — claimed by a worker and being processed. If the worker crashes before completing,
-  the row stays `Firing` and becomes claimable again.
+  the row stays `Firing` until a recovery call (`requeueStuckTimer`) makes it claimable again.
 - **`Fired`** — successfully fired; terminal.
-- **`Cancelled`** — withdrawn before firing. Note: `Cancelled` is **also the decode fallback** for
-  an unrecognized stored status string (`statusFromText` maps anything unknown to `Cancelled`).
+- **`Cancelled`** — withdrawn before firing via `cancelTimer`; terminal. `Cancelled` is **also the
+  decode fallback** for an unrecognized stored status string (`statusFromText` maps anything unknown
+  to `Cancelled`).
+- **`Dead`** — abandoned after exceeding the attempt ceiling, via `deadLetterTimer` (or the worker's
+  `maxAttempts` auto-dead-letter); terminal. Carries a `last_error` explaining why.
 
 ## At-least-once firing
 
@@ -95,34 +103,57 @@ It is important to be honest about what `runTimerWorker` is and is not:
 
 ```haskell
 runTimerWorker ::
-  (Store :> es) => UTCTime -> (TimerRow -> Eff es (Maybe EventId)) -> Eff es (Maybe TimerRow)
+  (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics -> UTCTime -> (TimerRow -> Eff es (Maybe EventId)) -> Eff es (Maybe TimerRow)
 ```
 
 It claims **at most one** due timer, runs your `fire` action, and marks it `Fired` only on a
-`Just`. That is the whole of it. There is:
+`Just`. That is the core of it. There is:
 
 - **no loop** — the caller calls it on a tick;
 - **no clock** — the caller supplies `now`, which makes the worker trivially testable and lets you
   drive logical time in tests;
 - **no supervisor** — you run it inside your own polling loop or a shibuya worker;
-- **no cancellation SQL** — although the `Cancelled` status value exists, keiro 0.1.0.0 ships *no*
-  `cancelTimer` function. A timer is either fired or left to be superseded by a re-arm.
+- **no backoff** — a requeued timer is immediately re-claimable; nothing spaces retries out.
+
+The leading `Maybe KeiroMetrics` is the opt-in metrics handle (`Nothing` = no instruments); each
+pass records the `keiro.timer.*` backlog/stuck/fire-lag/attempts instruments.
 
 A fired timer is bound back to a process manager **only by convention**: your `fire` action reads
 the row's `processManagerName` / `correlationId` / `payload` and dispatches the appropriate
 command. `Jitsurei/EscalationProcess.hs`'s `incidentIdFromTimer` does exactly this — it checks
 `processManagerName == "jitsurei-escalation"` and reads the incident id out of `correlationId`.
 
+## Recovering stuck timers
+
+A `Firing` row left by a crash (or a `fire` that keeps returning `Nothing`) does **not** re-claim
+itself — `claimDueTimer` only selects `Scheduled` rows. To resolve such timers, keiro ships a
+supported recovery API in `Keiro.Timer` / `Keiro.Timer.Schema`:
+
+- **`findStuckTimers now filter`** — list `Firing` rows, filtered by how long they have been firing
+  (`minAge`) and how many times claimed (`minAttempts`), oldest-first. `countStuckTimers` is the
+  read-only count (and the source for the `keiro.timer.stuck` gauge).
+- **`requeueStuckTimer timerId`** — put the row back to `Scheduled` so the ordinary loop re-fires it
+  (use when the strand was transient — a crash, a redeploy).
+- **`cancelTimer timerId`** — move it to the terminal `Cancelled` state so it never fires.
+- **`deadLetterTimer timerId reason`** — move it to the terminal `Dead` state, recording `reason` in
+  `last_error` (use for a poison timer you have given up on; inspect with `SELECT * FROM keiro_timers
+  WHERE status = 'dead'`).
+
+To bound poison timers automatically, drive the worker with `runTimerWorkerWith` and set
+`TimerWorkerOptions { maxAttempts = Just n }` — the `n`-th over-limit claim dead-letters the timer
+instead of firing it. Run the find→requeue/cancel/dead-letter sweep as a periodic operational job.
+
 ## Trade-offs
 
 A bare, caller-driven worker is less convenient than a managed scheduler, but it is dramatically
-simpler to reason about and to test: there is no background thread, no hidden clock, and no
-recovery protocol beyond "a `Firing` row gets re-claimed". The cost is that *you* own the polling
-cadence and the loop, and you must keep firing idempotent. The payoff is that timers live in the
-same Postgres as your events, claimed with the same `SKIP LOCKED` discipline as everything else —
-no new infrastructure to operate. See [Drive the timer
-worker](/docs/keiro/how-to/drive-the-timer-worker) for the polling loop, and the
-[Keiro.Timer reference](/docs/keiro/reference/timers) for the full schema.
+simpler to reason about and to test: there is no background thread and no hidden clock. The recovery
+protocol is explicit — a stranded `Firing` row is resolved by an operator (or the `maxAttempts`
+ceiling), not by hidden retry magic. The cost is that *you* own the polling cadence and the loop, and
+you must keep firing idempotent. The payoff is that timers live in the same Postgres as your events,
+claimed with the same `SKIP LOCKED` discipline as everything else — no new infrastructure to operate.
+See [Drive the timer worker](/docs/keiro/how-to/drive-the-timer-worker) for the polling loop, and the
+[Keiro.Timer reference](/docs/keiro/reference/timers) for the full schema and the recovery API.
 
 <Cards>
   <Card title="Understanding process managers and sagas" href="/docs/keiro/explanation/process-managers-and-sagas" />

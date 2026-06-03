@@ -1,0 +1,264 @@
+---
+title: "Metrics (kiroku-metrics)"
+description: "The kiroku-metrics package: the in-process collector, the MetricsSnapshot types, the HTTP JSON/Prometheus/health/subscriptions endpoints, the WebSocket metrics and event channels, and the server config."
+---
+
+`kiroku-metrics` is a **sister package** to `kiroku-store`: it depends on the store but adds nothing
+to it. It turns a running Kiroku store's operational state into observable surfaces — an HTTP server
+exposing JSON and Prometheus metrics, Kubernetes-style health probes, a live subscription-status
+endpoint, and a WebSocket that streams both metrics snapshots and the live event tail. The collector
+plugs into the store's existing public callback seams, so the core library is untouched.
+
+<Callout type="info">
+  Package `kiroku-metrics` (v0.1.0.0), umbrella module `Kiroku.Metrics` (re-exporting `Types`,
+  `Collector`, `Config`, `Health`, `Server`, `Subscriptions`, `WebSocket`). The server has **no
+  built-in auth or TLS** — bind it to an internal interface or run it behind a sidecar/ingress that
+  terminates TLS and authentication. The [how-to](/docs/kiroku/how-to/serve-metrics-and-health) wires
+  it end to end.
+</Callout>
+
+## The collector
+
+A `KirokuMetrics` is an opaque handle holding STM counters, a pool-status map, and a per-subscription
+accumulator. It is driven entirely by the store's public `eventHandler` / `observationHandler`
+callback seams — wrap them into `ConnectionSettings` **before** opening the store and the collector
+sees every event. All callback updates are non-blocking STM (`modifyTVar'`) with no I/O, because the
+store invokes them synchronously on the emit-site thread.
+
+```haskell
+newKirokuMetrics         :: KirokuStore -> IO KirokuMetrics
+newKirokuMetricsWith     :: STM GlobalPosition -> STM Int -> IO KirokuMetrics
+metricsEventHandler       :: KirokuMetrics -> Maybe (KirokuEvent -> IO ()) -> (KirokuEvent -> IO ())
+metricsObservationHandler :: KirokuMetrics -> Maybe (Observation -> IO ()) -> (Observation -> IO ())
+snapshotMetrics           :: KirokuMetrics -> IO MetricsSnapshot
+```
+
+- `newKirokuMetrics store` builds a collector that reads the global position and active-subscriber
+  count from the live store's `EventPublisher`.
+- `newKirokuMetricsWith` takes those two readers as explicit `STM` actions — the seam used when the
+  store does not exist yet. The canonical pattern holds the store in a `TVar` and reads through it
+  (the **deferred-store** pattern; see the example), because the collector's callbacks must be on
+  `ConnectionSettings` *before* `withStore`, yet snapshots read store-level gauges from the live
+  handle.
+- `metricsEventHandler` / `metricsObservationHandler` wrap into the matching `ConnectionSettings`
+  field; each composes with an optional passthrough handler you may already have.
+- `snapshotMetrics` reads an atomic, immutable `MetricsSnapshot` (the collector's TVars plus the
+  store readers, in one STM transaction). Derived values such as `lag` are computed at read time.
+
+## Snapshot types
+
+`MetricsSnapshot` is the JSON-encodable value `/metrics` returns and the WebSocket metrics channel
+pushes.
+
+```haskell
+data MetricsSnapshot = MetricsSnapshot
+  { store         :: StoreGauges
+  , counters      :: LifecycleCounters
+  , subscriptions :: Map Text SubscriptionMetrics
+  }
+
+data StoreGauges = StoreGauges
+  { globalPosition       :: Int64
+  , activeSubscribers    :: Int
+  , poolConnecting       :: Int
+  , poolReady            :: Int
+  , poolInUse            :: Int
+  , poolEstablishedTotal :: Int64
+  , poolTerminatedTotal  :: Int64
+  }
+
+data SubscriptionMetrics = SubscriptionMetrics
+  { lastKnownPosition :: Int64
+  , lag               :: Int64        -- max 0 (globalPosition - lastKnownPosition), computed at read
+  , dbErrorCount      :: Int64
+  , lastStopReason    :: Maybe Text
+  }
+```
+
+`LifecycleCounters` carries 21 cumulative counters: `notifierReconnecting`, `notifierReconnected`,
+`publisherPoolErrors`, the three `subscriptionDbErrors{Load,Fetch,Save}`, the lifecycle transitions
+(`subscriptionsStarted`, `…CaughtUp`, `…Paused`, `…Resumed`, `…Reconnecting`, `…Retrying`,
+`…DeadLettered`), the four stop reasons (`subscriptionsStopped{Handler,Cancelled,Overflow,Crashed}`),
+and the delivery counters (`liveFetches`, `batchesDelivered`, `eventsDelivered`, `hardDeletesIssued`).
+
+The JSON wire form is snake_case throughout, e.g.:
+
+```json
+{
+  "store": { "global_position": 42, "active_subscribers": 1,
+             "pool_connecting": 0, "pool_ready": 1, "pool_in_use": 0,
+             "pool_established_total": 2, "pool_terminated_total": 0 },
+  "counters": { "subscriptions_started": 1, "subscriptions_caught_up": 1,
+                "live_fetches": 42, "batches_delivered": 3, "events_delivered": 42, "…": 0 },
+  "subscriptions": {
+    "inventory-projection": { "last_known_position": 42, "lag": 0,
+                              "db_error_count": 0, "last_stop_reason": null }
+  }
+}
+```
+
+<Callout type="info">
+  A subscription's `lag` is an **upper bound** (`globalPosition − lastKnownPosition`), not an exact
+  count — `lastKnownPosition` advances only as batches are observed. This is why `readinessMaxLag`
+  defaults higher than a typical exact-lag threshold.
+</Callout>
+
+## HTTP endpoints
+
+| Path | Method | Status | Body |
+|---|---|---|---|
+| `/metrics` | GET | 200 | the full `MetricsSnapshot` as JSON |
+| `/metrics/<name>` | GET | 200 / 404 | one subscription's `SubscriptionMetrics`, or `{"error": …}` |
+| `/metrics/prometheus` | GET | 200 | Prometheus text-exposition format (`text/plain`) |
+| `/health` | GET | 200 / 503 | `{ "status": ReadinessStatus, "metrics": MetricsSnapshot }` |
+| `/health/live` | GET | 200 / 503 | `{ "alive": bool }` |
+| `/health/ready` | GET | 200 / 503 | `ReadinessStatus` (`ready`, `lag_ok`, `no_overflow`, `dependencies`) |
+| `/subscriptions` | GET | 200 | JSON array of subscription-status rows (see [operator CLI](/docs/kiroku/reference/operator-cli)) |
+| `/subscriptions/<name>` | GET | 200 | the rows filtered by name |
+| `/ws/metrics` | WS | 101 | metrics channel (below) |
+| `/ws/events` | WS | 101 | event channel (below) |
+
+The `enableJSON`, `enablePrometheus`, and `enableWebSocket` config flags gate the respective routes.
+`/subscriptions` is served only when a [`SubscriptionStatusProvider`](#subscription-status) is wired.
+
+### Prometheus names
+
+`/metrics/prometheus` renders the snapshot as standard text exposition. The series:
+
+```text
+kiroku_events_appended_total                                      # = store.global_position
+kiroku_active_subscribers
+kiroku_pool_connections{state="connecting"|"ready"|"in_use"}
+kiroku_pool_established_total
+kiroku_pool_terminated_total
+kiroku_notifier_reconnecting_total
+kiroku_notifier_reconnected_total
+kiroku_publisher_pool_errors_total
+kiroku_subscription_db_errors_by_phase_total{phase="load"|"fetch"|"save"}
+kiroku_subscriptions_started_total
+kiroku_subscriptions_caught_up_total
+kiroku_subscriptions_paused_total
+kiroku_subscriptions_resumed_total
+kiroku_subscriptions_reconnecting_total
+kiroku_subscriptions_retrying_total
+kiroku_subscriptions_dead_lettered_total
+kiroku_subscriptions_stopped_total{reason="handler"|"cancelled"|"overflow"|"crashed"}
+kiroku_live_fetches_total
+kiroku_batches_delivered_total
+kiroku_events_delivered_total
+kiroku_hard_deletes_total
+kiroku_subscription_position{subscription="<name>"}
+kiroku_subscription_lag{subscription="<name>"}
+kiroku_subscription_db_errors_total{subscription="<name>"}
+```
+
+## Health probes
+
+```haskell
+type DependencyCheck = IO DependencyStatus
+
+postgresPing       :: KirokuStore -> DependencyCheck     -- built-in: SELECT 1 over the store pool
+checkLiveness      :: MetricsServerConfig -> KirokuMetrics -> IO LivenessStatus
+checkReadiness     :: MetricsServerConfig -> KirokuMetrics -> [DependencyCheck] -> IO ReadinessStatus
+checkDetailedHealth :: MetricsServerConfig -> KirokuMetrics -> [DependencyCheck] -> IO (ReadinessStatus, MetricsSnapshot)
+```
+
+- **Liveness** (`/health/live`) is 200 while a snapshot can be taken within `livenessTimeoutUs`.
+- **Readiness** (`/health/ready`) is 200 only when **no** subscription is overflow-stopped, none lags
+  beyond `readinessMaxLag`, and every supplied `DependencyCheck` is healthy. `postgresPing store` is
+  the built-in check; pass any others (a downstream ping, a queue depth) in the `[DependencyCheck]`
+  list.
+
+## Subscription status
+
+`/subscriptions` is served from a caller-supplied closure, keeping the server store-agnostic:
+
+```haskell
+type SubscriptionStatusProvider = IO [SubscriptionStatusRow]
+
+storeSubscriptionStatus :: KirokuStore -> SubscriptionStatusProvider   -- reads subscriptionStates
+```
+
+`storeSubscriptionStatus store` is the canonical provider — it reads the live registry through
+`Kiroku.Store.Subscription.subscriptionStates`. The row shape (`subscription`, `member`, `phase`,
+`global_position`) is the same JSON the [operator CLI](/docs/kiroku/reference/operator-cli) renders;
+the two packages share one codec, so the CLI's `--remote-url` client decodes exactly what this
+endpoint encodes. A stopped/cancelled/crashed subscription is **absent** from the list, never a
+"stopped" row.
+
+## The WebSocket channels
+
+`/ws/metrics` and `/ws/events` upgrade to a JSON message protocol:
+
+```haskell
+data ClientMessage
+  = Ping
+  | SubscribeMetrics
+  | SubscribeEvents (Maybe Int64) (Maybe Text)   -- from_position, category
+  | UnsubscribeEvents
+
+data ServerMessage
+  = Pong
+  | Snapshot MetricsSnapshot          -- on /ws/metrics
+  | Event Value                       -- on /ws/events (one per appended event)
+  | EventStreamStarted Int64          -- ack carrying from_position
+  | Goodbye
+  | ErrorMsg Text
+```
+
+- **`/ws/metrics`** sends a `MetricsSnapshot` on connect, then a fresh snapshot every
+  `wsPushIntervalUs` microseconds; a `ping` is answered with `pong`.
+- **`/ws/events`** streams one JSON message per appended event in global-position order after a
+  `subscribe_events` message. It can **replay** history from a chosen `from_position` and/or restrict
+  to a single `category`. It rides the public `EventPublisher` broadcast and the public effectful
+  reads — it creates **no persistent subscription** and writes nothing to the `subscriptions`
+  checkpoint table, so transient watchers leave no trace. Under back-pressure a slow client drops the
+  oldest undelivered batches (`wsEventQueueCap`) rather than stalling the publisher.
+
+## Server lifecycle
+
+```haskell
+data MetricsServer = MetricsServer { serverThread :: Async (), serverPort :: Int }
+
+-- the common bracket: real WebSocket event streaming + dependency checks
+withMetricsServerWithStore ::
+  MetricsServerConfig -> KirokuMetrics -> KirokuStore -> [DependencyCheck] -> (MetricsServer -> IO a) -> IO a
+
+-- /subscriptions without the event-streaming WebSocket
+withMetricsServerSubscriptions ::
+  MetricsServerConfig -> KirokuMetrics -> [DependencyCheck] -> SubscriptionStatusProvider -> (MetricsServer -> IO a) -> IO a
+
+-- lower-level start/stop and seams
+startMetricsServer          :: MetricsServerConfig -> KirokuMetrics -> [DependencyCheck] -> IO MetricsServer
+startMetricsServerWithStore :: MetricsServerConfig -> KirokuMetrics -> KirokuStore -> [DependencyCheck] -> IO MetricsServer
+startMetricsServerWith'     :: MetricsServerConfig -> KirokuMetrics -> [DependencyCheck] -> Maybe SubscriptionStatusProvider -> WS.ServerApp -> IO MetricsServer
+stopMetricsServer           :: MetricsServer -> IO ()
+```
+
+`withMetricsServerWithStore` is the usual entry point: it wires the real event-streaming WebSocket
+over the store and serves `/subscriptions` from `storeSubscriptionStatus`. `startMetricsServer` (no
+store) installs a **rejecting** WebSocket stub — use it when you only want the HTTP surfaces.
+
+## Config
+
+```haskell
+data MetricsServerConfig = MetricsServerConfig
+  { port             :: Int       -- 9091
+  , enableJSON       :: Bool      -- True
+  , enablePrometheus :: Bool      -- True
+  , enableWebSocket  :: Bool      -- True
+  , wsPushIntervalUs :: Int       -- 1_000_000 (1s)
+  , wsMaxConnections :: Int       -- 100
+  , wsEventQueueCap  :: Natural   -- 256 (batches; DropOldest under back-pressure)
+  , readinessMaxLag  :: Int64     -- 10_000
+  , livenessTimeoutUs :: Int      -- 1_000_000 (1s)
+  }
+
+defaultConfig :: MetricsServerConfig   -- all endpoints enabled, port 9091
+```
+
+<Cards>
+  <Card title="Serve metrics and health" href="/docs/kiroku/how-to/serve-metrics-and-health" />
+  <Card title="Operator CLI" href="/docs/kiroku/reference/operator-cli" />
+  <Card title="OpenTelemetry (kiroku-otel)" href="/docs/kiroku/reference/opentelemetry" />
+</Cards>

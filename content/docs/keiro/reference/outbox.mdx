@@ -143,7 +143,8 @@ data PublishOutcome = PublishSucceeded | PublishFailed !Text
 
 publishClaimedOutbox ::
   (IOE :> es, Store :> es) =>
-  (OutboxRow -> Eff es PublishOutcome) -> OutboxPublishOptions -> Eff es OutboxPublishSummary
+  (OutboxRow -> Eff es PublishOutcome) -> OutboxPublishOptions -> Maybe KeiroMetrics ->
+  Eff es OutboxPublishSummary
 ```
 
 **One claim pass per call** — it claims a batch, calls your publish function per row, marks each
@@ -151,6 +152,21 @@ sent/failed/dead, and returns. It does **not** loop; the application schedules i
 once per process-compose tick). Mark a row sent only after the broker acks (return
 `PublishSucceeded`); the inbox dedupes any double-send. See [Bridge the outbox to
 Kafka](/docs/keiro/how-to/bridge-the-outbox-to-kafka).
+
+The trailing `Maybe KeiroMetrics` is the opt-in
+[metrics](/docs/keiro/reference/telemetry#metrics-surface) handle: per pass it records the
+`keiro.outbox.backlog` gauge and the `keiro.outbox.published`, `keiro.outbox.retried`, and
+`keiro.outbox.deadlettered` counters. Pass `Nothing` to disable them.
+
+## `countOutboxBacklog`
+
+Count rows awaiting publish — those in `pending` or `failed` status. This is the source for the
+[`keiro.outbox.backlog`](/docs/keiro/reference/telemetry#metric-catalogue) gauge; `publishClaimedOutbox`
+records it each pass.
+
+```haskell
+countOutboxBacklog :: (Store :> es) => Eff es Int
+```
 
 ## Schema primitives (`Keiro.Outbox.Schema`)
 

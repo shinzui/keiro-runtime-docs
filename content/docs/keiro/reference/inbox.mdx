@@ -17,7 +17,7 @@ completed — or branches on the existing row's status if it is a duplicate.
 ```haskell
 runInboxTransaction ::
   forall a es. (IOE :> es, Store :> es) =>
-  InboxDedupePolicy -> IntegrationEvent -> Maybe KafkaDeliveryRef ->
+  Maybe KeiroMetrics -> InboxDedupePolicy -> IntegrationEvent -> Maybe KafkaDeliveryRef ->
   (IntegrationEvent -> Tx.Transaction a) ->
   Eff es (Either InboxError (InboxResult a))
 ```
@@ -25,7 +25,10 @@ runInboxTransaction ::
 Returns `Left (DedupePolicyUnsatisfied …)` if the policy's required field is absent; otherwise
 `Right` the classified `InboxResult`. The handler runs **inside** the inbox transaction, so it is a
 `Tx.Transaction a` — a thrown exception or `Tx.condemn` rolls back the whole transaction including
-the inbox row.
+the inbox row. The leading `Maybe KeiroMetrics` is the opt-in
+[metrics](/docs/keiro/reference/telemetry#metrics-surface) handle: each transaction records the
+`keiro.inbox.processed`, `keiro.inbox.duplicates`, `keiro.inbox.failed`, and `keiro.inbox.backlog`
+instruments. Pass `Nothing` to disable them.
 
 ## `runInboxTransactionWithKey`
 
@@ -36,7 +39,7 @@ payload).
 ```haskell
 runInboxTransactionWithKey ::
   forall a es. (IOE :> es, Store :> es) =>
-  Text -> Text -> IntegrationEvent -> Maybe KafkaDeliveryRef ->
+  Maybe KeiroMetrics -> Text -> Text -> IntegrationEvent -> Maybe KafkaDeliveryRef ->
   (IntegrationEvent -> Tx.Transaction a) ->
   Eff es (InboxResult a)
 ```
@@ -113,6 +116,16 @@ The retention window **is** the duplicate-detection window: a redelivery arrivin
 is processed again. Size `keepFor` above your maximum tolerated delivery delay (the user guide
 recommends 30 days). Failed rows are never GC'd.
 </Callout>
+
+## `countInboxBacklog`
+
+Count non-terminal inbox rows — those still `processing` (in flight) or `failed` (awaiting a retry).
+This is the source for the [`keiro.inbox.backlog`](/docs/keiro/reference/telemetry#metric-catalogue)
+gauge; `runInboxTransaction` records it each transaction.
+
+```haskell
+countInboxBacklog :: (Store :> es) => Eff es Int
+```
 
 ## `lookupInbox` / `listInbox`
 

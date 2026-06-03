@@ -58,15 +58,31 @@ data ReadModelError
 ## Query functions
 
 ```haskell
-runQuery     :: (IOE :> es, Store :> es) => ReadModel q r -> q -> Eff es (Either ReadModelError r)
-runQueryWith :: (IOE :> es, Store :> es) => ConsistencyMode -> ReadModel q r -> q -> Eff es (Either ReadModelError r)
-waitFor      :: (IOE :> es, Store :> es) => PositionWaitOptions -> ReadModel q r -> GlobalPosition -> Eff es (Either ReadModelError ())
+runQuery     :: (IOE :> es, Store :> es) => Maybe KeiroMetrics -> ReadModel q r -> q -> Eff es (Either ReadModelError r)
+runQueryWith :: (IOE :> es, Store :> es) => Maybe KeiroMetrics -> ConsistencyMode -> ReadModel q r -> q -> Eff es (Either ReadModelError r)
+waitFor      :: (IOE :> es, Store :> es) => Maybe KeiroMetrics -> PositionWaitOptions -> ReadModel q r -> GlobalPosition -> Eff es (Either ReadModelError ())
 ```
 
 `runQueryWith` does, in order: `ensureReadModel` (which calls `registerReadModel` then
 `validateMetadata`); if the schema and liveness are OK, `waitIfNeeded` for the mode; then run `query`
 in a transaction. On schema drift it hard-fails with `ReadModelStaleSchema`; while a model is not
 `Live` it fails with `ReadModelNotLive`.
+
+Each of these takes the opt-in [metrics](/docs/keiro/reference/telemetry#metrics-surface) handle as
+its leading argument. When a `Strong`/`AwaitPosition` wait hits its deadline, `waitFor` records the
+[`keiro.projection.wait.timeouts`](/docs/keiro/reference/telemetry#metric-catalogue) counter; pass
+`Nothing` to disable it. (These signatures gained the `Maybe KeiroMetrics` argument with the metrics
+surface; 0.1.0.0 callers pass `Nothing`.)
+
+## `readSubscriptionPosition`
+
+Read a subscription's checkpoint — the global position its projection has caught up to — or `Nothing`
+if it has none yet. Used internally by `waitFor` and by
+[`recordProjectionLag`](/docs/keiro/reference/projection#recordprojectionlag).
+
+```haskell
+readSubscriptionPosition :: (Store :> es) => Text -> Eff es (Maybe GlobalPosition)
+```
 
 ## The registry
 

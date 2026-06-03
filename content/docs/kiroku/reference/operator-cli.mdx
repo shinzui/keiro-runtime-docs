@@ -1,0 +1,161 @@
+---
+title: "Operator CLI (kiroku-cli)"
+description: "The kiroku-cli package: the command/parser API for embedding in a host CLI, the standalone remote client, and the subscriptions status command with its table/JSON output and wire contract."
+---
+
+`kiroku-cli` gives operators a command-line view of a Kiroku worker. It has **two surfaces** from one
+command model: an **embeddable library** that a host service mounts under its own parser and runs
+against its live `KirokuStore`, and a **standalone executable** that is a pure remote HTTP client —
+it opens no store and queries a worker's [`/subscriptions`](/docs/kiroku/reference/metrics#http-endpoints)
+endpoint. The first (and so far only) command is subscription status.
+
+<Callout type="info">
+  Package `kiroku-cli` (v0.1.0.0). Library modules `Kiroku.Cli`, `Kiroku.Cli.Command`,
+  `Kiroku.Cli.Parser`, `Kiroku.Cli.Run`, `Kiroku.Cli.Standalone`, `Kiroku.Cli.Subscription.Status`;
+  executable `kiroku`. Remote queries need a worker running [`kiroku-metrics`](/docs/kiroku/reference/metrics).
+</Callout>
+
+## The command model
+
+```haskell
+data KirokuCommand
+  = KirokuNoCommand
+  | KirokuSubscriptions SubscriptionCommand
+
+data SubscriptionCommand
+  = SubscriptionStatus StatusOptions
+
+data StatusOptions = StatusOptions
+  { outputFormat :: OutputFormat
+  , endpoint     :: Maybe RemoteEndpoint   -- Nothing = in-process registry; Just = remote HTTP
+  }
+
+data OutputFormat   = OutputTable | OutputJson
+newtype RemoteEndpoint = RemoteEndpoint Text   -- a worker's base URL, e.g. http://worker:9091
+```
+
+`endpoint = Nothing` reads the host process's own `KirokuStore` registry (embeddable path);
+`Just ep` queries a remote worker over HTTP (the override the standalone binary always takes).
+
+## The parser
+
+```haskell
+kirokuCommandParser :: Parser KirokuCommand
+kirokuParserInfo    :: ParserInfo KirokuCommand
+kirokuSubparser     :: (KirokuCommand -> command) -> Mod CommandFields command
+```
+
+`kirokuCommandParser` parses `subscriptions status [--format table|json] [--remote-url URL]`.
+`kirokuSubparser` lifts the whole `kiroku` command group into a host parser so a service can mount it
+beside its own commands:
+
+```haskell
+hostParser =
+  subparser
+    ( command "serve" (info (pure HostServe) (progDesc "Run the worker."))
+        <> kirokuSubparser HostKiroku        -- adds `host-cli kiroku subscriptions status …`
+    )
+```
+
+### Flags
+
+| Flag | Values | Default | Meaning |
+|---|---|---|---|
+| `--format` | `table` \| `json` | `table` | Human table or script-friendly JSON. |
+| `--remote-url` | `URL` | _(none)_ | Query a worker's `kiroku-metrics` `/subscriptions` endpoint instead of the local registry. |
+
+For the standalone binary, `--remote-url` falls back to the `KIROKU_REMOTE_URL` environment variable.
+
+## Running a command
+
+```haskell
+-- embeddable: the host owns the store
+runKirokuCommandWithStore   :: KirokuStore -> KirokuCommand -> IO ()      -- run and print
+renderKirokuCommandWithStore :: KirokuStore -> KirokuCommand -> IO Text   -- run and return the text
+
+-- standalone: no store available
+runKirokuCommand :: KirokuCommand -> IO ()   -- prints guidance for store-requiring commands
+```
+
+`renderKirokuCommandWithStore` reads the live registry via `subscriptionStates` for an in-process
+status command, or — if `StatusOptions.endpoint` is `Just ep` — defers to the remote client, so even
+an embedded host can point at a sibling worker.
+
+## Subscription status
+
+The row type is the **shared wire contract** between this CLI and the metrics server's
+`/subscriptions` endpoint (both packages use this one codec):
+
+```haskell
+data SubscriptionStatusRow = SubscriptionStatusRow
+  { subscription   :: Text
+  , member         :: Int32     -- consumer-group member index (0 when not a group)
+  , phase          :: Text      -- "catching_up" | "live" | "paused" | "reconnecting" | "retrying"
+  , globalPosition :: Int64     -- the subscription FSM's current cursor
+  }
+```
+
+```json
+{ "subscription": "invoice-projection", "member": 0, "phase": "live", "global_position": 1284 }
+```
+
+Rendering and fetching:
+
+```haskell
+subscriptionStatusRows         :: Map (SubscriptionName, Int32) SubscriptionStateView -> [SubscriptionStatusRow]
+renderSubscriptionStatusRows   :: OutputFormat -> [SubscriptionStatusRow] -> Text
+fetchRemoteSubscriptionStatusRows :: RemoteEndpoint -> IO (Either Text [SubscriptionStatusRow])
+renderRemoteSubscriptionStatus :: RemoteEndpoint -> OutputFormat -> IO Text
+```
+
+- `subscriptionStatusRows` converts an in-process `subscriptionStates` snapshot to rows, sorted by
+  `(subscription, member)`.
+- `renderSubscriptionStatusRows OutputTable` prints aligned columns
+  (`SUBSCRIPTION  MEMBER  PHASE  GLOBAL_POSITION`); `OutputJson` prints the JSON array.
+- `fetchRemoteSubscriptionStatusRows` does `GET <base>/subscriptions` and returns a **readable
+  `Left` message** on a connection failure, non-2xx response, or decode error — not a Haskell
+  exception.
+
+<Callout type="info">
+  A subscription that is stopped, cancelled, or crashed is **absent** from the registry — it is never
+  a "stopped" row. `global_position` is the FSM's in-memory cursor, not the durable checkpoint.
+</Callout>
+
+## The standalone executable
+
+The `kiroku` binary opens no store; it is always a remote client.
+
+```haskell
+newtype StandaloneOptions = StandaloneOptions { command :: KirokuCommand }
+newtype StandaloneRuntime = StandaloneRuntime { command :: KirokuCommand }
+
+standaloneParserInfo   :: ParserInfo StandaloneOptions
+resolveStandaloneOptions :: [(String, String)] -> StandaloneOptions -> Either Text StandaloneRuntime
+runStandaloneCommand   :: StandaloneRuntime -> IO Text
+```
+
+`resolveStandaloneOptions` fills the endpoint from `--remote-url` or `KIROKU_REMOTE_URL`; if a
+status command has **neither**, it fails with guidance (it cannot read in-process subscriptions
+because it runs none). Usage:
+
+```bash
+export KIROKU_REMOTE_URL='http://worker-host:9091'
+kiroku subscriptions status                 # table output (default)
+kiroku subscriptions status --format json   # JSON, for scripts
+kiroku subscriptions status --remote-url http://other-worker:9091
+```
+
+```text
+SUBSCRIPTION        MEMBER  PHASE  GLOBAL_POSITION
+billing-projection  1       live   1284
+invoice-projection  0       live   1284
+```
+
+The binary exits non-zero (with the readable message on stderr) when no endpoint is configured or a
+remote query fails.
+
+<Cards>
+  <Card title="Inspect subscriptions with the CLI" href="/docs/kiroku/how-to/inspect-subscriptions-with-the-cli" />
+  <Card title="Metrics (kiroku-metrics)" href="/docs/kiroku/reference/metrics" />
+  <Card title="Subscriptions and consumer groups" href="/docs/kiroku/explanation/subscriptions-and-consumer-groups" />
+</Cards>

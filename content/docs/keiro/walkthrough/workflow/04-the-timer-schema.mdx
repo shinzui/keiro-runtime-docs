@@ -1,6 +1,6 @@
 ---
 title: "04 — The timer schema and claim SQL"
-description: "The keiro_timers table, the claim CTE with FOR UPDATE SKIP LOCKED, the re-arm ON CONFLICT guard, markTimerFired, the row decoder, and the honest no-cancellation / no-backoff gaps."
+description: "The keiro_timers table, the claim CTE with FOR UPDATE SKIP LOCKED, the re-arm ON CONFLICT guard, markTimerFired, the row decoder, the requeue/cancel/dead-letter recovery statements, and the remaining no-backoff gap."
 ---
 
 <Callout type="info">
@@ -8,15 +8,17 @@ description: "The keiro_timers table, the claim CTE with FOR UPDATE SKIP LOCKED,
   Read [the previous chapter](/docs/keiro/walkthrough/workflow/03-the-types-and-config) first.
 </Callout>
 
-This chapter walks the **storage layer** for durable timers: the `keiro_timers` table and the
-three SQL statements in `keiro/src/Keiro/Timer/Schema.hs` that operate on it — schedule, claim,
-and mark-fired — plus the row decoder. The worker that *drives* this storage is
+This chapter walks the **storage layer** for durable timers: the `keiro_timers` table and the SQL
+statements in `keiro/src/Keiro/Timer/Schema.hs` that operate on it — schedule, claim, mark-fired,
+the read-only counts, and the recovery statements (requeue/cancel/dead-letter/find-stuck) — plus the
+row decoder. The worker that *drives* this storage is
 [chapter 05](/docs/keiro/walkthrough/workflow/05-the-timer-worker). The dry reference is
 [reference / timers](/docs/keiro/reference/timers).
 
 ## The `keiro_timers` table
 
-The table is created by the bootstrap migration:
+The table is created by the bootstrap migration; the **timer-recovery** migration later adds
+`last_error` and narrows the index:
 
 ```sql
 -- keiro-migrations/sql-migrations/2026-05-17-00-00-00-keiro-bootstrap.sql
@@ -33,8 +35,14 @@ CREATE TABLE IF NOT EXISTS keiro_timers (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- keiro-migrations/sql-migrations/2026-05-17-03-00-00-keiro-timer-recovery.sql
+ALTER TABLE keiro_timers
+  ADD COLUMN IF NOT EXISTS last_error TEXT;
+
+DROP INDEX IF EXISTS keiro_timers_due_idx;
 CREATE INDEX IF NOT EXISTS keiro_timers_due_idx
-  ON keiro_timers (status, fire_at, process_manager_name);
+  ON keiro_timers (status, fire_at, process_manager_name)
+  WHERE status IN ('scheduled', 'firing');
 ```
 
 Column by column:
@@ -47,16 +55,20 @@ Column by column:
 - **`payload JSONB NOT NULL`** — opaque JSON carried to the `fire` action; keiro never inspects
   it.
 - **`status TEXT NOT NULL DEFAULT 'scheduled'`** — the lifecycle string (`scheduled`, `firing`,
-  `fired`, `cancelled`); a new row starts `scheduled`.
-- **`attempts BIGINT NOT NULL DEFAULT 0`** — incremented on every claim. Recorded, but nothing
-  acts on it (see the gaps below).
+  `fired`, `cancelled`, `dead`); a new row starts `scheduled`.
+- **`attempts BIGINT NOT NULL DEFAULT 0`** — incremented on every claim. The worker's optional
+  `maxAttempts` ceiling acts on it (chapter 05); the recovery filters can select on it too.
 - **`fired_event_id UUID`** — nullable; set when the timer fires.
+- **`last_error TEXT`** — nullable; set by `deadLetterTimer` to the reason a timer was abandoned.
+  Populated only for `dead` rows. Added by the timer-recovery migration.
 - **`created_at`, `updated_at`** — bookkeeping; `updated_at` is bumped to `now()` by every
   mutation.
 
-The **`keiro_timers_due_idx (status, fire_at, process_manager_name)`** index is leading-keyed for
-exactly the claim query's predicate (`status = 'scheduled' AND fire_at <= …`), so finding the next
-due timer is an index range scan, not a sequential scan.
+The **`keiro_timers_due_idx`** index is leading-keyed for the claim query's predicate
+(`status = 'scheduled' AND fire_at <= …`), so finding the next due timer is an index range scan, not
+a sequential scan. The timer-recovery migration makes it a **partial** index on
+`status IN ('scheduled', 'firing')`, so it now serves the recovery queries (which scan `firing`
+rows) as well — and stays small by excluding terminal `fired`/`cancelled`/`dead` rows.
 
 ## `scheduleTimerStmt` — the idempotent re-arm
 
@@ -186,40 +198,78 @@ statusFromText = \case
   "firing"    -> Firing
   "fired"     -> Fired
   "cancelled" -> Cancelled
+  "dead"      -> Dead
   _           -> Cancelled
 ```
 
-Four known strings map to their constructor; **any unrecognized string falls back to
+Five known strings map to their constructor; **any unrecognized string falls back to
 `Cancelled`**. So `Cancelled` carries two meanings: "deliberately withdrawn" and "I could not
 recognize this stored status." This defensive default never spontaneously revives a timer — a
 `Cancelled` row is not `scheduled`, so the claim query ignores it.
 
-## Honest gaps
+## Recovery statements
 
-This storage layer is deliberately minimal. Three things you might expect are **not** here.
+A timer left `firing` is **not** selected by the claim query (which requires `status =
+'scheduled'`), so a crash or a `fire` that returned `Nothing` strands the row until a recovery path
+acts on it. These statements are that path; the [reference](/docs/keiro/reference/timers#recovery-operations)
+lists their Haskell wrappers and the [durable-timers explanation](/docs/keiro/explanation/durable-timers)
+gives the runbook.
+
+**`findStuckTimersStmt` / `countStuckTimersStmt`** — select (or count) `firing` rows, optionally
+filtered by how long they have been firing (`updated_at <= now − minAge`) and how many times they
+have been claimed (`attempts >= minAttempts`), oldest-first:
+
+```sql
+-- keiro/src/Keiro/Timer/Schema.hs
+SELECT timer_id, process_manager_name, correlation_id, fire_at,
+  payload, status, attempts, fired_event_id
+FROM keiro_timers
+WHERE status = 'firing'
+  AND ($1::timestamptz IS NULL OR updated_at <= $1)
+  AND ($2::bigint IS NULL OR attempts >= $2)
+ORDER BY updated_at, timer_id
+```
+
+**`requeueStuckTimerStmt`** — put a stranded row back to `scheduled` so the ordinary claim loop
+re-fires it. Only `firing` rows match, so it is idempotent; `fire_at` is untouched, so a due timer is
+immediately re-claimable:
+
+```sql
+UPDATE keiro_timers
+SET status = 'scheduled', updated_at = now()
+WHERE timer_id = $1 AND status = 'firing'
+```
+
+**`cancelTimerStmt`** — withdraw a timer to the terminal `cancelled` state. Terminal rows
+(`fired`/`cancelled`/`dead`) are excluded, so it never resurrects or re-terminates a settled timer:
+
+```sql
+UPDATE keiro_timers
+SET status = 'cancelled', updated_at = now()
+WHERE timer_id = $1 AND status IN ('scheduled', 'firing')
+```
+
+**`deadLetterTimerStmt`** — abandon a timer to the terminal `dead` state, recording `reason` in
+`last_error`. This is what the worker's `maxAttempts` ceiling calls (chapter 05) and what an operator
+calls on a poison timer:
+
+```sql
+UPDATE keiro_timers
+SET status = 'dead', last_error = $2, updated_at = now()
+WHERE timer_id = $1 AND status IN ('scheduled', 'firing')
+```
+
+Each `UPDATE` returns `rowsAffected > 0` as a `Bool`, so the wrapper reports whether a row actually
+changed.
+
+## The remaining gap: no backoff
 
 <Callout type="warn">
-  **No cancellation SQL ships.** There is no `cancelTimer` function and no statement that sets
-  `status = 'cancelled'`. The `Cancelled` constructor exists only as a `TimerStatus` value and as
-  the decode fallback above. A `cancelled` row can therefore arise only from a corrupt/unknown
-  stored status or a future migration — not from any shipped keiro call.
-</Callout>
-
-<Callout type="warn">
-  **No backoff.** There is no `next_attempt_at` column and no delay schedule. `attempts` is
-  incremented on each claim but nothing throttles a retry: a row left `firing` (by a crash, or by
-  a `fire` that returned `Nothing` —
-  [chapter 05](/docs/keiro/walkthrough/workflow/05-the-timer-worker)) is **immediately
-  re-claimable** on the next pass once it is `scheduled` again. Note: a `firing` row is *not*
-  selected by the claim query (which requires `status = 'scheduled'`); re-claim depends on a
-  recovery path putting it back to `scheduled`. As shipped, there is no backoff timing either way.
-</Callout>
-
-<Callout type="warn">
-  **No dead-letter, no max-attempts.** Nothing acts on `attempts`. A poison timer — one whose
-  `fire` always fails — is retried indefinitely (the timer-side analog of the `PMCommandFailed`
-  hazard from [chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model)). The
-  operator must watch the `attempts` column; keiro 0.1.0.0 will not give up on its own.
+  **No backoff.** There is still no `next_attempt_at` column and no delay schedule. Once a stranded
+  row is requeued to `scheduled`, it is **immediately** re-claimable on the next pass — re-claim
+  timing is whatever cadence the caller's loop runs at. The `maxAttempts` ceiling (chapter 05) bounds
+  *how many times* a poison timer is retried before it is dead-lettered, but it does not space the
+  retries out.
 </Callout>
 
 ## Next

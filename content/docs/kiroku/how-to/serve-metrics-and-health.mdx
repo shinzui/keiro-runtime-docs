@@ -1,0 +1,94 @@
+---
+title: "Serve metrics and health"
+description: "Wire the kiroku-metrics collector into a store's callbacks and run the HTTP/Prometheus/health/WebSocket server, using the deferred-store pattern."
+---
+
+You want a running Kiroku worker to expose operational metrics (JSON + Prometheus), Kubernetes-style
+liveness/readiness probes, a live subscription-status endpoint, and an optional WebSocket tail of
+metrics and events. `kiroku-metrics` does this without touching the core store: a collector plugs
+into the store's public callback seams, and a server reads snapshots from it.
+
+<Callout type="info">
+  Assumes a working store (see [Run against Postgres](/docs/kiroku/how-to/run-against-postgres)). The
+  full surface is the [metrics reference](/docs/kiroku/reference/metrics). The runnable, self-checking
+  version of this guide is `kiroku-metrics`'s `example/Main.hs` (`cabal run kiroku-metrics-example`).
+</Callout>
+
+## Goal
+
+Build a `KirokuMetrics` collector, attach it to the store **before** the store opens, and run
+`withMetricsServerWithStore` so `/metrics`, `/metrics/prometheus`, `/health/*`, `/subscriptions`, and
+`/ws/*` reflect live activity.
+
+## Steps
+
+1. **Build the collector with the deferred-store pattern.** The collector's callbacks must be on
+   `ConnectionSettings` *before* `withStore`, but a snapshot reads store-level gauges from the live
+   handle. Resolve the chicken-and-egg with a `TVar` that holds the store once it is open, and build
+   the collector from `STM` readers over it:
+
+   ```haskell
+   storeVar <- newTVarIO Nothing
+   metrics  <- newKirokuMetricsWith (readPosition storeVar) (readSubscribers storeVar)
+
+   let settings =
+         defaultConnectionSettings connStr
+           & #eventHandler       .~ Just (metricsEventHandler       metrics Nothing)
+           & #observationHandler .~ Just (metricsObservationHandler metrics Nothing)
+   ```
+
+   The `Nothing` passthroughs mean the collector is the only handler; pass `Just yourHandler` to
+   compose with one you already have. (If the store already exists, `newKirokuMetrics store` skips the
+   `TVar` dance.)
+
+2. **Open the store, publish it into the `TVar`, and start the server.** `withMetricsServerWithStore`
+   wires the real event-streaming WebSocket and serves `/subscriptions` from the live registry. Add
+   `postgresPing store` so readiness fails when the database is unreachable:
+
+   ```haskell
+   withStore settings $ \store -> do
+     atomically (writeTVar storeVar (Just store))
+     withMetricsServerWithStore (defaultConfig { port = 9091 }) metrics store [postgresPing store] $ \srv -> do
+       -- your subscriptions and appends run here; the endpoints reflect them live
+       runWorker store
+   ```
+
+   Use `port = 0` to bind an OS-assigned free port and read it back from `srv.serverPort` (handy in
+   tests).
+
+3. **Query the endpoints.** Once events flow:
+
+   ```text
+   GET /metrics              -> the full MetricsSnapshot as JSON
+   GET /metrics/prometheus   -> Prometheus text exposition (kiroku_events_appended_total, …)
+   GET /health/live          -> 200 while a snapshot is takeable within livenessTimeoutUs
+   GET /health/ready         -> 200 only if no overflow-stop, lag <= readinessMaxLag, deps healthy
+   GET /subscriptions        -> [{subscription, member, phase, global_position}, …]
+   ```
+
+4. **Tune readiness and the WebSocket (optional).** Raise `readinessMaxLag` for a deliberately
+   lagging projection, narrow `wsPushIntervalUs` for a faster live push, or set
+   `enableWebSocket = False` to serve HTTP only. See the
+   [config record](/docs/kiroku/reference/metrics#config).
+
+## Verify it worked
+
+`curl http://127.0.0.1:9091/metrics` returns a snapshot whose `store.global_position` matches the
+number of events you have appended, and `curl .../metrics/prometheus` contains
+`kiroku_events_appended_total`. Hit `/health/ready` — it is 200 when the store is reachable and no
+subscription is lagging or overflow-stopped. To watch the live event tail, open a WebSocket to
+`/ws/events`, send `{"type":"subscribe_events"}`, and observe one JSON message per appended event.
+
+<Callout type="warn">
+  The server ships **no auth or TLS**. Bind it to an internal interface or place it behind an ingress
+  / sidecar that terminates TLS and authentication before exposing it.
+</Callout>
+
+## Related
+
+- [Metrics reference](/docs/kiroku/reference/metrics) — the collector API, snapshot types, endpoint
+  table, Prometheus names, WebSocket protocol, and config.
+- [Inspect subscriptions with the CLI](/docs/kiroku/how-to/inspect-subscriptions-with-the-cli) — the
+  `kiroku subscriptions status` command that consumes `/subscriptions`.
+- [Enable OpenTelemetry](/docs/kiroku/how-to/enable-opentelemetry) — distributed-tracing spans, the
+  complementary observability surface.

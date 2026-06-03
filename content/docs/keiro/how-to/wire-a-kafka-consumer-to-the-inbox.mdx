@@ -44,7 +44,9 @@ durably recorded (or provably a duplicate).
      case integrationEventFromKafka record of
        Left _decodeErr -> pure DeadLetter                   -- poison: missing/invalid headers
        Right (event, kafka) -> do
-         result <- runInboxTransaction PreferIntegrationMessageId event (Just kafka) handler
+         result <- runInboxTransaction Nothing PreferIntegrationMessageId event (Just kafka) handler
+         -- the leading `Nothing` is the opt-in metrics handle; pass `Just metrics` to
+         -- record the keiro.inbox.* instruments (see Enable OpenTelemetry).
          pure $ case result of
            Right (InboxProcessed _)        -> AckCommit
            Right InboxDuplicate            -> AckCommit      -- safe: the handler already ran once

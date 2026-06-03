@@ -56,31 +56,43 @@ policy](/docs/keiro/how-to/choose-an-inbox-dedupe-policy).
 
 ```haskell
 -- keiro/src/Keiro/Inbox.hs
-runInboxTransaction policy event kafka handler =
+runInboxTransaction mMetrics policy event kafka handler =
   case dedupeKeyFor policy event kafka of
     Left err -> pure (Left err)
     Right dedupe ->
-      Right <$> runInboxTransactionWithKey (event ^. #source) dedupe event kafka handler
+      Right <$> runInboxTransactionWithKey mMetrics (event ^. #source) dedupe event kafka handler
 
-runInboxTransactionWithKey src dedupe event kafka handler = do
+runInboxTransactionWithKey mMetrics src dedupe event kafka handler = do
   now <- liftIO getCurrentTime
-  runTransaction $ do
+  result <- runTransaction $ do
     inserted <- tryInsertProcessingTx src dedupe event kafka now
     case inserted of
       Right () -> do
-        result <- handler event
+        handled <- handler event
         markCompletedTx src dedupe now
-        pure (InboxProcessed result)
+        pure (InboxProcessed handled)
       Left row -> case row ^. #status of
         InboxCompleted -> pure InboxDuplicate
         InboxProcessing -> pure InboxInProgress
         InboxFailed -> pure (InboxPreviouslyFailed (row ^. #lastError))
+  -- Record the classification counter and the backlog gauge outside the
+  -- handler transaction (each a no-op under a 'Nothing' handle).
+  case result of
+    InboxProcessed _ -> recordInboxProcessed mMetrics 1
+    InboxDuplicate -> recordInboxDuplicates mMetrics 1
+    InboxPreviouslyFailed _ -> recordInboxFailed mMetrics 1
+    InboxInProgress -> pure ()
+  backlog <- countInboxBacklog
+  recordInboxBacklog mMetrics (fromIntegral backlog)
+  pure result
 ```
 
 `runInboxTransaction` resolves the dedupe key, then delegates to `runInboxTransactionWithKey` — the
 lower-level variant you call directly when the policy cannot express your key (e.g. a key joined
-from several headers or derived from the payload). The whole body runs inside one `runTransaction`,
-and that single transaction *is* the idempotency contract:
+from several headers or derived from the payload). The leading `mMetrics :: Maybe KeiroMetrics` is the
+opt-in [metrics](/docs/keiro/reference/telemetry#metrics-surface) handle, threaded through both
+entry points. The handler still runs inside one `runTransaction`, and that single transaction *is*
+the idempotency contract:
 
 - `tryInsertProcessingTx` returns `Right ()` for a **new** row → run `handler event`, then
   `markCompletedTx`, and return `InboxProcessed`. The insert, the handler's writes, and the
@@ -92,6 +104,12 @@ and that single transaction *is* the idempotency contract:
 
 The four cases above are the `InboxResult` constructors — `InboxProcessed`, `InboxDuplicate`,
 `InboxInProgress`, `InboxPreviouslyFailed` — the caller pattern-matches on to decide what to ack.
+
+**The metrics tail.** After the transaction commits, the result is classified into one of the
+`keiro.inbox.*` counters (`processed` / `duplicates` / `failed`; `InboxInProgress` records nothing),
+and `countInboxBacklog` feeds the `keiro.inbox.backlog` gauge. Recording happens **outside** the
+handler transaction so a metrics call can never affect what commits, and every `record*` is a no-op
+under a `Nothing` handle.
 
 <Callout type="warn">
 If the handler throws or condemns the transaction, the whole `runTransaction` rolls back — **the

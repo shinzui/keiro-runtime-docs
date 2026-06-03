@@ -1,10 +1,10 @@
 ---
 title: "03 — The migration runner"
-description: "Reading Keiro.Migrations: embedDir at compile time, parseAddedSqlMigration, the kiroku-then-keiro order, the four runners over codd's idempotent ledger, the keiro-migrate CLI, and the three SQL files that create the five tables."
+description: "Reading Keiro.Migrations: embedDir at compile time, parseAddedSqlMigration, the kiroku-then-keiro order, the four runners over codd's idempotent ledger, the keiro-migrate CLI, and the four SQL files that create (and alter) the five tables."
 ---
 
 This chapter reads `keiro-migrations/src/Keiro/Migrations.hs` (the runner),
-`keiro-migrations/app/Main.hs` (the `keiro-migrate` CLI), and the three embedded SQL files. It is
+`keiro-migrations/app/Main.hs` (the `keiro-migrate` CLI), and the four embedded SQL files. It is
 self-contained: keiro bakes its schema into the binary and applies it through
 [`codd`](https://github.com/mzabani/codd), a Haskell migration tool that keeps a **ledger** of
 applied migrations so re-running is idempotent.
@@ -144,25 +144,30 @@ otherwise it runs the verifying path with `LaxCheck`. Both apply the **full** ki
 5-second connect timeout (`secondsToDiffTime 5`). For the invocation, read [Run the
 migrations](/docs/keiro/how-to/run-migrations).
 
-## The three files, the five tables
+## The four files, the five tables
 
-The embedded files apply in filename-timestamp order; each creates tables in the `kiroku` schema:
+The embedded files apply in filename-timestamp order; each creates (or alters) tables in the `kiroku`
+schema:
 
 ```text
-2026-05-17-00-00-00-keiro-bootstrap.sql  -> keiro_snapshots, keiro_read_models, keiro_timers
-2026-05-17-01-00-00-keiro-outbox.sql     -> keiro_outbox
-2026-05-17-02-00-00-keiro-inbox.sql      -> keiro_inbox
+2026-05-17-00-00-00-keiro-bootstrap.sql       -> keiro_snapshots, keiro_read_models, keiro_timers
+2026-05-17-01-00-00-keiro-outbox.sql          -> keiro_outbox
+2026-05-17-02-00-00-keiro-inbox.sql           -> keiro_inbox
+2026-05-17-03-00-00-keiro-timer-recovery.sql  -> ALTER keiro_timers (add last_error; re-index)
 ```
 
-Each table's purpose, with a cross-link to the subsystem that owns it:
+Because `embedDir` embeds **every** `.sql` under `sql-migrations/`, adding the fourth file was all it
+took to ship the timer-recovery schema — the runner picks it up with no code change. Each table's
+purpose, with a cross-link to the subsystem that owns it:
 
 - **`keiro_snapshots`** — the latest persisted state per stream, keyed by `stream_id`, with a
   compatibility index (`keiro_snapshots_compat_idx`) on the codec version and shape hash. See
   [Snapshot](/docs/keiro/reference/snapshot).
 - **`keiro_read_models`** — the registry of read-model build status (version, shape hash,
   `last_built_at`). See [Read model](/docs/keiro/reference/read-model).
-- **`keiro_timers`** — scheduled process-manager timers, with a due index
-  (`keiro_timers_due_idx`) on `(status, fire_at, process_manager_name)`. See
+- **`keiro_timers`** — scheduled process-manager timers, with a partial due/recovery index
+  (`keiro_timers_due_idx`) on `(status, fire_at, process_manager_name)` over active rows, plus a
+  `last_error` column for dead-lettered timers (timer-recovery migration). See
   [Timers](/docs/keiro/reference/timers).
 - **`keiro_outbox`** — the transactional outbox of pending integration events, with a pending index
   and a per-key head-of-line index. See [Outbox](/docs/keiro/reference/outbox).

@@ -1,10 +1,12 @@
 ---
 title: "Telemetry"
-description: "Reference for Keiro.Telemetry: the three span helpers, the W3C TraceContext bridge, and the attribute keys keiro sets."
+description: "Reference for Keiro.Telemetry: the three span helpers, the W3C TraceContext bridge, the attribute keys keiro sets, and the opt-in worker metrics surface."
 ---
 
 The types and functions on this page live in `Keiro.Telemetry`. This is the **single** module where
-keiro touches `hs-opentelemetry-api` and `hs-opentelemetry-semantic-conventions`. Tracing is opt-in
+keiro touches `hs-opentelemetry-api` and `hs-opentelemetry-semantic-conventions`. It carries two
+independent, opt-in surfaces: **tracing** (the span helpers below) and **metrics** (the
+[`KeiroMetrics`](#metrics-surface) instrument set). Tracing is opt-in
 through `Maybe Tracer`: with `Nothing` every
 helper is a pass-through that runs the body and emits **zero** spans; with `Just tracer` it opens a
 span. The application makes the `Tracer` (typically `hs-opentelemetry-sdk`'s `makeTracer`) and
@@ -132,12 +134,94 @@ keiro_events_appended              -- "keiro.events.appended"
 ```
 
 <Callout type="warn">
-**Instrumentation coverage is partial.** Today three sites emit spans:
-**outbox publish**, **inbox consume**, and **command run**. Hydration, snapshot reads, projection
-writes, and the timer worker are **not yet instrumented** — those spans are deferred (tracked in the
-keiro repo's `docs/research/opentelemetry-semconv-audit.md`). Enabling a tracer does not give you
-full coverage of the framework's internals today.
+**Span coverage is partial; metric coverage is broad.** Three sites emit **spans** today:
+**outbox publish**, **inbox consume**, and **command run**. Hydration and snapshot reads are still
+**not traced**. The four background workers — outbox, inbox, timer, and projection — instead carry
+the **metric** instruments documented in [Metrics surface](#metrics-surface) below, so their backlog,
+lag, and outcome counts are observable even though they emit no spans. Both surfaces are tracked in
+the keiro repo's `docs/research/opentelemetry-semconv-audit.md`.
 </Callout>
+
+## Metrics surface
+
+Alongside the span helpers, `Keiro.Telemetry` exposes an OpenTelemetry **metrics** instrument set for
+the four background workers. Like tracing, it is opt-in: workers accept a `Maybe KeiroMetrics`, and
+every `record*` helper is a no-op under `Nothing`, so an application that has not wired a `Meter` is
+unaffected.
+
+### `Meter` and the instrumentation library
+
+`Meter` is re-exported from `hs-opentelemetry-api`. The application builds it once from its
+`MeterProvider` against keiro's instrumentation library:
+
+```haskell
+keiroInstrumentationLibrary :: InstrumentationLibrary
+keiroInstrumentationLibrary =
+  InstrumentationLibrary { libraryName = "keiro", libraryVersion = "", ... }
+```
+
+Typically `meter <- getMeter mp keiroInstrumentationLibrary` after constructing the SDK
+`MeterProvider`.
+
+### `KeiroMetrics`
+
+The full instrument set. Build it once at startup with `newKeiroMetrics` and thread the
+`Just metrics` value into each worker; share **one** value across all workers.
+
+```haskell
+data KeiroMetrics = KeiroMetrics
+  { outboxBacklog          :: Gauge Int64
+  , outboxPublished        :: Counter Int64
+  , outboxRetried          :: Counter Int64
+  , outboxDeadlettered     :: Counter Int64
+  , inboxProcessed         :: Counter Int64
+  , inboxDuplicates        :: Counter Int64
+  , inboxFailed            :: Counter Int64
+  , inboxBacklog           :: Gauge Int64
+  , timerBacklog           :: Gauge Int64
+  , timerFireLag           :: Histogram
+  , timerAttempts          :: Histogram
+  , timerStuck             :: Gauge Int64
+  , projectionLag          :: Gauge Int64
+  , projectionWaitTimeouts :: Counter Int64
+  }
+
+newKeiroMetrics :: (MonadIO m) => Meter -> m KeiroMetrics
+```
+
+`newKeiroMetrics` creates every instrument from the `Meter`. Under a no-op meter the instruments are
+themselves no-ops, so it is safe to call unconditionally.
+
+### Metric catalogue
+
+These are the wire names keiro registers. The `record*` helpers (and the `*Name` `Text` bindings for
+each wire name) are exported from `Keiro.Telemetry`; gauges and counters take `Int64`, histograms
+take `Double`. All instruments are recorded with empty attributes (no per-call labels).
+
+| Wire name | Kind | Unit | Record helper | Emitted by |
+|---|---|---|---|---|
+| `keiro.outbox.backlog` | Gauge | `{event}` | `recordOutboxBacklog` | Outbox publisher, once per pass — rows in `pending`/`failed` awaiting publish. |
+| `keiro.outbox.published` | Counter | `{event}` | `recordOutboxPublished` | Outbox publisher, per-pass summary — rows successfully published. |
+| `keiro.outbox.retried` | Counter | `{event}` | `recordOutboxRetried` | Outbox publisher — publish attempts that failed and will retry. |
+| `keiro.outbox.deadlettered` | Counter | `{event}` | `recordOutboxDeadlettered` | Outbox publisher — rows parked in `dead` after exhausting retries. |
+| `keiro.inbox.processed` | Counter | `{message}` | `recordInboxProcessed` | Inbox transaction — messages processed to completion. |
+| `keiro.inbox.duplicates` | Counter | `{message}` | `recordInboxDuplicates` | Inbox transaction — deliveries skipped as duplicates by `(source, dedupe_key)`. |
+| `keiro.inbox.failed` | Counter | `{message}` | `recordInboxFailed` | Inbox transaction — messages whose handler raised. |
+| `keiro.inbox.backlog` | Gauge | `{message}` | `recordInboxBacklog` | Inbox transaction — rows in `processing`/`failed` (non-terminal). |
+| `keiro.timer.backlog` | Gauge | `{timer}` | `recordTimerBacklog` | Timer worker, once per pass — `scheduled` timers already due. |
+| `keiro.timer.fire.lag` | Histogram | `ms` | `recordTimerFireLag` | Timer worker, per claimed timer — milliseconds between `fire_at` and the actual fire. |
+| `keiro.timer.attempts` | Histogram | `{attempt}` | `recordTimerAttempts` | Timer worker, per claimed timer — the post-claim attempt count. |
+| `keiro.timer.stuck` | Gauge | `{timer}` | `recordTimerStuck` | Timer worker, once per pass — timers stranded in `firing`. |
+| `keiro.projection.lag` | Gauge | `{event}` | `recordProjectionLag` | `recordProjectionLag` (application-driven) — events between the log head and a projection's checkpoint. |
+| `keiro.projection.wait.timeouts` | Counter | `{timeout}` | `recordProjectionWaitTimeouts` | Read-model `waitFor` — calls that timed out before the projection caught up. |
+
+The worker entry points thread the handle for you: the [timer worker](/docs/keiro/reference/timers#runtimerworker)
+records the backlog, stuck, fire-lag, and attempts instruments inside each pass; the
+[outbox](/docs/keiro/reference/outbox) and [inbox](/docs/keiro/reference/inbox) helpers record theirs
+per pass and per transaction; and the projection path exposes
+[`recordProjectionLag`](/docs/keiro/reference/projection#recordprojectionlag) for the application to
+call on its drain loop. See [Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) for the
+end-to-end wiring.
 
 <Cards>
   <Card title="Enable OpenTelemetry" href="/docs/keiro/how-to/enable-opentelemetry" />

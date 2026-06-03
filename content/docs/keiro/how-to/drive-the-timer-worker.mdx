@@ -30,11 +30,13 @@ back into the owning process manager, and let many workers share the table safel
 2. **Write the `fire` action that routes a timer back to its process manager.** A `TimerRow`
    carries `processManagerName`, `correlationId`, and `payload`; read them to decide what command to
    dispatch, then return `Just` the produced `EventId` so the timer is marked `Fired`. This is the
-   real jitsurei escalation worker:
+   real jitsurei escalation worker (the leading `Nothing` to `runTimerWorker` is the opt-in
+   [metrics](/docs/keiro/reference/telemetry#metrics-surface) handle — pass `Just metrics` to record
+   the `keiro.timer.*` instruments):
 
    ```haskell
    runEscalationTimerWorker options now =
-     runTimerWorker now $ \timer ->
+     runTimerWorker Nothing now $ \timer ->        -- leading `Nothing` is the opt-in metrics handle
        case incidentIdFromTimer timer of
          Nothing         -> pure Nothing            -- not ours: leave it for another worker
          Just incidentId -> do
@@ -71,6 +73,14 @@ back into the owning process manager, and let many workers share the table safel
 4. **Run as many workers as you like.** `claimDueTimer` uses `FOR UPDATE SKIP LOCKED`, so concurrent
    workers each claim a **distinct** timer and never collide. Scale throughput by running more loops
    — there is nothing to partition or coordinate.
+
+5. **Cap retries and recover stuck timers (optional).** A timer whose `fire` action keeps failing
+   stays `Firing` and is re-claimed forever. To bound that, drive the worker with
+   `runTimerWorkerWith metrics options now fire` and set `maxAttempts = Just n` — the `n`-th over-limit
+   claim moves the timer to the terminal `Dead` state instead of firing it. For timers already
+   stranded, run the [stuck-row recovery API](/docs/keiro/reference/timers#recovery-operations)
+   (`findStuckTimers` → `requeueStuckTimer` / `cancelTimer` / `deadLetterTimer`) as a periodic
+   operational job; see [Understanding durable timers](/docs/keiro/explanation/durable-timers).
 
 ## Verify it worked
 

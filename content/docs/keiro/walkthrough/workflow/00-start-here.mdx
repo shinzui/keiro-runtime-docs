@@ -56,19 +56,20 @@ flowchart TD
 
 ## Honest gaps, up front
 
-This tour documents keiro **as shipped at version 0.1.0.0**, including what is *not* there. So
-you are not surprised later:
+This tour documents keiro **as shipped on the 0.1.0.0 development line**, including what is *not*
+there. So you are not surprised later:
 
-- **No timer-cancellation SQL ships.** `Cancelled` exists only as a `TimerStatus` constructor
-  and as the decode fallback for an unrecognized stored status. There is no `cancelTimer`
-  function. See [chapter 04](/docs/keiro/walkthrough/workflow/04-the-timer-schema).
 - **No backoff.** There is no `next_attempt_at` column and no exponential schedule; `attempts`
-  is incremented but nothing delays a retry. A `Firing` row is immediately re-claimable.
-- **No dead-letter / max-attempts.** A poison timer (or a `PMCommandFailed` dispatch) is
-  retried indefinitely; the operator must watch `attempts`.
+  is incremented but nothing delays a retry. A requeued `Firing` row is immediately re-claimable.
 - **The timer worker is bare.** `runTimerWorker` has no loop, no clock, and no supervisor — the
-  caller passes `now` and drives the tick. See
+  caller passes `now` and drives the tick. It now also records the `keiro.timer.*` metrics each
+  pass and takes a leading `Maybe KeiroMetrics`. See
   [chapter 05](/docs/keiro/walkthrough/workflow/05-the-timer-worker).
+
+What **has** since landed (and the chapters cover): a stuck-row **recovery API** —
+`cancelTimer` / `requeueStuckTimer` / `deadLetterTimer` / `findStuckTimers` — and an optional
+`maxAttempts` ceiling that auto-dead-letters a poison timer to the terminal `Dead` state instead of
+retrying it forever. See [chapter 04](/docs/keiro/walkthrough/workflow/04-the-timer-schema).
 
 ## The chapters
 
@@ -76,7 +77,7 @@ you are not surprised later:
   <Card title="01 — The process manager: the dispatch loop" href="/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop" description="runProcessManagerOnce top to bottom: correlate/handle, deterministicCommandId, the eventAlreadyIn guard, dispatchCommand, retarget = coerce, and the worker's ack semantics." />
   <Card title="02 — The transaction model" href="/docs/keiro/walkthrough/workflow/02-the-transaction-model" description="The separate-transaction reality vs. the atomic myth: what is atomic, what is not, why deterministic ids make replay a no-op, and the PMCommandFailed hazard." />
   <Card title="03 — The ProcessManager types and config" href="/docs/keiro/walkthrough/workflow/03-the-types-and-config" description="Every field of every type — ProcessManager, the action, the results, and the timer types — tied to how the jitsurei managers wire them." />
-  <Card title="04 — The timer schema and claim SQL" href="/docs/keiro/walkthrough/workflow/04-the-timer-schema" description="The keiro_timers columns, the claim CTE with FOR UPDATE SKIP LOCKED, the re-arm ON CONFLICT guard, the decoder, and the honest gaps." />
+  <Card title="04 — The timer schema and claim SQL" href="/docs/keiro/walkthrough/workflow/04-the-timer-schema" description="The keiro_timers columns, the claim CTE with FOR UPDATE SKIP LOCKED, the re-arm ON CONFLICT guard, the decoder, the requeue/cancel/dead-letter recovery statements, and the no-backoff gap." />
   <Card title="05 — The timer worker" href="/docs/keiro/walkthrough/workflow/05-the-timer-worker" description="runTimerWorker line by line, at-least-once firing, and how fire rejoins the command cycle via jitsurei's escalation and payment-timeout workers." />
 </Cards>
 

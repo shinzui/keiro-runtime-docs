@@ -1,6 +1,6 @@
 ---
 title: "Keiro.Timer"
-description: "Reference for keiro's durable timers: the TimerId, TimerRequest, TimerRow, and TimerStatus types, the storage operations, the worker, and the keiro_timers table."
+description: "Reference for keiro's durable timers: the TimerId, TimerRequest, TimerRow, and TimerStatus types, the storage operations, the worker and its options, the stuck-row recovery API, and the keiro_timers table."
 ---
 
 The types and functions on this page live in `Keiro.Timer` (the wire types are defined in
@@ -46,7 +46,7 @@ data TimerRequest = TimerRequest
 A timer's lifecycle state.
 
 ```haskell
-data TimerStatus = Scheduled | Firing | Fired | Cancelled
+data TimerStatus = Scheduled | Firing | Fired | Cancelled | Dead
 ```
 
 <TypeTable
@@ -54,13 +54,15 @@ data TimerStatus = Scheduled | Firing | Fired | Cancelled
     Scheduled: { type: "—", description: "Waiting for its fireAt; claimable." },
     Firing: { type: "—", description: "Claimed by a worker and being processed (re-claimable if the worker crashes before completing)." },
     Fired: { type: "—", description: "Successfully fired; terminal." },
-    Cancelled: { type: "—", description: "Withdrawn before firing; ALSO the decode fallback for an unrecognized stored value." },
+    Cancelled: { type: "—", description: "Withdrawn before firing (via cancelTimer); terminal. ALSO the decode fallback for an unrecognized stored value." },
+    Dead: { type: "—", description: "Abandoned after exceeding the attempt ceiling (via deadLetterTimer or the maxAttempts auto-dead-letter); terminal; carries an explanatory last_error." },
   }}
 />
 
 <Callout type="info">
-`statusFromText` maps any **unknown** stored status string to `Cancelled`. There is no
-`cancelTimer` function in keiro 0.1.0.0 — no cancellation SQL ships.
+`statusFromText` maps any **unknown** stored status string to `Cancelled`. The stored strings are
+`scheduled | firing | fired | cancelled | dead`. Cancellation and dead-lettering ship as the
+[recovery operations](#recovery-operations) below.
 </Callout>
 
 ## `TimerRow`
@@ -125,25 +127,162 @@ Mark a claimed timer `Fired`, recording the id of the event its firing produced.
 markTimerFired :: (Store :> es) => TimerId -> EventId -> Eff es ()
 ```
 
+## `countDueTimers`
+
+Count timers that are `scheduled` and already due at `now` — the timer backlog. Read-only; mirrors
+`claimDueTimer`'s `WHERE` clause but counts rather than locking. The worker records this as the
+[`keiro.timer.backlog`](/docs/keiro/reference/telemetry#metric-catalogue) gauge.
+
+```haskell
+countDueTimers :: (Store :> es) => UTCTime -> Eff es Int
+```
+
 ## `runTimerWorker`
 
-Claim and fire at most one timer due at `now`. Atomically claims the earliest due timer (marking it
-`Firing`), runs `fire` on it, and — **if** `fire` returns the id of the event it produced — marks
-the timer `Fired`. Returns the claimed `TimerRow`, or `Nothing` when nothing is due.
+Claim and fire at most one timer due at `now`, with no attempt ceiling. Atomically claims the
+earliest due timer (marking it `Firing`), runs `fire` on it, and — **if** `fire` returns the id of
+the event it produced — marks the timer `Fired`. Returns the claimed `TimerRow`, or `Nothing` when
+nothing is due.
 
 ```haskell
 runTimerWorker ::
-  (Store :> es) => UTCTime -> (TimerRow -> Eff es (Maybe EventId)) -> Eff es (Maybe TimerRow)
+  (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics ->
+  UTCTime ->
+  (TimerRow -> Eff es (Maybe EventId)) ->
+  Eff es (Maybe TimerRow)
 ```
 
 A `fire` that returns `Nothing` (or a crash) leaves the timer `Firing`, to be retried on a later
 claim — this is what gives **at-least-once** firing. The caller drives this on a schedule (e.g. once
-per tick) and supplies `now`. See [Drive the timer
+per tick) and supplies `now`. The first argument is the opt-in
+[`KeiroMetrics`](/docs/keiro/reference/telemetry#metrics-surface) handle (`Nothing` disables all
+timer instruments); pass `Nothing` if you have not wired a `Meter`. See [Drive the timer
 worker](/docs/keiro/how-to/drive-the-timer-worker).
+
+<Callout type="info">
+`runTimerWorker` gained an `IOE` constraint and the leading `Maybe KeiroMetrics` argument when the
+metrics surface landed (it was `(Store :> es) => UTCTime -> …` in 0.1.0.0). Existing callers pass
+`Nothing` for the new argument.
+</Callout>
+
+## `TimerWorkerOptions`
+
+Options controlling `runTimerWorkerWith`.
+
+```haskell
+newtype TimerWorkerOptions = TimerWorkerOptions
+  { maxAttempts :: Maybe Int }
+
+defaultTimerWorkerOptions :: TimerWorkerOptions   -- TimerWorkerOptions { maxAttempts = Nothing }
+```
+
+<TypeTable
+  type={{
+    maxAttempts: { type: "Maybe Int", default: "Nothing", description: "When Just n, a claimed timer whose post-claim attempts exceeds n is moved to Dead (auto-dead-lettered) instead of fired, rather than ping-ponging forever on a timer that never completes. Nothing never auto-dead-letters." },
+  }}
+/>
+
+## `runTimerWorkerWith`
+
+Like `runTimerWorker` but applies the given `TimerWorkerOptions`. `runTimerWorker` is
+`runTimerWorkerWith defaultTimerWorkerOptions`.
+
+```haskell
+runTimerWorkerWith ::
+  (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics ->
+  TimerWorkerOptions ->
+  UTCTime ->
+  (TimerRow -> Eff es (Maybe EventId)) ->
+  Eff es (Maybe TimerRow)
+```
+
+`claimDueTimer` increments `attempts` *before* the ceiling check, so the comparison sees the
+post-claim count: with `maxAttempts = Just 0` the very first claim dead-letters; with `Just 2` the
+third claim does. A dead-lettered timer is moved to `Dead` with an explanatory `last_error` (e.g.
+`"timer exceeded attempt ceiling of 2"`) and the `fire` action is **not** run.
+
+## Recovery operations
+
+A timer left in `Firing` by a crash is normally re-claimed on the next due pass. When a timer cannot
+make progress — its `fire` action keeps failing, or the row is genuinely stranded — these operations
+let an operator inspect and resolve it. They live in `Keiro.Timer.Schema` (re-exported from
+`Keiro.Timer`). For the runbook, see [Understanding durable timers](/docs/keiro/explanation/durable-timers).
+
+### `StuckTimerFilter`
+
+Criteria selecting timers stranded in `Firing`. A row is "stuck" when its `status` is `firing` and it
+matches every set bound.
+
+```haskell
+data StuckTimerFilter = StuckTimerFilter
+  { minAge      :: !(Maybe NominalDiffTime)
+  , minAttempts :: !(Maybe Int)
+  }
+
+anyStuckTimer :: StuckTimerFilter   -- StuckTimerFilter Nothing Nothing
+```
+
+<TypeTable
+  type={{
+    minAge: { type: "Maybe NominalDiffTime", default: "Nothing", description: "Row qualifies when it has been firing at least this long — its updated_at is at or before now - minAge." },
+    minAttempts: { type: "Maybe Int", default: "Nothing", description: "Row qualifies when it has been claimed at least this many times." },
+  }}
+/>
+
+### `findStuckTimers`
+
+List timers stranded in `Firing` matching the filter, ordered oldest-first by `updated_at`.
+
+```haskell
+findStuckTimers :: (Store :> es) => UTCTime -> StuckTimerFilter -> Eff es [TimerRow]
+```
+
+### `countStuckTimers`
+
+Count timers stranded in `Firing` matching the filter. The worker records `countStuckTimers now
+anyStuckTimer` as the [`keiro.timer.stuck`](/docs/keiro/reference/telemetry#metric-catalogue) gauge.
+
+```haskell
+countStuckTimers :: (Store :> es) => UTCTime -> StuckTimerFilter -> Eff es Int
+```
+
+### `requeueStuckTimer`
+
+Move a timer from `Firing` back to `Scheduled` so the ordinary claim loop re-fires it. Leaves
+`fire_at` unchanged, so a due timer becomes immediately re-claimable. Idempotent (only `firing` rows
+match). Returns `True` when a row changed.
+
+```haskell
+requeueStuckTimer :: (Store :> es) => TimerId -> Eff es Bool
+```
+
+### `cancelTimer`
+
+Move a timer from `Scheduled` or `Firing` to the terminal `Cancelled` state so it never fires.
+Terminal rows (`fired`, `cancelled`, `dead`) are left untouched. Idempotent. Returns `True` when a
+row changed.
+
+```haskell
+cancelTimer :: (Store :> es) => TimerId -> Eff es Bool
+```
+
+### `deadLetterTimer`
+
+Move a timer from `Scheduled` or `Firing` to the terminal `Dead` state, recording `reason` in
+`last_error` so an operator can see why it was abandoned (`SELECT * FROM keiro_timers WHERE status =
+'dead'`). Terminal rows are left untouched. Idempotent. Returns `True` when a row changed.
+
+```haskell
+deadLetterTimer :: (Store :> es) => TimerId -> Text -> Eff es Bool
+```
 
 ## The `keiro_timers` table
 
-The bootstrap migration creates the table and its due-timer index:
+The bootstrap migration creates the table and its due-timer index; the
+`2026-05-17-03-00-00-keiro-timer-recovery` migration adds the `last_error` column and narrows the
+index to active rows:
 
 ```sql
 CREATE TABLE IF NOT EXISTS keiro_timers (
@@ -155,15 +294,21 @@ CREATE TABLE IF NOT EXISTS keiro_timers (
   status TEXT NOT NULL DEFAULT 'scheduled',
   attempts BIGINT NOT NULL DEFAULT 0,
   fired_event_id UUID,
+  last_error TEXT,                     -- added by the timer-recovery migration
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- timer-recovery migration: the index now also covers 'firing' rows (for the
+-- recovery queries) and is partial on active statuses.
 CREATE INDEX IF NOT EXISTS keiro_timers_due_idx
-  ON keiro_timers (status, fire_at, process_manager_name);
+  ON keiro_timers (status, fire_at, process_manager_name)
+  WHERE status IN ('scheduled', 'firing');
 ```
 
-The status column stores the lowercase strings `scheduled | firing | fired | cancelled`.
+The status column stores the lowercase strings `scheduled | firing | fired | cancelled | dead`.
+`last_error` is populated only for dead-lettered (`dead`) rows; it is not surfaced on the `TimerRow`
+record, so operators read it directly from the table.
 
 <Cards>
   <Card title="Keiro.ProcessManager reference" href="/docs/keiro/reference/process-manager" />

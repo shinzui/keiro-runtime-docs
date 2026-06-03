@@ -1,0 +1,100 @@
+---
+title: "Inspect subscriptions with the CLI"
+description: "Use kiroku-cli to list a worker's live subscriptions — embedded in a host CLI against the local store, or as the standalone remote client over HTTP."
+---
+
+You want to see which subscriptions a Kiroku worker is running, what phase each is in, and how far
+its cursor has advanced. `kiroku-cli` gives you that two ways: embedded in your service's own CLI
+(reading the live store), or as a standalone binary that queries a remote worker over HTTP.
+
+<Callout type="info">
+  The standalone path queries a worker's [`kiroku-metrics`](/docs/kiroku/how-to/serve-metrics-and-health)
+  `/subscriptions` endpoint, so that worker must be running the metrics server. The full surface is the
+  [operator CLI reference](/docs/kiroku/reference/operator-cli).
+</Callout>
+
+## Option A — embed it in your host CLI
+
+Mount the `kiroku` command group under your service's parser with `kirokuSubparser`, then dispatch to
+`runKirokuCommandWithStore` with the live store:
+
+```haskell
+data HostCommand = HostServe | HostKiroku KirokuCommand
+
+hostParser :: Parser HostCommand
+hostParser =
+  subparser
+    ( command "serve" (info (pure HostServe) (progDesc "Run the worker."))
+        <> kirokuSubparser HostKiroku
+    )
+
+run :: KirokuStore -> HostCommand -> IO ()
+run store = \case
+  HostServe          -> startWorker store
+  HostKiroku command -> runKirokuCommandWithStore store command
+```
+
+Now your binary answers:
+
+```bash
+host-cli kiroku subscriptions status
+host-cli kiroku subscriptions status --format json
+```
+
+This reads the in-process registry directly (`subscriptionStates`), so it needs no metrics server —
+just a live store in the same process.
+
+## Option B — the standalone remote client
+
+The `kiroku` executable opens no store; point it at a worker's metrics endpoint:
+
+```bash
+export KIROKU_REMOTE_URL='http://worker-host:9091'
+kiroku subscriptions status
+```
+
+or pass the URL explicitly:
+
+```bash
+kiroku subscriptions status --remote-url http://worker-host:9091 --format json
+```
+
+If you provide neither `--remote-url` nor `KIROKU_REMOTE_URL`, it exits non-zero with guidance — the
+standalone binary cannot see in-process subscriptions because it runs none.
+
+## Read the output
+
+Table output (the default) is aligned for humans:
+
+```text
+SUBSCRIPTION        MEMBER  PHASE  GLOBAL_POSITION
+billing-projection  1       live   1284
+invoice-projection  0       live   1284
+```
+
+`--format json` emits the array for scripts and pipelines:
+
+```json
+[ { "subscription": "invoice-projection", "member": 0, "phase": "live", "global_position": 1284 } ]
+```
+
+- **`member`** is the consumer-group member index (`0` for a non-group subscription).
+- **`phase`** is the FSM phase (`catching_up`, `live`, `paused`, `reconnecting`, `retrying`).
+- **`global_position`** is the FSM's current cursor, not the durable checkpoint.
+- A stopped, cancelled, or crashed subscription is **absent** — there is no "stopped" row.
+
+## Verify it worked
+
+Start a worker with a couple of subscriptions and (for option B) the metrics server. Running
+`kiroku subscriptions status` lists each live subscription with a `live` phase once it has caught up,
+and the `global_position` column tracks the store head as you append events. A connection failure to
+the remote endpoint prints a readable error and a non-zero exit, not a stack trace.
+
+## Related
+
+- [Operator CLI reference](/docs/kiroku/reference/operator-cli) — the command model, parser, flags,
+  and the shared `SubscriptionStatusRow` wire contract.
+- [Serve metrics and health](/docs/kiroku/how-to/serve-metrics-and-health) — stand up the
+  `/subscriptions` endpoint the standalone client queries.
+- [Subscriptions and consumer groups](/docs/kiroku/explanation/subscriptions-and-consumer-groups) —
+  what the phases and members mean.

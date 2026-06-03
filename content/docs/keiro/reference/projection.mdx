@@ -68,6 +68,21 @@ Apply one event to an `AsyncProjection`, yielding the `Tx` the (caller-supplied)
 applyAsyncProjection :: AsyncProjection -> RecordedEvent -> Tx.Transaction ()
 ```
 
+## `recordProjectionLag`
+
+Measure how far an `AsyncProjection` trails the log and record it on the opt-in
+[metrics](/docs/keiro/reference/telemetry#metrics-surface) handle. It reads the `$all` log head and
+the projection's checkpoint position (via
+[`readSubscriptionPosition`](/docs/keiro/reference/read-model#readsubscriptionposition)) and records
+the gap — `max 0 (head − checkpoint)` — as the
+[`keiro.projection.lag`](/docs/keiro/reference/telemetry#metric-catalogue) gauge. Since keiro ships no
+async-projection worker loop, **the application calls this** on its own drain loop (a no-op under a
+`Nothing` handle).
+
+```haskell
+recordProjectionLag :: (IOE :> es, Store :> es) => Maybe KeiroMetrics -> AsyncProjection -> Eff es ()
+```
+
 The worked example is `jitsurei` `orderSummaryInlineProjection` (`jitsurei/src/Jitsurei/ReadModels.hs`),
 which folds each `OrderEvent` into `jitsurei_order_summary`. See
 [Your first read model](/docs/keiro/tutorials/your-first-read-model).

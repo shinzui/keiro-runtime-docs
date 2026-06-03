@@ -11,10 +11,12 @@ shows how to wire it, and the [explanation](/docs/kiroku/explanation/tracing-sub
 covers why the span model looks the way it does.
 
 <Callout type="info">
-  Package `kiroku-otel` (v0.1.0.0), modules `Kiroku.Otel.TraceContext` and
+  Package `kiroku-otel` (v0.2.0.0), modules `Kiroku.Otel.TraceContext` and
   `Kiroku.Otel.Subscription`. Assumes you already have an OpenTelemetry `TracerProvider` and
   exporter configured in your app — this package wires kiroku into them, it does not set up
-  OpenTelemetry itself.
+  OpenTelemetry itself. As of 0.2.0.0 it targets **`hs-opentelemetry-api` 1.0** and links
+  **`hs-opentelemetry-semantic-conventions` 1.40**, so the messaging/db attributes below are the
+  spec-generated `AttributeKey`s rather than hand-typed strings.
 </Callout>
 
 ## `Kiroku.Otel.TraceContext`
@@ -123,7 +125,9 @@ path does not produce two spans per batch.
 ### Attribute keys
 
 Each is exported as a `Text` constant. `kiroku.subscription.name` is set on every span; group keys
-appear only for consumer-group members.
+appear only for consumer-group members. The `messaging.*` / `db.*` keys are the OpenTelemetry
+semantic conventions, added in 0.2.0.0 alongside the bespoke `kiroku.*` keys (they do not replace
+them — traces read consistently).
 
 | Constant               | Attribute key                       | On                                                   |
 | ---------------------- | ----------------------------------- | ---------------------------------------------------- |
@@ -138,6 +142,11 @@ appear only for consumer-group members.
 | `attrEventPos`         | `kiroku.event.global_position`      | retrying / immediate dead-letter spans               |
 | `attrDeadLetterReason` | `kiroku.dead_letter.reason`         | dead-letter spans/events                             |
 | `attrDbPhase`          | `kiroku.db.phase`                   | db-error spans/events                                |
+| `attrMessagingSystem`  | `messaging.system` (`"kiroku"`)     | deliver spans (semantic convention)                  |
+| `attrMessagingDestinationName` | `messaging.destination.name` (the subscription) | deliver spans (semantic convention)        |
+| `attrMessagingOperationType`   | `messaging.operation.type` (`"process"`)        | deliver spans (semantic convention)        |
+| `attrDbSystemName`     | `db.system.name` (`"postgresql"`)   | db-error spans (semantic convention)                 |
+| `attrDbOperationName`  | `db.operation.name` (the failing phase) | db-error spans (semantic convention)             |
 
 <Callout type="info">
   The `KirokuEvent` constructor set is **additive**: a future subscription event surfaces here as a

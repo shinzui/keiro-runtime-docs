@@ -1,12 +1,12 @@
 ---
 title: "Enable OpenTelemetry"
-description: "Configure a Tracer and thread it into keiro's command and outbox surfaces so the framework emits distributed-tracing spans."
+description: "Configure a Tracer and a KeiroMetrics meter and thread them into keiro's command, outbox, inbox, timer, and projection surfaces so the framework emits distributed-tracing spans and worker metrics."
 ---
 
-You want keiro to emit OpenTelemetry spans — a command run, an outbox publish, an inbox consume —
-and have them join up into one distributed trace across services. keiro never creates a tracer for
-you: tracing is **opt-in**, driven by a `Maybe Tracer` you thread in. This guide shows how to wire
-it.
+You want keiro to emit OpenTelemetry **spans** — a command run, an outbox publish, an inbox consume —
+joined into one distributed trace across services, and the **worker metrics** (outbox/inbox/timer/projection
+backlog, lag, and outcome counts). keiro never creates a tracer or meter for you: both are **opt-in**,
+driven by a `Maybe Tracer` and a `Maybe KeiroMetrics` you thread in. This guide shows how to wire them.
 
 <Callout type="info">
   Assumes you already have a working command path (see
@@ -69,18 +69,46 @@ Kafka hop so a consumer's span becomes a child of the producer's span.
    producer span — the two services share one trace id. No extra wiring is needed beyond passing the
    tracer; the keiro publisher and inbox consumer call the bridge for you.
 
+5. **Build a `KeiroMetrics` and thread it into the workers (optional).** Spans cover the request
+   paths; the four background workers carry **metrics** instead. Build a SDK `MeterProvider`, obtain a
+   `Meter` against keiro's instrumentation library, and construct the instrument set once at startup:
+
+   ```haskell
+   import Keiro.Telemetry (newKeiroMetrics, keiroInstrumentationLibrary)
+
+   meter   <- getMeter meterProvider keiroInstrumentationLibrary  -- hs-opentelemetry SDK
+   metrics <- newKeiroMetrics meter
+   ```
+
+   Then pass `Just metrics` where each worker takes its `Maybe KeiroMetrics` handle — share **one**
+   value across all of them:
+
+   ```haskell
+   publishClaimedOutbox publish publishOpts            (Just metrics)  -- keiro.outbox.*
+   runInboxTransaction   (Just metrics) policy ev kfk   handler         -- keiro.inbox.*
+   runTimerWorker        (Just metrics) now             fire            -- keiro.timer.*
+   recordProjectionLag   (Just metrics) asyncProjection                 -- keiro.projection.lag
+   runQueryWith          (Just metrics) mode rm q                       -- keiro.projection.wait.timeouts
+   ```
+
+   Every instrument is a no-op under `Nothing`, so wiring is incremental — a worker you have not yet
+   metered simply keeps passing `Nothing`. The full catalogue (wire names, kinds, units) is in the
+   [Telemetry reference](/docs/keiro/reference/telemetry#metric-catalogue).
+
 ## Verify it worked
 
 Point your collector (or a console exporter) at the service and run a command that publishes through
 the outbox to a topic a second service consumes. Confirm three linked spans appear under **one trace
 id**: an `Internal` command span, a `Producer` `send …` span, and — in the downstream service — a
 `Consumer` `process …` span whose parent is the producer span. With `tracer = Nothing` (the
-default), no spans are emitted at all.
+default), no spans are emitted at all. On the metrics side, confirm the `keiro.outbox.backlog` /
+`keiro.timer.backlog` gauges and the published/processed counters appear on your metrics exporter
+once you pass `Just metrics`.
 
 ## Related
 
 - [Telemetry reference](/docs/keiro/reference/telemetry) — the three span helpers, span names/kinds,
-  the attribute table, and which instrumentation sites are still deferred.
+  the attribute table, the `KeiroMetrics` surface, and the metric catalogue.
 - [`RunCommandOptions`](/docs/keiro/reference/command) and
   [`OutboxPublishOptions`](/docs/keiro/reference/outbox) — the records carrying the `tracer` field.
 - [Wire a Kafka consumer to the inbox](/docs/keiro/how-to/wire-a-kafka-consumer-to-the-inbox) — the

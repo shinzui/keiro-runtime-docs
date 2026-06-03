@@ -15,11 +15,23 @@ claim](/docs/keiro/walkthrough/integration/03-the-outbox-enqueue-and-claim) firs
 data PublishOutcome = PublishSucceeded | PublishFailed !Text
   deriving stock (Generic, Eq, Show)
 
-publishClaimedOutbox :: (IOE :> es, Store :> es) => (OutboxRow -> Eff es PublishOutcome) -> OutboxPublishOptions -> Eff es OutboxPublishSummary
-publishClaimedOutbox publish options = do
+publishClaimedOutbox ::
+  (IOE :> es, Store :> es) =>
+  (OutboxRow -> Eff es PublishOutcome) -> OutboxPublishOptions -> Maybe KeiroMetrics ->
+  Eff es OutboxPublishSummary
+publishClaimedOutbox publish options mMetrics = do
   now <- liftIO getCurrentTime
   rows <- claimOutboxBatch (options ^. #orderingPolicy) (options ^. #batchSize) now
-  drainBatch rows OutboxPublishSummary {claimed = 0, published = 0, retried = 0, dead = 0, haltedOn = Nothing}
+  -- Backlog gauge, recorded once per pass (no-op under a 'Nothing' handle).
+  backlog <- countOutboxBacklog
+  recordOutboxBacklog mMetrics (fromIntegral backlog)
+  summary <-
+    drainBatch rows OutboxPublishSummary {claimed = 0, published = 0, retried = 0, dead = 0, haltedOn = Nothing}
+  -- Counters from the aggregated pass summary.
+  recordOutboxPublished mMetrics (fromIntegral (summary ^. #published))
+  recordOutboxRetried mMetrics (fromIntegral (summary ^. #retried))
+  recordOutboxDeadlettered mMetrics (fromIntegral (summary ^. #dead))
+  pure summary
   where
     …
 ```
@@ -31,8 +43,13 @@ transport-neutral: it takes a caller-supplied `publish :: OutboxRow -> Eff es Pu
 broker library never appears in keiro itself.
 </Callout>
 
-It claims a batch under the active `OrderingPolicy`, seeds an empty `OutboxPublishSummary`, and hands
-the batch to the `drainBatch` worker loop.
+It claims a batch under the active `OrderingPolicy`, records the `keiro.outbox.backlog` gauge from
+`countOutboxBacklog`, seeds an empty `OutboxPublishSummary`, and hands the batch to the `drainBatch`
+worker loop. The trailing `mMetrics :: Maybe KeiroMetrics` is the opt-in
+[metrics](/docs/keiro/reference/telemetry#metrics-surface) handle; after the drain it records the
+`published` / `retried` / `dead` counts from the aggregated summary as the `keiro.outbox.published`,
+`keiro.outbox.retried`, and `keiro.outbox.deadlettered` counters. Every `record*` is a no-op under a
+`Nothing` handle.
 
 ## `drainBatch`: publish, then mark
 

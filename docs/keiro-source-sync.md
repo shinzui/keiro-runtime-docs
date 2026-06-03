@@ -18,19 +18,31 @@ the affected pages, then bump the pointer below.
 ## Last reviewed commit
 
 ```text
-94c85e2a3ccbdb1adb07fcb5a7ee57b964802a2f  (94c85e2)
-2026-06-01 13:20:34 -0700
+aeaafee8861840750475e7d48b2c5cb0ae71beab  (aeaafee)
+2026-06-03 07:52:54 -0700
 keiro 0.1.0.0 (development line; the in-tree version is still 0.1.0.0)
 ```
 
-> **Note.** Most pages describe keiro **as released at 0.1.0.0** and are unchanged since the original
-> `3f5dc9c` review. `reference/telemetry.mdx` tracks one **post-0.1.0.0** change on this line: the
-> OpenTelemetry 1.40 upgrade (semantic-convention `AttributeKey`s are now **imported/re-exported**
-> from `OpenTelemetry.SemanticConventions`, not vendored locally). Wire-level attribute names are
-> unchanged.
+> **Note.** Most pages describe keiro **as released at 0.1.0.0**. The `94c85e2..aeaafee` range
+> completes **Phase 2** of the keiro roadmap and is reflected across the reference, walkthrough, and
+> how-to trees: the opt-in **`KeiroMetrics`** instrument set in `reference/telemetry.mdx` (14 worker
+> instruments), the outbox/inbox/timer/projection workers now thread a leading/trailing
+> `Maybe KeiroMetrics`, the **timer stuck-row recovery API** (`findStuckTimers` / `requeueStuckTimer`
+> / `cancelTimer` / `deadLetterTimer`) with the new terminal `Dead` state, the `maxAttempts`
+> auto-dead-letter ceiling, the `last_error` column and the `2026-05-17-03-00-00-keiro-timer-recovery`
+> migration. Span coverage is unchanged (still outbox/inbox/command); the workers gained **metrics**,
+> not spans.
 
 ### Previous pointers (for traceability)
 
+- `94c85e2a3ccbdb1adb07fcb5a7ee57b964802a2f` (`94c85e2`, 2026-06-01, keiro 0.1.0.0) — the baseline
+  before Phase 2's observability/recovery work. The `94c85e2..aeaafee` range added the
+  `KeiroMetrics` metrics surface, instrumented the four background workers, shipped the timer
+  recovery API (`Dead` state, `maxAttempts`, `last_error`, timer-recovery migration), and added
+  `recordProjectionLag` / `countInboxBacklog` / `countOutboxBacklog` / `readSubscriptionPosition`.
+  Worker entry-point signatures changed (`runTimerWorker`, `runInboxTransaction(WithKey)`,
+  `publishClaimedOutbox`, `runQuery(With)` / `waitFor` all take the metrics handle); existing callers
+  pass `Nothing`.
 - `3f5dc9c1fa90f6358cebb9e85d92dde4c325db48` (`3f5dc9c`, 2026-05-31, keiro 0.1.0.0) — the baseline the
   keiro doc set was first authored against. The `3f5dc9c..94c85e2` range covered the OpenTelemetry
   1.40 / hs-opentelemetry 1.0 upgrade (folded into `reference/telemetry.mdx`) and the docs-driven

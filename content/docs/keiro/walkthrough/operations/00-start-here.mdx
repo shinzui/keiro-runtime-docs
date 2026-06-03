@@ -12,10 +12,10 @@ the chapters in order.
 
 ## The design in one picture
 
-Telemetry is **opt-in** through a `Maybe Tracer`: with `Nothing` every helper is a pass-through
-(zero spans, one `Maybe` branch of cost); with `Just tracer` it opens a span. Three sites open spans
-today. The migration runner embeds three SQL files at compile time and applies kiroku's then keiro's
-schema in one idempotent codd ledger.
+Telemetry is **opt-in** through a `Maybe Tracer` (spans) and a `Maybe KeiroMetrics` (worker metrics):
+with `Nothing` every helper is a pass-through; with the handle set it records. Three sites open spans
+today; the four background workers carry the metric instruments. The migration runner embeds four SQL
+files at compile time and applies kiroku's then keiro's schema in one idempotent codd ledger.
 
 ```mermaid
 flowchart TD
@@ -43,19 +43,20 @@ flowchart TD
 The source files this tour reads:
 
 ```text
-keiro/src/Keiro/Telemetry.hs              -- the three span helpers, the W3C bridge, the keys
+keiro/src/Keiro/Telemetry.hs              -- the three span helpers, the W3C bridge, the keys, the KeiroMetrics surface
 keiro/src/Keiro/Command.hs                -- withCommandSpan + recordCommandOutcome / commandErrorClass
-keiro/src/Keiro/Outbox.hs                 -- withProducerSpan call site (publish)
+keiro/src/Keiro/Outbox.hs                 -- withProducerSpan call site (publish); keiro.outbox.* metrics
 keiro-migrations/src/Keiro/Migrations.hs  -- the migration runner
 keiro-migrations/app/Main.hs              -- the keiro-migrate CLI
-keiro-migrations/sql-migrations/*.sql     -- the three embedded files (five tables)
+keiro-migrations/sql-migrations/*.sql     -- the four embedded files (five tables)
 ```
 
 <Callout type="warn">
-**Instrumentation coverage is partial.** Today three sites emit spans: **outbox publish**, **inbox
-consume**, and **command run**. Hydration, snapshot reads, projection writes, and the timer worker
-are **not yet instrumented** — those spans are deferred. Enabling a tracer does not give full
-coverage of the framework's internals today. (Same note as the
+**Span coverage is partial; metric coverage is broad.** Three sites emit **spans**: **outbox
+publish**, **inbox consume**, and **command run**. Hydration and snapshot reads are still not traced.
+The four background workers (outbox, inbox, timer, projection) instead carry the **metric** instruments
+in [`KeiroMetrics`](/docs/keiro/reference/telemetry#metrics-surface), so their backlog, lag, and
+outcome counts are observable without spans. (Same note as the
 [Telemetry reference](/docs/keiro/reference/telemetry).)
 </Callout>
 

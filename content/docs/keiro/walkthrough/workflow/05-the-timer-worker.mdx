@@ -13,46 +13,92 @@ The last chapter. [Chapter 04](/docs/keiro/walkthrough/workflow/04-the-timer-sch
 `keiro/src/Keiro/Timer.hs` — and show how its `fire` action rejoins the command cycle, using
 jitsurei's escalation and payment-timeout workers as the worked example.
 
-## `runTimerWorker` — the whole body
+## `runTimerWorkerWith` — the whole body
 
-The worker is nine lines:
+`runTimerWorker` is now a one-liner over `runTimerWorkerWith`, which carries the metrics recording
+and the optional attempt ceiling:
 
 ```haskell
 -- keiro/src/Keiro/Timer.hs
-runTimerWorker now fire = do
+runTimerWorkerWith metrics options now fire = do
+  backlog <- countDueTimers now
+  recordTimerBacklog metrics (fromIntegral backlog)
+  stuck <- countStuckTimers now anyStuckTimer
+  recordTimerStuck metrics (fromIntegral stuck)
   due <- claimDueTimer now
   case due of
     Nothing -> pure Nothing
     Just timer -> do
-      fired <- fire timer
-      for_ fired (markTimerFired (timer ^. #timerId))
-      pure (Just timer)
+      recordTimerFireLag metrics (realToFrac (now `diffUTCTime` (timer ^. #fireAt)) * 1000)
+      recordTimerAttempts metrics (fromIntegral (timer ^. #attempts))
+      case options ^. #maxAttempts of
+        Just attemptCeiling
+          | (timer ^. #attempts) > attemptCeiling -> do
+              _ <-
+                deadLetterTimer
+                  (timer ^. #timerId)
+                  ("timer exceeded attempt ceiling of " <> Text.pack (show attemptCeiling))
+              pure (Just timer)
+        _ -> do
+          fired <- fire timer
+          for_ fired (markTimerFired (timer ^. #timerId))
+          pure (Just timer)
+
+runTimerWorker metrics = runTimerWorkerWith metrics defaultTimerWorkerOptions
 ```
 
-Its signature:
+The signatures:
 
 ```haskell
 -- keiro/src/Keiro/Timer.hs
-runTimerWorker :: (Store :> es) => UTCTime -> (TimerRow -> Eff es (Maybe EventId)) -> Eff es (Maybe TimerRow)
+runTimerWorkerWith ::
+  (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics -> TimerWorkerOptions -> UTCTime ->
+  (TimerRow -> Eff es (Maybe EventId)) -> Eff es (Maybe TimerRow)
+
+runTimerWorker ::
+  (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics -> UTCTime ->
+  (TimerRow -> Eff es (Maybe EventId)) -> Eff es (Maybe TimerRow)
 ```
 
 Line by line:
 
-1. **`due <- claimDueTimer now`** — claim **at most one** due timer using the
+1. **The two gauges, once per pass.** Before claiming, the worker reads `countDueTimers` (the
+   backlog) and `countStuckTimers now anyStuckTimer` (rows stranded in `firing` by earlier passes)
+   and records each on the `Maybe KeiroMetrics` handle as `keiro.timer.backlog` and
+   `keiro.timer.stuck`. Under a `Nothing` handle every `record*` call is a no-op, so an unmetered
+   worker pays only for the two extra counts. (See the
+   [telemetry reference](/docs/keiro/reference/telemetry#metric-catalogue).)
+2. **`due <- claimDueTimer now`** — claim **at most one** due timer using the
    `FOR UPDATE SKIP LOCKED` CTE from
    [chapter 04](/docs/keiro/walkthrough/workflow/04-the-timer-schema). This atomically moves the
    claimed row to `firing` and bumps `attempts`.
-2. **`Nothing -> pure Nothing`** — nothing was due. The worker returns immediately; the caller's
+3. **`Nothing -> pure Nothing`** — nothing was due. The worker returns immediately; the caller's
    loop typically sleeps until the next tick.
-3. **`Just timer -> do`** — a timer was claimed; run the caller's reaction.
-4. **`fired <- fire timer`** — hand the whole `TimerRow` (with its `processManagerName`,
+4. **The two histograms, per claimed timer.** `keiro.timer.fire.lag` is `(now − fire_at)` in
+   **milliseconds** (the `* 1000` scales the seconds `diffUTCTime` yields; the lag is non-negative
+   because only `fire_at <= now` rows are claimable), and `keiro.timer.attempts` is the **post-claim**
+   attempt count.
+5. **The attempt-ceiling branch.** If `options.maxAttempts = Just n` and the post-claim `attempts`
+   **exceeds** `n`, the worker calls `deadLetterTimer` — moving the row to the terminal `dead` state
+   with an explanatory `last_error` — and **does not** run `fire`. With `defaultTimerWorkerOptions`
+   (`maxAttempts = Nothing`) this branch never fires and behavior is the historical claim-fire-mark.
+6. **`fired <- fire timer`** — otherwise hand the whole `TimerRow` (with its `processManagerName`,
    `correlationId`, and `payload`) to the caller-supplied `fire`. `fire` returns `Maybe EventId`:
    `Just` the id of the event its firing produced, or `Nothing` if it did nothing.
-5. **`for_ fired (markTimerFired (timer ^. #timerId))`** — `markTimerFired` runs **only when
+7. **`for_ fired (markTimerFired (timer ^. #timerId))`** — `markTimerFired` runs **only when
    `fire` returned `Just`**. `for_` over a `Maybe` is a no-op on `Nothing`, so a `fire` that
    returns `Nothing` leaves the row `firing` and does **not** mark it `fired`.
-6. **`pure (Just timer)`** — return the claimed row (so the caller can log/inspect it),
-   regardless of whether `fire` produced an event.
+8. **`pure (Just timer)`** — return the claimed row (so the caller can log/inspect it),
+   regardless of whether `fire` produced an event or the row was dead-lettered.
+
+<Callout type="info">
+  Because `claimDueTimer` bumps `attempts` **before** the ceiling check, the comparison sees the
+  post-claim count: `maxAttempts = Just 0` dead-letters on the very first claim; `Just 2` on the
+  third. This is the bounded counterpart to at-least-once firing — a timer whose `fire` never
+  succeeds is parked in `dead` instead of being re-claimed forever.
+</Callout>
 
 ## At-least-once firing
 
@@ -94,7 +140,7 @@ dispatches `EscalateIncident` to the incident aggregate through the command cycl
 ```haskell
 -- keiro/jitsurei/src/Jitsurei/EscalationProcess.hs
 runEscalationTimerWorker options now =
-  runTimerWorker now $ \timer ->
+  runTimerWorker Nothing now $ \timer ->
     case incidentIdFromTimer timer of
       Nothing -> pure Nothing
       Just incidentId -> do
@@ -118,8 +164,11 @@ fixed `Just`:
 ```haskell
 -- keiro/jitsurei/src/Jitsurei/Timers.hs
 runPaymentTimeoutWorker now =
-  runTimerWorker now (\_ -> pure (Just (EventId paymentTimeoutEventId)))
+  runTimerWorker Nothing now (\_ -> pure (Just (EventId paymentTimeoutEventId)))
 ```
+
+(Both pass `Nothing` for the metrics handle; wire `Just metrics` to populate the `keiro.timer.*`
+instruments.)
 
 It ignores the row and always reports `Just`, so the timer is marked `fired` on the first
 successful pass. (`paymentTimeoutRequest` builds the matching `TimerRequest` for
@@ -146,8 +195,11 @@ target command in **its own** ([chapter 01](/docs/keiro/walkthrough/workflow/01-
 crash-safe not through atomicity but through **deterministic write ids** that make replay a no-op.
 A separate, caller-driven worker claims due timers with `FOR UPDATE SKIP LOCKED`
 ([chapter 04](/docs/keiro/walkthrough/workflow/04-the-timer-schema)) and fires them at-least-once,
-the firing rejoining the command cycle through a `fire` action you supply. And you have seen the
-honest gaps: no cancellation SQL, no backoff, no dead-letter, and a bare worker.
+the firing rejoining the command cycle through a `fire` action you supply. The worker now also
+records the `keiro.timer.*` metrics each pass and can bound runaway timers with
+`maxAttempts`/`deadLetterTimer`. The remaining honest gaps: no backoff between claims, and the worker
+is still bare (no loop, clock, or supervisor) — but cancellation and dead-lettering now ship as the
+[recovery API](/docs/keiro/reference/timers#recovery-operations).
 
 <Cards>
   <Card title="Process managers and sagas" href="/docs/keiro/explanation/process-managers-and-sagas" description="The conceptual companion: what a process manager is, the separate-transaction model, and the PMCommandFailed caveat." />

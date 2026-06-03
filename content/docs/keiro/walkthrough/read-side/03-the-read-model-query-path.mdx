@@ -52,19 +52,22 @@ data ReadModelError
 
 ```haskell
 -- keiro/src/Keiro/ReadModel.hs
-runQueryWith consistency readModel input = do
+runQueryWith metrics consistency readModel input = do
   schemaCheck <- ensureReadModel readModel
   case schemaCheck of
     Left err -> pure (Left err)
     Right () -> do
-      waitResult <- waitIfNeeded consistency readModel
+      waitResult <- waitIfNeeded metrics consistency readModel
       case waitResult of
         Left err -> pure (Left err)
         Right () -> Right <$> runTransaction ((readModel ^. #query) input)
 ```
 
 The order is deliberate: **schema first**, then maybe wait, then read. A read can fail before it ever
-touches the table. (`runQuery` is just `runQueryWith` applied to the model's `defaultConsistency`.)
+touches the table. (`runQuery metrics` is just `runQueryWith metrics` applied to the model's
+`defaultConsistency`.) The leading `metrics :: Maybe KeiroMetrics` is the opt-in
+[metrics](/docs/keiro/reference/telemetry#metrics-surface) handle, threaded only as far as `waitFor`,
+which records a timeout (below).
 
 ## `validateMetadata`: drift is a hard error
 
@@ -94,19 +97,21 @@ and just falls back to a full replay. Read models fail loud; snapshots fail quie
 
 ```haskell
 -- keiro/src/Keiro/ReadModel.hs
-waitIfNeeded Strong _ = pure (Right ())
-waitIfNeeded Eventual _ = pure (Right ())
-waitIfNeeded (PositionWait options) readModel =
+waitIfNeeded _ Strong _ = pure (Right ())
+waitIfNeeded _ Eventual _ = pure (Right ())
+waitIfNeeded metrics (PositionWait options) readModel =
   case options ^. #target of
     Nothing -> pure (Right ())
-    Just targetPosition -> waitFor options readModel targetPosition
+    Just targetPosition -> waitFor metrics options readModel targetPosition
 ```
 
 Here is the gotcha in three lines: `Strong` and `Eventual` are the **same** — both return `Right ()`
-immediately. A `PositionWait` with `target = Nothing` also returns immediately. Only `PositionWait`
-with a `Just target` calls `waitFor`, which polls `subscriptions.last_seen` until the target
-`GlobalPosition` is reached or `timeoutMicros` elapses (→ `ReadModelWaitTimeout`). `waitFor`'s poll
-SQL:
+immediately (and ignore the metrics handle). A `PositionWait` with `target = Nothing` also returns
+immediately. Only `PositionWait` with a `Just target` calls `waitFor`, which polls
+`subscriptions.last_seen` until the target `GlobalPosition` is reached or `timeoutMicros` elapses. On
+a genuine give-up `waitFor` records the
+[`keiro.projection.wait.timeouts`](/docs/keiro/reference/telemetry#metric-catalogue) counter (a no-op
+under a `Nothing` handle) before returning `ReadModelWaitTimeout`. `waitFor`'s poll SQL:
 
 ```sql
 SELECT last_seen
