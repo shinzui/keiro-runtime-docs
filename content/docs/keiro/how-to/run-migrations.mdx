@@ -3,7 +3,7 @@ title: "Run the migrations"
 description: "Apply keiro's schema with the keiro-migrate tool, or compose keiro's migrations into a service's own codd ledger."
 ---
 
-keiro owns eight PostgreSQL tables that must exist before the framework runs. They ship as **embedded
+keiro owns nine PostgreSQL tables that must exist before the framework runs. They ship as **embedded
 codd migrations** (codd is a Haskell migration tool; the SQL is baked into the binary). This guide
 shows how to apply them — either with the ready-made `keiro-migrate` tool or by composing keiro's SQL
 into your service's own migration ledger.
@@ -16,9 +16,9 @@ into your service's own migration ledger.
 
 ## Goal
 
-Apply the kiroku + keiro schema to a database so the eight keiro tables (`keiro_snapshots`,
+Apply the kiroku + keiro schema to a database so the nine keiro tables (`keiro_snapshots`,
 `keiro_read_models`, `keiro_timers`, `keiro_outbox`, `keiro_inbox`, `keiro_workflow_steps`,
-`keiro_awakeables`, `keiro_workflow_children`) exist.
+`keiro_awakeables`, `keiro_workflow_children`, `keiro_subscription_shards`) exist.
 
 ## Steps
 
@@ -60,17 +60,34 @@ Apply the kiroku + keiro schema to a database so the eight keiro tables (`keiro_
    `keiroFrameworkMigrations`, make sure kiroku's migrations run first.
    </Callout>
 
+## Scaffold a new migration
+
+When you add your own keiro-adjacent table, let the CLI stamp a correctly-named, correctly-pinned
+skeleton instead of hand-numbering a file. From the `keiro-migrations` package root (or with
+`KEIRO_MIGRATIONS_DIR` pointing at your `sql-migrations` dir):
+
+```bash
+cabal run keiro-migrate -- new "add widget projection table"
+# Created sql-migrations/2026-06-05-14-32-07-keiro-add-widget-projection-table.sql
+```
+
+The file is named for the real current UTC time (so it can never collide with or sort before an
+existing one) and opens with the `SET search_path TO kiroku, pg_catalog;` pin plus a TODO body. After
+adding it, **touch the embed comment** in `src/Keiro/Migrations.hs` (or `cabal clean`) so Template
+Haskell re-embeds the directory — the command prints this reminder. See the
+[migration scaffold reference](/docs/keiro/reference/migrations-and-schema#the-migration-scaffold-keiromigrationsnew).
+
 ## Verify it worked
 
-Connect to the database and confirm the eight keiro tables exist in the `kiroku` schema:
+Connect to the database and confirm the nine keiro tables exist in the `kiroku` schema:
 
 ```bash
 psql "$CODD_CONNECTION" -c "\dt kiroku.keiro_*"
 ```
 
-You should see `keiro_snapshots`, `keiro_read_models`, `keiro_timers`, `keiro_outbox`, and
-`keiro_inbox`. Re-running `keiro-migrate` is idempotent — codd's ledger skips already-applied
-migrations.
+You should see `keiro_snapshots`, `keiro_read_models`, `keiro_timers`, `keiro_outbox`, `keiro_inbox`,
+`keiro_workflow_steps`, `keiro_awakeables`, `keiro_workflow_children`, and `keiro_subscription_shards`.
+Re-running `keiro-migrate` is idempotent — codd's ledger skips already-applied migrations.
 
 ## Related
 

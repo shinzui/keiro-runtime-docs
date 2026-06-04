@@ -1,0 +1,120 @@
+---
+title: "03 — The shard lease"
+description: "Reading Keiro.Subscription.Shard.Schema and Keiro.Subscription.Shard: the keiro_subscription_shards table, claimShardsTx's FOR UPDATE SKIP LOCKED claim over claimable rows, renew/release, and the Eff-level ShardLease whose acquireOwnedBuckets claims one bucket per pass against a fairShareTarget."
+---
+
+kiroku already partitions a category into `N` buckets and keeps a per-bucket checkpoint, so `N` readers
+can drain a busy category in parallel. What it leaves open is *membership* — who owns each bucket right
+now. These two modules supply that as a **lease**: the storage and SQL in
+`Keiro.Subscription.Shard.Schema`, and the typed `Eff`-level surface in `Keiro.Subscription.Shard`.
+
+## The table records ownership, not position
+
+```sql
+CREATE TABLE keiro_subscription_shards (
+  subscription_name  TEXT        NOT NULL,
+  bucket             INT         NOT NULL,     -- kiroku consumer-group member index
+  shard_count        INT         NOT NULL,     -- N; fixed per subscription_name
+  owner_worker_id    UUID,                     -- NULL = unowned / claimable
+  lease_expires_at   TIMESTAMPTZ,              -- NULL when unowned
+  heartbeat_at       TIMESTAMPTZ,              -- last renewal (observability)
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (subscription_name, bucket),
+  CONSTRAINT keiro_subscription_shards_bucket_range_chk CHECK (bucket >= 0 AND bucket < shard_count),
+  CONSTRAINT keiro_subscription_shards_count_chk        CHECK (shard_count >= 1)
+);
+```
+
+One row per `(subscription_name, bucket)`. The table records *who owns each bucket* as a renewable lease
+(`owner_worker_id` + `lease_expires_at`); it does **not** re-hash the keyspace and does **not** store
+event positions — those stay in kiroku's per-member checkpoints, so a re-homed bucket resumes where its
+previous owner left off. The two partial-friendly indexes serve the renew path (an owner's held buckets)
+and the claim path (claimable buckets by expiry).
+
+## The claim is the real exclusion mechanism
+
+`claimShardsTx` is the heart of disjointness. It claims up to `targetCount` buckets that are unowned *or*
+expired, in one statement, using `FOR UPDATE SKIP LOCKED`:
+
+```sql
+WITH claimable AS (
+  SELECT bucket
+  FROM keiro_subscription_shards
+  WHERE subscription_name = $1
+    AND (owner_worker_id IS NULL OR lease_expires_at < $2)
+  ORDER BY bucket
+  LIMIT $5
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE keiro_subscription_shards s
+SET owner_worker_id = $4, lease_expires_at = $3, heartbeat_at = $2, updated_at = $2
+FROM claimable c
+WHERE s.subscription_name = $1 AND s.bucket = c.bucket
+RETURNING s.bucket
+```
+
+`FOR UPDATE SKIP LOCKED` over the claimable rows is exactly the pattern the
+[timer worker's claim](/docs/keiro/walkthrough/workflow/05-the-timer-worker) uses: two workers racing the
+same bucket can never both win — one locks the row, the other skips it. So a *stale* "how many workers are
+live" estimate only changes how aggressively a worker claims, never whether ownership stays disjoint. The
+companion statements are unremarkable by design: `renewLeaseTx` writes a fresh expiry for every row this
+worker still owns (a bucket stolen after its lease lapsed is simply absent from the result — that is how a
+worker learns it lost a bucket), and `releaseShardsTx` clears ownership of the given buckets it still
+holds for a graceful, immediate handoff.
+
+The statements are `Transaction`-flavoured so the `Eff` layer can compose several into one short
+transaction.
+
+## The lease descriptor and the one-bucket-per-pass rule
+
+`Keiro.Subscription.Shard` wraps those statements behind a small descriptor and a handful of operations:
+
+```haskell
+data ShardLease = ShardLease
+  { subscriptionName :: SubscriptionName
+  , workerId         :: WorkerId
+  , shardCount       :: Int              -- N
+  , leaseTtl         :: NominalDiffTime  -- how long a claim/renew keeps a bucket
+  }
+
+fairShareTarget :: Int -> Int -> Int
+fairShareTarget shardCount liveWorkers =
+  let k = max 1 liveWorkers in (shardCount + k - 1) `div` k   -- ceil(N / liveWorkers)
+```
+
+`acquireOwnedBuckets` is the one ownership-reconcile pass — renew, then claim — in a single transaction:
+
+```haskell
+acquireOwnedBuckets lease liveWorkers = do
+  now <- liftIO getCurrentTime
+  let target = fairShareTarget (shardCount lease) liveWorkers
+  runTransaction $ do
+    held <- renewLeaseTx (subscriptionName lease) (workerId lease) now (leaseTtl lease)
+    claimed <-
+      if length held < target
+        then claimShardsTx (subscriptionName lease) (workerId lease) 1 now (leaseTtl lease)
+        else pure []
+    pure (Set.fromList held <> Set.fromList claimed)
+```
+
+The `1` is the design decision worth pausing on: **claim at most one bucket per pass.** If a cold worker
+grabbed its whole fair share at once it could, racing alone before its peers' first pass, monopolise every
+bucket — and then never see the idle peers, because they own nothing and so are invisible in the lease
+table. Taking one bucket per pass means concurrently-starting workers each grab one, become visible after
+their first pass, and climb to an even share *together*. Ownership spreads over up to `N` reconcile
+intervals — a deliberate trade of spin-up latency for coordinator-free fairness. The companion ops are the
+heartbeat (`renewOwnedBuckets`), the graceful release (`relinquish`), the idempotent table seed
+(`ensureShards`, `ON CONFLICT DO NOTHING`), and the read the worker uses to estimate live workers
+(`ownershipSnapshot`).
+
+Why a lease and not a held lock? The module is explicit: a transaction-scoped advisory lock auto-releases
+at transaction end (so it cannot span a worker's multi-transaction life) and a session-scoped lock has no
+connection affinity through kiroku's pooled `Store` — the same finding the resume worker records. A
+renewable `lease_expires_at` gives lifetime ownership and automatic failover without depending on
+connection affinity.
+
+<Cards>
+  <Card title="02 — The push-aware resume loop" href="/docs/keiro/walkthrough/scaling/02-the-push-aware-resume-loop" />
+  <Card title="04 — The sharded worker" href="/docs/keiro/walkthrough/scaling/04-the-sharded-worker" />
+  <Card title="Subscription sharding (reference)" href="/docs/keiro/reference/subscription-sharding" />
+</Cards>

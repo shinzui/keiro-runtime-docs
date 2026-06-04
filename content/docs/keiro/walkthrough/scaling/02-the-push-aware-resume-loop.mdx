@@ -1,0 +1,79 @@
+---
+title: "02 — The push-aware resume loop"
+description: "Reading the EP-50 additions to Keiro.Workflow.Resume: runPollLoopWith as forever (pass >> waitForWake), runWorkflowResumeWorkerPush wiring the store notifier to resumeWorkflowsOnce, why pollInterval is repurposed as the fallback timeout, and the runStoreIO effect-row pin."
+---
+
+The [wake signal](/docs/keiro/walkthrough/scaling/01-the-wake-signal) is generic; this chapter reads how
+`Keiro.Workflow.Resume` (the EP-50 additions) turns it into a push-aware resume worker, while leaving the
+[fixed-poll worker](/docs/keiro/walkthrough/durable-execution/07-the-resume-worker) untouched as the
+baseline.
+
+## The generic driver
+
+The whole loop is three combinators:
+
+```haskell
+runPollLoopWith :: WakeSignal -> Int -> IO () -> IO ()
+runPollLoopWith wake fallbackMicros pass =
+  forever (pass >> void (waitForWake wake fallbackMicros))
+```
+
+Run one `pass`, then block on the wake with the fallback, forever. The **pass is the durable unit**; the
+wake only shortens the gap between passes. Both `WakeReason`s mean "run another pass", so the result is
+discarded for control flow — a missed `NOTIFY` costs at most one `fallbackMicros` of latency, never lost
+work, because correctness rests on the (idempotent) pass, not on a notification arriving. The same shape
+applies mechanically to the timer worker and the outbox publisher; the module documents that and ships
+the resume-worker wiring as the concrete one.
+
+## Wiring the resume worker
+
+`runWorkflowResumeWorkerPush` is `runPollLoopWith` with the store's notifier as the signal and one
+`resumeWorkflowsOnce` as the pass:
+
+```haskell
+runWorkflowResumeWorkerPush ::
+  KirokuStore ->
+  WorkflowResumeOptions ->
+  WorkflowRegistry '[Store, Error StoreError, IOE] ->
+  IO ()
+runWorkflowResumeWorkerPush store opts registry = do
+  wake <- wakeSignalFromStore store
+  runPollLoopWith wake (pollInterval opts) onePass
+ where
+  onePass = void (runStoreIO store (resumeWorkflowsOnce opts registry))
+```
+
+Three things to read out of those few lines:
+
+- **`pollInterval` is repurposed.** Under the fixed-poll worker it is "the fixed gap between passes";
+  here it is passed as the *fallback* timeout — "the maximum gap when no notification arrives". The
+  meaning shifts from a floor on latency to a ceiling on it: strictly better, and identical in the
+  no-notification worst case. Nothing else about `WorkflowResumeOptions` changes, so a resumed run still
+  honours the same snapshot and telemetry `runOptions`.
+- **It opens no new connection.** The only new resource is the `WakeSignal`, which (chapter 01) rides
+  kiroku's single existing per-store listener. The query pool is unchanged.
+- **The effect-row pin.** The worker takes the `KirokuStore` *directly* (to reach the notifier) and runs
+  each pass through `runStoreIO store`, which eliminates a concrete effect row. That is why the registry
+  type is pinned to `'[Store, Error StoreError, IOE]` — exactly the row `runStoreIO` discharges. A caller
+  with a richer row does not have to accept this: they can call `runPollLoopWith` directly with their own
+  `runStoreIO`-equivalent pass.
+
+## Why this is the natural home for `IO`
+
+`runWorkflowResumeWorkerPush` returns `IO ()`, not `Eff es ()`. The push worker manages a long-lived wait
+on an STM channel and holds the `KirokuStore` handle to reach the notifier, so `IO` is its natural home —
+the same reasoning the [sharded worker](/docs/keiro/walkthrough/scaling/04-the-sharded-worker) makes for
+its long-lived reader threads. The `Eff`-flavoured `resumeWorkflowsOnce` pass is lifted into that `IO`
+loop through `runStoreIO`, keeping the durable logic in the effect world and only the loop machinery in
+`IO`.
+
+The acceptance the EP carries is the parent/child cascade: a parent whose child finishes is woken
+promptly because the child's completion is an append, which fires the `NOTIFY` the parent's push loop is
+waiting on — sub-second hand-off instead of a poll-interval wait.
+
+<Cards>
+  <Card title="01 — The wake signal" href="/docs/keiro/walkthrough/scaling/01-the-wake-signal" />
+  <Card title="03 — The shard lease" href="/docs/keiro/walkthrough/scaling/03-the-shard-lease" />
+  <Card title="Enable push delivery" href="/docs/keiro/how-to/enable-push-delivery" />
+  <Card title="07 — The resume worker (baseline)" href="/docs/keiro/walkthrough/durable-execution/07-the-resume-worker" />
+</Cards>

@@ -1,0 +1,81 @@
+---
+title: "Enable push delivery"
+description: "Swap a fixed-poll worker for the push-aware loop so it reacts within sub-second of an append — using kiroku's existing LISTEN/NOTIFY notifier, with no new connections and a durable poll fallback."
+---
+
+A keiro background worker polls on a fixed interval, so that interval is also its worst-case reaction
+time. **Push delivery** lets the worker wait to be woken by a Postgres `NOTIFY` instead, reacting
+within sub-second of real work while staying idle-cheap. This guide switches the resume worker to push
+and shows how the same pattern applies to other poll loops. For the concept, see
+[Scaling the workers](/docs/keiro/explanation/scaling-the-workers); for the API, the
+[push-delivery reference](/docs/keiro/reference/push-delivery).
+
+## Switch the resume worker to push
+
+The resume worker ships a push-aware sibling. You already have a `KirokuStore` (from `withStore`) and a
+`WorkflowRegistry`; pass the store directly:
+
+```haskell
+import Keiro.Workflow.Resume (runWorkflowResumeWorkerPush, defaultWorkflowResumeOptions)
+
+-- store    :: KirokuStore
+-- registry :: WorkflowRegistry '[Store, Error StoreError, IOE]
+runWorkflowResumeWorkerPush store defaultWorkflowResumeOptions registry
+```
+
+That is the whole change. The worker now runs `resumeWorkflowsOnce` each pass and, between passes,
+blocks on the store's notifier — waking on any append, or after the fallback timeout, whichever comes
+first.
+
+<Callout type="info">
+The registry's effect row must be `'[Store, Error StoreError, IOE]` — the concrete row
+`runStoreIO` eliminates, since the push worker runs each pass through it. If your registry is written
+against a richer row, use the generic `runPollLoopWith wake fallbackMicros pass` with your own
+`runStoreIO`-equivalent pass instead.
+</Callout>
+
+## Understand the guarantees
+
+- **No new connection.** The wake rides kiroku's *single* pre-existing per-store listener connection;
+  `wakeSignalFromStore` just duplicates an in-memory STM channel. Your query pool is sized exactly as
+  before, however many push-aware workers you run over the one store.
+- **`pollInterval` becomes the fallback.** Under the push worker, the `pollInterval` field of
+  `WorkflowResumeOptions` means "the maximum gap when no notification arrives", not "the fixed gap
+  between passes". Keep it where it was: a dropped `NOTIFY` then costs at most that much latency.
+- **Correctness never depends on a notification.** A `NOTIFY` is best-effort. The durable, idempotent
+  pass is the unit of work; a missed wake only delays the next pass to the fallback, exactly as the old
+  fixed poll did. In the worst case (every notification dropped) the push worker behaves identically to
+  `runWorkflowResumeWorker`.
+
+## Tune the fallback
+
+Set a longer fallback if you want fewer wasted passes on a quiet system (push still delivers low
+latency when work *does* arrive), or a shorter one for belt-and-braces latency if you are worried about
+listener flaps:
+
+```haskell
+let opts = defaultWorkflowResumeOptions & #pollInterval .~ 5_000_000   -- 5 s fallback
+runWorkflowResumeWorkerPush store opts registry
+```
+
+## The same pattern elsewhere
+
+`runPollLoopWith :: WakeSignal -> Int -> IO () -> IO ()` is the generic driver: one idempotent pass,
+then a bounded wait on the signal. The [timer worker](/docs/keiro/how-to/drive-the-timer-worker) and
+[outbox publisher](/docs/keiro/how-to/publish-with-the-outbox) passes are already idempotent, so the
+same `wakeSignalFromStore store` channel shortens their idle gaps too — build the signal once and wrap
+each worker's pass:
+
+```haskell
+import Keiro.Wake (wakeSignalFromStore)
+
+wake <- wakeSignalFromStore store
+runPollLoopWith wake 1_000_000 (void (runStoreIO store oneTimerPass))
+```
+
+<Cards>
+  <Card title="Scaling the workers" href="/docs/keiro/explanation/scaling-the-workers" />
+  <Card title="Push delivery (Keiro.Wake)" href="/docs/keiro/reference/push-delivery" />
+  <Card title="Run the workflow resume worker" href="/docs/keiro/how-to/run-the-workflow-resume-worker" />
+  <Card title="Run sharded subscriptions" href="/docs/keiro/how-to/run-sharded-subscriptions" />
+</Cards>

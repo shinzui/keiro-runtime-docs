@@ -1,10 +1,10 @@
 ---
 title: "Migrations and schema"
-description: "Reference for Keiro.Migrations: the migration accessors, the four runners, the keiro-migrate CLI, and the eight tables keiro owns."
+description: "Reference for Keiro.Migrations: the migration accessors, the four runners, the keiro-migrate CLI (migrate + new), the migration scaffold, and the nine tables keiro owns."
 ---
 
 The functions on this page live in `Keiro.Migrations` (package `keiro-migrations`); the CLI is the
-`keiro-migrate` executable. keiro's schema ships as **embedded codd migrations** — seven SQL files
+`keiro-migrate` executable. keiro's schema ships as **embedded codd migrations** — nine SQL files
 under `keiro-migrations/sql-migrations/`, baked into the binary with Template Haskell and applied in
 filename-timestamp order. For the task narrative, see
 [Run the migrations](/docs/keiro/how-to/run-migrations).
@@ -43,7 +43,10 @@ connect timeout.
 
 ## The `keiro-migrate` CLI
 
-The executable reads codd settings from the environment with `getCoddSettings`, then dispatches on
+The executable dispatches on its first argument: `keiro-migrate new <description>` scaffolds a new
+migration file (below); anything else (the bare `keiro-migrate`) **applies** the migrations.
+
+The apply path reads codd settings from the environment with `getCoddSettings`, then dispatches on
 `KEIRO_MIGRATE_NO_CHECK`:
 
 - if `KEIRO_MIGRATE_NO_CHECK` is set → `runAllKeiroMigrationsNoCheck settings (secondsToDiffTime 5)`;
@@ -53,12 +56,58 @@ So both paths apply the **full** kiroku+keiro set, with a 5-second connect timeo
 difference is whether codd verifies the schema afterward. The environment variables are codd's own:
 `CODD_CONNECTION` (the libpq connection string) and `CODD_SCHEMAS=kiroku` (the schema to manage).
 
+## The migration scaffold (`Keiro.Migrations.New`)
+
+`keiro-migrate new "<description>"` writes a timestamped migration skeleton and prints its path. The
+file is named for the **real current UTC time** — `YYYY-MM-DD-HH-MM-SS-<slug>.sql` — so two migrations
+authored at different moments can never collide and always sort in authoring order, with no
+hand-assigned slots to coordinate. The slug is the description lower-cased with non-alphanumeric runs
+collapsed to single dashes and a `keiro-` prefix ensured.
+
+```haskell
+newMigrationFile   :: FilePath -> String -> IO FilePath   -- write skeleton under dir, return path
+defaultMigrationsDir :: FilePath                           -- "sql-migrations"
+migrationFileName  :: UTCTime -> String -> FilePath
+migrationSlug      :: String -> String
+migrationTemplate  :: String -> String
+```
+
+The target directory defaults to the package's `sql-migrations` (run from the `keiro-migrations`
+package root) and is overridable with `KEIRO_MIGRATIONS_DIR`. The command refuses an empty description
+and never overwrites an existing file. The emitted skeleton pins the session `search_path` (below) and
+a TODO body:
+
+```sql
+-- <description>
+--
+-- Pin the session search_path so unqualified names resolve into the kiroku
+-- schema when this migration is applied incrementally to an existing database.
+SET search_path TO kiroku, pg_catalog;
+
+-- TODO: write the migration body. Prefer idempotent DDL (IF NOT EXISTS).
+```
+
+<Callout type="warn">
+`embedDir` is not tracked per-file by GHC's recompilation checker, so after adding a `.sql` file you
+must **touch the embed comment** in `src/Keiro/Migrations.hs` (or `cabal clean`) for Template Haskell
+to pick it up. The `keiro-migrate new` output reminds you of this.
+</Callout>
+
+<Callout type="info">
+**The `search_path` pin** (`SET search_path TO kiroku, pg_catalog;`) is session-scoped, so each
+migration that creates or alters keiro tables sets it itself rather than relying on the connection's
+default — which makes unqualified names resolve into the `kiroku` schema even when the migration is
+applied *incrementally* to an existing database. The two MasterPlan-6 migrations carry the pin; the
+scaffold bakes it into every new file.
+</Callout>
+
 ## Tables keiro owns
 
-All eight tables live in the **`kiroku` schema**. The first five come from the
-bootstrap/outbox/inbox/timer-recovery migrations; the last three are the
-[durable-workflow](/docs/keiro/reference/durable-workflows) tables. Field detail lives on the owning
-subsystem's reference page; this is the map.
+All nine tables live in the **`kiroku` schema**. The first five come from the
+bootstrap/outbox/inbox/timer-recovery migrations; the next three are the
+[durable-workflow](/docs/keiro/reference/durable-workflows) tables; the last is the
+[subscription-sharding](/docs/keiro/reference/subscription-sharding) lease table. Field detail lives on
+the owning subsystem's reference page; this is the map.
 
 | Table | Migration | Purpose | Owning reference |
 |---|---|---|---|
@@ -67,11 +116,12 @@ subsystem's reference page; this is the map.
 | `keiro_timers` | bootstrap (+ timer-recovery) | Durable timers for process managers and workflow sleeps | [Keiro.Timer](/docs/keiro/reference/timers) |
 | `keiro_outbox` | outbox | Transactional outbox rows awaiting publish | [Outbox](/docs/keiro/reference/outbox) |
 | `keiro_inbox` | inbox | Inbound dedupe ledger keyed by `(source, dedupe_key)` | [Inbox](/docs/keiro/reference/inbox) |
-| `keiro_workflow_steps` | workflow-steps | Step-lookup index backing replay and unfinished-workflow discovery | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
+| `keiro_workflow_steps` | workflow-steps (+ workflow-generation) | Step-lookup index backing replay and unfinished-workflow discovery | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro_awakeables` | awakeables | Pending external completions (durable promises) | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro_workflow_children` | workflow-children | Durable parent→child workflow links | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
+| `keiro_subscription_shards` | subscription-shards | Consumer-group bucket-ownership leases for sharded category subscriptions | [Subscription sharding](/docs/keiro/reference/subscription-sharding#the-lease-table) |
 
-The seven migration files, applied in this order:
+The nine migration files, applied in this order:
 
 ```text
 2026-05-17-00-00-00-keiro-bootstrap.sql           -- keiro_snapshots, keiro_read_models, keiro_timers
@@ -81,13 +131,22 @@ The seven migration files, applied in this order:
 2026-06-03-00-00-00-keiro-workflow-steps.sql      -- keiro_workflow_steps
 2026-06-03-01-00-00-keiro-awakeables.sql          -- keiro_awakeables
 2026-06-03-02-00-00-keiro-workflow-children.sql   -- keiro_workflow_children
+2026-06-05-00-00-00-keiro-workflow-generation.sql -- ALTER keiro_workflow_steps: add generation, widen PK + lookup index
+2026-06-05-01-00-00-keiro-subscription-shards.sql -- keiro_subscription_shards
 ```
 
 The timer-recovery migration adds the `last_error` column (populated only for dead-lettered timers)
 and narrows `keiro_timers_due_idx` to active (`scheduled`/`firing`) rows so it also serves the
-[stuck-row recovery queries](/docs/keiro/reference/timers#recovery-operations). The three workflow
-migrations add no columns to existing tables — a workflow sleep reuses `keiro_timers` unchanged,
-routing entirely on its JSON payload discriminator.
+[stuck-row recovery queries](/docs/keiro/reference/timers#recovery-operations). The three original
+workflow migrations add no columns to existing tables — a workflow sleep reuses `keiro_timers`
+unchanged, routing entirely on its JSON payload discriminator. The **workflow-generation** migration
+(EP-48) adds the `generation` column (default 0, so every existing row is unaffected) to
+`keiro_workflow_steps` and widens its primary key to `(workflow_id, workflow_name, generation,
+step_name)` — a strict relaxation no existing row can violate — to support
+[continue-as-new rotation](/docs/keiro/reference/durable-workflows#versioning-and-rotation). The
+**subscription-shards** migration (EP-51) adds the `keiro_subscription_shards` lease table. Both
+MasterPlan-6 migrations open with a `SET search_path TO kiroku, pg_catalog;` pin so unqualified names
+resolve into the `kiroku` schema on an incremental upgrade.
 
 <Cards>
   <Card title="Run the migrations" href="/docs/keiro/how-to/run-migrations" />

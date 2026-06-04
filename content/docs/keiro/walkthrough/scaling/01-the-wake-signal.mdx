@@ -1,0 +1,97 @@
+---
+title: "01 — The wake signal"
+description: "Reading Keiro.Wake: how wakeSignalFromStore duplicates kiroku's broadcast tick channel (an STM op, not a connection), the orElse-over-registerDelay wait that returns WokenByNotify or WokenByTimeout and collapses a backlog to one wake, and neverWake as the 'all NOTIFYs dropped' control."
+---
+
+`Keiro.Wake` is one small module (`keiro/src/Keiro/Wake.hs`) with one job: give a poll-loop worker a
+way to *wait to be woken* by an append, bounded by a fallback timeout so a missed notification never
+stalls progress.
+
+## Where the wake comes from — and why it is free
+
+The kiroku event store already fires a Postgres `NOTIFY` on channel `<schema>.events` (default
+`kiroku.events`) on every append, via a trigger on the `streams` table, and already runs **one**
+dedicated long-lived listener connection per store (`Kiroku.Store.Notification.Notifier`, started once
+by `withStore`). That listener fans every notification out to an in-process STM broadcast channel,
+`notifier.tickChan :: TChan ()`.
+
+`wakeSignalFromStore` builds a signal by **duplicating** that broadcast channel:
+
+```haskell
+wakeSignalFromStore :: KirokuStore -> IO WakeSignal
+wakeSignalFromStore store = do
+  myChan <- atomically (dupTChan (tickChan (notifier store)))
+  pure (WakeSignal (waitOn myChan))
+```
+
+`dupTChan` is an **STM operation, not a database connection**. So N keiro workers over one store share
+the single existing listener connection plus N cheap STM cursors; push adds **zero** new long-lived
+connections, and the query pool is sized exactly as before. Duplicating *once* here (rather than reading
+the shared channel) also means this consumer has its own cursor — it never steals another consumer's
+ticks, and ticks that arrive *between* waits queue in the duplicated channel rather than being lost.
+
+## The wait: a notification or the timeout, whichever first
+
+A `WakeSignal` is just a function that blocks until one of two things happens, reporting which:
+
+```haskell
+data WakeReason = WokenByNotify | WokenByTimeout
+
+newtype WakeSignal = WakeSignal
+  { waitForWake :: Int -> IO WakeReason }   -- block until a notify arrives OR the timeout (µs) elapses
+```
+
+The implementation composes a channel read and a timer with STM's `orElse`:
+
+```haskell
+waitOn myChan timeoutMicros = do
+  timer <- registerDelay timeoutMicros
+  atomically $
+    ( do
+        _ <- readTChan myChan     -- a tick is queued...
+        drain myChan              -- ...collapse any backlog so one wait == one "go look" episode
+        pure WokenByNotify
+    )
+      `orElse` (readTVar timer >>= check >> pure WokenByTimeout)
+```
+
+Two details earn their place:
+
+- **`registerDelay` + `orElse`** is the idiomatic STM "wait for X or a timeout": `registerDelay` flips a
+  `TVar` to `True` after the delay, and `check` retries the transaction until either branch can proceed.
+  No thread, no `threadDelay` race.
+- **`drain`** empties the duplicated channel after the first tick. The worker re-queries the database
+  durably anyway, so a burst of ten appends only needs to provoke *one* pass — draining collapses the
+  backlog so one wait returns once per "there is new work" episode, not once per append.
+
+The returned `WakeReason` is kept for telemetry; for control flow both reasons mean the same thing —
+"run another pass" — which is exactly what the [push loop](/docs/keiro/walkthrough/scaling/02-the-push-aware-resume-loop)
+relies on.
+
+## `neverWake`: the dropped-notification control
+
+The module also ships a signal that *never* fires a notification — every wait elapses the fallback:
+
+```haskell
+neverWake :: WakeSignal
+neverWake = WakeSignal $ \timeoutMicros -> do
+  timer <- registerDelay timeoutMicros
+  atomically (readTVar timer >>= check)
+  pure WokenByTimeout
+```
+
+This is how the test suite proves push is an *optimization over* the durable poll, not a replacement:
+drive the push-aware worker with `neverWake` and it must still drain the backlog purely on the fallback,
+behaving identically to the old fixed-poll loop. It also lets a deliberately fixed-cadence worker run
+under the same push-aware driver with an unchanged cadence.
+
+The whole correctness argument is in the module's own words: a `NOTIFY` is best-effort and its payload
+is advisory, so `waitForWake` *always* takes a fallback timeout — a missed notification only delays the
+next pass to that interval. keiro treats the notification as an opaque wake and re-queries durably,
+ignoring kiroku's `stream_name,stream_id,stream_version` payload entirely.
+
+<Cards>
+  <Card title="00 — Start here" href="/docs/keiro/walkthrough/scaling/00-start-here" />
+  <Card title="02 — The push-aware resume loop" href="/docs/keiro/walkthrough/scaling/02-the-push-aware-resume-loop" />
+  <Card title="Push delivery (reference)" href="/docs/keiro/reference/push-delivery" />
+</Cards>

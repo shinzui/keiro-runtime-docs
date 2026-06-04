@@ -34,7 +34,9 @@ workflowStreamName (WorkflowName name) (WorkflowId wid) =
 
 Every instance owns exactly one kiroku stream. The `:` and `-` are **structural** — names and ids must
 not make the boundary ambiguous, the same caveat the v1 process-manager `pm:<name>-<correlationId>`
-convention carries. There is no separate "history table"; the stream *is* the history.
+convention carries. There is no separate "history table"; the stream *is* the history. (Continue-as-new
+adds a sibling, `workflowGenerationStreamName`, that suffixes a rotated journal with `#<g>`; generation
+0 keeps this bare name — see [chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation).)
 
 ## The journal event sum
 
@@ -44,6 +46,7 @@ data WorkflowJournalEvent
   | WorkflowCompleted { recordedAt :: !UTCTime }
   | WorkflowCancelled { recordedAt :: !UTCTime }
   | WorkflowFailed    { reason :: !Text, recordedAt :: !UTCTime }
+  | WorkflowContinuedAsNew { generation :: !Int, recordedAt :: !UTCTime }   -- EP-48 rotation marker
 ```
 
 The crucial design move is that **the suspension primitives do not add event types**. A fired sleep, a
@@ -55,7 +58,9 @@ why:
 
 `WorkflowCompleted` is the terminal marker; `WorkflowCancelled` (written to a child's journal by
 `cancelChild`) makes a run short-circuit to `Cancelled`; `WorkflowFailed` carries a reason for a
-permanently-failed run. The last three are additive within `schemaVersion = 1` — new wire tags on the
+permanently-failed run. `WorkflowContinuedAsNew` is the lone *rotation* marker continue-as-new adds
+(its `generation` is the next generation the rotation opens — [chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation)).
+All four non-`StepRecorded` constructors are additive within `schemaVersion = 1` — new wire tags on the
 codec's `eventTypes`, with no upcaster, because old journals never carry them.
 
 ## A self-describing codec
@@ -64,7 +69,7 @@ codec's `eventTypes`, with no upcaster, because old journals never carry them.
 workflowJournalCodec :: Codec WorkflowJournalEvent
 workflowJournalCodec =
   Codec
-    { eventTypes = "StepRecorded" :| ["WorkflowCompleted", "WorkflowCancelled", "WorkflowFailed"]
+    { eventTypes = "StepRecorded" :| ["WorkflowCompleted", "WorkflowCancelled", "WorkflowFailed", "WorkflowContinuedAsNew"]
     , eventType = \case StepRecorded{} -> "StepRecorded"; ...
     , schemaVersion = 1
     , encode = encodeJournalEvent
@@ -84,32 +89,38 @@ Two kinds of reserved names back replay. The **terminal markers** are sentinels 
 index row) means "this workflow has reached an end state":
 
 ```haskell
-completedStepName = "__workflow_completed__"
-cancelledStepName = "__workflow_cancelled__"
-failedStepName    = "__workflow_failed__"
+completedStepName      = "__workflow_completed__"
+cancelledStepName      = "__workflow_cancelled__"
+failedStepName         = "__workflow_failed__"
+continuedAsNewStepName = "__workflow_continued_as_new__"   -- EP-48: terminal *for its generation*
+continueSeedStepName   = "__workflow_seed__"               -- EP-48: the carried continueAsNew seed
 ```
 
 The comment is explicit that these literals are an integration contract: `findUnfinishedWorkflowIds`'s
 SQL hard-codes `'__workflow_completed__'` and `'__workflow_cancelled__'`, so **the literal here must
 match the literal in that SQL** ([chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery)).
+`continuedAsNewStepName` is deliberately *not* in that SQL's terminal set, and `continueSeedStepName`
+carries a rotation's seed onto the next generation — both are detailed in
+[chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation).
 
-The **prefixes** are how the three waits journal their completions without new event types:
+The **prefixes** are how the three waits (and `patch`) journal their completions without new event types:
 
 ```haskell
 sleepStepPrefix     = "sleep:"   -- a durable sleep's completion
 awakeableStepPrefix = "awk:"     -- an awakeable's completion
 childStepPrefix     = "child:"   -- a child spawn record and its :result completion
+patchStepPrefix     = "patch:"   -- a patch decision, patch:<patchId> (EP-49; chapter 09)
 ```
 
 Each is an integration contract its owning module must use exactly. You will see them again in
-chapters 04–06.
+chapters 04–06 and 09.
 
 ## The folded state and the outcome
 
 ```haskell
 type WorkflowState = Map Text Aeson.Value   -- step name -> recorded JSON result
 
-data WorkflowOutcome a = Completed a | Suspended | Cancelled
+data WorkflowOutcome a = Completed a | Suspended | Cancelled | ContinuedAsNew
   deriving stock (Eq, Show, Functor)
 ```
 
@@ -117,8 +128,9 @@ data WorkflowOutcome a = Completed a | Suspended | Cancelled
 contract the snapshot machinery ([chapter 08](/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry))
 consumes, so it must stay a `Map Text Value` with dynamic step-name keys. `WorkflowOutcome` is the
 result of a run: `Completed a` (ran to the end, marker journaled), `Suspended` (parked at an unresolved
-wait), or `Cancelled` (the journal carried a cancellation marker). The next chapter shows how
-`runWorkflowWith` produces each.
+wait), `Cancelled` (the journal carried a cancellation marker), or `ContinuedAsNew` (the run rotated its
+journal — still unfinished, [chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation)).
+The next chapter shows how `runWorkflowWith` produces each.
 
 <Cards>
   <Card title="← 00 — Start here" href="/docs/keiro/walkthrough/durable-execution/00-start-here" />

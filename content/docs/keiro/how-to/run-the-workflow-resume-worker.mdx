@@ -97,8 +97,29 @@ _ <- runWorkflowTimerWorker mMetrics now myProcessManagerFireAction
   journal ids and step short-circuiting make two workers racing the same workflow converge to the same
   journal, each side effect at most once. The `useAdvisoryLock` field is reserved and has no effect.
 
+## React faster with push delivery
+
+The fixed `pollInterval` is also the worst-case latency: a workflow whose wait just resolved can sit
+idle up to a full interval before the next pass notices. To react within sub-second of any append,
+swap in the **push-aware** worker, which waits on kiroku's existing `LISTEN/NOTIFY` notifier between
+passes:
+
+```haskell
+import Keiro.Workflow.Resume (runWorkflowResumeWorkerPush)
+
+-- store :: KirokuStore; the registry's effect row is '[Store, Error StoreError, IOE]
+runWorkflowResumeWorkerPush store defaultWorkflowResumeOptions appRegistry
+```
+
+It opens **no new database connection** (it rides the store's single existing listener) and the
+`pollInterval` is repurposed as a *fallback* timeout, so a dropped notification still drains the
+backlog at the old cadence — strictly better for latency, identical in the no-notification worst case.
+See [Enable push delivery](/docs/keiro/how-to/enable-push-delivery) and the
+[push-delivery reference](/docs/keiro/reference/push-delivery).
+
 <Cards>
   <Card title="Write a durable workflow" href="/docs/keiro/how-to/write-a-durable-workflow" />
+  <Card title="Enable push delivery" href="/docs/keiro/how-to/enable-push-delivery" />
   <Card title="Drive the timer worker" href="/docs/keiro/how-to/drive-the-timer-worker" />
   <Card title="Durable workflows reference" href="/docs/keiro/reference/durable-workflows" />
   <Card title="The durable-execution walkthrough" href="/docs/keiro/walkthrough/durable-execution/07-the-resume-worker" />

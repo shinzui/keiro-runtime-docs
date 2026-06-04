@@ -18,9 +18,13 @@ import Keiro.Workflow           -- the effect, step, runWorkflow/runWorkflowWith
 import Keiro.Workflow.Sleep     -- sleepNamed / sleep, runWorkflowTimerWorker
 import Keiro.Workflow.Awakeable -- awakeableNamed / awakeable, signalAwakeable, cancelAwakeable
 import Keiro.Workflow.Child     -- spawnChild, awaitChild, cancelChild
-import Keiro.Workflow.Resume    -- resumeWorkflowsOnce, the registry, the resume worker
+import Keiro.Workflow.Resume    -- resumeWorkflowsOnce, the registry, the fixed-poll and push-aware workers
 import Keiro.Workflow.Snapshot  -- workflowStateCodec (the snapshot discriminant)
 ```
+
+`continueAsNew`, `restoreSeed`, and `patch` ([versioning and rotation](#versioning-and-rotation)) are
+re-exported from `Keiro.Workflow`. The [push-aware resume worker](#the-resume-worker) additionally
+rides `Keiro.Wake` — see the [push-delivery reference](/docs/keiro/reference/push-delivery).
 
 ## The effect and the authoring surface
 
@@ -62,13 +66,19 @@ freshOrdinal  :: (Workflow :> es) => Text -> Eff es Int
 newtype WorkflowName = WorkflowName { unWorkflowName :: Text }   -- the definition (e.g. "order-fulfillment")
 newtype WorkflowId   = WorkflowId   { unWorkflowId   :: Text }   -- one instance
 newtype StepName     = StepName     { unStepName     :: Text }   -- a checkpoint label
+newtype PatchId      = PatchId      { unPatchId      :: Text }   -- a versioning patch (see "Versioning and rotation")
 
-workflowStreamName :: WorkflowName -> WorkflowId -> StreamName   -- "wf:<name>-<id>"
+workflowStreamName           :: WorkflowName -> WorkflowId -> StreamName          -- "wf:<name>-<id>"
+workflowGenerationStreamName :: WorkflowName -> WorkflowId -> Int -> StreamName    -- the physical stream for one generation
 ```
 
 Every instance owns one kiroku stream named **`wf:<name>-<id>`**. `:` and `-` are structural — names
 and ids must not make the boundary ambiguous (the same caveat as the process-manager
-`pm:<name>-<correlationId>` convention).
+`pm:<name>-<correlationId>` convention). `continueAsNew` (below) rotates an instance's *physical*
+journal onto a fresh **generation**: generation 0 keeps the bare `wf:<name>-<id>` name (so
+never-rotated workflows are byte-for-byte unchanged), and generation `g > 0` appends a `#<g>` suffix —
+`workflowGenerationStreamName name id g`. The *logical* identity `(WorkflowName, WorkflowId)` you and
+the resume registry see is stable across rotations.
 
 ```haskell
 data WorkflowJournalEvent
@@ -76,22 +86,31 @@ data WorkflowJournalEvent
   | WorkflowCompleted { recordedAt :: UTCTime }
   | WorkflowCancelled { recordedAt :: UTCTime }
   | WorkflowFailed    { reason :: Text, recordedAt :: UTCTime }
+  | WorkflowContinuedAsNew { generation :: Int, recordedAt :: UTCTime }   -- the EP-48 rotation marker
 
 workflowJournalCodec :: Codec WorkflowJournalEvent   -- schemaVersion 1, no upcasters
 ```
 
 Each `step` appends a `StepRecorded`; the terminal `WorkflowCompleted` closes the journal. The
 suspension primitives journal their completions as the **same** `StepRecorded` event under reserved
-step-name prefixes — never as new event types — so the replay loop stays uniform:
+step-name prefixes — never as new event types — so the replay loop stays uniform. `continueAsNew` adds
+the one new terminal-for-this-generation marker, `WorkflowContinuedAsNew` (its `generation` is the
+*next* generation the rotation opens); it is additive within `schemaVersion = 1`, so old journals never
+carry the tag and no upcaster is needed.
 
 | Reserved binding | Value | Used by |
 |---|---|---|
 | `sleepStepPrefix` | `"sleep:"` | a durable sleep's completion |
 | `awakeableStepPrefix` | `"awk:"` | an awakeable's completion |
 | `childStepPrefix` | `"child:"` | a child spawn record and its `:result` completion |
+| `patchStepPrefix` | `"patch:"` | a `patch` branch decision (`patch:<patchId>`) |
 | `completedStepName` | `"__workflow_completed__"` | the terminal completion marker (index row) |
 | `cancelledStepName` | `"__workflow_cancelled__"` | the terminal cancellation marker (index row) |
 | `failedStepName` | `"__workflow_failed__"` | the terminal failure marker (index row) |
+| `continuedAsNewStepName` | `"__workflow_continued_as_new__"` | the rotation marker (terminal *for its generation*) |
+| `continueSeedStepName` | `"__workflow_seed__"` | the carried `continueAsNew` seed, on the next generation |
+
+The helper `patchStepName :: PatchId -> Text` is `patchStepPrefix <> unPatchId`.
 
 ```haskell
 type WorkflowState = Map Text Value   -- the accumulated step-name -> result map a run folds
@@ -100,14 +119,16 @@ type WorkflowState = Map Text Value   -- the accumulated step-name -> result map
 ## Running a workflow
 
 ```haskell
-data WorkflowOutcome a = Completed a | Suspended | Cancelled
+data WorkflowOutcome a = Completed a | Suspended | Cancelled | ContinuedAsNew
 
 runWorkflow     :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
 runWorkflowWith :: (IOE :> es, Store :> es) => WorkflowRunOptions -> WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
 ```
 
 `runWorkflowWith` is the **single canonical entry point**; `runWorkflow` is it with
-`defaultWorkflowRunOptions`. The resume worker re-invokes through `runWorkflowWith`, so a resumed run
+`defaultWorkflowRunOptions`. Each run first resolves the instance's *current* (highest) generation and
+operates only on it; a never-rotated workflow stays at generation 0, so naming, load, and append are
+byte-for-byte as before. The resume worker re-invokes through `runWorkflowWith`, so a resumed run
 honours the same options. The outcome is:
 
 <TypeTable
@@ -115,6 +136,7 @@ honours the same options. The outcome is:
     "Completed a": { type: "—", description: "The computation ran to its end; a WorkflowCompleted marker is journaled." },
     Suspended: { type: "—", description: "The run parked at an unresolved awaitStep (a sleep, awakeable, or child wait); a wake source was armed and a later resume continues." },
     Cancelled: { type: "—", description: "The journal already carries a WorkflowCancelled marker (a child cancelled by its parent); the run short-circuited and executed nothing." },
+    ContinuedAsNew: { type: "—", description: "The run rotated onto a fresh journal generation via continueAsNew. Still unfinished (distinct from Completed): the new generation has no terminal marker, so the resume worker re-invokes it on its current generation." },
   }}
 />
 
@@ -168,6 +190,64 @@ data WorkflowError
 
 All four surface through `throwIO`, so they propagate through the surrounding store/IO error channel.
 A `WorkflowStepDecodeError` is a programmer error: a step's result type changed incompatibly.
+
+## Versioning and rotation
+
+These three functions on the authoring surface (re-exported from `Keiro.Workflow`) let a workflow
+keep an unbounded history bounded, and let you evolve a workflow's logic while instances are in flight.
+
+```haskell
+continueAsNew :: (Workflow :> es, ToJSON s)               => s -> Eff es a
+restoreSeed   :: (Workflow :> es, ToJSON s, FromJSON s)   => s -> Eff es s
+patch         :: (Workflow :> es)                         => PatchId -> Eff es Bool
+```
+
+### `continueAsNew` / `restoreSeed` — journal rotation
+
+`continueAsNew seed` rotates a long-running workflow onto a fresh journal **generation**: it snapshots
+the carried `seed`, journals a terminal `WorkflowContinuedAsNew` marker on the current generation, and
+unwinds *this* run (the result type is fully polymorphic because control never returns to the caller —
+the rotated continuation runs on the next run/resume). This is how a workflow that runs an *unbounded*
+number of steps — a poller, a per-day rolling process — keeps its per-generation journal bounded so
+replay and hydration stay fast forever.
+
+`restoreSeed def` reads the carried seed back at the **top of the workflow body**: it is an ordinary
+journaled `step` under `continueSeedStepName`, so on a rotated-into generation it hits the seed the
+rotation wrote (returning the carried value without re-running), and on the first generation it misses
+and records `def`.
+
+```haskell
+pollerWorkflow :: (Workflow :> es, Store :> es, IOE :> es) => Eff es a
+pollerWorkflow = do
+  cursor <- restoreSeed (Cursor 0)                 -- carried value, or the default on generation 0
+  batch  <- step (StepName "poll") (pollFrom cursor)
+  sleepNamed (StepName "interval") 60
+  continueAsNew (advance cursor batch)             -- rotate; never returns
+```
+
+A rotating run returns the [`ContinuedAsNew`](#running-a-workflow) outcome; the resume worker drives
+it forward on its current generation. The rotation is crash-safe: the next generation's seed step is
+appended **first** (advancing `currentGeneration`), so even a crash mid-rotation converges to
+"continue from the seed" and never re-runs the closed generation. The one-entry seed map is snapshotted
+unconditionally on rotation (regardless of `snapshotPolicy`), so the next generation hydrates in O(1).
+
+### `patch` — versioning in-flight workflows
+
+`patch pid` returns a **stable, journaled** branch decision: `True` for an instance that is fresh at
+this point (run the new logic) and `False` for one already in flight when the patch shipped (keep the
+old logic). The decision is journaled once under `patch:<pid>` and replayed verbatim forever.
+
+<Callout type="warn">
+`patch` is an **escape hatch** for a change that *cross-cuts several steps*. For the common case — one
+step changed — do **not** use `patch`: **rename the step** instead. A renamed `StepName` has no
+journaled history under its new name, so its action runs fresh on the next replay, which is exactly
+right for a single-step change. Reach for `patch` only when an in-flight instance would be left
+incoherent by the new code (the change adds, removes, or reorders steps, or changes the meaning of an
+already-journaled result). **Never reuse a retired `PatchId`.**
+</Callout>
+
+See [Write a durable workflow → Versioning](/docs/keiro/how-to/write-a-durable-workflow#versioning-a-running-workflow)
+for the rename-vs-patch decision worked through an example.
 
 ## The four primitives
 
@@ -334,10 +414,30 @@ emptyResumeSummary          :: ResumeSummary
 <TypeTable
   type={{
     runOptions: { type: "WorkflowRunOptions", default: "defaultWorkflowRunOptions", description: "Threaded into runWorkflowWith / runChildWorkflow, so a resumed run honours the same snapshot and telemetry options as its first run. The metrics handle here also backs the per-pass keiro.workflow.awakeables.pending and keiro.workflow.resumed instruments." },
-    pollInterval: { type: "Int", default: "1_000_000", description: "Microseconds the loop driver sleeps between passes." },
+    pollInterval: { type: "Int", default: "1_000_000", description: "Microseconds the loop driver sleeps between passes. Under the push-aware worker its meaning shifts to the fallback timeout: the maximum gap when no NOTIFY arrives." },
     useAdvisoryLock: { type: "Bool", default: "False", description: "Reserved and not wired — kept for forward compatibility; setting it has no effect. Concurrency is safe by construction: deterministic ids and step short-circuiting make two workers racing the same workflow converge to the same journal, each side effect at most once." },
   }}
 />
+
+A rotated run (`ContinuedAsNew`) counts toward `resumed`: its new generation has no terminal marker, so
+`findUnfinishedWorkflowIds` still reports it and the next pass drives the rotated generation forward.
+
+### Push-aware variant
+
+`Keiro.Workflow.Resume` also ships a **push-aware** worker that wakes within sub-second of any append
+instead of waiting out a fixed poll, by riding kiroku's existing per-store `LISTEN/NOTIFY` notifier.
+
+```haskell
+runWorkflowResumeWorkerPush :: KirokuStore -> WorkflowResumeOptions -> WorkflowRegistry '[Store, Error StoreError, IOE] -> IO ()
+runPollLoopWith            :: WakeSignal -> Int -> IO () -> IO ()   -- generic: one pass, then wait on the signal
+```
+
+`runWorkflowResumeWorkerPush` runs `resumeWorkflowsOnce` each pass and, between passes, waits on the
+store's notifier — falling back to `pollInterval` (now read as the *fallback* timeout) so a dropped
+notification still drains the backlog. It opens **no new database connection**. This is the push-aware
+sibling of `runWorkflowResumeWorker(With)`, which remain the durable fixed-poll baseline. See the
+[push-delivery reference](/docs/keiro/reference/push-delivery) and
+[Enable push delivery](/docs/keiro/how-to/enable-push-delivery).
 
 ## Snapshots
 
@@ -367,19 +467,29 @@ sync inside the same transaction as each journal append.
 
 ```haskell
 data WorkflowStepRow = WorkflowStepRow
-  { workflowId :: Text, workflowName :: Text, stepName :: Text, result :: Value, recordedAt :: UTCTime }
+  { workflowId :: Text, workflowName :: Text, generation :: Int, stepName :: Text, result :: Value, recordedAt :: UTCTime }
 
 recordStepTx            :: WorkflowStepRow -> Tx.Transaction ()        -- INSERT ... ON CONFLICT DO NOTHING
-loadStepIndex           :: (Store :> es) => WorkflowId -> Eff es (Map Text Value)
-stepExists              :: (Store :> es) => WorkflowId -> Text -> Eff es Bool
-findUnfinishedWorkflowIds :: (Store :> es) => Eff es [(Text, Text)]    -- (workflow_id, workflow_name) lacking a terminal marker
+loadStepIndex           :: (Store :> es) => WorkflowName -> WorkflowId -> Int -> Eff es (Map Text Value)
+stepExists              :: (Store :> es) => WorkflowName -> WorkflowId -> Int -> Text -> Eff es Bool
+currentGeneration       :: (Store :> es) => WorkflowName -> WorkflowId -> Eff es Int   -- MAX(generation), or 0
+findUnfinishedWorkflowIds :: (Store :> es) => Eff es [(Text, Text)]    -- (workflow_id, workflow_name) whose CURRENT generation lacks a terminal marker
 ```
+
+EP-48 threads the **generation** through every lookup. `currentGeneration` returns `MAX(generation)`
+for the logical id (0 when the workflow has no rows). `findUnfinishedWorkflowIds` scopes its
+terminal-marker check to the current generation, and deliberately does **not** treat
+`continuedAsNewStepName` as terminal — so a rotated, still-running workflow is correctly reported as
+unfinished rather than masked as finished.
 
 ## Journal append helpers
 
 Used by wake-source code (a fired timer, `signalAwakeable`, a finishing child) to record an awaited
 step's resolution. The append uses a deterministic event id over
-`("keiro":"workflow":name:id:stepName)`, so concurrent or retried writes collapse to one row.
+`("keiro":"workflow":name:id:generation:stepName)`, so concurrent or retried writes collapse to one
+row — and the same step name on two generations yields *different* ids. These helpers resolve the
+current generation internally (a wake source always targets the generation the suspended run is parked
+on, the current one), so callers do not pass it.
 
 ```haskell
 appendJournalEntry           :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> WorkflowJournalEvent -> Eff es ()
@@ -394,11 +504,14 @@ operator-visible state.
 
 | Table | Migration | Purpose |
 |---|---|---|
-| `keiro_workflow_steps` | `keiro-workflow-steps` | Step-lookup index backing replay and unfinished-workflow discovery; PK `(workflow_id, step_name)`. |
+| `keiro_workflow_steps` | `keiro-workflow-steps` (+ `keiro-workflow-generation`) | Step-lookup index backing replay and unfinished-workflow discovery; PK `(workflow_id, workflow_name, generation, step_name)`. |
 | `keiro_awakeables` | `keiro-awakeables` | Pending external completions (`pending`/`completed`/`cancelled`), keyed by `awakeable_id`. |
 | `keiro_workflow_children` | `keiro-workflow-children` | Durable parent→child links (`running`/`completed`/`cancelled`), PK `(child_id, child_name)`. |
 
-See [Migrations and schema](/docs/keiro/reference/migrations-and-schema) for the full table map.
+The `keiro-workflow-generation` migration (EP-48) adds the `generation` column (default 0) to
+`keiro_workflow_steps` and widens its primary key to include `workflow_name` and `generation`, so two
+generations of the same logical workflow never collide on a reserved step name. See
+[Migrations and schema](/docs/keiro/reference/migrations-and-schema) for the full table map.
 
 ## Observability
 

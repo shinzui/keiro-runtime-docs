@@ -110,6 +110,64 @@ deterministic external ids, dedupe at the destination, or model the effect throu
 commands](/docs/keiro/how-to/make-commands-idempotent). The journal guarantees *at most once per
 completed step*; your action should be safe under *at least once until it completes*.
 
+## Versioning a running workflow
+
+When you change a workflow whose instances are already in flight, you have **two** tools — and the
+common one needs no API.
+
+**Rename the step.** Because step durability is keyed on the *name*, not the source position, changing
+one step's behaviour is just a rename. Change `step (StepName "charge") …` to
+`step (StepName "charge-v2") …`: the new name has no journaled history, so its action runs fresh on the
+next replay, exactly as you want. **The rule of thumb: if a single rename makes the change correct,
+rename.**
+
+**Patch — the escape hatch.** Only when a change *cross-cuts several steps* — an instance already past
+some of them must take one stable branch for the rest of its life — reach for `patch`. It returns a
+stable, journaled `Bool`: `True` for an instance fresh at that point, `False` for one already in flight
+when the patch shipped. For example, wrapping two existing steps in a new fraud check:
+
+```haskell
+orderFlow orderId = do
+  useFraudCheck <- patch (PatchId "fraud-check-v2")
+  if useFraudCheck
+    then do
+      _ <- step (StepName "reserve-inventory") (reserveInventoryWithHold orderId)
+      _ <- step (StepName "fraud-review")      (fraudReview orderId)
+      _ <- step (StepName "charge")            (chargeWithHold orderId)
+      pure ()
+    else do
+      _ <- step (StepName "reserve-inventory") (reserveInventory orderId)
+      _ <- step (StepName "charge")            (chargeCard orderId)
+      pure ()
+```
+
+An order already mid-flight (it reserved inventory under the old logic, with no hold to release)
+observes `useFraudCheck == False` and finishes on the old path; a fresh order observes `True`. Reach
+for `patch` *only* when an in-flight instance would be left incoherent by the new code, and **never
+reuse a retired `PatchId`** — the decision is journaled under `patch:<id>` and replayed forever.
+
+## Keep an unbounded history bounded with continue-as-new
+
+A workflow that runs an *unbounded* number of steps — a poller, a per-day rolling process — would grow
+its journal without limit. `continueAsNew seed` rotates it onto a fresh journal *generation* so the
+per-generation history stays bounded; read the carried state back at the top of the body with
+`restoreSeed`:
+
+```haskell
+pollerWorkflow :: (Workflow :> es, Store :> es, IOE :> es) => Eff es a
+pollerWorkflow = do
+  cursor <- restoreSeed (Cursor 0)               -- the carried value, or the default on generation 0
+  batch  <- step (StepName "poll") (pollFrom cursor)
+  step (StepName "handle") (handleBatch batch)
+  sleepNamed (StepName "interval") 60
+  continueAsNew (advance cursor batch)           -- rotate onto a fresh generation; never returns
+```
+
+`continueAsNew` never returns to its caller (its result type is polymorphic) — it unwinds the run, so
+put it at the end of the body. A rotating run returns the `ContinuedAsNew` outcome, and the resume
+worker drives the next generation forward automatically. Snapshots compact *within* a generation;
+rotation bounds the history *across* generations.
+
 <Cards>
   <Card title="Run the workflow resume worker" href="/docs/keiro/how-to/run-the-workflow-resume-worker" />
   <Card title="Your first durable workflow" href="/docs/keiro/tutorials/your-first-durable-workflow" />

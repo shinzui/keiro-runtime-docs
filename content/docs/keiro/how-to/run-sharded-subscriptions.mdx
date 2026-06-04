@@ -1,0 +1,94 @@
+---
+title: "Run sharded subscriptions"
+description: "Scale a high-volume category subscription across a pool of identical workers with Keiro.Subscription.Shard: start N copies of one binary, let them lease consumer-group buckets cooperatively, and get coordinator-free failover — with an idempotent handler."
+---
+
+One subscription worker reading a busy category in order is a throughput ceiling, and you cannot just
+run two copies — both would process every event. **Consumer-group sharding** lets a pool of identical
+workers drain the category *disjointly*: every event processed by exactly one worker, with automatic
+failover when a worker dies and no external coordinator. This guide wires it up. For the concept, see
+[Scaling the workers](/docs/keiro/explanation/scaling-the-workers); for the API, the
+[subscription-sharding reference](/docs/keiro/reference/subscription-sharding).
+
+## Goal
+
+Drain a high-volume category across `N` worker processes so each handles a disjoint slice of the
+keyspace, and a crashed worker's slice is taken over within one lease TTL.
+
+## Steps
+
+1. **Run the shards migration.** Sharding needs the `keiro_subscription_shards` lease table. It ships
+   in keiro's embedded set, so a normal `keiro-migrate` (or `allKeiroMigrations`) creates it — see
+   [Run the migrations](/docs/keiro/how-to/run-migrations).
+
+2. **Write an idempotent handler.** A sharded subscription is **at-least-once**: a brief overlap is
+   possible while a bucket changes owners. Key your effect on `eventId` and make redelivery a no-op,
+   exactly as for an [async projection](/docs/keiro/how-to/make-an-async-projection-idempotent):
+
+   ```haskell
+   handle :: RecordedEvent -> IO ()
+   handle ev = upsertProjection (eventId ev) (decodePayload ev)   -- ON CONFLICT DO NOTHING
+   ```
+
+3. **Pick `N` and the options.** `N` (the bucket count) is fixed per subscription name — **every
+   worker must pass the same `N`**. Start from the defaults (30 s lease, 10 s renew, batch 100, buffer
+   256) and supply the category target and `N`:
+
+   ```haskell
+   import Keiro.Subscription.Shard.Worker (defaultShardedWorkerOptions, runShardedSubscriptionGroup)
+
+   let opts = defaultShardedWorkerOptions (Category "orders") 8   -- 8 buckets
+   ```
+
+4. **Start the same binary `N` (or more) times.** Each process calls `runShardedSubscriptionGroup`
+   with the same `SubscriptionName` and options. It mints its own worker id, ensures the shard rows,
+   and runs the reconcile loop forever:
+
+   ```haskell
+   runShardedSubscriptionGroup store (SubscriptionName "orders-projector") opts handle
+   ```
+
+   Run as many copies as you like up to `N`; the pool converges to an even split over a few reconcile
+   intervals. (More than `N` workers is allowed — the surplus simply own nothing until a peer dies.)
+
+<Callout type="info">
+**Why a pool of identical processes, not one process forking N readers?** Identical processes are what
+your orchestrator already scales (a Deployment replica count, an autoscaling group). The lease table
+makes them cooperate without leader election, and a process that dies stops renewing — so failover is
+just "its leases expire and a survivor re-claims them", with no health-checking to wire up.
+</Callout>
+
+## What happens on failure
+
+A worker renews its leases every `renewInterval` (default 10 s), several times per `leaseTtl` (default
+30 s). When a worker crashes it stops renewing; within one TTL its buckets' leases expire and a
+surviving worker claims them on its next pass, resuming each bucket at kiroku's per-bucket checkpoint —
+**no event is dropped or reprocessed beyond the at-least-once overlap**. On a *clean* shutdown the
+worker relinquishes its buckets immediately (via a `finally`), so failover is instant rather than
+waiting out the TTL.
+
+## Observe and tune
+
+- **Watch ownership.** `ownershipSnapshot` (or a `SELECT bucket, owner_worker_id, lease_expires_at FROM
+  kiroku.keiro_subscription_shards WHERE subscription_name = …`) shows who owns what and when each lease
+  expires — a quick health read.
+- **Lease vs renew.** Keep `renewInterval` comfortably under `leaseTtl` (the default 10 s / 30 s gives
+  ~3 renews per TTL) so a single slow pass never drops a bucket. A shorter TTL means faster failover but
+  less slack; a longer one is more forgiving but slower to reclaim a dead worker's buckets.
+- **Choosing `N`.** `N` caps useful parallelism (at most `N` workers do work) and is fixed once chosen
+  — pick it for your peak, not today's load. Changing `N` later means draining and re-seeding the shard
+  rows.
+
+<Callout type="warn">
+**Disjointness does not depend on the liveness estimate.** A worker's count of "how many of us are
+live" only tunes how aggressively it claims; the `FOR UPDATE SKIP LOCKED` claim is the real exclusion,
+so two workers can never both own the same bucket even with a stale estimate. What you *must* get right
+is the **idempotent handler** — that is what makes the at-least-once overlap harmless.
+</Callout>
+
+<Cards>
+  <Card title="Scaling the workers" href="/docs/keiro/explanation/scaling-the-workers" />
+  <Card title="Subscription sharding" href="/docs/keiro/reference/subscription-sharding" />
+  <Card title="Make an async projection idempotent" href="/docs/keiro/how-to/make-an-async-projection-idempotent" />
+  <Card title="The scaling walkthrough" href="/docs/keiro/walkthrough/scaling/00-start-here" />
+</Cards>

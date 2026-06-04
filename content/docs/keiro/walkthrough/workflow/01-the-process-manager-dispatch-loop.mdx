@@ -144,6 +144,41 @@ state append) are the subject of [chapter 02](/docs/keiro/walkthrough/workflow/0
 for the cycle a single command runs through, see the
 [command processor](/docs/keiro/walkthrough/command-cycle/03-the-command-processor).
 
+## The payoff: the manager's own state is a keiki transducer
+
+It is worth pausing on what just happened, because it is the whole reason a process manager is so
+little code. That `manager ^. #eventStream` argument is an `EventStream phi rs s ci co` — the **same**
+typed wrapper over a keiki `SymTransducer` that a *domain aggregate* carries
+([the foundation tour](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step)). The manager
+is **just another aggregate**: its progress is event-sourced to its own `fulfillment-<id>` /
+`esc-<id>` stream, and `runCommandWithSql` steps its transducer through the **exact same**
+Hydrate → Transduce → Append cycle a user command uses. Nothing in this engine re-implements state
+storage, replay, or concurrency — it *borrows* the command cycle wholesale. That reuse is the benefit,
+and it has three concrete edges:
+
+- **Typed registers (`RegFile rs`) instead of hand-rolled saga state.** A saga's working memory —
+  "which approvals are in", "the reservation id to compensate", a deadline — lives in the transducer's
+  typed register file, not smuggled into an ad-hoc state blob. The same `RegFile` shape is what lets the
+  manager stream snapshot and hydrate exactly like an aggregate.
+- **ε-edges: the manager can advance *itself*.** A keiki transducer can take an internal transition on
+  a **guard alone**, without consuming a command — "once both legs have confirmed, move to `Shipped`".
+  That is precisely the "stateful coordinator that drives itself forward" behaviour a saga needs, and it
+  falls out of the transducer rather than being coded as an extra dispatch.
+- **Replay-safety is inherited, not added.** Stepping a `SymTransducer` is a **pure, total**
+  transition, so re-hydrating the manager stream reconstructs the exact manager state deterministically.
+  *That* is why the `eventAlreadyIn` pre-check plus a `deterministicCommandId` is enough to make the
+  whole reaction a benign no-op on replay (chapter 02) — the determinism comes from the transducer
+  underneath, for free.
+
+The single mental model is the point: an aggregate, this process manager, and a
+[saga](/docs/keiro/how-to/write-a-saga-with-compensation) are all the *same* keiki transducer, differing
+only in what `ci` and `co` are bound to — so there is one decision core, one persistence story, and one
+replay argument across the whole framework. (For the full rationale, read
+[Why SymTransducer, not Decider](/docs/keiro/explanation/why-symtransducer-not-decider).) Contrast this
+with [durable execution](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop#this-is-not-a-keiki-transducer-and-that-is-deliberate),
+the one subsystem that is *not* a transducer: a workflow is imperative code over a dynamic step map, so
+it cannot reuse this machinery and journals instead.
+
 ## `finish` and the dispatch loop
 
 Both the duplicate and the freshly-appended path call `finish`, which runs the dispatch loop and

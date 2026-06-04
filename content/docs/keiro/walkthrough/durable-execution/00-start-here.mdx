@@ -70,6 +70,9 @@ keiro/src/Keiro/Workflow/Resume.hs       -- the resume / crash-recovery worker
 keiro/src/Keiro/Workflow/Snapshot.hs     -- the workflow snapshot codec + Keiro.Telemetry instruments
 ```
 
+Chapter 09 returns to `Types.hs`, `Schema.hs`, and `Workflow.hs` for the MasterPlan-6 additions —
+continue-as-new journal rotation and the `patch` versioning API.
+
 ## The chapters
 
 <Cards>
@@ -81,6 +84,7 @@ keiro/src/Keiro/Workflow/Snapshot.hs     -- the workflow snapshot codec + Keiro.
   <Card title="06 — Child workflows" href="/docs/keiro/walkthrough/durable-execution/06-child-workflows" description="spawnChild as a journaled parent step + link row, awaitChild over awaitStep, cancelChild's two-marker dance, and runChildWorkflow/childCompletionHook waking the parent." />
   <Card title="07 — The resume worker" href="/docs/keiro/walkthrough/durable-execution/07-the-resume-worker" description="The registry, resumeWorkflowsOnce's discovery union and per-workflow advance, child routing, the ResumeSummary, and why no advisory lock is needed." />
   <Card title="08 — Snapshots and telemetry" href="/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry" description="The fixed-shape-hash workflowStateCodec, tail replay from a snapshot seed, and the six keiro.workflow.* instruments plus the withWorkflowSpan run span." />
+  <Card title="09 — Versioning and rotation" href="/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation" description="The generation column and #<g> stream suffix, currentGeneration, the ContinueAsNew/WorkflowRotate unwind and crash-safe rotateGeneration, restoreSeed as an ordinary step, and the patch hit/miss handler keyed on startedInFlight." />
 </Cards>
 
 ## What this tour assumes
@@ -92,3 +96,15 @@ durable sleep reuses). The durable-execution runtime layers on both: it journals
 the same codec machinery, and a workflow sleep is a `keiro_timers` row routed by a payload
 discriminator. The runnable worked example throughout is jitsurei's
 `orderFulfillmentWorkflow` (`cabal run jitsurei:exe:jitsurei-demo -- workflow`).
+
+<Callout type="warn">
+**One expectation to reset before you start: this runtime is *not* a keiki `SymTransducer`.** Everywhere
+else in keiro the decision core is one — an aggregate, a process manager, and a saga are all the same
+keiki transducer ([the foundation tour](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step)).
+Durable execution is the deliberate exception: `Keiro.Workflow` is an `effectful` effect interpreted by a
+**journal-and-replay handler**, with no keiki transducer involved — because a workflow is imperative code
+with in-line waits over a *dynamic* step map, not a pure transition relation over a *static* register
+file. [Chapter 02](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop#this-is-not-a-keiki-transducer-and-that-is-deliberate)
+explains the split in full; the two still share the kiroku log and the `Codec` substrate beneath the
+decision core.
+</Callout>

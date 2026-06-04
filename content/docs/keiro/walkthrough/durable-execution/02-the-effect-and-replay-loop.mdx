@@ -33,6 +33,40 @@ contract that keeps the surface small:
 `CurrentWorkflow` exposes the running identity (to key wake sources), and `FreshOrdinal` is the
 per-run counter behind the ordinal convenience forms.
 
+## This is *not* a keiki transducer — and that is deliberate
+
+Everywhere else in keiro the decision core is a keiki `SymTransducer`: the
+[command cycle](/docs/keiro/walkthrough/command-cycle/00-start-here) steps one with
+`Keiki.applyEventStreaming` (`Keiki.InFlight`/`Settled`), and a
+[process manager](/docs/keiro/walkthrough/workflow/00-start-here) is the *same* object persisted to its
+own stream. That is keiro's v1 thesis — "aggregates, process managers, and sagas are all one keiki
+transducer" ([the foundation tour](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step)).
+Durable execution is the **one** subsystem where that thesis does **not** hold, by design — so it is
+worth saying plainly why before reading the interpreter.
+
+`Workflow` is an ordinary [`effectful`](https://hackage.haskell.org/package/effectful) **dynamic-dispatch
+effect** (`data Workflow :: Effect where …`, `DispatchOf Workflow = Dynamic`), interpreted by
+`runWorkflowWith` with `interpret handler action`. There is no `Keiki` import anywhere in the
+`Keiro.Workflow` family. The reason is structural, not incidental:
+
+- A keiki `SymTransducer` is a **pure, total** transition relation over a **statically-known register
+  file** — its whole power (symbolic execution, the `BoolAlg`/`RegFile` shape) comes from knowing the
+  state's slots ahead of time. A durable workflow is the opposite shape: **imperative effectful code
+  with in-line waits**, whose "state" is a *dynamic* `Map Text Value` keyed by runtime step-name strings.
+  There is no fixed transition relation to express, and no static slot list to symbolic-execute over.
+- So the runtime keeps durability with a different mechanism — **journal-and-replay through an effect
+  handler** — rather than transducer stepping. The handler intercepts each `Step`/`Await`, consults the
+  folded journal, and either replays a recorded result or runs the action and journals it (the rest of
+  this chapter).
+
+What the two *do* share is the **substrate below the decision core**: a workflow journals to a kiroku
+stream through the same [`Codec`](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary)
+machinery aggregates use, and reuses keiro's snapshots, timers, and migrations. The split surfaces
+concretely in [chapter 08](/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry): the
+workflow snapshot codec **cannot** derive a shape hash from `Keiki.Shape.regFileShapeHash` (there is no
+static slot list), so it uses a fixed sentinel and self-describing JSON instead — the one keiki mention
+in the whole module family is exactly this *contrast*.
+
 ## `runWorkflowWith`: the cancellation short-circuit
 
 ```haskell
@@ -182,6 +216,14 @@ is what makes the wake-source helpers (`appendJournalEntry` / `appendJournalEntr
 idempotent: they pre-check `stepExists` and, on a hit, return the would-be id without appending. That
 deterministic-id-plus-pre-check pattern is why two resume workers can race the same workflow and
 converge ([chapter 07](/docs/keiro/walkthrough/durable-execution/07-the-resume-worker)).
+
+<Callout type="info">
+EP-48 continue-as-new threads a **generation** through this whole path: `runWorkflowWith` resolves the
+current generation once, `appendJournalTx` targets `workflowGenerationStreamName name wid gen`, and the
+id recipe becomes `("keiro":"workflow":name:id:generation:stepName)` so the same step name on two
+generations yields *different* ids. At generation 0 every form here is byte-for-byte unchanged — see
+[chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation).
+</Callout>
 
 ## Run options and the active-count gauge
 

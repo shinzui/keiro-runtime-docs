@@ -64,8 +64,9 @@ stream named `wf:<name>-<id>`) plus **replay**.
   result, the now-resolved wait returns immediately, and only the un-journaled tail runs for real.
 
 So "resume" is not a special code path — it is *the same function, run again*. The journal is what
-makes re-running it cheap and safe. A `runWorkflow` returns one of three [outcomes](/docs/keiro/reference/durable-workflows#running-a-workflow):
-`Completed a`, `Suspended`, or `Cancelled`.
+makes re-running it cheap and safe. A `runWorkflow` returns one of four [outcomes](/docs/keiro/reference/durable-workflows#running-a-workflow):
+`Completed a`, `Suspended`, `Cancelled`, or `ContinuedAsNew` (the run rotated its journal — see
+*Evolving a running workflow* below).
 
 ## Named steps, not positional history
 
@@ -148,12 +149,32 @@ For a workflow with a long journal, re-reading the whole stream on every run is 
 map so a resume hydrates from the snapshot plus the journal tail. Snapshots are advisory — a stale or
 corrupt one degrades to a full replay, never to a wrong answer.
 
-Two pieces are deliberately **deferred** (cleanly additive):
+## Evolving a running workflow: rotation and versioning
 
-- **Continue-as-new journal rotation** for unbounded-length histories. A workflow that journals
-  millions of steps has no compaction story yet beyond snapshots.
-- **A versioning / patch API** for changing a workflow's logic while instances are in flight. Named
-  steps make *additive* edits safe; structurally changing a step's meaning still needs care.
+Two questions come up once workflows are live: *how does an unbounded-length history stay bounded?* and
+*how do I change a workflow's logic while instances are in flight?* Both now have shipped answers
+(MasterPlan 6), and both fall out of the named-step model rather than fighting it.
+
+**Continue-as-new rotation.** A workflow that runs an unbounded number of steps — a poller, a per-day
+rolling process — would grow its journal without limit. `continueAsNew seed` rotates the instance onto
+a fresh journal **generation**: it carries `seed` forward, closes the current generation with a
+terminal marker, and unwinds the run; the next run hydrates from the seed against an empty journal.
+Read the seed back at the top of the body with `restoreSeed`. The *logical* identity
+`(WorkflowName, WorkflowId)` is stable across rotations — only the physical stream the journal lives on
+rotates underneath it (`wf:<name>-<id>` for generation 0, `wf:<name>-<id>#<g>` after) — so the resume
+worker keeps driving it transparently. Snapshots compact *within* a generation; rotation bounds the
+history *across* generations.
+
+**Versioning: rename, or patch.** Because step identity is the **name**, the *common* way to change a
+running workflow needs no special API: **rename the step**. A new `StepName` has no journaled history,
+so its action runs fresh on the next replay — exactly right when one step's behaviour changed. The rule
+of thumb: *if a single rename makes the change correct, rename.* For the rare change that *cross-cuts
+several steps* — where an instance already past some of them must take one stable branch for the rest of
+its life — `patch pid` returns a **stable, journaled** branch decision: `True` for an instance fresh at
+that point, `False` for one already in flight when the patch shipped. The decision is recorded once and
+replayed verbatim forever. Reach for `patch` only when an in-flight instance would otherwise be left
+incoherent, and never reuse a retired `PatchId`. See
+[Write a durable workflow → Versioning](/docs/keiro/how-to/write-a-durable-workflow#versioning-a-running-workflow).
 
 <Cards>
   <Card title="Durable workflows reference" href="/docs/keiro/reference/durable-workflows" />

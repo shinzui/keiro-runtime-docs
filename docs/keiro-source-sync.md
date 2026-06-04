@@ -18,34 +18,48 @@ the affected pages, then bump the pointer below.
 ## Last reviewed commit
 
 ```text
-d6928518d955c4ca8c3987a6f27dedeb9b2f23d4  (d692851)
-2026-06-03 (MasterPlan 5 close-out, EP-45 M5)
+0730ae1533894ec5398b9dc0728989edb0f1148d  (0730ae1)
+2026-06-04 (MasterPlan 6 close-out, EP-51 M4/M6; HEAD tip is a Nix-only build change)
 keiro 0.1.0.0 (development line; the in-tree version is still 0.1.0.0)
 ```
 
-> **Note.** The `aeaafee..d692851` range ships **Phase 5 — v2 durable execution** (MasterPlan 5,
-> EP-38…EP-45): the `Keiro.Workflow` module family. This is a new, first-class **shipped** feature and
-> is documented across a new doc set rather than folded into existing pages:
-> - **New pages:** `reference/durable-workflows.mdx`, `explanation/durable-execution.mdx`,
->   `tutorials/your-first-durable-workflow.mdx`, `how-to/write-a-durable-workflow.mdx`,
->   `how-to/run-the-workflow-resume-worker.mdx`, `cookbook/durable-order-workflow.mdx`, and the
->   nine-chapter `walkthrough/durable-execution/` tour.
-> - **Surface:** the `Workflow` effect (`step` / `awaitStep`), `runWorkflow(With)` + `WorkflowRunOptions`,
->   durable `sleepNamed`/`sleep` (reusing `keiro_timers` via a payload discriminator), `awakeableNamed`
->   + `signalAwakeable`/`cancelAwakeable`, child workflows (`spawnChild`/`awaitChild`/`cancelChild`), the
->   resume worker (`resumeWorkflowsOnce` + the `WorkflowRegistry`), and `workflowStateCodec` snapshots.
-> - **Schema:** three new migrations / tables — `keiro_workflow_steps`, `keiro_awakeables`,
->   `keiro_workflow_children` (now **seven** migration files, **eight** tables; folded into
->   `reference/migrations-and-schema.mdx` and the operations walkthrough).
-> - **Telemetry:** six `keiro.workflow.*` instruments and the `withWorkflowSpan` run span, plus the
->   `keiro.workflow.{name,id,step}` attribute keys (folded into `reference/telemetry.mdx`).
-> - **Updated to "shipped":** `explanation/workflow-roadmap.mdx` (v2 now Available),
->   `keiro/index.mdx`, and `faq.mdx`.
+> **Note.** The `d692851..0730ae1` range ships **Phase 5 phase-2 — v2 durable execution, continued**
+> (MasterPlan 6, EP-48…EP-51) plus a doc-neutral Nix build migration at the tip (`0730ae1`). It evolves
+> the existing durable-workflow doc set and adds a new **worker-scaling** doc set rather than a wholly
+> separate area:
+> - **Versioning & rotation (EP-48/EP-49), folded into the workflow pages:** `continueAsNew` /
+>   `restoreSeed` (journal *generations*, `wf:<name>-<id>#<g>`, the `WorkflowContinuedAsNew` marker, the
+>   `ContinuedAsNew` outcome, `currentGeneration`) and `patch` / `PatchId` (the `patch:` reserved prefix,
+>   the `startedInFlight` decision). Touches `reference/durable-workflows.mdx`,
+>   `explanation/durable-execution.mdx`, `explanation/workflow-roadmap.mdx`,
+>   `how-to/write-a-durable-workflow.mdx`, `faq.mdx`, `keiro/index.mdx`, and a new walkthrough chapter
+>   `walkthrough/durable-execution/09-versioning-and-rotation.mdx`.
+> - **New pages — push delivery (EP-50) & sharding (EP-51):** `reference/push-delivery.mdx`
+>   (`Keiro.Wake`: `WakeSignal`/`WakeReason`, `wakeSignalFromStore`, `neverWake`, `runPollLoopWith`,
+>   `runWorkflowResumeWorkerPush`), `reference/subscription-sharding.mdx` (`Keiro.Subscription.Shard{,.Worker,.Schema}`:
+>   `ShardLease`, `acquireOwnedBuckets`, `runShardedSubscriptionGroup`, `keiro_subscription_shards`),
+>   `explanation/scaling-the-workers.mdx`, `how-to/enable-push-delivery.mdx`,
+>   `how-to/run-sharded-subscriptions.mdx`, and the new five-chapter `walkthrough/scaling/` tour.
+> - **Schema:** two new migrations — `keiro-workflow-generation` (ALTER `keiro_workflow_steps`: add
+>   `generation`, widen PK to `(workflow_id, workflow_name, generation, step_name)`, re-index) and
+>   `keiro-subscription-shards` (new `keiro_subscription_shards` table). Now **nine** migration files,
+>   **nine** tables; folded into `reference/migrations-and-schema.mdx` and `how-to/run-migrations.mdx`.
+>   Both MasterPlan-6 migrations carry a `SET search_path TO kiroku, pg_catalog;` pin.
+> - **Tooling:** the `keiro-migrate new <description>` scaffold subcommand and the `Keiro.Migrations.New`
+>   module (folded into `reference/migrations-and-schema.mdx` and `how-to/run-migrations.mdx`).
+> - **Telemetry:** no new instruments in this range.
 >
-> Deferred (called out as such): continue-as-new journal rotation and the versioning/patch API.
+> Deferred (now rejected or demand-driven, no longer "additive soon"): multi-region / global ordering,
+> server-side scripted projections, a schema registry, and field-level encryption.
 
 ### Previous pointers (for traceability)
 
+- `d6928518d955c4ca8c3987a6f27dedeb9b2f23d4` (`d692851`, 2026-06-03, keiro 0.1.0.0) — the baseline
+  before Phase 5 phase-2. The `d692851..0730ae1` range added continue-as-new journal rotation
+  (`continueAsNew`/`restoreSeed`, EP-48), the versioning/patch API (`patch`, EP-49), LISTEN/NOTIFY push
+  delivery (`Keiro.Wake` + `runWorkflowResumeWorkerPush`, EP-50), consumer-group sharding for category
+  subscriptions (`Keiro.Subscription.Shard`, EP-51), the two new migrations/tables, and the
+  `keiro-migrate new` scaffold — plus a Nix-only build migration at the tip.
 - `aeaafee8861840750475e7d48b2c5cb0ae71beab` (`aeaafee`, 2026-06-03, keiro 0.1.0.0) — the baseline
   before Phase 5. The `aeaafee..d692851` range added the `Keiro.Workflow` durable-execution runtime
   (named-step journaling/replay, durable sleep, awakeables, child workflows, the crash-recovery resume
@@ -69,8 +83,8 @@ keiro 0.1.0.0 (development line; the in-tree version is still 0.1.0.0)
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline d692851..HEAD
-   git -C "$KEIRO" diff --stat d692851..HEAD
+   git -C "$KEIRO" log --oneline 0730ae1..HEAD
+   git -C "$KEIRO" diff --stat 0730ae1..HEAD
    ```
    keiro also keeps its own `docs/`, `CHANGELOG.md`, and `docs/plans|masterplans` entries — the
    prose diff there is the fastest way to understand intent before touching the source. Note that
@@ -84,11 +98,13 @@ keiro 0.1.0.0 (development line; the in-tree version is still 0.1.0.0)
      `reference/event-stream-and-stream.mdx`, `reference/codec.mdx`, `reference/router.mdx`,
      `reference/projection.mdx`, `reference/read-model.mdx`, `reference/snapshot.mdx`,
      `reference/process-manager.mdx`, `reference/timers.mdx`, `reference/durable-workflows.mdx`,
+     `reference/push-delivery.mdx`, `reference/subscription-sharding.mdx`,
      `reference/integration-event.mdx`, `reference/inbox.mdx`, `reference/outbox.mdx`,
      `reference/telemetry.mdx`, `reference/migrations-and-schema.mdx`.
    - **Walkthroughs** (line-by-line tours of the real source): every chapter under
      `walkthrough/command-cycle/`, `walkthrough/read-side/`, `walkthrough/workflow/`,
-     `walkthrough/durable-execution/`, `walkthrough/operations/`, and `walkthrough/integration/`.
+     `walkthrough/durable-execution/`, `walkthrough/scaling/`, `walkthrough/operations/`, and
+     `walkthrough/integration/`.
    - **Conceptual anchors**: `explanation/what-is-keiro.mdx`, `explanation/the-keiro-stack.mdx`,
      `explanation/the-jitsurei-example.mdx`, and `tutorials/getting-started.mdx`.
 3. Replace the **Last reviewed commit** block above with the new `HEAD`, and move the old SHA into

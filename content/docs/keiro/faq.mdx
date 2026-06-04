@@ -27,17 +27,38 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     and child workflows, plus a crash-recovery resume worker. Unlike Temporal's positional history,
     step identity is by **name**, so it is stable across source reordering. It layers on the v1
     **process managers** + **durable timers** (`keiro_timers`), which remain the right tool for
-    fundamentally event-driven, reactive coordination. The deferred pieces are continue-as-new journal
-    rotation and a versioning/patch API. See [Understanding durable
-    execution](/docs/keiro/explanation/durable-execution), the [durable workflows
-    reference](/docs/keiro/reference/durable-workflows), and the [workflow
+    fundamentally event-driven, reactive coordination. It also ships **continue-as-new** journal
+    rotation (`continueAsNew` / `restoreSeed`, for unbounded histories) and a **versioning** API
+    (`patch`, for cross-cutting logic changes — prefer renaming a step for single-step changes). See
+    [Understanding durable execution](/docs/keiro/explanation/durable-execution), the [durable
+    workflows reference](/docs/keiro/reference/durable-workflows), and the [workflow
     roadmap](/docs/keiro/explanation/workflow-roadmap).
+  </Accordion>
+
+  <Accordion title="How do I change a workflow's logic while instances are in flight?">
+    Two tools, and the common one needs no API. Because step identity is the **name**, a single
+    step's change is just a **rename** — the new `StepName` has no journaled history, so it runs fresh.
+    For a change that *cross-cuts several steps*, `patch (PatchId "…")` returns a stable, journaled
+    `Bool`: `True` for instances fresh at that point, `False` for ones already in flight, replayed
+    verbatim forever. Reach for `patch` only when an in-flight instance would otherwise be left
+    incoherent, and never reuse a retired `PatchId`. See [Write a durable workflow →
+    Versioning](/docs/keiro/how-to/write-a-durable-workflow#versioning-a-running-workflow).
+  </Accordion>
+
+  <Accordion title="How do I scale the background workers?">
+    Two additive primitives that leave the durable model untouched. **Push delivery** (`Keiro.Wake`,
+    `runWorkflowResumeWorkerPush`) makes a poll-loop worker react within sub-second of an append by
+    riding kiroku's existing `LISTEN/NOTIFY` notifier — no new connections, and a durable poll fallback
+    so a dropped notification only costs latency. **Consumer-group sharding**
+    (`Keiro.Subscription.Shard`, `runShardedSubscriptionGroup`) drains a high-volume category across a
+    pool of identical workers that lease buckets cooperatively, with coordinator-free failover. See
+    [Scaling the workers](/docs/keiro/explanation/scaling-the-workers).
   </Accordion>
 
   <Accordion title="Is keiro Postgres-only?">
     Yes. keiro persists everything — events, snapshots, read models, timers, the outbox, the inbox —
     to **one** PostgreSQL database. That single-substrate design is deliberate: no second datastore to
-    keep consistent. See [Run the migrations](/docs/keiro/how-to/run-migrations) for the eight tables
+    keep consistent. See [Run the migrations](/docs/keiro/how-to/run-migrations) for the nine tables
     keiro owns.
   </Accordion>
 

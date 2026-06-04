@@ -1,0 +1,126 @@
+---
+title: "04 — The sharded worker"
+description: "Reading Keiro.Subscription.Shard.Worker: reconcileShardsOnce as the single testable unit (estimate live workers, acquire, shed excess, reconcile readers), startReader's kiroku consumer-group config, runShardedSubscriptionGroup's loop and finally-on-shutdown failover, and the rebalance-signal seam."
+---
+
+The [lease layer](/docs/keiro/walkthrough/scaling/03-the-shard-lease) decides *which* buckets a worker
+owns. `Keiro.Subscription.Shard.Worker` turns that ownership into *running kiroku readers*. You start the
+**same** binary `N` times and they partition the category among themselves — every event processed by
+exactly one worker, with coordinator-free failover.
+
+## One pass: estimate, acquire, shed, reconcile readers
+
+`reconcileShardsOnce` is the single testable unit (the analogue of `resumeWorkflowsOnce`): one call
+claims/renews/sheds leases and starts/stops readers once, with no loop of its own.
+
+```haskell
+reconcileShardsOnce store lease opts readers handler = do
+  now <- getCurrentTime
+  -- 1. Estimate live workers: distinct non-expired owners, plus self.
+  snap <- either (const []) id <$> runStoreIO store (ownershipSnapshot lease)
+  let liveOwners  = Set.fromList [w | (_, Just w, Just expiresAt) <- snap, expiresAt > now]
+      liveWorkers = Set.size (Set.insert (lease ^. #workerId) liveOwners)
+      shareTarget = fairShareTarget (lease ^. #shardCount) liveWorkers
+  -- 2. Renew held + claim up to fair share (one bucket per pass).
+  claimed <- either (const Set.empty) id <$> runStoreIO store (acquireOwnedBuckets lease liveWorkers)
+  -- 3. Shed any excess above the fair share — but never when alone.
+  owned <-
+    if liveWorkers > 1 && Set.size claimed > shareTarget
+      then do
+        let excess = Set.fromList (drop shareTarget (sort (Set.toList claimed)))
+        _ <- runStoreIO store (relinquish lease excess)
+        pure (claimed `Set.difference` excess)
+      else pure claimed
+  -- 4. Bring readers in line with `owned`: start newly-owned, stop newly-lost.
+  ...
+  pure owned
+```
+
+The four steps read as one idea — *converge my running readers to my fair share of buckets*:
+
+- **Estimate** counts distinct owners whose lease has not expired, plus self. It is only an estimate, and
+  that is fine: the [`FOR UPDATE SKIP LOCKED` claim](/docs/keiro/walkthrough/scaling/03-the-shard-lease)
+  is the real exclusion, so a stale count never causes double ownership — it only tunes how aggressively
+  this worker claims.
+- **Acquire** renews held leases and claims one more bucket if below the fair share (chapter 03).
+- **Shed** is the counterpart to one-bucket-per-pass claiming. A worker that over-claimed on a cold start
+  (when it briefly believed it was alone) gives the excess back so the pool converges to an even split.
+  The guard `liveWorkers > 1` is load-bearing: **a lone worker never sheds — it must own every bucket**,
+  or events would stop being read.
+- **Reconcile readers** diffs `owned` against the currently-running readers, starts a reader for each
+  newly-owned bucket, and stops the reader for each newly-lost one. A bucket that moves owners resumes at
+  its own kiroku per-member checkpoint, so no event is dropped.
+
+## Each reader is a kiroku consumer-group member
+
+`startReader` opens one kiroku consumer-group reader for a bucket and forks a drain thread:
+
+```haskell
+startReader store lease opts handler bucket = do
+  let subConfig =
+        (defaultSubscriptionConfig (lease ^. #subscriptionName) (opts ^. #target) (\_ -> pure Continue))
+          { Sub.batchSize = opts ^. #batchSize
+          , Sub.consumerGroup =
+              Just (ConsumerGroup{ member = fromIntegral bucket, size = fromIntegral (opts ^. #shardCount) })
+          }
+  (stream, cancelAction) <- subscriptionStream store subConfig (opts ^. #bufferSize)
+  tid <- forkIO (Stream.fold (Fold.drainMapM handler) stream)
+  pure (RunningReader (cancelAction >> killThread tid))
+```
+
+The `ConsumerGroup{member = bucket, size = N}` is what ties keiro's `bucket` to kiroku's hash partition —
+the same `(member, size)` kiroku uses to route a stream id to a bucket. The returned `RunningReader`
+captures the stop action (cancel the subscription, which terminates the drain, then kill the thread), so
+the reconcile loop can stop a lost bucket cleanly.
+
+## The loop, and why a crash is just failover
+
+`runShardedSubscriptionGroup` mints a worker id, ensures the `N` rows exist, then reconciles every
+`renewInterval` forever — with a `finally` that stops every reader on the way out:
+
+```haskell
+runShardedSubscriptionGroup store subName opts handler = do
+  worker <- WorkerId <$> UUIDv4.nextRandom
+  let lease = ShardLease { subscriptionName = subName, workerId = worker
+                         , shardCount = opts ^. #shardCount, leaseTtl = opts ^. #leaseTtl }
+  _ <- runStoreIO store (ensureShards lease)
+  readers <- newIORef Map.empty
+  loop lease readers `finally` stopAll readers
+ where
+  loop lease readers = forever $ do
+    _ <- reconcileShardsOnce store lease opts readers handler
+    threadDelay delayMicros
+  stopAll readers = readIORef readers >>= \m -> for_ (Map.elems m) stopReader
+```
+
+On shutdown — the loop thread killed, simulating a crash — the `finally` stops every reader this worker
+holds, so its buckets stop being read immediately; its leases then expire and a surviving worker re-claims
+them on its next pass. **Failover needs no health-checking and no coordinator** — it is just "stop
+renewing, and someone else claims the expired lease". A fresh `WorkerId` per process start (chapter 03)
+is why a restarted binary never inherits the dead process's leases.
+
+Like the [push resume worker](/docs/keiro/walkthrough/scaling/02-the-push-aware-resume-loop), this worker
+lives in `IO`: it manages long-lived `forkIO` reader threads and holds the `KirokuStore` directly, running
+each lease pass through `runStoreIO`. The handler is a plain `RecordedEvent -> IO ()`, and because a
+sharded subscription delivers **at-least-once** (a brief overlap while a bucket changes owners), the
+handler must be idempotent — keyed on `eventId` — exactly as keiro's async-projection guidance already
+requires.
+
+## The rebalance-signal seam
+
+The fixed `threadDelay` between passes is a deliberate, documented seam (EP-51 Milestone 6). The shipped
+default is a pure poll: correctness — disjointness and failover — rests entirely on the lease table and
+needs no notification. But the [`Keiro.Wake`](/docs/keiro/walkthrough/scaling/01-the-wake-signal) channel
+wakes on event *appends* (`kiroku.events`), which is a *different* event from a shard ownership *change*.
+Signalling a prompt rebalance on a worker join or a voluntary relinquish would ride a dedicated
+`keiro_shard_rebalance` `NOTIFY` fired on claim/release — and the swap is local to this one `threadDelay`
+(replace it with a bounded wait on that channel, exactly as `runPollLoopWith` does for appends). It is left
+as the poll default because it is a latency optimisation, not a correctness requirement — the same
+discipline that governs push delivery throughout this tour.
+
+<Cards>
+  <Card title="03 — The shard lease" href="/docs/keiro/walkthrough/scaling/03-the-shard-lease" />
+  <Card title="Run sharded subscriptions" href="/docs/keiro/how-to/run-sharded-subscriptions" />
+  <Card title="Subscription sharding (reference)" href="/docs/keiro/reference/subscription-sharding" />
+  <Card title="Scaling the workers" href="/docs/keiro/explanation/scaling-the-workers" />
+</Cards>

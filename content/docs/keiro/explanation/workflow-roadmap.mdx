@@ -59,6 +59,8 @@ whose checkpoints are individually durable:
 | Journal storage | one kiroku stream per instance, `wf:<name>-<id>` |
 | Crash recovery | `resumeWorkflowsOnce` discovers and re-invokes unfinished workflows from a registry |
 | Snapshots | `runWorkflowWith` + `snapshotPolicy` compact long journals |
+| Rotation | `continueAsNew` / `restoreSeed` rotate onto a fresh journal generation so unbounded histories stay bounded |
+| Versioning | `patch` gives a stable, journaled branch decision for cross-cutting logic changes (prefer renaming a step for single-step changes) |
 | Observability | the `keiro.workflow.*` instruments and a `workflow <name>` span |
 
 The key design decision is **named steps, not positional history**: step identity is an explicit
@@ -66,9 +68,27 @@ string, stable across source reordering, which avoids the Temporal-style replay 
 ordinary code movement can otherwise cause. See
 [Understanding durable execution](/docs/keiro/explanation/durable-execution) for why this matters.
 
-Two pieces are deliberately **deferred** (cleanly additive): continue-as-new journal rotation for
-unbounded histories, and a versioning / patch API for changing a workflow's logic while instances are
-in flight.
+### Phase-2 additions (MasterPlan 6)
+
+The phase-2 work closes the two pieces that were once deferred and adds two scaling primitives shared
+with the read side:
+
+- **Continue-as-new journal rotation** (`continueAsNew` / `restoreSeed`) keeps an unbounded-length
+  history bounded by rotating onto a fresh journal generation.
+- **The versioning / patch API** (`patch`) gives a stable, journaled branch decision for a change that
+  cross-cuts several steps; a single-step change is still better expressed by renaming the step.
+- **LISTEN/NOTIFY push delivery** (`Keiro.Wake`, `runWorkflowResumeWorkerPush`) wakes the resume worker
+  (and any poll-loop worker) within sub-second of an append, riding kiroku's existing per-store
+  notifier with no new connections and a durable poll fallback.
+- **Consumer-group sharding** (`Keiro.Subscription.Shard`, `runShardedSubscriptionGroup`) lets a pool
+  of identical workers drain a high-volume category subscription disjointly, with coordinator-free
+  failover.
+
+The last two are about *scaling the workers* rather than the workflow model itself — see
+[Scaling the workers](/docs/keiro/explanation/scaling-the-workers).
+
+Still deferred (rejected or demand-driven): multi-region / global ordering, server-side scripted
+projections, a schema registry, and field-level encryption.
 
 ## Which layer to build on
 
