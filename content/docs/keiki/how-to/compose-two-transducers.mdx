@@ -1,0 +1,147 @@
+---
+title: "Compose two transducers"
+description: "Chain one aggregate's output into another's input with compose, aligning the middle alphabet and the register slot names so the composite's guarantees survive."
+---
+
+You have two `SymTransducer`s and want the events of the first to drive the second — an
+`AlertSource` that emits `EmailCmd`, feeding an `EmailDelivery` that consumes `EmailCmd`. keiki's
+`compose` builds that pipeline as a single transducer. This guide shows the two alignment
+obligations you must satisfy before it typechecks, and how to confirm the composite still carries
+the keiki guarantees.
+
+<Callout type="info">
+  Assumes you can already author a single aggregate and read its types (input alphabet, output
+  alphabet, register file). If not, start with [the SymTransducer
+  explanation](/docs/keiki/explanation/the-symtransducer).
+</Callout>
+
+## Goal
+
+Given `t1 :: SymTransducer _ rs1 s1 ci1 mid` and `t2 :: SymTransducer _ rs2 s2 mid co`, produce
+`compose t1 t2 :: SymTransducer _ (Append rs1 rs2) (Composite s1 s2) ci1 co` — a transducer that
+consumes t1's input and emits t2's output, threading t1's events through t2 transparently.
+
+## Steps
+
+<Steps>
+
+<Step>
+
+**Align the middle alphabet.** `compose` requires t1's *output* type to be exactly t2's *input*
+type — the shared `mid`. The two transducers must agree on this type with no implicit coercion.
+
+In the `AlertSource ⨾ EmailDelivery` fixture (`test/Keiki/CompositionSpec.hs`), the source's output
+type is declared to be `EmailCmd` precisely so it lines up with `EmailDelivery`'s input alphabet:
+
+```haskell
+-- | The source aggregate's *output* type is EmailCmd — so the
+-- composite's mid alphabet aligns with EmailDelivery's input.
+type AlertEvent = EmailCmd
+
+alertSource
+  :: SymTransducer (HsPred AlertRegs AlertCmd)
+                   AlertRegs AlertVertex AlertCmd EmailCmd
+```
+
+Here `mid ~ EmailCmd`: it is `alertSource`'s output and `emailDelivery`'s input. If your two
+alphabets differ — t1 emits a wrapper type, or t2 wants a renamed/filtered subset — you bridge them
+with a profunctor adapter (`lmapMaybeCi`) *before* composing; see [Build a cross-context
+process](/docs/keiki/how-to/build-a-cross-context-process).
+
+</Step>
+
+<Step>
+
+**Satisfy the slot-name disjointness constraint.** `compose` carries
+`Disjoint (Names rs1) (Names rs2)`: the two register files must not share a slot *name*. The
+composite's register file is `Append rs1 rs2`, and overlapping names would make register reads
+ambiguous after the append.
+
+The fixture's `AlertRegs` deliberately picks names that cannot clash with `EmailDelivery`'s
+`EmailRegs`, even though the field shapes mirror each other:
+
+```haskell
+-- | Register file for the source aggregate. Mirrors EmailRegs in
+-- field shape but with distinct slot names so 'Append AlertRegs
+-- EmailRegs' has no name collisions.
+type AlertRegs =
+  '[ '("alertRecipient", Text)
+   , '("alertSubject",   Text)
+   , '("alertAt",        UTCTime)
+   ]
+```
+
+If your two transducers *do* share a slot name (say both use `"loanId"`), rename one of them. Pick a
+context prefix per aggregate (`app…`, `sync…`, `loan…` is the convention in the jitsurei loan
+workflow) so every slot name is unique across the chain.
+
+<Callout type="warn">
+  A name clash surfaces as a `Disjoint`/`TypeError` constraint failure at the `compose` call site,
+  not as a runtime error. Read the slot name GHC names in the error and rename that slot in one of
+  the two aggregates.
+</Callout>
+
+</Step>
+
+<Step>
+
+**Call `compose t1 t2`.** With the middle alphabet aligned and the slot names disjoint, the
+composition is a one-liner. Give it a type signature spelling out the composite shape so the reader
+(and GHC's error messages) can see what you built:
+
+```haskell
+pipeline
+  :: SymTransducer
+       (HsPred (Append AlertRegs EmailRegs) AlertCmd)
+       (Append AlertRegs EmailRegs)
+       (Composite AlertVertex EmailVertex)
+       AlertCmd
+       EmailEvent
+pipeline = compose alertSource emailDelivery
+```
+
+The composite's input is `AlertCmd` (t1's input), its output is `EmailEvent` (t2's output), its
+register file is `Append AlertRegs EmailRegs`, and its vertex is `Composite AlertVertex EmailVertex`
+— a strict newtype around the pair so `Bounded`/`Enum`/`Eq`/`Show` derive cleanly.
+
+</Step>
+
+</Steps>
+
+## Verify the composite's guarantees survive
+
+`compose` is built so the keiki guarantees on `t1` and `t2` carry through to the composite —
+single-valuedness, mechanical inversion, and the hidden-input check. Confirm them on the result
+exactly as you would on a single aggregate (these are the assertions in `CompositionSpec.hs`):
+
+```haskell
+-- one external command in, one wire event out
+step pipeline (initial pipeline, initialRegs pipeline) sampleTrigger
+  == Just (Composite AlertEmitted EmailSentVertex, _, [sampleEmailEvent])
+
+-- the composite is single-valued (symbolic check)
+isSingleValuedSym (withSymPred pipeline) == True
+
+-- no transitively-hidden inputs
+checkHiddenInputs pipeline == []
+
+-- replay (reconstitute) lands at the expected final composite state
+reconstitute pipeline [sampleEmailEvent]
+  == Just (Composite AlertEmitted EmailSentVertex, _)
+```
+
+The single-valuedness result is the load-bearing one: the composite is single-valued whenever t1 and
+t2 individually are, because the substitution `compose` performs is a syntactic rewrite that
+preserves unsatisfiability. The same machinery preserves replay (`reconstitute`) — `solveOutput` on
+the composite's output walks t2's wire form back through t1's structural reads to recover the
+original `ci1`. For what these guarantees are and why they hold, see [what gets
+derived](/docs/keiki/explanation/what-gets-derived).
+
+## Related
+
+- [Build a cross-context process](/docs/keiki/how-to/build-a-cross-context-process) — chain more
+  than two aggregates and bridge mismatched alphabets with `lmapMaybeCi`.
+- [Model a saga with feedback](/docs/keiki/how-to/model-a-saga-with-feedback) — close the loop with
+  `feedback1`.
+- The composition reference (`Keiki.Composition` — `compose`, `Composite`) under
+  [the keiki reference](/docs/keiki/reference).

@@ -1,0 +1,264 @@
+---
+title: "04 — compose"
+description: "epsilonEdge / productEdge, the composite guard / update / output, ε-edge handling, and the multi-event chain expansion via PartialPath / expandPaths / stepPath / finalizePath."
+---
+
+This chapter reads `compose` itself — the one user-facing combinator the whole tour has been building
+toward. It assembles the weakening (chapter 02) and substitution (chapter 03) helpers into a transducer
+whose edges thread `t1`'s output through `t2`. Read
+[00 — Start here](/docs/keiki/walkthrough/composition/00-start-here) for the overview.
+
+## The signature
+
+```haskell
+-- src/Keiki/Composition.hs
+compose
+  :: forall rs1 rs2 s1 s2 ci1 mid co.
+     ( WeakenR rs1
+     , Disjoint (Names rs1) (Names rs2)
+     )
+  => SymTransducer (HsPred rs1 ci1) rs1 s1 ci1 mid
+  -> SymTransducer (HsPred rs2 mid) rs2 s2 mid co
+  -> SymTransducer (HsPred (Append rs1 rs2) ci1)
+                   (Append rs1 rs2)
+                   (Composite s1 s2)
+                   ci1
+                   co
+```
+
+The two constraints are the algebra's preconditions: `WeakenR rs1` supplies the evidence to shift `t2`'s
+register reads (chapter 02), and `Disjoint (Names rs1) (Names rs2)` is the *documented precondition* that
+the two register files have disjoint slot-name domains. The result consumes `t1`'s input (`ci1`),
+produces `t2`'s output (`co`), has the product vertex `Composite s1 s2`, and the appended register file.
+
+The transducer record wires the four fields exactly as you'd expect:
+
+```haskell
+-- src/Keiki/Composition.hs
+compose t1 t2 = SymTransducer
+  { edgesOut    = composedEdges
+  , initial     = Composite (initial t1) (initial t2)
+  , initialRegs = appendRegFile (initialRegs t1) (initialRegs t2)
+  , isFinal     = \(Composite a b) -> isFinal t1 a && isFinal t2 b
+  }
+```
+
+Initial vertex is the pair of initials; initial registers are the two files appended; a composite vertex
+is final only when **both** components are final. All the work is in `composedEdges`.
+
+## Edge generation: one t1-edge at a time
+
+`composedEdges` walks `t1`'s outgoing edges from `s1` and expands each:
+
+```haskell
+-- src/Keiki/Composition.hs
+composedEdges (Composite s1 s2) =
+  concatMap (composeEdge s1 s2) (edgesOut t1 s1)
+```
+
+`composeEdge` branches on the *length of `t1`'s edge output* — and this is the whole control structure of
+`compose`:
+
+```haskell
+-- src/Keiki/Composition.hs
+composeEdge _s1Source s2 e1 = case output e1 of
+  []     -> [epsilonEdge e1 s2]
+  [o1]   -> map (productEdge e1 o1) (edgesOut t2 s2)
+  mids   ->
+    map (finalizePath e1) (expandPaths mids (initialPath e1 s2))
+```
+
+Three cases:
+
+- **`[]` — an ε-edge.** `t1` advances without emitting a `mid` symbol. There is nothing for `t2` to
+  consume, so the composite edge advances only `s1`.
+- **`[o1]` — the common case.** `t1` emits exactly one `mid` symbol. Pair it against *every* `t2`-edge
+  from `s2` and substitute.
+- **`mids` (two or more) — multi-event.** `t1` emits several `mid` symbols on one edge. Walk `t2` through
+  the whole list, building one length-N composite edge per path.
+
+## `epsilonEdge`: advance s1, freeze s2
+
+```haskell
+-- src/Keiki/Composition.hs
+-- | For each ε-edge of t1 from @s1@: one composite edge that
+-- advances @s1@ and leaves @s2@ unchanged.
+epsilonEdge e1 s2 = case e1 of
+  Edge { update = u1 } -> Edge
+    { guard  = weakenLPred @rs1 @rs2 (guard e1)
+    , update = weakenLUpdate @rs1 @rs2 u1
+    , output = []
+    , target = Composite (target e1) s2
+    }
+```
+
+No substitution happens — there is no `t1` output to substitute against. The guard and update are simply
+`t1`'s, weakened *left* into the merged register file (chapter 02). Output stays empty; the target keeps
+`s2` frozen at its incoming value. The composite ε-edge is `t1`'s ε-edge, lifted.
+
+## `productEdge`: the substitution assembled
+
+The single-output case is where chapters 02 and 03 come together. For each `t2`-edge `e2`, the composite
+edge conjoins `t1`'s weakened contribution with `t2`'s substituted contribution:
+
+```haskell
+-- src/Keiki/Composition.hs
+productEdge e1 o1 e2 = case (e1, e2) of
+  (Edge { update = u1 }, Edge { update = u2 }) -> Edge
+    { guard  = PAnd (weakenLPred @rs1 @rs2 (guard e1))
+                    (substPred  @rs1 @rs2 (guard e2) o1)
+    , update = UCombine
+                 (weakenLUpdate @rs1 @rs2 u1)
+                 (substUpdate   @rs1 @rs2 u2 o1)
+    , output = map (\o2 -> substOut @rs1 @rs2 o2 o1) (output e2)
+    , target = Composite (target e1) (target e2)
+    }
+```
+
+Read each field as "t1's part, weakened" combined with "t2's part, substituted against `o1`":
+
+| field | t1's contribution | t2's contribution | combined by |
+| --- | --- | --- | --- |
+| `guard` | `weakenLPred (guard e1)` | `substPred (guard e2) o1` | `PAnd` |
+| `update` | `weakenLUpdate u1` | `substUpdate u2 o1` | `UCombine` |
+| `output` | (consumed as `o1`) | `substOut o2 o1` per `o2` | `map` |
+| `target` | `target e1` | `target e2` | `Composite` |
+
+The composite edge fires only when *both* `t1`'s guard and `t2`'s substituted guard hold (`PAnd`); it
+applies both register updates (`UCombine`, where t1 writes the `rs1` prefix and t2 the `rs2` suffix); and
+it emits `t2`'s output, with each `mid` read substituted away. The target steps both axes.
+
+<Callout type="info">
+`productEdge` uses the **raw `UCombine` constructor**, not the safe `combine` smart constructor — and so
+GHC sees the `Disjoint (Names rs1) (Names rs2)` constraint on `compose` as unused (the module opens with
+`-Wno-redundant-constraints`). The source explains why: the disjointness here is *structural* — the left
+half writes only into the `rs1` prefix, the right only into the `rs2` suffix — but promoting that to the
+type-level `Disjoint w1 w2` the smart constructor demands would require threading a `Subset` witness
+through `Edge`'s existential and a hand-written lemma. External authors still get the static check via
+`combine`; this internal call site is the documented exception (EP-18's Decision Log, dated 2026-05-02).
+Pattern-matching each `Edge { update = u1 }` brings the edge's existential `w` index into scope so the
+`UCombine`'s result type can be pinned.
+</Callout>
+
+The acceptance anchor is `test/Keiki/CompositionSpec.hs`: `compose alertSource emailDelivery` on a
+`TriggerAlert` produces exactly one `EmailSent`, lands at `Composite AlertEmitted EmailSentVertex`, is
+single-valued, and round-trips under `reconstitute`.
+
+## Multi-event: the chain expansion
+
+When `t1`'s edge emits *several* `mid` symbols at once (the `mids` case), one `t2`-edge is not enough —
+`t2` has to consume each `mid` in turn, and at each step it may have several edges to choose from. The
+result is a search over **paths**: every way of threading `t2` through the `mid` list. This is EP-19 M6's
+library-side chain expansion. It is driven by an existential accumulator:
+
+```haskell
+-- src/Keiki/Composition.hs
+-- | An in-progress t2-edge path through a multi-event 'compose'
+-- expansion. Carries the accumulated guard (the lifted @e1@-guard
+-- conjoined with each consumed t2-edge's substituted guard), the
+-- chained update, the concatenation of t2-edge outputs (each
+-- substituted against the corresponding mid-symbol), and the t2-
+-- state after consuming all mid-symbols processed so far.
+data PartialPath rs1 rs2 ci1 co s2 = forall w.
+  PartialPath
+    !(HsPred (Append rs1 rs2) ci1)         -- accumulated guard
+    !(Update (Append rs1 rs2) w ci1)       -- chained update (existential w)
+    ![OutTerm (Append rs1 rs2) ci1 co]     -- accumulated outputs in order
+    !s2                                    -- t2-state after consuming so far
+```
+
+The existential `w` hides the chained update's growing slot-set index — each step extends the chain with
+another `UCombine`, so `w` grows but stays hidden from the surrounding code.
+
+Four functions drive it:
+
+<Steps>
+<Step>
+**`initialPath e1 s2`** seeds the accumulator with `t1`'s contribution — the lifted guard and update — and
+an empty output list and `t2`'s starting state. The recursion threads through it without re-referencing
+`t1`.
+
+```haskell
+-- src/Keiki/Composition.hs
+initialPath e1 s2 = case e1 of
+  Edge { update = u1 } ->
+    PartialPath
+      (weakenLPred   @rs1 @rs2 (guard e1))
+      (weakenLUpdate @rs1 @rs2 u1)
+      []
+      s2
+```
+</Step>
+<Step>
+**`expandPaths mids path`** consumes the `mid` list one symbol at a time. Empty list → the path is
+complete; otherwise, for each `t2`-edge from the path's current state, take one step and recurse on the
+rest. The `concatMap` over `edgesOut t2 s2` is the per-step branching that makes this a search.
+
+```haskell
+-- src/Keiki/Composition.hs
+expandPaths []         path = [path]
+expandPaths (o : rest) path =
+  case path of
+    PartialPath g u outs s2 ->
+      concatMap (\e2 -> expandPaths rest (stepPath g u outs o s2 e2))
+                (edgesOut t2 s2)
+```
+</Step>
+<Step>
+**`stepPath g u outs o s2 e2`** extends a path by one `t2`-edge consuming one `mid` symbol `o`. It
+conjoins the substituted guard, chains the substituted update, appends the substituted outputs, and
+advances to `e2`'s target. This is `productEdge`'s body, but accumulating into the path instead of
+building a finished edge:
+
+```haskell
+-- src/Keiki/Composition.hs
+stepPath g u outs o _s2 e2 = case e2 of
+  Edge { update = u2 } ->
+    PartialPath
+      (PAnd g (substPred   @rs1 @rs2 (guard e2) o))
+      (UCombine u (substUpdate @rs1 @rs2 u2 o))
+      (outs ++ map (\o2 -> substOut @rs1 @rs2 o2 o) (output e2))
+      (target e2)
+```
+</Step>
+<Step>
+**`finalizePath e1 path`** turns a fully-consumed path into a composite edge, borrowing `t1`'s `target`
+for the `s1` axis and the path's end-state for the `s2` axis.
+
+```haskell
+-- src/Keiki/Composition.hs
+finalizePath e1 (PartialPath g u outs s2End) = Edge
+  { guard  = g
+  , update = u
+  , output = outs
+  , target = Composite (target e1) s2End
+  }
+```
+</Step>
+</Steps>
+
+<Callout type="info">
+The single-output case `[o1]` is exactly the depth-1 specialization of this machinery — one `mid` symbol,
+one level of `concatMap` over `t2`'s edges, no accumulation. `compose` keeps it as a separate branch for
+clarity and to avoid the `PartialPath` allocation in the common case, but the semantics are identical.
+</Callout>
+
+The multi-event acceptance is `test/Keiki/CompositionMultiEventSpec.hs`: `t1` emits two `mid` symbols
+(`[MidA n, MidB n]`) on one edge, and `t2` has two edges (one per `mid` constructor). The chain expansion
+produces `2 mid-symbols × 2 t2-edges = 4` composite edges, each with a length-2 output list:
+
+```haskell
+-- test/Keiki/CompositionMultiEventSpec.hs
+let pipeline = compose t1 t2
+    edges    = edgesOut pipeline (initial pipeline)
+length edges `shouldBe` 4
+mapM_ (\e -> length (output e) `shouldBe` 2) edges
+```
+
+Three of those four edges carry unsatisfiable `PBot` guards (the `substPred (PInCtor MidA) MidB ≡ PBot`
+collapse from chapter 03), but they are structurally present. Only the satisfiable path fires: `omega` on
+`T1Trigger 42` yields `[EchoA 42, EchoB 42]`.
+
+Next: [05 — Either-lifters and alternative](/docs/keiki/walkthrough/composition/05-either-lifters-and-alternative).
+
+Previous: [03 — Substitution](/docs/keiki/walkthrough/composition/03-substitution).

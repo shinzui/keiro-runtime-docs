@@ -1,0 +1,222 @@
+---
+title: "10 — Choice, Strong, Arrow"
+description: "The remaining ecosystem instances: Choice built on alternative, Strong built on firstSym, Arrow built on arrTransducer, and why arr does not fuse through compose."
+---
+
+<Callout type="info">
+This chapter is part of the composition source tour. Start at
+[00 — Start here](/docs/keiki/walkthrough/composition/00-start-here) for the map of the whole tour.
+</Callout>
+
+The previous chapter read `Category`. This chapter finishes the ecosystem instances in
+`keiki/src/Keiki/Profunctor.hs`: `Choice` (routing through `Either`), `Strong` (threading an unrelated
+value), and `Arrow` (lifting a plain function). Each is built from a combinator we have already read,
+and each inherits a now-familiar variance contract. The chapter ends on the one genuine limitation:
+`arr` does not fuse through `compose`.
+
+## `Choice`: routing on `Either`, built on `alternative`
+
+`left'` routes a `Left` input through the wrapped transducer and passes a `Right` straight through;
+`right'` is symmetric. Both delegate to `Keiki.Composition.alternative` (chapter 05) with
+`identityTransducer` on the pass-through arm:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+instance Choice SomeSymTransducer where
+  left' :: forall a b c. SomeSymTransducer a b
+        -> SomeSymTransducer (Either a c) (Either b c)
+  left' SomeSymIdentity        = SomeSymIdentity
+  left' (SomeSymTransducer t)  = leftWrap t
+
+  right' :: forall a b c. SomeSymTransducer a b
+         -> SomeSymTransducer (Either c a) (Either c b)
+  right' SomeSymIdentity       = SomeSymIdentity
+  right' (SomeSymTransducer t) = rightWrap t
+```
+
+The `leftWrap` helper is `alternative t identityTransducer`; `rightWrap` is `alternative
+identityTransducer t`. Conceptually:
+
+```haskell
+-- left'  t  ≈  alternative t identityTransducer
+-- right' t  ≈  alternative identityTransducer t
+```
+
+`identityTransducer` has `rs = '[]`, so the `Disjoint` side condition on `alternative` is vacuous —
+there is **no `CategoryOverlapError` path** here (unlike `Cat..` in chapter 09). The
+`unsafeCoerceDisjointness` calls in `leftWrap`/`rightWrap` fabricate evidence only because GHC cannot
+reduce a type family over a skolem `rs`; the underlying claim `Disjoint xs '[]` is genuinely vacuously
+true.
+
+Crucially, `Choice` **preserves `solveOutput`**. Unlike the `lmapCi`/`rmapCo` combinators (which
+poison inversion), the edges `left'`/`right'` produce run the underlying `alternative`'s
+`leftInCtor`/`rightInCtor` wrappers, which round-trip correctly. The module haddock makes the
+contrast:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+-- This is *more* preservation than the
+-- 'lmapCi' / 'rmapCo' combinators (which poison @icBuild@); the
+-- Choice instance does not introduce additional loss.
+```
+
+The `ChoiceSpec` (`keiki/test/Keiki/ChoiceSpec.hs`) reads forward routing both ways — a `Left` lands
+on the wrapped arm, a `Right` passes through unchanged:
+
+```haskell
+-- keiki/test/Keiki/ChoiceSpec.hs
+omega t (initial t) (initialRegs t) (Left sampleSendEmail)
+  `shouldBe` [(Left sampleEmailEvent)]
+...
+omega t (initial t) (initialRegs t) (Right (42 :: Int))
+  `shouldBe` [(Right 42)]
+```
+
+And the sentinel law `left' Cat.id == Cat.id` holds by construction — the first clause returns
+`SomeSymIdentity`.
+
+### Why `identityTransducer` guards with `PInCtor`, not `PTop`
+
+A subtlety worth quoting. `identityTransducer`'s single edge guards on `PInCtor identityInCtor`, not
+`PTop`, even though `identityInCtor`'s `icMatch` always succeeds standalone:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+-- EP-29 M1 discovered that the simpler @PTop@ guard fires on every input,
+-- including the *wrong arm* of an 'Keiki.Composition.alternative'
+-- composite. 'liftRPredAlt PTop = PTop' ... so an
+-- @alternative t identityTransducer@ composite at @Left _@ inputs
+-- would see *both* arms' edges fire ... Replacing 'PTop' with
+-- 'PInCtor identityInCtor' is semantically a no-op standalone ...
+-- but becomes arm-discriminating after 'liftLPredAlt' / 'liftRPredAlt'
+-- wraps the InCtor in 'leftInCtor' / 'rightInCtor'.
+```
+
+`PTop` lifts to `PTop` (the lift has no `PInCtor` to re-tag), so a `PTop`-guarded identity would fire
+on *both* arms. A `PInCtor`-guarded one becomes arm-discriminating once lifted, because
+`leftInCtor`/`rightInCtor`'s `icMatch` returns `Nothing` on the wrong arm. This is what keeps `Choice`
+single-valued — `isSingleValuedSym` survives `left'`/`right'` in the spec.
+
+## `Strong`: threading a value, built on `firstSym`
+
+`first'` accepts `(a, c)`, runs `t` on the `a`, and pairs `t`'s output with the untouched `c`:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+instance Strong SomeSymTransducer where
+  first' :: forall a b c.
+            SomeSymTransducer a b
+         -> SomeSymTransducer (a, c) (b, c)
+  first' SomeSymIdentity        = SomeSymIdentity
+  first' (SomeSymTransducer t)  = SomeSymTransducer (firstSym t)
+
+  second' :: forall a b c.
+             SomeSymTransducer a b
+          -> SomeSymTransducer (c, a) (c, b)
+  second' SomeSymIdentity       = SomeSymIdentity
+  second' (SomeSymTransducer t) =
+    SomeSymTransducer
+      (lmapCi swap (rmapCo swap (firstSym t)))
+    where
+      swap :: forall x y. (x, y) -> (y, x)
+      swap (x, y) = (y, x)
+```
+
+`first'` delegates to `firstSym` (read in chapter 08 — it walks each edge, contramapping guards/updates
+with `fst` and prepending a `c`-projection field to each output). `second'` is derived by sandwiching
+`firstSym` between two `swap`s: `lmapCi swap . rmapCo swap . firstSym`. The module notes a direct
+`secondSym` could shave the two rewrites for a small build-cost win, but the `swap` shape keeps the
+symmetry obvious.
+
+`Strong` inherits `firstSym`'s **lossy-`solveOutput`** contract — the threaded-value `WireCtor`'s
+`wcMatch` is `const Nothing` and the contramapped `InCtor`'s `icBuild` is poisoned. Forward processing
+is unaffected, which the `StrongSpec` (`keiki/test/Keiki/StrongSpec.hs`) confirms by threading a
+`RequestId`:
+
+```haskell
+-- keiki/test/Keiki/StrongSpec.hs
+omega t (initial t) (initialRegs t) (sampleSendEmail, requestId)
+  `shouldBe` [(sampleEmailEvent, requestId)]
+```
+
+`second'` produces the symmetric `(RequestId, EmailCmd) -> (RequestId, EmailEvent)`, and both survive
+`isSingleValuedSym`.
+
+## `Arrow`: lifting a function, built on `arrTransducer`
+
+`arr` lifts an arbitrary Haskell function into a stateless one-edge transducer; `first`/`second`
+delegate to `Strong`; `>>>`/`<<<` inherit `Category`:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+instance Arr.Arrow SomeSymTransducer where
+  arr    f = SomeSymTransducer (arrTransducer f)
+  first    = first'
+  second   = second'
+```
+
+`arrTransducer` is one vertex, one edge, whose `WireCtor`'s `wcBuild` applies `f`. Its `wcMatch` is
+`const Nothing` — there is no inverse for an arbitrary function, so it carries the same lossy contract:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+arrWc :: WireCtor b (a, ())
+arrWc = WireCtor
+  { wcName  = "arr"
+  , wcMatch = \_ -> Nothing
+  , wcBuild = \(a, ()) -> f a
+  }
+```
+
+The `ArrowSpec` (`keiki/test/Keiki/ArrowSpec.hs`) reads forward eval and the documented fact that
+`arr id` is **not** detected as `Cat.id` — Haskell function identity is unobservable at the value
+level, so `arr id` materialises a real `SomeSymTransducer`, not the sentinel.
+
+## The limitation: `arr` does not fuse through `compose`
+
+This is the one place the abstraction leaks, and it is documented rather than worked around. `arr f
+>>> arr g` does **not** produce `arr (g . f)`:
+
+<Callout type="warn">
+`arr f >>> arr g` does not fuse to `arr (g . f)`. `compose` substitutes the second stage's
+`TInpCtorField` against the first stage's emitted `WireCtor`, demanding `icName ic2 == wcName wc1`. An
+`arrTransducer`'s `WireCtor` is named `"arr"`, but the next stage's `TInpCtorField` reads through
+`identityInCtor`, named `"Identity"`. The names do not match, so substitution turns the composed
+guard into `PBot` and the composite **never fires**.
+</Callout>
+
+The module haddock gives the root cause — the symbolic `Term` AST has no `TPure`-style constructor for
+arbitrary function application, by design:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+-- This is documented rather than worked
+-- around because the symbolic 'Term' AST has no
+-- 'TPure'-style constructor for arbitrary function application
+-- (intentional; see 'Keiki.Symbolic.translateTermSym' for why
+-- function applications would be untranslatable). Use 'Arr.arr'
+-- standalone for adapter purposes; for actual composition, build
+-- one transducer that wraps the combined function.
+```
+
+The spec exercises the *working* `arr`-through-`Category` paths — `arr f >>> Cat.id` and `Cat.id <<<
+arr f` — which both pass through verbatim because the sentinel short-circuit (chapter 09) never invokes
+`compose`:
+
+```haskell
+-- keiki/test/Keiki/ArrowSpec.hs
+let lifted :: SomeSymTransducer Int Text
+    lifted = Arr.arr (Text.pack . show) Cat.>>> Cat.id
+in case lifted of
+     SomeSymTransducer t ->
+       omega t (initial t) (initialRegs t) (99 :: Int)
+         `shouldBe` [("99" :: Text)]
+```
+
+For genuine composition of lifted functions, the guidance is to build one transducer wrapping the
+combined function rather than composing two `arr`s. The next chapter leaves the abstract instances
+behind and reads a concrete cross-context process end to end in the jitsurei worked example.
+
+Previous: [09 — Category and the overlap check](/docs/keiki/walkthrough/composition/09-category-and-overlap-check).
+
+Next: [11 — A cross-context process, end to end](/docs/keiki/walkthrough/composition/11-cross-context-process-tour).

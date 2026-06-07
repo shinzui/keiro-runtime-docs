@@ -1,0 +1,217 @@
+---
+title: "Build a cross-context process"
+description: "Author a process-manager aggregate, bridge mismatched alphabets with lmapMaybeCi, and chain three aggregates into one cross-context workflow with compose."
+---
+
+You have aggregates in separate bounded contexts — a loan application, a core-banking sync process, a
+loan — and you want to wire them into one workflow where one context's *events* drive another
+context's *commands*. keiki expresses this with a **process-manager aggregate** (events in, commands
+out) bridged to its neighbours by `lmapMaybeCi` adapters and joined with `compose`. This guide walks
+the full recipe, mirroring `jitsurei`'s loan workflow.
+
+<Callout type="info">
+  Assumes you can already [compose two transducers](/docs/keiki/how-to/compose-two-transducers) with
+  aligned alphabets and disjoint slot names. This guide is about the case where the alphabets *don't*
+  align and a context boundary sits between them.
+</Callout>
+
+## Goal
+
+Chain `LoanApplication ⨾ CoreBankingSync ⨾ Loan` into a single `Guarded` transducer, with two
+`lmapMaybeCi` adapters bridging the two context boundaries — and understand why the composite is a
+wiring artifact, not the thing that runs at runtime.
+
+<Steps>
+
+<Step>
+
+**Author the process-manager aggregate.** A *process* in the keiki sense is a transducer whose input
+alphabet is *events* from one context and whose output alphabet is *commands* to another. Build it
+with the `Keiki.Builder` DSL: events in, commands out, progress registers, and an idempotency guard.
+
+`Jitsurei.CoreBankingSync` is the model. It takes `SyncInput` events (`LoanCreatedIn`,
+`LegacyCallbackReceivedIn`), records progress in `SyncRegs`, and emits `SyncOutput` (an audit event
+plus a command-out wrapper). The idempotency guard is the `requireEq` matching the callback's
+`loanId` against the pending one; combined with `SyncSettled` being terminal, replays are idempotent
+by construction:
+
+```haskell
+coreBankingSync :: Guarded SyncRegs SyncVertex SyncInput SyncOutput
+coreBankingSync = B.buildTransducer SyncIdle emptySyncRegs
+                    (\case SyncSettled -> True; _ -> False) do
+
+  B.from SyncIdle do
+    B.onCmd inCtorLoanCreatedIn $ \d -> B.do
+      B.slot @"syncPendingLoanId"      .= d.loanId
+      B.slot @"syncPendingApplicantId" .= d.applicantId
+      B.slot @"syncPendingPrincipal"   .= d.principal
+      B.emit wireSyncToLegacyRequested SyncToLegacyRequestedTermFields
+        { loanId = d.loanId, applicantId = d.applicantId, principal = d.principal }
+      B.goto SyncRequested
+
+  B.from SyncRequested do
+    B.onCmd inCtorLegacyCallbackReceivedIn $ \d -> B.do
+      -- Idempotency anchor: the callback's loanId must match the
+      -- pending one. A duplicate callback for another loan fails this
+      -- guard; a duplicate for the same loan finds SyncSettled (terminal).
+      B.requireEq d.loanId #syncPendingLoanId
+      B.emit wireLegacyAssignmentCommanded
+        LegacyAssignmentCommandedTermFields
+          { assignment = TApp2 buildAssign d.loanId d.legacyLoanId }
+      B.goto SyncSettled
+```
+
+Input constructors are suffixed `In` so the composition can distinguish "events I consume" from
+"commands I emit".
+
+</Step>
+
+<Step>
+
+**Bridge mismatched alphabets with `lmapMaybeCi`.** A process's output type is rarely *exactly* the
+next aggregate's input type. `lmapMaybeCi :: (ci' -> Maybe ci) -> SymTransducer _ rs s ci co ->
+SymTransducer _ rs s ci' co` pre-composes a partial contramap on the input alphabet: it both
+**renames** (maps `ci'` constructors onto `ci` constructors) and **filters** (an input the function
+maps to `Nothing` fails every guard's structural check, so it is dropped from the command stream).
+
+The loan workflow has two such adapters. `loanEventToSyncInput` lifts only the approval event into
+the sync process; everything else becomes `Nothing`:
+
+```haskell
+loanEventToSyncInput :: LoanEvent -> Maybe SyncInput
+loanEventToSyncInput (ApplicationApproved a) =
+  Just (LoanCreatedIn (LoanCreatedInData
+    { loanId      = "loan-" <> a.applicantId
+    , applicantId = a.applicantId
+    , principal   = a.requestedAmount
+    }))
+loanEventToSyncInput _ = Nothing
+```
+
+`syncOutputToLoanCmd` unwraps only the command-carrying output; the audit signal becomes `Nothing`:
+
+```haskell
+syncOutputToLoanCmd :: SyncOutput -> Maybe LoanCmd'
+syncOutputToLoanCmd (LegacyAssignmentCommanded d) = Just d.assignment
+syncOutputToLoanCmd (SyncToLegacyRequested  _)    = Nothing
+```
+
+<Callout type="warn">
+  `lmapMaybeCi` poisons the rewritten `InCtor`'s `icBuild`: do **not** call `solveOutput` on edges it
+  produced. Forward evaluation (`delta`, `omega`, `step`) only consults `icMatch` and is unaffected;
+  only the inverse (event → command reconstruction) is given up on the adapted input side.
+</Callout>
+
+</Step>
+
+<Step>
+
+**Chain with `compose` into the full system.** Wrap each downstream aggregate in its adapter, then
+`compose` the three legs. This is the `loanWorkflow` value verbatim from
+`jitsurei/src/Jitsurei/LoanWorkflow.hs`:
+
+```haskell
+loanWorkflow =
+  loanApplication
+    `compose`
+  lmapMaybeCi loanEventToSyncInput
+    (coreBankingSync `compose` lmapMaybeCi syncOutputToLoanCmd loan)
+```
+
+Read as a 3-aggregate chain `LoanApplication ⨾ CoreBankingSync ⨾ Loan`, joined by two `lmapMaybeCi`
+adapters that bridge **and** filter:
+
+- `loanEventToSyncInput` sits between `loanApplication`'s events and `coreBankingSync`'s input,
+  mapping only `ApplicationApproved → LoanCreatedIn` and everything else to `Nothing`.
+- `syncOutputToLoanCmd` sits between `coreBankingSync`'s output and `loan`'s commands, unwrapping
+  only `LegacyAssignmentCommanded` and dropping the `SyncToLegacyRequested` audit signal.
+
+The composite's full type spells out the appended register file and nested vertex:
+
+```haskell
+loanWorkflow
+  :: Guarded
+       (Append LoanAppRegs (Append SyncRegs LoanRegs))
+       (Composite LoanAppVertex (Composite SyncVertex LoanVertex))
+       LoanCmd
+       LoanEvent'
+```
+
+The three contexts use distinct slot-name prefixes (`app…`, `sync…`, `loan…`) so the nested
+`Append` satisfies `compose`'s `Disjoint` constraint at the type level.
+
+</Step>
+
+<Step>
+
+**Drive through the adapter functions at runtime.** Here is the part that surprises people.
+
+<Callout type="warn">
+  `compose` is **lockstep**: every non-ε composite edge fires *both* legs simultaneously, in one
+  step. Real cross-context creation flows are **async** — the runtime observes
+  `ApplicationApproved`, *then* (in a separate transactional step) issues a command on the
+  `CoreBankingSync` stream, *then later* the legacy callback channel delivers an event. There is no
+  single `LoanCmd` input that fires the whole chain in one composite step. Given the adapters' `Maybe`
+  results, the all-legs-aligned firing is essentially never. **The composite is a type-level wiring /
+  verification artifact, not the thing that executes.**
+</Callout>
+
+Because of that, you drive each aggregate **directly through the adapter functions**, one
+cross-context jump at a time — which is exactly what the runtime adapter does and what
+`jitsurei/test/Jitsurei/LoanWorkflowSpec.hs` exercises:
+
+```haskell
+-- Stage 1: LoanApplication's ApplicationApproved → CoreBankingSync input
+Just syncInput <- pure (loanEventToSyncInput appApproved)
+Just (sync1State, sync1Regs) <-
+  pure (delta coreBankingSync (initial coreBankingSync)
+                              (initialRegs coreBankingSync) syncInput)
+-- sync1State == SyncRequested
+
+-- Stage 2: the legacy callback channel delivers a matching event
+let callback = LegacyCallbackReceivedIn
+      (LegacyCallbackReceivedInData "loan-alice" "LEG-42")
+Just (sync2State, _, [sync2Out]) <-
+  pure (step coreBankingSync (sync1State, sync1Regs) callback)
+-- sync2State == SyncSettled
+
+-- Stage 3: CoreBankingSync's output → Loan's command
+Just loanCmd' <- pure (syncOutputToLoanCmd sync2Out)
+step loan (loan1State, loan1Regs) loanCmd'
+-- == Just (LoanLinked, _, [LegacyLoanIdAssigned ...])
+```
+
+The durable, async loop that strings these jumps together across separate streams and transactions
+is owned by keiro. keiki's job is the per-aggregate logic and the static wiring `loanWorkflow`
+expresses; keiro's job is to actually run the cross-context choreography.
+
+</Step>
+
+</Steps>
+
+## Verify it worked
+
+Run the end-to-end smoke flow from `LoanWorkflowSpec`: an approval drives `coreBankingSync` from
+`SyncIdle` to `SyncRequested` (with the audit emit), a matching legacy callback settles it to
+`SyncSettled` emitting `LegacyAssignmentCommanded`, and the unwrapped command drives `loan` to
+`LoanLinked` emitting `LegacyLoanIdAssigned`:
+
+```haskell
+case step loan (loan1State, loan1Regs) loanCmd' of
+  Just (LoanLinked, _, [LegacyLoanIdAssigned d]) -> do
+    d.loanId       `shouldBe` "loan-alice"
+    d.legacyLoanId `shouldBe` "LEG-42"
+```
+
+The adapters themselves are unit-checkable too: `loanEventToSyncInput appApproved` returns
+`Just (LoanCreatedIn …)` while a non-approval event returns `Nothing`, and `syncOutputToLoanCmd`
+unwraps `LegacyAssignmentCommanded` but maps `SyncToLegacyRequested` to `Nothing`.
+
+## Related
+
+- [Compose two transducers](/docs/keiki/how-to/compose-two-transducers) — the two-aggregate case
+  with aligned alphabets.
+- [Model a saga with feedback](/docs/keiki/how-to/model-a-saga-with-feedback) — single-round
+  reactions with `feedback1`.
+- The composition and profunctor references (`Keiki.Composition`, `Keiki.Profunctor` —
+  `lmapMaybeCi`) under [the keiki reference](/docs/keiki/reference).

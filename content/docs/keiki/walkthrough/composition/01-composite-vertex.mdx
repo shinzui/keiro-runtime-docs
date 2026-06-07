@@ -1,0 +1,133 @@
+---
+title: "01 — The composite vertex"
+description: "The Composite pair type and its hand-rolled Bounded, column-major Enum, and NoThunks instances — and why they are hand-rolled to avoid orphans."
+---
+
+This chapter reads the first section of `src/Keiki/Composition.hs`: the `Composite` vertex type and its
+three instances. Every composite in this tour — `compose`, `alternative`, `feedback1` — uses
+`Composite` as its vertex. Read [00 — Start here](/docs/keiki/walkthrough/composition/00-start-here) for
+the overview picture.
+
+## The type: a strict pair, not a tuple
+
+```haskell
+-- src/Keiki/Composition.hs
+-- | The composite of two vertex types. A newtype around a pair so
+-- 'Bounded'/'Enum'/'Eq'/'Show' derive cleanly without orphan
+-- instances on @(s1, s2)@ — those would conflict with downstream
+-- code.
+data Composite s1 s2 = Composite !s1 !s2
+  deriving (Eq, Show)
+```
+
+`Composite` is *the* composite vertex: when you `compose t1 t2`, the result's vertex type is
+`Composite s1 s2`, where `s1` is `t1`'s vertex and `s2` is `t2`'s. The two bang patterns make the
+constructor strict in both components.
+
+<Callout type="info">
+The haddock says "newtype around a pair" but the declaration is `data` with two strict fields — same
+shape as `(s1, s2)`, but a fresh nominal type. That distinction is the whole point: keiki needs
+`Bounded` and `Enum` on the composite vertex (the symbolic analysis enumerates `[minBound .. maxBound]`
+over vertices), and writing those instances on the bare tuple `(s1, s2)` would be an **orphan instance**
+— GHC defines neither `Bounded (a, b)` with the shape keiki wants nor `Enum (a, b)` at all, and any
+instance keiki added on `(,)` would risk colliding with downstream code. A dedicated `Composite` type
+owns its instances locally.
+</Callout>
+
+## Why `Enum` is hand-rolled, and why column-major
+
+The symbolic single-valuedness check (and the renderers) walk a transducer's vertices by enumerating
+`[minBound .. maxBound]`. For a composite that means enumerating the cartesian product `s1 × s2`. There
+is no derivable `Enum` for a product, so `Composite` rolls its own:
+
+```haskell
+-- src/Keiki/Composition.hs
+-- | Column-major enumeration: @Composite s1 s2@ enumerates
+-- @s2@ within each @s1@. Indexing assumes both component
+-- @Enum@s have contiguous @[minBound .. maxBound]@ ranges (the
+-- common case for a derived 'Enum' on an enum-like data type).
+instance ( Bounded s1, Enum s1
+         , Bounded s2, Enum s2
+         ) => Enum (Composite s1 s2) where
+  toEnum n =
+    let n2 = fromEnum (maxBound :: s2) - fromEnum (minBound :: s2) + 1
+        (q, r) = n `divMod` n2
+    in Composite (toEnum (q + fromEnum (minBound :: s1)))
+                 (toEnum (r + fromEnum (minBound :: s2)))
+  fromEnum (Composite a b) =
+    let n2 = fromEnum (maxBound :: s2) - fromEnum (minBound :: s2) + 1
+        ai = fromEnum a - fromEnum (minBound :: s1)
+        bi = fromEnum b - fromEnum (minBound :: s2)
+    in ai * n2 + bi
+```
+
+Read `fromEnum` first: it computes `n2`, the **size of the second axis** (`maxBound - minBound + 1` over
+`s2`), then maps a `Composite a b` to `ai * n2 + bi`. The `s1` index is the high digit and the `s2` index
+is the low digit — so consecutive integers walk `s2` first, holding `s1` fixed, then carry into `s1`.
+That is *column-major* order: `s2` varies fastest. `toEnum` is the exact inverse — `divMod` by `n2`
+recovers the quotient (`s1`'s index) and remainder (`s2`'s index).
+
+<Callout type="info">
+The two `fromEnum (minBound :: s1)` / `fromEnum (minBound :: s2)` offsets matter: a component `Enum`
+need not start at `0` (a derived `Enum` over a sub-range, or a type whose first constructor is not the
+global minimum, can start elsewhere). Subtracting the component's `minBound` normalizes each axis to a
+`0`-based index before combining, and `toEnum` adds the offset back. The "contiguous range" assumption
+in the haddock is what makes `n2` a correct axis size — it holds for the derived `Enum` on an enum-like
+data type, which is what aggregate vertices are.
+</Callout>
+
+The `Bounded` instance is the matching pair of corner points:
+
+```haskell
+-- src/Keiki/Composition.hs
+instance (Bounded s1, Bounded s2) => Bounded (Composite s1 s2) where
+  minBound = Composite minBound minBound
+  maxBound = Composite maxBound maxBound
+```
+
+Together, `Bounded` and `Enum` give `[minBound .. maxBound] :: [Composite s1 s2]` the full product, in
+column-major order — exactly what the per-vertex enumeration needs.
+
+## `NoThunks`: leaks can only enter through the children
+
+keiki tracks thunk-freedom for snapshot safety. Because the `Composite` constructor is strict in both
+fields, the only place a leak can hide is *inside* a child, so the instance just recurses into both:
+
+```haskell
+-- src/Keiki/Composition.hs
+-- The 'Composite' constructor is strict in both components by
+-- construction (see the bang patterns above), so leaks can only enter
+-- through the children. The instance recurses into both.
+instance (NoThunks s1, NoThunks s2) => NoThunks (Composite s1 s2) where
+  showTypeOf _ = "Composite"
+  wNoThunks ctx (Composite a b) = allNoThunks
+    [ noThunks ("Composite.left"  : ctx) a
+    , noThunks ("Composite.right" : ctx) b
+    ]
+```
+
+`allNoThunks` reports the first child that fails the check; the context strings `"Composite.left"` /
+`"Composite.right"` make the offending side legible in the diagnostic. This is the same pattern keiki's
+other product types use — recurse, tag each branch.
+
+## Where it shows up
+
+In the acceptance test, the composite of `alertSource` and `emailDelivery` has vertex
+`Composite AlertVertex EmailVertex`, and the test asserts against literal `Composite` values
+(`test/Keiki/CompositionSpec.hs`):
+
+```haskell
+-- test/Keiki/CompositionSpec.hs
+case step pipeline (initial pipeline, initialRegs pipeline) sampleTrigger of
+  Just (Composite av ev, _, [co]) -> do
+    av `shouldBe` AlertEmitted
+    ev `shouldBe` EmailSentVertex
+    co `shouldBe` sampleEmailEvent
+```
+
+The same `Composite` vertex carries `alternative`'s two independent arms (chapter 05) and `feedback1`'s
+nested `Composite s1 (Composite s2 s1)` (chapter 06).
+
+Next: [02 — Weakening](/docs/keiki/walkthrough/composition/02-weakening).
+
+Previous: [00 — Start here](/docs/keiki/walkthrough/composition/00-start-here).

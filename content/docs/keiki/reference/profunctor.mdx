@@ -1,0 +1,233 @@
+---
+title: "Keiki.Profunctor"
+description: "An existential wrapper that lets a SymTransducer join the Profunctor / Category / Strong / Choice / Arrow ecosystem, plus standalone variance combinators on the concrete type."
+---
+
+`Keiki.Profunctor` exposes a `SymTransducer` to the standard `profunctor` / `arrow` ecosystem. The
+wrapper `SomeSymTransducer ci co` hides the register-file slot list and the control vertex, leaving
+only the input alphabet `ci` and the output alphabet `co` — the shape those typeclasses expect. The
+module also ships standalone **variance combinators** on the concrete `SymTransducer`.
+
+<Callout type="warn">
+Forward-only variance contract. The variance combinators (`lmapCi`, `lmapMaybeCi`, `rmapCo`,
+`dimapTransducer`) and the `Strong` / `Arrow` machinery rewrite edges in a way that is **lossy for
+`solveOutput`**: `lmapCi` poisons `icBuild` (it raises a runtime error if invoked) and `rmapCo` sets
+`wcMatch = const Nothing`. Forward processing — `delta`, `omega`, `evalPred`, `evalTerm` — only ever
+consults `icMatch` / `wcBuild` and is **unaffected**; only the inversion-from-event path is dropped on
+rewritten edges. Two consequences fall out of this, covered under [Choice](#choice-instance) and
+[Arrow](#arrow-instance).
+</Callout>
+
+## `SomeSymTransducer`
+
+The existential wrapper. It hides `rs` and `s`, exposing only `ci` / `co`. The packed constraints let
+pattern-matched-out transducers participate in `compose` (`WeakenR`), the runtime slot-overlap check
+(`KnownSlotNames`), and the symbolic analyses, which enumerate the vertex (`Bounded` / `Enum`).
+
+```haskell
+data SomeSymTransducer ci co where
+  SomeSymTransducer
+    :: ( WeakenR rs
+       , KnownSlotNames rs
+       , Bounded s
+       , Enum s
+       )
+    => SymTransducer (HsPred rs ci) rs s ci co
+    -> SomeSymTransducer ci co
+  SomeSymIdentity :: SomeSymTransducer a a
+```
+
+`SomeSymIdentity` is a **sentinel** for `Cat.id`. A generic identity transducer cannot satisfy
+`compose`'s `icName == wcName` substitution requirement for arbitrary upstream wire names, so identity
+is encoded as a sentinel that is short-circuited inside `(.)` rather than fed through `compose`. The
+constraint `ci ~ co` comes from the GADT signature. A smart constructor mirrors the data constructor:
+
+```haskell
+someSymTransducer
+  :: ( WeakenR rs
+     , KnownSlotNames rs
+     , Bounded s
+     , Enum s
+     )
+  => SymTransducer (HsPred rs ci) rs s ci co
+  -> SomeSymTransducer ci co
+```
+
+When you pattern-match the wrapper, `rs` and `s` come into scope as skolem types that may not escape
+the match; handle `SomeSymIdentity` explicitly when traversing arbitrary values.
+
+## Variance combinators
+
+These act on the **concrete** `SymTransducer` and reshape its boundary alphabets without rebuilding
+edges.
+
+`lmapCi` pre-composes a contramap on the input alphabet — it renames / upcasts every `InCtor` so the
+transducer reads from a wider `ci'`:
+
+```haskell
+lmapCi
+  :: forall ci ci' rs s co.
+     (ci' -> ci)
+  -> SymTransducer (HsPred rs ci)  rs s ci  co
+  -> SymTransducer (HsPred rs ci') rs s ci' co
+```
+
+`lmapMaybeCi` is **the workflow bridge**: a partial contramap that both renames/upcasts **and
+filters**. An input mapped to `Nothing` fails every guard's structural `PInCtor` check and is dropped,
+so a process manager wired through `lmapMaybeCi` observes only the events it cares about.
+
+```haskell
+lmapMaybeCi
+  :: forall ci ci' rs s co.
+     (ci' -> Maybe ci)
+  -> SymTransducer (HsPred rs ci)  rs s ci  co
+  -> SymTransducer (HsPred rs ci') rs s ci' co
+```
+
+`rmapCo` post-composes a covariant map on the output alphabet (rewrites every `WireCtor`'s `wcBuild`):
+
+```haskell
+rmapCo
+  :: forall ci co co' rs s.
+     (co -> co')
+  -> SymTransducer (HsPred rs ci) rs s ci co
+  -> SymTransducer (HsPred rs ci) rs s ci co'
+```
+
+`dimapTransducer` does both; it is `rmapCo g . lmapCi f`:
+
+```haskell
+dimapTransducer
+  :: (ci' -> ci)
+  -> (co  -> co')
+  -> SymTransducer (HsPred rs ci)  rs s ci  co
+  -> SymTransducer (HsPred rs ci') rs s ci' co'
+```
+
+All four carry the forward-only variance caveat in the callout above: `solveOutput` is not preserved on
+rewritten edges.
+
+## `identityTransducer` and `arrTransducer`
+
+`identityTransducer` is the **concrete** one-vertex identity (distinct from the `SomeSymIdentity`
+sentinel) — used by the `Profunctor` / `Functor` / `Choice` instances when they need to apply variance
+to the sentinel:
+
+```haskell
+identityTransducer
+  :: forall a.
+     SymTransducer (HsPred '[] a) '[] IdVertex a a
+```
+
+`arrTransducer` lifts an arbitrary Haskell function into a stateless one-edge transducer; the `Arrow`
+instance's `arr` wraps it:
+
+```haskell
+arrTransducer
+  :: forall a b.
+     (a -> b)
+  -> SymTransducer (HsPred '[] a) '[] IdVertex a b
+```
+
+Both run on the single-constructor vertex `IdVertex`:
+
+```haskell
+data IdVertex = IdVertex
+  deriving stock (Eq, Show, Bounded, Enum)
+```
+
+## `CategoryOverlapError`
+
+Raised when `(.)` is invoked on two `SomeSymTransducer` values whose underlying register files share a
+slot name. It carries the colliding slot names; catch it with `Control.Exception.catch` or force the
+throw with `evaluate`.
+
+<TypeTable
+  type={{
+    coeSlots: { type: "[String]", description: "The slot names that collided between the two transducers' register files" },
+  }}
+/>
+
+```haskell
+data CategoryOverlapError = CategoryOverlapError
+  { coeSlots :: [String]
+  } deriving stock (Eq, Show)
+
+instance Exception CategoryOverlapError
+```
+
+## Typeclass instances
+
+All six instances are on `SomeSymTransducer`.
+
+<Cards>
+<Card title="Profunctor">
+`dimap` / `lmap` / `rmap` delegate to `dimapTransducer` / `lmapCi` / `rmapCo`. Reshape the boundary
+alphabet without rebuilding edges. The `SomeSymIdentity` sentinel is materialised into a concrete
+`identityTransducer` before the rewrite runs.
+</Card>
+<Card title="Functor">
+`fmap = rmap` — a covariant map over the output alphabet.
+</Card>
+<Card title="Category">
+`id = SomeSymIdentity`. `(.)` short-circuits when either side is the sentinel (so `id . t = t` and
+`t . id = t` hold by definition); otherwise `composeWrappers` does a runtime slot-overlap check,
+raising `CategoryOverlapError` on a collision or proceeding via `unsafeCoerceDisjointness` and
+`compose`.
+</Card>
+<Card title="Choice">
+`left' = alternative t identityTransducer`, `right' = alternative identityTransducer t`. Routes one
+`Either` arm through `t` and passes the other straight through. **Preserves `solveOutput`** (see below).
+</Card>
+<Card title="Strong">
+`first' = firstSym t` — thread an unrelated value (e.g. a correlation id) alongside the transducer.
+`second'` is derived via `swap`. Lossy `solveOutput` (the threaded-value rewrite poisons `icBuild` and
+sets `wcMatch = const Nothing`).
+</Card>
+<Card title="Arrow">
+`arr = arrTransducer`; `first` / `second` delegate to `Strong`. `(>>>)` / `(<<<)` inherit the
+`Category` instance's overlap check and sentinel short-circuit.
+</Card>
+</Cards>
+
+### Choice instance
+
+`left'` on `t :: SomeSymTransducer a b` produces `SomeSymTransducer (Either a c) (Either b c)`: a
+`Left a` routes through `t` to `Left b`, a `Right c` passes through unchanged. There is **no
+slot-overlap risk** — `identityTransducer` has `rs ~ '[]`, so the `Disjoint` side condition on
+`alternative` is vacuous and no `CategoryOverlapError` path is needed.
+
+<Callout type="info">
+Consequence 1: `Choice` **preserves** the `solveOutput` round-trip. Because it is built on
+`alternative` plus identity over `rs ~ '[]`, `solveOutput` on `left'` / `right'` edges runs the
+underlying `leftInCtor` / `rightInCtor` wrappers, which preserve round-trip behaviour. This is *more*
+preservation than the `lmapCi` / `rmapCo` combinators, which poison `icBuild`; `Choice` introduces no
+additional loss. On the `SomeSymIdentity` sentinel, both `left'` and `right'` return `SomeSymIdentity`.
+</Callout>
+
+### Arrow instance
+
+`arr f` wraps `arrTransducer`. Its `WireCtor` is named `"arr"` with `wcMatch = const Nothing` (there is
+no inverse for an arbitrary function), so it inherits the forward-only variance contract.
+
+<Callout type="warn">
+Consequence 2: `arr f >>> arr g` does **not** fuse. `compose` substitutes the downstream stage's
+`TInpCtorField` against the upstream `WireCtor` and demands `icName == wcName`. An `arrTransducer`
+output's `WireCtor` is named `"arr"`, but the next stage's read uses `identityInCtor` named
+`"Identity"` — the names never match, so substitution collapses the composed guard to `PBot` and the
+composite never fires. Use `arr` standalone for adapter purposes; for actual composition, build one
+transducer that wraps the combined function. (The symbolic `Term` AST has no constructor for arbitrary
+function application by design, so there is no general fusion to recover here.)
+</Callout>
+
+## See also
+
+- [Composition](/docs/keiki/reference/composition) — `compose` / `alternative` and the substitution
+  machinery the `Category` / `Choice` instances delegate to.
+- [Core](/docs/keiki/reference/core) — `SymTransducer`, `InCtor`, `WireCtor`, `OutTerm`, and the
+  `solveOutput` inversion the variance caveat refers to.
+- [What gets derived](/docs/keiki/explanation/what-gets-derived) — why `solveOutput` matters and what
+  losing it costs.
+
+The instance laws and the lossy/lossless boundaries above are exercised by
+`test/Keiki/ProfunctorSpec.hs`.

@@ -1,0 +1,228 @@
+---
+title: "08 — The existential wrapper and Profunctor"
+description: "SomeSymTransducer and its identity sentinel, the lmap/rmap/dimap variance combinators, the forward-only caveat that poisons inversion, and the internal AST rewriters that power them."
+---
+
+<Callout type="info">
+This chapter is part of the composition source tour. Start at
+[00 — Start here](/docs/keiki/walkthrough/composition/00-start-here) for the map of the whole tour.
+</Callout>
+
+Chapters 01–07 read `Keiki.Composition` — the combinators on the *concrete* `SymTransducer`. This
+chapter moves to `keiki/src/Keiki/Profunctor.hs`, which wraps the concrete transducer in an
+existential so it can join the standard `Profunctor` / `Category` / `Strong` / `Choice` / `Arrow`
+ecosystem. We read the wrapper, its identity sentinel, the four variance combinators, the
+forward-only caveat that makes them lossy, and the internal AST rewriters they delegate to.
+
+## `SomeSymTransducer`: hiding `rs` and `s`
+
+The ecosystem typeclasses want a two-parameter type `p ci co`. A `SymTransducer` has five parameters.
+The wrapper hides three of them — the predicate carrier (fixed to `HsPred`), the register-file slot
+list `rs`, and the control vertex `s` — exposing only `ci` and `co`:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+data SomeSymTransducer ci co where
+  SomeSymTransducer
+    :: ( WeakenR rs
+       , KnownSlotNames rs
+       , Bounded s
+       , Enum s
+       )
+    => SymTransducer (HsPred rs ci) rs s ci co
+    -> SomeSymTransducer ci co
+  SomeSymIdentity :: SomeSymTransducer a a
+```
+
+The packed constraints are not decoration. `WeakenR rs` is what `compose` demands; `KnownSlotNames
+rs` lets the `Category` instance read slot names at the value level for its runtime overlap check
+(chapter 09); `Bounded s` and `Enum s` let pattern-matched-out transducers feed the symbolic analyses
+that enumerate the vertex type. Every keiki vertex type already derives `Bounded`/`Enum`, so packing
+the constraints does not restrict what can be wrapped.
+
+<TypeTable
+  type={{
+    SomeSymTransducer: { type: "constructor", description: "Wraps a concrete SymTransducer, hiding rs and s behind the packed constraints." },
+    SomeSymIdentity: { type: "constructor", description: "A sentinel for Cat.id with ci ~ co from its GADT signature; not a real transducer." },
+  }}
+/>
+
+### Why a sentinel for identity
+
+`SomeSymIdentity` exists because a *generic* identity transducer cannot satisfy `compose`'s
+substitution. The module haddock explains:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+-- The sentinel exists because 'Keiki.Composition.compose' substitutes
+-- t2's 'TInpCtorField'-on-@ic2@ against t1's 'WireCtor'-named
+-- emission, requiring @icName ic2 == wcName wc1@ for the substitution
+-- to be sound. A *generic* identity transducer (one whose 'InCtor' is
+-- the same regardless of @ci@) cannot satisfy this for arbitrary
+-- upstream wire names. The sentinel sidesteps this by short-circuiting
+-- @id . t@ and @t . id@ in 'Cat..' rather than running them through
+-- 'compose'.
+```
+
+There *is* a concrete `identityTransducer` in the module too — a one-vertex machine that copies its
+input to its output through a phantom one-slot register file. The `Profunctor`/`Functor` instances
+materialise the sentinel into that concrete form before applying variance combinators; the `Category`
+instance never does, preferring the short-circuit. We read `identityTransducer` in detail in chapter
+10, where `Choice` builds on it.
+
+## The variance combinators
+
+Four standalone combinators on the concrete `SymTransducer` change its alphabets. `lmapCi`
+contravariantly remaps the input; `rmapCo` covariantly remaps the output; `dimapTransducer` does both;
+`lmapMaybeCi` is a partial contramap that doubles as a router.
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+lmapCi
+  :: forall ci ci' rs s co.
+     (ci' -> ci)
+  -> SymTransducer (HsPred rs ci)  rs s ci  co
+  -> SymTransducer (HsPred rs ci') rs s ci' co
+lmapCi f t = SymTransducer
+  { edgesOut    = \s -> map (rewriteEdge f) (edgesOut t s)
+  , initial     = initial t
+  , initialRegs = initialRegs t
+  , isFinal     = isFinal t
+  }
+```
+
+`dimapTransducer` is just the two composed, and the public `Profunctor` instance on the wrapper
+delegates straight to these:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+dimapTransducer
+  :: (ci' -> ci)
+  -> (co  -> co')
+  -> SymTransducer (HsPred rs ci)  rs s ci  co
+  -> SymTransducer (HsPred rs ci') rs s ci' co'
+dimapTransducer f g = rmapCo g . lmapCi f
+```
+
+`lmapMaybeCi` is the one used in the jitsurei worked example (chapter 11) as a cross-context adapter:
+inputs for which `f` returns `Nothing` fail every guard's structural `PInCtor` check, so they are
+filtered out of the command stream:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+lmapMaybeCi
+  :: forall ci ci' rs s co.
+     (ci' -> Maybe ci)
+  -> SymTransducer (HsPred rs ci)  rs s ci  co
+  -> SymTransducer (HsPred rs ci') rs s ci' co
+```
+
+The `ProfunctorSpec` (`keiki/test/Keiki/ProfunctorSpec.hs`) confirms `lmapMaybeCi` routes: a routed
+input fires one edge, an unrouted one fires none:
+
+```haskell
+-- keiki/test/Keiki/ProfunctorSpec.hs
+it "filters non-routed inputs (no edges fire)" $ do
+  let routed = lmapMaybeCi router emailDelivery
+  fireFromInitial routed OtherCmd `shouldBe` []
+```
+
+## The forward-only caveat
+
+This is the load-bearing warning of the entire module. The variance combinators preserve **forward
+processing** — `delta`, `omega`, `evalPred`, `evalTerm` — but **break inversion**. Forward evaluation
+only ever consults `icMatch` (input) and `wcBuild` (output); the inversion path (`solveOutput`) needs
+`icBuild` and `wcMatch`, and those are exactly what the rewriters destroy.
+
+<Callout type="warn">
+Transducers produced by `lmapCi` / `lmapMaybeCi` / `rmapCo` / `dimapTransducer` do **not** preserve
+`Keiki.Core.solveOutput`. `lmapCi` **poisons `icBuild`** (it raises a runtime error if invoked);
+`rmapCo` sets **`wcMatch = const Nothing`** (so `solveOutput` returns `Nothing`). Forward processing
+is unaffected; only the inversion-from-event path is dropped on lmapped/rmapped edges.
+</Callout>
+
+The spec pins both behaviours. The `lmapCi` inverse returns a `Just` whose inner thunk throws when
+forced — the contract is "`Just (poison)`", not "`Nothing`":
+
+```haskell
+-- keiki/test/Keiki/ProfunctorSpec.hs
+Just c -> evaluate c
+  `shouldThrow` errorCall' "icBuild on a contramapped InCtor"
+```
+
+The `rmapCo` inverse, by contrast, is a clean `Nothing`:
+
+```haskell
+-- keiki/test/Keiki/ProfunctorSpec.hs
+it "returns Nothing from solveOutput on rmapped edges" $ do
+  let rmapped = rmapCo WrappedEvent emailDelivery
+  ...
+  solveOutput o (initialRegs rmapped) wrappedEvent
+    `shouldBe` (Nothing :: Maybe EmailCmd)
+```
+
+Both still pass `isSingleValuedSym` — single-valuedness lives in the forward semantics, which the
+rewrites leave intact.
+
+## The internal AST rewriters
+
+The combinators delegate to a family of recursive walkers over the closed `Edge`/`HsPred`/`Update`/
+`Term`/`OutTerm`/`OutFields`/`InCtor`/`WireCtor` AST. Each threads a contramap on `ci` (or a covariant
+map on `co`) through every position the parameter occupies. The two that *introduce the loss* are
+`contraInCtor` and `mapWireCtor`:
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+contraInCtor :: (ci' -> ci) -> InCtor ci ifs -> InCtor ci' ifs
+contraInCtor f InCtor { icName = n, icMatch = m } = InCtor
+  { icName  = n
+  , icMatch = m . f
+  , icBuild = poisonedIcBuild n
+  }
+```
+
+```haskell
+-- keiki/src/Keiki/Profunctor.hs
+mapWireCtor :: (co -> co') -> WireCtor co fs -> WireCtor co' fs
+mapWireCtor g WireCtor { wcName = n, wcBuild = b } = WireCtor
+  { wcName  = n
+  , wcMatch = \_co' -> Nothing
+  , wcBuild = g . b
+  }
+```
+
+`contraInCtor` precomposes `icMatch` with `f` (so the forward match still works on the new alphabet)
+but replaces `icBuild` with `poisonedIcBuild` — a function that errors with a message pointing back at
+the haddock. `mapWireCtor` postcomposes `wcBuild` with `g` but blanks `wcMatch` to `const Nothing`.
+
+The rest of the rewriters are pure structural recursion that carries those two through the tree. The
+cast of characters:
+
+<Cards>
+<Card title="contraTerm / contraPred / contraUpdate / contraOutTerm">
+Walk a `Term`, `HsPred`, `Update`, or `OutTerm`, rewriting every `TInpCtorField`/`PInCtor` via
+`contraInCtor`. These are the backbone `lmapCi` rides through `rewriteEdge`.
+</Card>
+<Card title="mapOutTermCo / rewriteEdgeOut">
+Walk an output, rewriting every `OPack`'s `WireCtor` via `mapWireCtor`. This is `rmapCo`'s path.
+</Card>
+<Card title="contraMaybe* family">
+The partial-contramap variants behind `lmapMaybeCi`; `icMatch` becomes `\ci' -> f ci' >>= m`,
+filtering inputs `f` rejects.
+</Card>
+<Card title="firstSym">
+The `Strong` core — read in chapter 10. It also lives in this module and reuses the same lossy
+contract (poisoned `icBuild`, blank `wcMatch`).
+</Card>
+</Cards>
+
+The edge-level entry points tie it together — `rewriteEdge` (for `lmapCi`), `rewriteEdgeMaybe` (for
+`lmapMaybeCi`), and `rewriteEdgeOut` (for `rmapCo`) — each rebuilding an `Edge` with the rewritten
+guard, update, and outputs while preserving the `target` vertex.
+
+The next chapter reads the `Category` instance, where the wrapper's hidden `rs` forces a *runtime*
+slot-overlap check in place of `compose`'s static `Disjoint` constraint.
+
+Previous: [07 — N-ary families](/docs/keiki/walkthrough/composition/07-nary-families).
+
+Next: [09 — Category and the overlap check](/docs/keiki/walkthrough/composition/09-category-and-overlap-check).

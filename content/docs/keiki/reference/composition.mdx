@@ -1,0 +1,332 @@
+---
+title: "Keiki.Composition"
+description: "Sequential composition, disjoint-input dispatch, and single-step feedback for SymTransducers, plus the index/term weakening and substitution machinery they are built on."
+---
+
+`Keiki.Composition` builds bigger transducers out of smaller ones. Every combinator on this page
+operates on a **guarded** `SymTransducer` — the form whose predicate carrier is fixed to `HsPred`:
+
+```haskell
+type Guarded rs s ci co = SymTransducer (HsPred rs ci) rs s ci co
+```
+
+See [The SymTransducer](/docs/keiki/explanation/the-symtransducer) for what each parameter means
+(`rs` the register-file slot list, `s` the control vertex, `ci`/`co` the input/output alphabets).
+
+The three user-facing combinators are [`compose`](#compose) (sequential / pipeline),
+[`alternative`](#alternative) (disjoint-input dispatch), and [`feedback1`](#feedback1) (single-step
+reaction). Each one **preserves the three keiki derivations** — see
+[Preservation of the derivations](#preservation-of-the-derivations). Everything else exported here is
+the weakening / substitution / lifting machinery those three are built on, exposed for advanced uses.
+
+## `Composite`
+
+The composite control vertex of two transducers: a strict pair, wrapped in a named type so that
+`Bounded` / `Enum` derive cleanly without writing orphan instances on `(s1, s2)` (which would clash
+with downstream code).
+
+```haskell
+data Composite s1 s2 = Composite !s1 !s2
+  deriving (Eq, Show)
+```
+
+The `Bounded`, `Enum`, and `NoThunks` instances are **hand-rolled** (to avoid those orphans on the
+bare tuple):
+
+- `Bounded`: `minBound = Composite minBound minBound`, `maxBound = Composite maxBound maxBound`.
+- `Enum`: **column-major** — `Composite s1 s2` enumerates `s2` within each `s1`. Indexing assumes both
+  component `Enum`s have contiguous `[minBound .. maxBound]` ranges (the common case for a derived
+  `Enum` on an enum-like type).
+- `NoThunks`: recurses into both components. The constructor is strict in both fields, so leaks can
+  only enter through the children.
+
+This vertex type is what makes the composite participate in the symbolic analyses, which enumerate the
+vertex via `Bounded`/`Enum`.
+
+## `compose`
+
+Sequential composition (choreography / pipeline). Given `t1` whose **output** alphabet is `mid` and
+`t2` whose **input** alphabet is also `mid`, `compose t1 t2` threads `t1`'s events through `t2`
+transparently. The intermediate `mid` never escapes — the composite consumes `t1`'s input `ci1` and
+produces `t2`'s output `co`.
+
+```haskell
+compose
+  :: forall rs1 rs2 s1 s2 ci1 mid co.
+     ( WeakenR rs1
+     , Disjoint (Names rs1) (Names rs2)
+     )
+  => SymTransducer (HsPred rs1 ci1) rs1 s1 ci1 mid
+  -> SymTransducer (HsPred rs2 mid) rs2 s2 mid co
+  -> SymTransducer (HsPred (Append rs1 rs2) ci1)
+                   (Append rs1 rs2)
+                   (Composite s1 s2)
+                   ci1
+                   co
+```
+
+The composite vertex is `Composite s1 s2`, and its register file is `Append rs1 rs2` — the
+`Disjoint (Names rs1) (Names rs2)` constraint is the documented precondition that the two slot-name
+domains do not collide.
+
+### How it fuses
+
+`compose` does not run a pipeline at runtime — it **fuses two stages into one transition relation** at
+build time. Per source vertex `Composite s1 s2`:
+
+<Steps>
+<Step title="t1 ε-edges advance only s1">
+For each ε-edge of `t1` (one that emits no `mid` event) the composite gets one edge that advances
+`s1` and leaves `s2` unchanged. Its guard and update are `t1`'s, weakened across the `rs2` suffix
+(`weakenLPred` / `weakenLUpdate`).
+</Step>
+<Step title="Single-event t1 edges pair against every t2 edge">
+For a `t1` edge emitting one `mid` value `o1`, paired with each `t2` edge from `s2`: one composite edge
+whose guard / update / output are `t2`'s, **structurally substituted** against `o1` (via `substPred` /
+`substUpdate` / `substOut`), conjoined with `t1`'s lifted guard / update.
+</Step>
+<Step title="Multi-event t1 edges drive a path expansion">
+A `t1` edge emitting several `mid` values walks `t2` through the list, gathering every path (the
+cartesian product of `t2` edges per intermediate state) into a `PartialPath`. `expandPaths` enumerates
+these; each completed path becomes one length-N composite edge. This is the EP-19 multi-event
+expansion.
+</Step>
+</Steps>
+
+`substOut` re-tags the composite `OPack` with `t1`'s **input** constructor (`ic1` from `o1`), not
+`t2`'s output constructor — so the preserved `solveOutput` derivation can walk `t2`'s wire form back
+through `t1`'s structural reads and rebuild the original `ci1`.
+
+<Callout type="info">
+Structural-alignment precondition: substitution matches `t2`'s `TInpCtorField` reads against `t1`'s
+emitted `WireCtor` by `icName == wcName` string equality and positional field reads. `t1`'s outputs
+must be `OPack`, `t2`'s mid-side guards must be structural, and both must avoid the v1 escape hatches.
+When a constructor name fails to align, the substitution makes the composite edge guard unsatisfiable
+(`PBot`) before evaluation reaches the term.
+</Callout>
+
+## `alternative`
+
+Disjoint-input dispatch. The composite consumes `Either ci1 ci2` and emits `Either co1 co2`. A
+`Left ci1` advances `t1` from its current sub-vertex with `s2` frozen and emits `Left co1`; a
+`Right ci2` advances `t2` with `s1` frozen and emits `Right co2`. The two sub-aggregates have
+independent state that evolves in parallel as commands arrive for the appropriate arm.
+
+```haskell
+alternative
+  :: forall rs1 rs2 s1 s2 ci1 ci2 co1 co2.
+     ( WeakenR rs1
+     , Disjoint (Names rs1) (Names rs2)
+     )
+  => SymTransducer (HsPred rs1 ci1) rs1 s1 ci1 co1
+  -> SymTransducer (HsPred rs2 ci2) rs2 s2 ci2 co2
+  -> SymTransducer (HsPred (Append rs1 rs2) (Either ci1 ci2))
+                   (Append rs1 rs2)
+                   (Composite s1 s2)
+                   (Either ci1 ci2)
+                   (Either co1 co2)
+```
+
+The composite uses the same `Composite s1 s2` product vertex as `compose`; the initial state is
+`Composite (initial t1) (initial t2)` and `isFinal` requires **both** arms to be final. `t1`'s edges
+are lifted to fire only on `Left _` (via `leftInCtor` / `liftLPredAlt`), `t2`'s only on `Right _`.
+
+<Callout type="info">
+Cross-arm single-valuedness is **vacuous**: at any `Composite s1 s2`, every `t1` edge guard requires
+`Left _` and every `t2` edge guard requires `Right _`, so the two families are pairwise mutually
+exclusive by construction. No cross-transducer mutual-exclusion check is needed — within each arm,
+single-valuedness reduces to the underlying sub-aggregate's check.
+</Callout>
+
+## `feedback1`
+
+Single-step feedback: one round of an aggregate ↔ stateless-policy reaction. The aggregate `t` consumes
+an external command, the policy `f` observes `t`'s emitted event and emits a follow-up command, and `t`
+consumes that follow-up. The composite emits `t`'s **second** event.
+
+```haskell
+feedback1
+  :: forall rs1 rs2 s1 s2 ci co.
+     ( WeakenR rs1
+     , WeakenR rs2
+     , Disjoint (Names rs2) (Names rs1)
+     , Disjoint (Names rs1) (Names (Append rs2 rs1))
+     )
+  => SymTransducer (HsPred rs1 ci) rs1 s1 ci co
+  -> SymTransducer (HsPred rs2 co) rs2 s2 co ci
+  -> SymTransducer (HsPred (Append rs1 (Append rs2 rs1)) ci)
+                   (Append rs1 (Append rs2 rs1))
+                   (Composite s1 (Composite s2 s1))
+                   ci
+                   co
+```
+
+It is defined entirely in terms of `compose`:
+
+```haskell
+feedback1 t f = compose t (compose f t)
+```
+
+The inner `compose f t` chains the policy's output (a command for `t`) into a second invocation of `t`;
+the outer `compose t _` feeds `t`'s first event into that inner pipeline. The composite vertex is
+`Composite s1 (Composite s2 s1)` — "outer t state, then (policy state, inner t state)".
+
+<Callout type="warn">
+The fed-back aggregate must be **stateless**. The hard constraint
+`Disjoint (Names rs1) (Names (Append rs2 rs1))` is the outer `compose`'s slot-disjointness check
+applied to `rs1` versus `Append rs2 rs1`. Because `rs1` appears on **both** sides, the constraint
+reduces to "rs1 disjoint from itself" — satisfiable **only** when `rs1 ~ '[]`. For a non-empty `rs1`
+the call site fails with a slot-collision `TypeError`. This follows from the two-stacked-`compose`
+reduction: `t` appears twice, and keiki's register-file model gives each appearance its own copy of
+`rs1`.
+</Callout>
+
+Multi-round patterns are expressed by **nesting** — there is no `feedbackN`:
+
+```haskell
+twoRounds = feedback1 (feedback1 t f) f
+```
+
+The pure-core boundary holds because there is no loop: the cascade runs exactly once per external
+command. Unbounded loops are a keiro concern, not a keiki one.
+
+## `WeakenR` and the weakening family
+
+`WeakenR` lifts a **tail-side** `Index` (or `IndexN`) across an `rs1` prefix. The class is indexed by
+`rs1`; instances walk `rs1`'s slot list, prepending `SIdx` / `IS` to convert an `Index rs2 r` into an
+`Index (Append rs1 rs2) r`.
+
+```haskell
+class WeakenR (rs1 :: [Slot]) where
+  weakenR       :: forall rs2 r.   Index  rs2 r   -> Index  (Append rs1 rs2) r
+  weakenRIndexN :: forall rs2 s r. IndexN s rs2 r -> IndexN s (Append rs1 rs2) r
+```
+
+The standalone weakeners come in two directions. `weakenL*` lifts a **head-side** structure across an
+`rs2` suffix; `weakenR*` lifts a **tail-side** structure across an `rs1` prefix (and so each carry a
+`WeakenR rs1` constraint):
+
+```haskell
+weakenL          :: forall rs1 rs2 r.        Index rs1 r        -> Index (Append rs1 rs2) r
+weakenLTerm      :: forall rs1 rs2 ci ifs r. Term rs1 ci ifs r  -> Term (Append rs1 rs2) ci ifs r
+weakenLPred      :: forall rs1 rs2 ci.       HsPred rs1 ci       -> HsPred (Append rs1 rs2) ci
+weakenLUpdate    :: forall rs1 rs2 w ci.     Update rs1 w ci     -> Update (Append rs1 rs2) w ci
+
+weakenRTerm      :: forall rs1 rs2 ci ifs r. WeakenR rs1 => Term rs2 ci ifs r     -> Term (Append rs1 rs2) ci ifs r
+weakenRPred      :: forall rs1 rs2 ci.       WeakenR rs1 => HsPred rs2 ci          -> HsPred (Append rs1 rs2) ci
+weakenRUpdate    :: forall rs1 rs2 w ci.     WeakenR rs1 => Update rs2 w ci        -> Update (Append rs1 rs2) w ci
+weakenROutFields :: forall rs1 rs2 ci ifs fs. WeakenR rs1 => OutFields rs2 ci ifs fs -> OutFields (Append rs1 rs2) ci ifs fs
+```
+
+In both directions, register-free constructors (`TLit`, `TInpCtorField`, `PInCtor`) pass through
+unchanged, and the slot-name index `w` on an `Update` is preserved — adding slots on either side does
+not change which slot names an update writes.
+
+## The substitution family
+
+These implement the structural rewrite at the heart of `compose`: a `t2`-side structure is substituted
+against `t1`'s edge output (`OutTerm rs1 ci1 mid`), producing a structure over the appended register
+file `Append rs1 rs2` whose input alphabet is `ci1`.
+
+```haskell
+substTerm      :: forall rs1 rs2 ci1 mid ifs2 ifsR r.
+                  WeakenR rs1 => Term rs2 mid ifs2 r -> OutTerm rs1 ci1 mid -> Term (Append rs1 rs2) ci1 ifsR r
+substPred      :: forall rs1 rs2 ci1 mid.
+                  WeakenR rs1 => HsPred rs2 mid -> OutTerm rs1 ci1 mid -> HsPred (Append rs1 rs2) ci1
+substUpdate    :: forall rs1 rs2 w ci1 mid.
+                  WeakenR rs1 => Update rs2 w mid -> OutTerm rs1 ci1 mid -> Update (Append rs1 rs2) w ci1
+substOut       :: forall rs1 rs2 ci1 mid co.
+                  WeakenR rs1 => OutTerm rs2 mid co -> OutTerm rs1 ci1 mid -> OutTerm (Append rs1 rs2) ci1 co
+substOutFields :: forall rs1 rs2 ci1 mid ifs2 ifsR fs.
+                  WeakenR rs1 => OutFields rs2 mid ifs2 fs -> OutTerm rs1 ci1 mid -> OutFields (Append rs1 rs2) ci1 ifsR fs
+```
+
+A `t2`-side `TInpCtorField ic2` read is resolved by matching `icName ic2` against the `wcName` of
+`t1`'s emitted `WireCtor`: on a match, the `n`-th field of `t1`'s `OutFields` is spliced in (weakened
+across `rs2`); on a mismatch, `substPred (PInCtor ic2)` collapses to `PBot`, making the composite edge
+unsatisfiable. `substOut` re-tags the result with `t1`'s input constructor so `solveOutput` can rebuild
+`ci1` — see [`compose`](#compose).
+
+## Either lifters (alternative-side)
+
+These lift a structure authored against one arm of a disjoint-input composite into the `Either`
+alphabet `alternative` operates over. The constructor lifters re-tag `InCtor` / `WireCtor` to fire only
+on the matching arm and to wrap the rebuilt value in `Left` / `Right`:
+
+```haskell
+leftInCtor    :: InCtor ci1 ifs -> InCtor (Either ci1 ci2) ifs
+rightInCtor   :: InCtor ci2 ifs -> InCtor (Either ci1 ci2) ifs
+leftWireCtor  :: WireCtor co1 fs -> WireCtor (Either co1 co2) fs
+rightWireCtor :: WireCtor co2 fs -> WireCtor (Either co1 co2) fs
+```
+
+The `liftL*Alt` / `liftR*Alt` family walks the AST of a term / predicate / update / output, adjusting
+every constructor through the lifters above:
+
+```haskell
+liftLTermAlt      :: forall rs ci1 ci2 ifs r.    Term rs ci1 ifs r  -> Term rs (Either ci1 ci2) ifs r
+liftRTermAlt      :: forall rs ci1 ci2 ifs r.    Term rs ci2 ifs r  -> Term rs (Either ci1 ci2) ifs r
+liftLPredAlt      :: forall rs ci1 ci2.          HsPred rs ci1       -> HsPred rs (Either ci1 ci2)
+liftRPredAlt      :: forall rs ci1 ci2.          HsPred rs ci2       -> HsPred rs (Either ci1 ci2)
+liftLUpdateAlt    :: forall rs w ci1 ci2.        Update rs w ci1     -> Update rs w (Either ci1 ci2)
+liftRUpdateAlt    :: forall rs w ci1 ci2.        Update rs w ci2     -> Update rs w (Either ci1 ci2)
+liftLOutFieldsAlt :: forall rs ci1 ci2 ifs fs.   OutFields rs ci1 ifs fs -> OutFields rs (Either ci1 ci2) ifs fs
+liftROutFieldsAlt :: forall rs ci1 ci2 ifs fs.   OutFields rs ci2 ifs fs -> OutFields rs (Either ci1 ci2) ifs fs
+liftLOutAlt       :: forall rs ci1 ci2 co1 co2.  OutTerm rs ci1 co1  -> OutTerm rs (Either ci1 ci2) (Either co1 co2)
+liftROutAlt       :: forall rs ci1 ci2 co1 co2.  OutTerm rs ci2 co2  -> OutTerm rs (Either ci1 ci2) (Either co1 co2)
+```
+
+## N-ary coproduct injectors
+
+These inject one already-derived event family into a sum of **three** families, represented as the
+right-nested `Either co1 (Either co2 co3)` on the output side (and the analogous nest on the input
+side). They are nothing more than the binary lifters above composed the right number of times — no new
+machinery, and no new `unsafeCoerce`:
+
+```haskell
+wireCtor3At1 :: WireCtor co1 fs -> WireCtor (Either co1 (Either co2 co3)) fs
+wireCtor3At2 :: WireCtor co2 fs -> WireCtor (Either co1 (Either co2 co3)) fs
+wireCtor3At3 :: WireCtor co3 fs -> WireCtor (Either co1 (Either co2 co3)) fs
+
+inCtor3At1 :: InCtor ci1 ifs -> InCtor (Either ci1 (Either ci2 ci3)) ifs
+inCtor3At2 :: InCtor ci2 ifs -> InCtor (Either ci1 (Either ci2 ci3)) ifs
+inCtor3At3 :: InCtor ci3 ifs -> InCtor (Either ci1 (Either ci2 ci3)) ifs
+
+outTerm3At1 :: OutTerm rs ci1 co1 -> OutTerm rs (Either ci1 (Either ci2 ci3)) (Either co1 (Either co2 co3))
+outTerm3At2 :: OutTerm rs ci2 co2 -> OutTerm rs (Either ci1 (Either ci2 ci3)) (Either co1 (Either co2 co3))
+outTerm3At3 :: OutTerm rs ci3 co3 -> OutTerm rs (Either ci1 (Either ci2 ci3)) (Either co1 (Either co2 co3))
+```
+
+<Callout type="warn">
+Name-uniqueness obligation: `solveOutput` matches input constructors by `icName` **string equality**
+(and groups outputs by `wcName`). When several families are summed into one alphabet, their
+constructor-name strings must be pairwise distinct, or inversion can silently recover the wrong
+command. The `Either` wrapper keeps families structurally apart at the match step, but the names are
+the human-facing contract — keep them unique across summed families.
+</Callout>
+
+The pattern generalizes to any arity by composing one more `right…` per extra family; the arity-3
+helpers are the worked common case.
+
+## Preservation of the derivations
+
+`compose`, `alternative`, and `feedback1` each **preserve** the three keiki derivations:
+
+- **Mechanical inversion** — `solveOutput`. The composite `OPack` walks the output wire form back to
+  the original `ci`. `compose` achieves this by re-tagging with `t1`'s input constructor; `alternative`
+  by stripping the `Left` / `Right` wrapper.
+- **Hidden-input check** — `checkHiddenInputs`. Surfaces transitively-hidden fields (a field of `ci1`
+  that `t1` keeps in `mid` but `t2` drops on the wire is flagged at the composite level). Each side's
+  per-edge check inherits via the weakeners / lifters, which preserve `TInpCtorField` slot reads.
+- **Symbolic single-valuedness** — `isSingleValuedSym`. The composite is single-valued when its
+  components are: substitution is a syntactic rewrite that preserves unsatisfiability, and
+  `alternative`'s arms are mutually exclusive by construction.
+
+See [Shape](/docs/keiki/reference/shape) for the derivation surface (EP-22) and
+[What gets derived](/docs/keiki/explanation/what-gets-derived) for why these hold. The preservation
+proofs and case analyses are exercised by `test/Keiki/CompositionSpec.hs` and
+`test/Keiki/CompositionNarySpec.hs`.
+
+See also [Core](/docs/keiki/reference/core) for `SymTransducer`, `Edge`, `Term`, `HsPred`, `OutTerm`,
+and the `Guarded` alias, and [Registers vs. state](/docs/keiki/explanation/registers-vs-state) for the
+register-file model the weakening machinery threads through.

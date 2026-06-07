@@ -1,0 +1,212 @@
+---
+title: "07 — N-ary families"
+description: "The arity-3 coproduct injectors that thread one event family into a right-nested Either sum, how compose left-folds into nested Composites, and the name-uniqueness obligation solveOutput depends on."
+---
+
+<Callout type="info">
+This chapter is part of the composition source tour. Start at
+[00 — Start here](/docs/keiki/walkthrough/composition/00-start-here) for the map of the whole tour.
+</Callout>
+
+The previous chapter read `feedback1`. This chapter reads the N-ary coproduct injectors at the bottom
+of `keiki/src/Keiki/Composition.hs` (the `EP-48` block) — the helpers that let several independently
+authored event families be summed into one alphabet and still round-trip through
+`Keiki.Core.solveOutput`. We then read how `compose` left-folds a three-aggregate chain into nested
+`Composite` vertices, and the one obligation the whole scheme rests on: constructor-name uniqueness.
+
+## The shape: a right-nested `Either` sum
+
+Three families are summed into one alphabet as a **right-nested** `Either`:
+
+```haskell
+-- keiki/test/Keiki/CompositionNarySpec.hs
+type SumCmd = Either ACmd (Either BCmd CCmd)
+type SumEvt = Either AEvt (Either BEvt CEvt)
+```
+
+Family 1 sits in the outermost `Left`; family 2 in `Right (Left ...)`; family 3 (the last) in the
+innermost `Right (Right ...)`. The injectors are named by which of three slots they target.
+
+## The nine injectors
+
+There are three triples — one for `WireCtor`s (output side), one for `InCtor`s (input side), and one
+for whole `OutTerm`s. Each is built entirely from the binary `Either` lifters read in chapter 05
+(`leftWireCtor`/`rightWireCtor`, `leftInCtor`/`rightInCtor`, `liftLOutAlt`/`liftROutAlt`), composed
+the right number of times:
+
+```haskell
+-- keiki/src/Keiki/Composition.hs
+wireCtor3At1 :: WireCtor co1 fs -> WireCtor (Either co1 (Either co2 co3)) fs
+wireCtor3At1 = leftWireCtor
+
+wireCtor3At2 :: WireCtor co2 fs -> WireCtor (Either co1 (Either co2 co3)) fs
+wireCtor3At2 = rightWireCtor . leftWireCtor
+
+wireCtor3At3 :: WireCtor co3 fs -> WireCtor (Either co1 (Either co2 co3)) fs
+wireCtor3At3 = rightWireCtor . rightWireCtor
+```
+
+Read the composition by counting `right`s. Family `k` injects via `right…` applied `k - 1` times then
+`left…` once — except the **last** family `N`, which is `right…` applied `N - 1` times with **no
+trailing `left`**, because the innermost arm is the bare family type, not another `Either`. So
+`wireCtor3At3` is `rightWireCtor . rightWireCtor`, not `rightWireCtor . rightWireCtor . leftWireCtor`.
+
+The input-side triple is structurally identical:
+
+```haskell
+-- keiki/src/Keiki/Composition.hs
+inCtor3At1 :: InCtor ci1 ifs -> InCtor (Either ci1 (Either ci2 ci3)) ifs
+inCtor3At1 = leftInCtor
+
+inCtor3At2 :: InCtor ci2 ifs -> InCtor (Either ci1 (Either ci2 ci3)) ifs
+inCtor3At2 = rightInCtor . leftInCtor
+
+inCtor3At3 :: InCtor ci3 ifs -> InCtor (Either ci1 (Either ci2 ci3)) ifs
+inCtor3At3 = rightInCtor . rightInCtor
+```
+
+And the `OutTerm` triple re-homes a whole edge output — the function that actually lets an edge
+authored against one family participate in a transducer over the summed alphabet. It threads **both**
+the input and output sides at once, since an `OutTerm` carries an `InCtor`, a `WireCtor`, and the
+field reads between them:
+
+```haskell
+-- keiki/src/Keiki/Composition.hs
+outTerm3At1
+  :: OutTerm rs ci1 co1
+  -> OutTerm rs (Either ci1 (Either ci2 ci3)) (Either co1 (Either co2 co3))
+outTerm3At1 = liftLOutAlt
+
+outTerm3At2
+  :: OutTerm rs ci2 co2
+  -> OutTerm rs (Either ci1 (Either ci2 ci3)) (Either co1 (Either co2 co3))
+outTerm3At2 = liftROutAlt . liftLOutAlt
+
+outTerm3At3
+  :: OutTerm rs ci3 co3
+  -> OutTerm rs (Either ci1 (Either ci2 ci3)) (Either co1 (Either co2 co3))
+outTerm3At3 = liftROutAlt . liftROutAlt
+```
+
+Because these are *just compositions of the shipped binary lifts*, no new machinery — and crucially
+no new `unsafeCoerce` — is introduced. The module haddock is explicit about that, and about how to go
+beyond arity 3:
+
+```haskell
+-- keiki/src/Keiki/Composition.hs
+-- They are nothing more than the shipped binary lifts
+-- ('leftWireCtor'\/'rightWireCtor', 'leftInCtor'\/'rightInCtor',
+-- 'liftLOutAlt'\/'liftROutAlt') composed the right number of times, so
+-- no new machinery — and no new @unsafeCoerce@ — is introduced.
+```
+
+For a sum of more than three families, you compose one more `right…` per extra family. The arity-3
+helpers are the worked common case; larger `N` composes the binary lifts directly.
+
+## Round-tripping a summed event
+
+The `CompositionNarySpec` (`keiki/test/Keiki/CompositionNarySpec.hs`) builds an edge output in family
+1 and in family 2, re-homed into the summed alphabet:
+
+```haskell
+-- keiki/test/Keiki/CompositionNarySpec.hs
+sumOutA :: OutTerm Regs SumCmd SumEvt
+sumOutA = outTerm3At1 (pack inCtorAFlip wireAFlipped (OFCons (inpAFlip #aVal) OFNil))
+
+sumOutB :: OutTerm Regs SumCmd SumEvt
+sumOutB = outTerm3At2 (pack inCtorBFlip wireBFlipped (OFCons (inpBFlip #bVal) OFNil))
+```
+
+`solveOutput` inverts a summed event straight back to the *injected* command, and rejects an event
+from the wrong family arm:
+
+```haskell
+-- keiki/test/Keiki/CompositionNarySpec.hs
+it "round-trips a family-1 event through solveOutput" $
+  solveOutput sumOutA RNil (Left (AFlipped (AData 5)))
+    `shouldBe` Just (Left (AFlip (AData 5)))
+
+it "rejects an event from the wrong family arm" $
+  -- sumOutA inverts only family-1 (Left) events; a family-2 value
+  -- does not match its WireCtor, so inversion yields Nothing.
+  solveOutput sumOutA RNil (Right (Left (BFlipped (BData 7))))
+    `shouldBe` Nothing
+```
+
+The `Either` wrapping is what keeps families structurally apart at the match step: `sumOutA`'s
+`WireCtor` only matches `Left _` values, so the family-2 event simply falls through to `Nothing`.
+
+## Left-folding `compose` into nested `Composites`
+
+The injectors sum families into one alphabet. The complementary direction — chaining several
+aggregates in sequence — is `compose` left-folded. A three-aggregate chain
+
+```haskell
+compose (compose t1 t2) t3
+```
+
+produces a left-nested composite vertex, exactly as `compose`'s `Composite` pairing dictates:
+
+```haskell
+-- compose t1 t2          :: ... (Composite s1 s2) ...
+-- compose (compose t1 t2) t3 :: ... (Composite (Composite s1 s2) s3) ...
+```
+
+So the vertex grows as `Composite (Composite s1 s2) s3`, and the register file grows as `Append
+(Append rs1 rs2) rs3`. (Chapter 11 reads a *right*-nested three-aggregate chain in the jitsurei
+worked example — the same `compose` building block, associated the other way.) Either nesting is
+legitimate; what matters is that each aggregate's slot names stay disjoint so `compose`'s `Disjoint`
+constraint discharges at every step.
+
+## The name-uniqueness obligation
+
+The deeper contract under all of this is **constructor-name uniqueness**. `Keiki.Core.solveOutput`
+matches input constructors by `icName` *string equality* and groups outputs by `wcName`. The
+`Either` wrapper keeps families apart structurally at the match step, but the names are the
+human-facing contract — and if two summed families share a constructor name, inversion can silently
+recover the wrong command. The module haddock states the obligation:
+
+```haskell
+-- keiki/src/Keiki/Composition.hs
+-- 'Keiki.Core.solveOutput' matches input constructors by @icName@
+-- /string equality/ (and groups outputs by @wcName@). When several
+-- families are summed into one alphabet, their constructor-name strings
+-- must be pairwise distinct, or inversion can silently recover the wrong
+-- command.
+```
+
+The spec encodes both halves — that the injected names are pairwise distinct, and that a deliberately
+colliding alphabet is caught:
+
+```haskell
+-- keiki/test/Keiki/CompositionNarySpec.hs
+it "injected family names are pairwise distinct" $ do
+  let wcNames = [ wcName sumWireA, wcName sumWireB, wcName sumWireC ]
+      icNames = [ icName sumInA,   icName sumInB,   icName sumInC ]
+  (length wcNames, length (nub wcNames)) `shouldBe` (3, 3)
+  (length icNames, length (nub icNames)) `shouldBe` (3, 3)
+```
+
+```haskell
+-- keiki/test/Keiki/CompositionNarySpec.hs
+it "a colliding alphabet is caught by the uniqueness check" $ do
+  -- Two distinct families that both name a ctor "Dup": were they
+  -- summed, solveOutput's name-equality match could mis-invert. The
+  -- nub-based uniqueness check flags the collision.
+  let collidingNames =
+        [ wcName (mkWireCtor0 "Dup" () :: WireCtor () ())
+        , wcName (mkWireCtor0 "Dup" 'x' :: WireCtor Char ())
+        ]
+  (length collidingNames == length (nub collidingNames)) `shouldBe` False
+```
+
+<Callout type="warn">
+When you sum families, keep their constructor names pairwise distinct across the *whole* alphabet, not
+just within each family. The `Either` structure protects the match step, but `solveOutput`'s
+`icName`/`wcName` equality is the contract that determines which command an event inverts to. A name
+clash between two summed families is a silent correctness bug, not a type error.
+</Callout>
+
+Previous: [06 — feedback1](/docs/keiki/walkthrough/composition/06-feedback1).
+
+Next: [08 — The existential wrapper and Profunctor](/docs/keiki/walkthrough/composition/08-existential-wrapper-and-profunctor).

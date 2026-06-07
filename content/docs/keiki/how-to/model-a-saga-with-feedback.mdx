@@ -1,0 +1,204 @@
+---
+title: "Model a saga with feedback"
+description: "Use feedback1 to model one round of an aggregate reacting to its own event through a policy — and understand why the fed-back aggregate must be stateless."
+---
+
+You want one external command to trigger an aggregate, have a policy observe the resulting event and
+emit a follow-up command, and have the aggregate consume that follow-up — all in a single composite
+step. That single-round reaction is what `feedback1` expresses. This guide shows the recipe and is
+honest about the one restriction that bites: the fed-back aggregate must carry no register state.
+
+<Callout type="info">
+  Assumes you understand `compose` already — `feedback1` is defined in terms of it. Start with
+  [Compose two transducers](/docs/keiki/how-to/compose-two-transducers) if not.
+</Callout>
+
+## Goal
+
+Given an aggregate `t :: SymTransducer _ rs1 s1 ci co` and a policy `f :: SymTransducer _ rs2 s2 co ci`,
+build `feedback1 t f` — a transducer that, on one external `ci` command, fires t, feeds t's event
+into f, feeds f's follow-up command back into a second invocation of t, and emits t's *second* event.
+
+## How it works
+
+`feedback1 t f` is literally `compose t (compose f t)`:
+
+```haskell
+feedback1 t f = compose t (compose f t)
+```
+
+The composite vertex is `Composite s1 (Composite s2 s1)` — "outer t state, then (policy state, inner
+t state)". The two copies of t are independent dimensions of the composite vertex tuple; one
+external command drives the whole cascade exactly once. There is no loop, so the pure-core boundary
+holds.
+
+## The stateless-aggregate restriction (read this first)
+
+`feedback1`'s signature carries `Disjoint (Names rs1) (Names (Append rs2 rs1))`. That is the outer
+`compose`'s slot-disjointness check applied to `rs1` against `Append rs2 rs1` — and `rs1` appears on
+**both sides**. The constraint collapses to "`rs1` is disjoint from itself", which is satisfiable
+**only when `rs1 = '[]`**:
+
+```haskell
+feedback1
+  :: ( WeakenR rs1
+     , WeakenR rs2
+     , Disjoint (Names rs2) (Names rs1)
+     , Disjoint (Names rs1) (Names (Append rs2 rs1))  -- forces rs1 ~ '[]
+     )
+  => SymTransducer (HsPred rs1 ci) rs1 s1 ci co
+  -> SymTransducer (HsPred rs2 co) rs2 s2 co ci
+  -> SymTransducer ...
+```
+
+So **t must be stateless** — its register file must be empty, with all of its state living in the
+vertex. (The policy `f` *may* be stateful — its `rs2` is unconstrained against itself — but in
+practice a feedback policy is a stateless reactor, so `rs2 = '[]` too.)
+
+<Callout type="warn">
+  This is a type-level restriction, not a convention. A non-empty `rs1` fails at the `feedback1`
+  call site with a slot-collision `TypeError`. It follows from the two-stacked-`compose` reduction:
+  t appears twice and keiki's register-file model gives each appearance its own copy of `rs1`, so
+  the names would collide. A "shared-state" variant is a documented future extension, not shipped.
+</Callout>
+
+## The recipe
+
+The `ToggleAgg ↔ TogglePolicy` fixture (`test/Keiki/CompositionFeedback1Spec.hs`) is the minimal
+worked example. Both halves have empty register files.
+
+<Steps>
+
+<Step>
+
+**Author the aggregate with all state in the vertex.** The toggle is two vertices (`Off`/`On`) with
+an empty register file. Its one command `TgFlip` alternates the vertex and emits `TgFlipped`,
+forwarding the payload value:
+
+```haskell
+type ToggleRegs = '[]   -- stateless: all state in the vertex
+
+data ToggleVertex = Off | On
+  deriving stock (Eq, Show, Enum, Bounded)
+
+toggleAgg
+  :: SymTransducer (HsPred ToggleRegs TgCmd)
+                   ToggleRegs ToggleVertex TgCmd TgEv
+
+toggleEdges = \case
+  Off -> [ Edge { guard = isFlip, update = UKeep
+                , output = [ pack inCtorFlip wireFlipped
+                    (OFCons (inpFlip #tValue) OFNil) ]
+                , target = On } ]
+  On  -> [ Edge { guard = isFlip, update = UKeep
+                , output = [ pack inCtorFlip wireFlipped
+                    (OFCons (inpFlip #tValue) OFNil) ]
+                , target = Off } ]
+```
+
+</Step>
+
+<Step>
+
+**Author the policy as a stateless reactor.** One vertex (`Pol`), empty register file. On every
+observed `TgFlipped` event it emits another `TgFlip` command, forwarding the same value:
+
+```haskell
+type PolicyRegs = '[]
+
+data PolicyVertex = Pol
+  deriving stock (Eq, Show, Enum, Bounded)
+
+togglePolicy
+  :: SymTransducer (HsPred PolicyRegs TgEv)
+                   PolicyRegs PolicyVertex TgEv TgCmd
+
+policyEdges = \case
+  Pol -> [ Edge { guard = isPFlipped, update = UKeep
+                , output = [ pack inCtorPFlipped wirePFlip
+                    (OFCons (inpPFlipped #tValue) OFNil) ]
+                , target = Pol } ]
+```
+
+The policy's underlying constructor names (`TgFlipped`, `TgFlip`) must match the aggregate's across
+the boundary even though the TH binding *suffixes* differ (`PFlipped`/`PFlip` vs `Flipped`/`Flip`) —
+that is what lets `compose`'s structural-name substitution wire the cascade.
+
+</Step>
+
+<Step>
+
+**Close the loop with `feedback1`.** The composite's register file is `Append '[] (Append '[] '[])`
+which reduces to `'[]`; its vertex is the nested `Composite`:
+
+```haskell
+loop
+  :: SymTransducer
+       (HsPred (Append ToggleRegs (Append PolicyRegs ToggleRegs)) TgCmd)
+       (Append ToggleRegs (Append PolicyRegs ToggleRegs))
+       (Composite ToggleVertex (Composite PolicyVertex ToggleVertex))
+       TgCmd
+       TgEv
+loop = feedback1 toggleAgg togglePolicy
+```
+
+</Step>
+
+</Steps>
+
+## Verify it worked
+
+One external `TgFlip{42}` from the initial vertex `Composite Off (Composite Pol Off)` should advance
+*both* copies of t — proving the policy's emitted command reached the second t — and emit
+`TgFlipped{42}`:
+
+```haskell
+step loop (initial loop, initialRegs loop) (TgFlip (TgPayload 42))
+  == Just (Composite On (Composite Pol On), _, [TgFlipped (TgPayload 42)])
+--                  ^^                 ^^   both toggles stepped Off → On
+```
+
+The inner toggle stepping from `Off` to `On` is the observable proof the cascade ran. The composite
+is still single-valued (`isSingleValuedSym (withSymPred loop) == True`) and `checkHiddenInputs loop`
+is empty.
+
+## Workarounds and scaling up
+
+<Accordions>
+
+<Accordion title="The fed-back aggregate needs state">
+  Keep the aggregate stateless and push its state into the vertex (the normal case above). The
+  toggle's Off/On *is* its state — it just lives in the vertex enum rather than a register. If the
+  state genuinely cannot be a finite vertex, `feedback1` is not the tool; model the reaction as an
+  explicit two-aggregate `compose` chain plus a runtime loop (see the next item).
+</Accordion>
+
+<Accordion title="Multiple rounds of compensation">
+  Nest `feedback1`. Each extra round is one more wrapping:
+
+  ```haskell
+  twoRounds = feedback1 (feedback1 t f) f
+  ```
+
+  This stays inside the pure core because each nesting is still a finite, bounded cascade — there is
+  no loop, the chain runs a fixed number of times per external command.
+</Accordion>
+
+<Accordion title="Run until quiescence (unbounded rounds)">
+  `feedback1` cannot express "keep reacting until nothing changes" — that is an unbounded loop, and
+  the pure core is loop-free by construction. An until-quiescence reaction is a **keiro runtime
+  loop**: keiro repeatedly dispatches the policy's follow-up command and re-observes, driving the
+  aggregate and policy as separate streams until no new command is produced. The keiki composite is
+  the per-round wiring; keiro owns the iteration.
+</Accordion>
+
+</Accordions>
+
+## Related
+
+- [Compose two transducers](/docs/keiki/how-to/compose-two-transducers) — the primitive `feedback1`
+  is built from.
+- [Build a cross-context process](/docs/keiki/how-to/build-a-cross-context-process) — chaining
+  aggregates across contexts where the loop is async and owned by keiro.
+- The composition reference (`Keiki.Composition` — `feedback1`, `compose`, `Composite`) under
+  [the keiki reference](/docs/keiki/reference).
