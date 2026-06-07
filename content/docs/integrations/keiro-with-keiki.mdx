@@ -1,13 +1,221 @@
 ---
 title: keiro with keiki
-description: Pairing the durable keiro runtime with the pure keiki core.
+description: Pairing the durable keiro runtime with the pure keiki core — and validating an EventStream's transducer for replay-safety before it is ever hydrated.
 ---
 
-keiro (経路, the event-sourcing framework) uses keiki (継起, the pure mathematical
-core) for its law-abiding, IO-free semantics. This page documents how the durable
-runtime pairs with the pure core.
+keiro (経路, the event-sourcing framework) is the **durable, effectful runtime**: it talks to the
+store, hydrates aggregates, runs the command cycle, and drives process managers and workflows. keiki
+(継起, the pure mathematical core) is the **law-abiding, IO-free decision engine**: a
+`SymTransducer phi rs s ci co` whose `step` is total and side-effect-free. keiro does not re-implement
+any of keiki's semantics — it *embeds* a keiki transducer and adds the plumbing needed to replay it.
+
+This page describes that boundary, and then the headline integration the two libraries gained
+recently: keiro can ask keiki to **prove a stream is replay-safe at build time**, with no SMT solver
+and no database.
+
+## Where keiki shows up inside keiro
+
+The seam is the [`EventStream`](/docs/keiro/reference/event-stream-and-stream): one persistent stream
+is a keiki `SymTransducer` plus everything keiro needs to run it against a durable store — a `Codec`,
+a `SnapshotPolicy`, and a `StateCodec` over the folded `(state, registers)` pair.
+
+```haskell
+data EventStream phi rs s ci co = EventStream
+  { transducer    :: SymTransducer phi rs s ci co   -- the keiki decision core
+  , initialState  :: s
+  , initialRegisters :: RegFile rs
+  , eventCodec    :: Codec co
+  , snapshotPolicy :: SnapshotPolicy (s, RegFile rs)
+  , stateCodec    :: Maybe (StateCodec (s, RegFile rs))
+  , resolveStreamName :: Stream (EventStream …) -> StreamName
+  }
+```
+
+Everything downstream flows from that one embedded transducer:
+
+- **The command cycle is one call into keiki.** keiro's Transduce phase is
+  `Keiki.step transducer (state, registers) command`. `Nothing` is a rejection (`CommandRejected`);
+  `Just (state', registers', events)` is an accepted transition. Stepping the transducer *is* both the
+  decision and the state advance — there is no separate `evolve`. See
+  [Why SymTransducer, not Decider](/docs/keiro/explanation/why-symtransducer-not-decider).
+- **Replay is inherited, not added.** Because `step` is pure and total, folding a stream's event log
+  back into `(state, registers)` is deterministic by construction. keiro's durability layer adds
+  idempotency and ordering on top; the *decision* semantics are entirely keiki's.
+- **The type parameters thread straight through.** `phi` (guard alphabet), `rs` (register set), `s`
+  (control state), `ci` (command input), `co` (event output) are keiki's, surfaced unchanged on the
+  `EventStream`.
+
+For the field-by-field tour of that boundary, read the foundation walkthrough starting at
+[Start here](/docs/keiro/walkthrough/foundation/00-start-here).
+
+## Validating a stream before you replay it
+
+An `EventStream` is only as safe to replay as the keiki transducer inside it. keiki can prove
+*statically* — syntactically, with **no solver** — that a transducer is:
+
+- **replay-safe** — every command field an edge consumes is recoverable from the event(s) it emits, so
+  the command can be reconstructed on replay;
+- **deterministic** — no two outgoing edges of a vertex can both fire for one command
+  (single-valuedness); and
+- **free of dead edges** — no edge has an unreachable source or a statically-unsatisfiable guard.
+
+That umbrella check is keiki's [`validateTransducer`](/docs/keiki/walkthrough/symbolic-and-validation/07-build-time-validation-umbrella).
+`Keiro.EventStream.Validate` lifts it to the `EventStream` boundary so a service can assert *all* of
+its streams are sound before any of them is ever hydrated.
 
 <Callout type="info">
-  Documentation in progress. This page will explain the boundary between keiro's effectful runtime
-  and keiki's pure transducer semantics.
+This surface lives in `Keiro.EventStream.Validate` and is **not** re-exported from `Keiro` — import
+it by its module path. It requires the control state `s` to satisfy `(Bounded s, Enum s, Ord s,
+Show s)`, because the check walks `[minBound .. maxBound]` exactly as the renderers and
+`defaultStateCodec` shape hash do, and the transducer must use keiki's standard `HsPred` guard
+carrier.
 </Callout>
+
+### The three entry points
+
+```haskell
+data EventStreamWarning = EventStreamWarning
+  { eswStreamLabel :: !Text   -- the caller-supplied stream label
+  , eswReason      :: !Text   -- rendered from the underlying keiki warning
+  }
+  deriving stock (Eq, Show)
+
+-- run the check with defaultValidationOptions; [] means sound
+validateEventStream ::
+  (Bounded s, Enum s, Ord s, Show s) =>
+  Text -> EventStream (HsPred rs ci) rs s ci co -> [EventStreamWarning]
+
+-- same, with caller-chosen ValidationOptions
+validateEventStreamWith ::
+  (Bounded s, Enum s, Ord s, Show s) =>
+  ValidationOptions -> Text -> EventStream (HsPred rs ci) rs s ci co -> [EventStreamWarning]
+
+-- fail-fast smart constructor: Left warnings, or Right the validated stream
+mkEventStream ::
+  (Bounded s, Enum s, Ord s, Show s) =>
+  Text -> EventStream (HsPred rs ci) rs s ci co ->
+  Either [EventStreamWarning] (EventStream (HsPred rs ci) rs s ci co)
+```
+
+The `label` you pass is echoed into every `EventStreamWarning`, so a multi-aggregate service can tell
+*which* stream is at fault. `eswReason` renders the underlying keiki warning, tagged with its source
+vertex — one of `hidden-input @…`, `nondeterministic @…`, `possibly-dead @…`, or `opaque-guard @…`.
+These map one-to-one onto keiki's structured `TransducerValidationWarning` constructors:
+
+| `eswReason` prefix    | keiki warning          | Meaning                                                                                   |
+| --------------------- | ---------------------- | ----------------------------------------------------------------------------------------- |
+| `hidden-input @…`     | `HiddenInput`          | An edge reads command data its output never emits — unrecoverable on replay.              |
+| `nondeterministic @…` | `NondeterministicPair` | Two edges of one vertex can both fire for the same command (single-valuedness violation). |
+| `possibly-dead @…`    | `PossiblyDeadEdge`     | An edge whose source is unreachable, or whose guard is statically unsatisfiable.           |
+| `opaque-guard @…`     | `OpaqueGuard`          | An edge whose guard branches on a term the symbolic analyses can't see through (opt-in).   |
+
+### Fail fast at construction
+
+The simplest use is to build every stream through `mkEventStream` instead of the bare record literal,
+so an unsafe transducer can never become a live stream:
+
+```haskell
+import Keiro.EventStream.Validate (mkEventStream)
+
+orderEventStream ::
+  Either
+    [EventStreamWarning]
+    (EventStream (HsPred OrderRegs OrderCommand) OrderRegs OrderState OrderCommand OrderEvent)
+orderEventStream =
+  mkEventStream "order" EventStream
+    { transducer        = orderTransducer
+    , initialState      = Placed
+    , initialRegisters  = emptyOrderRegs
+    , eventCodec        = orderCodec
+    , snapshotPolicy    = Never
+    , stateCodec        = Nothing
+    , resolveStreamName = Stream.streamName
+    }
+```
+
+`Left warns` means at least one of `orderTransducer`'s edges is unsafe — surface the warnings and
+refuse to start. `Right es` is a stream proven sound under `defaultValidationOptions`. The bare
+`EventStream { … }` record literal stays available for low-level callers who deliberately want to skip
+the check.
+
+### Assert it over your whole registry, in CI
+
+A service usually owns several streams. Validate the registry as a unit test — it runs in microseconds
+because it never touches a solver or a database:
+
+```haskell
+allStreams :: [(Text, SomeEventStream)]
+allStreams =
+  [ ("order",      SomeEventStream orderEventStreamRecord)
+  , ("shipment",   SomeEventStream shipmentEventStreamRecord)
+  , ("fulfilment", SomeEventStream fulfilmentEventStreamRecord)
+  ]
+
+test_allStreamsAreReplaySafe :: Assertion
+test_allStreamsAreReplaySafe =
+  case concatMap (\(lbl, SomeEventStream es) -> validateEventStream lbl es) allStreams of
+    []    -> pure ()
+    warns -> assertFailure (unlines (map (Text.unpack . eswReason) warns))
+```
+
+This is the keiro-boundary mirror of keiki's
+[Assert a transducer is well-formed in CI](/docs/keiki/how-to/assert-a-transducer-is-well-formed-in-ci):
+same proof, asserted one level up where the streams are actually registered.
+
+### Tuning the checks
+
+`validateEventStreamWith` takes keiki's `ValidationOptions`, carried straight through to
+`validateTransducer`:
+
+<TypeTable
+  type={{
+    failOnEpsilonReadsInput: { type: "Bool", description: "Hidden-input (replay-safety) check.", default: "True" },
+    checkDeterminism: { type: "Bool", description: "Pure, structural determinism (single-valuedness) check.", default: "True" },
+    checkReachability: { type: "Bool", description: "Structural dead-edge check.", default: "True" },
+    warnOpaqueGuards: { type: "Bool", description: "Audit edges whose guard branches on an opaque term the symbolic analyses can't see through. Opt-in.", default: "False" },
+  }}
+/>
+
+`defaultValidationOptions` runs the three soundness checks and leaves the opaque-guard audit off. Two
+common reasons to override:
+
+- **Narrow the checks** for a stream with a known-benign warning (e.g. an intentional dead edge during
+  a migration) — disable just that check rather than skipping validation entirely.
+- **Opt into `warnOpaqueGuards = True`** to surface edges whose guards branch on a term keiki's
+  symbolic analyses translate to a free variable and therefore under-verify — most often a
+  collection-content condition (membership, "all resolved", size) lifted through a closure. It is
+  *advisory*, not a soundness error. See keiki's
+  [Opaque guards and the signpost](/docs/keiki/walkthrough/symbolic-and-validation/08-opaque-guards-and-the-signpost).
+
+<Callout type="warn">
+This is a **build-time, structural** proof. The determinism component flags only overlaps it can
+prove syntactically (no false positives, but it can miss ones it cannot prove), and the dead-edge
+component is structural reachability plus a literal-`PBot` check. For exact, solver-backed answers,
+drop down to keiki's `checkTransitionDeterminismSym` / `checkDeadEdgesSym` directly. Run the cheap
+check on every build; reserve the solver for the edges it flags.
+</Callout>
+
+## Where to go next
+
+<Cards>
+  <Card
+    title="EventStream reference"
+    href="/docs/keiro/reference/event-stream-and-stream"
+    description="The canonical API for EventStream, the Validate surface, SnapshotPolicy, StateCodec, and the Stream handle."
+  />
+  <Card
+    title="Why SymTransducer, not Decider"
+    href="/docs/keiro/explanation/why-symtransducer-not-decider"
+    description="Why keiro embeds keiki's transducer directly instead of a decide/evolve façade."
+  />
+  <Card
+    title="The validation umbrella (keiki)"
+    href="/docs/keiki/walkthrough/symbolic-and-validation/07-build-time-validation-umbrella"
+    description="validateTransducer: the pure, no-solver check keiro lifts to the EventStream boundary."
+  />
+  <Card
+    title="Single-valuedness and soundness (keiki)"
+    href="/docs/keiki/explanation/single-valuedness-and-soundness"
+    description="A precise account of what the determinism check proves, and where it under- and over-approximates."
+  />
+</Cards>
