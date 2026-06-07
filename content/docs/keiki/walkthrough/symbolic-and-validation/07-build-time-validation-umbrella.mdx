@@ -1,0 +1,272 @@
+---
+title: "07 — The build-time validation umbrella"
+description: "validateTransducer: the pure, no-solver build-time check that bundles hidden-input, determinism, reachability, and opaque-guard audits into one list of structured warnings a unit test can assert."
+---
+
+<Callout type="info">
+This chapter is part of the symbolic-and-validation source tour. Start at
+[00 — Start here](/docs/keiki/walkthrough/symbolic-and-validation/00-start-here) for the overview and
+the chapter map.
+</Callout>
+
+[Chapter 06](/docs/keiki/walkthrough/symbolic-and-validation/06-the-single-valuedness-gate) gave us one
+property — single-valuedness — and one solver-backed way to decide it. A project, though, wants a single
+build-time call that runs *several* checks and returns structured, pattern-matchable warnings, fast
+enough to live in an ordinary unit test with no external z3 process. That call is `validateTransducer`,
+and it lives in `src/Keiki/Core.hs` under the *Build-time validation umbrella (EP-56)* heading.
+
+<Callout type="warn">
+`validateTransducer` lives in **`Keiki.Core`**. Do not confuse it with `validateMermaidDiagram` /
+`validateMermaidAtlas` in `Keiki.Render.Validate`, which are an *unrelated* heuristic checker for
+rendered Mermaid diagram *text* (documented under rendering, `/docs/keiki/reference`). That module's
+own header says it "Mirrors the pure
+list-of-warnings house style of `Keiki.Core.validateTransducer` … but operates on rendered `Text`
+rather than a `Keiki.Core.SymTransducer`, so there is no shared code." Same shape, different subject.
+This chapter is about the transducer one.
+</Callout>
+
+## What the umbrella returns: `TransducerValidationWarning`
+
+Every check funnels into one structured warning type, parameterized over the vertex type `s` so it
+carries the *real* source vertex, not a pre-stringified one:
+
+```haskell
+-- src/Keiki/Core.hs
+data TransducerValidationWarning s
+    = {- | An edge consumes command information that its output does not
+      emit, so the command cannot be reconstructed on replay.
+      -}
+      HiddenInput
+        { tvwEdge :: EdgeRef s
+        , tvwInCtor :: Maybe String
+        , tvwMissingSlots :: [String]
+        , tvwDetail :: String
+        }
+    | {- | Two outgoing edges of the same vertex whose guards can both hold
+      for one command — a runtime nondeterminism / single-valuedness
+      violation (its dynamic witness is EP-55's @AmbiguousEdges@).
+      -}
+      NondeterministicPair
+        { tvwSource :: s
+        , tvwEdgeA :: Int
+        , tvwEdgeB :: Int
+        , tvwInCtor :: Maybe String
+        , tvwDetail :: String
+        }
+    | {- | An edge that can never fire: its source vertex is unreachable
+      from 'initial', or its guard is statically unsatisfiable.
+      -}
+      PossiblyDeadEdge
+        { tvwEdge :: EdgeRef s
+        , tvwDetail :: String
+        }
+    | {- | An edge whose guard contains an opaque 'TApp' term. … Advisory,
+      not a soundness error: opt in via 'warnOpaqueGuards'.
+      -}
+      OpaqueGuard
+        { tvwEdge :: EdgeRef s
+        , tvwDetail :: String
+        }
+    deriving stock (Eq, Show)
+```
+
+<TypeTable
+  type={{
+    HiddenInput: { type: "EdgeRef s, Maybe String, [String], String", description: "An edge reads command info its output never emits, so replay cannot reconstruct the command." },
+    NondeterministicPair: { type: "s, Int, Int, Maybe String, String", description: "Two outgoing guards of one vertex can both hold — the build-time mirror of the runtime AmbiguousEdges." },
+    PossiblyDeadEdge: { type: "EdgeRef s, String", description: "An edge that can never fire: unreachable source vertex, or a statically-unsatisfiable (literal PBot) guard." },
+    OpaqueGuard: { type: "EdgeRef s, String", description: "A guard branches on an opaque TApp term the symbolic analyses cannot see through. Advisory, opt-in." },
+  }}
+/>
+
+Note the comment on `NondeterministicPair`: its *dynamic witness* is `AmbiguousEdges` from the runtime
+explainer. Build-time and runtime speak one vocabulary — both locate edges via the same `EdgeRef`. We
+trace that mirror in
+[10 — Runtime rejection diagnostics](/docs/keiki/walkthrough/symbolic-and-validation/10-runtime-rejection-diagnostics).
+
+## Choosing the checks: `ValidationOptions`
+
+```haskell
+-- src/Keiki/Core.hs
+data ValidationOptions = ValidationOptions
+    { failOnEpsilonReadsInput :: Bool  -- run the hidden-input check
+    , checkDeterminism :: Bool         -- run the (pure, structural) determinism check
+    , checkReachability :: Bool        -- run the (structural) dead-edge check
+    , warnOpaqueGuards :: Bool         -- run the opaque-guard audit (opt-in; default off)
+    }
+    deriving stock (Eq, Show)
+
+-- | The three soundness checks enabled; the opt-in opaque-guard audit off.
+defaultValidationOptions :: ValidationOptions
+defaultValidationOptions =
+    ValidationOptions
+        { failOnEpsilonReadsInput = True
+        , checkDeterminism = True
+        , checkReachability = True
+        , warnOpaqueGuards = False
+        }
+```
+
+<TypeTable
+  type={{
+    failOnEpsilonReadsInput: { type: "Bool", default: "True", description: "Run the hidden-input check." },
+    checkDeterminism: { type: "Bool", default: "True", description: "Run the pure, structural determinism check." },
+    checkReachability: { type: "Bool", default: "True", description: "Run the structural dead-edge check." },
+    warnOpaqueGuards: { type: "Bool", default: "False", description: "Run the opaque-guard audit — opt-in, off by default for backward compatibility." },
+  }}
+/>
+
+Three soundness checks default on; the opaque-guard audit defaults off so `defaultValidationOptions`
+keeps its meaning for existing consumers. We give the opaque audit its own chapter:
+[08 — Opaque guards and the signpost](/docs/keiki/walkthrough/symbolic-and-validation/08-opaque-guards-and-the-signpost).
+
+## The umbrella body
+
+```haskell
+-- src/Keiki/Core.hs
+validateTransducer ::
+    (Bounded s, Enum s, Ord s, Show s) =>
+    ValidationOptions ->
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [TransducerValidationWarning s]
+validateTransducer opts t =
+    concat
+        [ if failOnEpsilonReadsInput opts then hiddenInputWarnings t else []
+        , if checkDeterminism opts then determinismWarnings t else []
+        , if checkReachability opts
+            then
+                [ PossiblyDeadEdge (dewEdge w) (dewReason w)
+                | w <- checkDeadEdges defaultDeadEdgeOptions t
+                ]
+            else []
+        , if warnOpaqueGuards opts then opaqueGuardWarnings t else []
+        ]
+```
+
+The body is a `concat` of four conditional lists. The signature pins the carrier to `HsPred` — this is
+the *pure* path. The Haddock is explicit about why:
+
+```haskell
+-- src/Keiki/Core.hs
+{- | The build-time validation umbrella. Runs the enabled checks over the
+'HsPred' (syntactic, /no solver/) carrier and concatenates their structured
+warnings, so a project can put @validateTransducer defaultValidationOptions t
+== []@ directly in a unit test and have it pass or fail in microseconds with
+no external z3 process.
+
+The default path is deliberately specialised to the 'HsPred' carrier and is
+/cheap and pure/: the determinism component flags only structurally-provable
+overlaps (never a false positive, but it can miss overlaps it cannot prove
+syntactically), and the dead-edge component is structural reachability plus a
+literal-'PBot' check. For the exact, solver-backed answers use
+'Keiki.Symbolic.checkTransitionDeterminismSym' and
+'Keiki.Symbolic.checkDeadEdgesSym' directly.
+-}
+```
+
+The trade is stated in one breath: **microseconds, no z3, no false positives — but it can miss overlaps
+it cannot prove syntactically.** The exact answers cost a solver call and live in
+[09 — Solver-backed diagnostics](/docs/keiki/walkthrough/symbolic-and-validation/09-solver-backed-diagnostics).
+
+## The determinism component: `provablyOverlap`
+
+The pure determinism check never guesses. It emits a `NondeterministicPair` only when overlap is
+*structurally provable* — which is exactly two cases:
+
+```haskell
+-- src/Keiki/Core.hs
+provablyOverlap :: HsPred rs ci -> HsPred rs ci -> Bool
+provablyOverlap PTop PTop = True
+provablyOverlap (PInCtor a) (PInCtor b) = icName a == icName b
+provablyOverlap _ _ = False
+```
+
+Both guards are `PTop` (both always hold, so they certainly overlap), or both name the *same* input
+constructor (both fire on the same command). Every other shape returns `False` — not "no overlap", but
+"cannot prove overlap syntactically". This is an **under-approximation**: every warning it emits is a
+true positive, but its silence does not prove determinism. `determinismWarnings` wraps `provablyOverlap`
+in the per-vertex, per-pair `i < j` loop you saw in
+[chapter 06](/docs/keiki/walkthrough/symbolic-and-validation/06-the-single-valuedness-gate), and fills
+`tvwInCtor` with the shared constructor name in the same-`PInCtor` case.
+
+<Callout type="info">
+There is a sibling, `checkTransitionDeterminismPure`, that emits the leaner `DeterminismWarning` using
+the *same* `provablyOverlap` predicate. `validateTransducer`'s determinism component
+(`determinismWarnings`) is the richer one — it produces `NondeterministicPair` with the constructor
+name. Both under-approximate identically; they differ only in the warning record they return.
+</Callout>
+
+## The reachability component: `reachableVertices` and `checkDeadEdges`
+
+The dead-edge check rests on a finite fixpoint over the `Bounded`/`Enum` vertex set, following `target`
+pointers from `initial`:
+
+```haskell
+-- src/Keiki/Core.hs
+reachableVertices ::
+    (Bounded s, Enum s, Ord s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    Set.Set s
+reachableVertices t = go (Set.singleton (initial t)) [initial t]
+  where
+    go seen [] = seen
+    go seen (s : rest) =
+        let succs = [target e | e <- edgesOut t s]
+            new = filter (`Set.notMember` seen) succs
+         in go (foldr Set.insert seen new) (new ++ rest)
+```
+
+A worklist fold: start with `initial` seen, pop a vertex, add the targets you have not seen, repeat
+until the worklist drains. `checkDeadEdges` then flags an edge as *possibly* dead when its source vertex
+is not in that set, or (with `defaultDeadEdgeOptions`) when its guard is the literal `PBot`. The Haddock
+underlines the limit: this is purely structural — it follows pointers and inspects guard *syntax*, and
+"CANNOT reason about register values." A self-loop guarded `available == True` whose `available` is set
+`False` on entry is *not* catchable here. That kind of overlap needs the
+[solver-backed dead-edge check](/docs/keiki/walkthrough/symbolic-and-validation/09-solver-backed-diagnostics).
+Hence every result is labelled "possibly dead".
+
+## The umbrella in a test
+
+`test/Keiki/ValidationSpec.hs` is the contribution-grade anchor. It builds tiny fixtures — `overlapT`
+(two `PTop` edges out of `Start`), `deadT` (an edge leaving the unreachable `Orphan`), `botT` (a literal
+`PBot` guard), `hiddenT` (an edge whose output drops slot `c`), and `cleanT` — and asserts the umbrella's
+output edge by edge:
+
+```haskell
+-- test/Keiki/ValidationSpec.hs
+    describe "validateTransducer (pure, no solver)" $ do
+        it "clean transducer yields no warnings" $
+            validateTransducer defaultValidationOptions cleanT `shouldBe` []
+
+        it "overlapping pair yields a NondeterministicPair naming both indices and source" $ do
+            let isOverlapStart (NondeterministicPair{tvwSource = Start, tvwEdgeA = 0, tvwEdgeB = 1}) = True
+                isOverlapStart _ = False
+            filter isOverlapStart (validateTransducer defaultValidationOptions overlapT)
+                `shouldSatisfy` (not . null)
+
+        it "edge from an unreachable vertex yields a PossiblyDeadEdge" $ do
+            let isDeadOrphan (PossiblyDeadEdge{tvwEdge = EdgeRef{edgeSource = Orphan, edgeIndex = 0}}) = True
+                isDeadOrphan _ = False
+            validateTransducer defaultValidationOptions deadT
+                `shouldSatisfy` any isDeadOrphan
+```
+
+The clean transducer yields `[]` — that is the assertion a project drops into CI. The toggle spec
+confirms a check turns off when its flag is `False`:
+
+```haskell
+-- test/Keiki/ValidationSpec.hs
+    describe "ValidationOptions toggles" $ do
+        it "disabling determinism suppresses NondeterministicPair" $ do
+            let opts = defaultValidationOptions{checkDeterminism = False}
+                isND (NondeterministicPair{}) = True
+                isND _ = False
+            filter isND (validateTransducer opts overlapT) `shouldBe` []
+```
+
+That `validateTransducer defaultValidationOptions t == []` line is the whole point: a microsecond,
+solver-free gate that fails the build the moment a guard overlap, dead edge, or hidden input creeps in —
+while the exact, solver-backed answers stay one explicit call away.
+
+Previous: [06 — The single-valuedness gate](/docs/keiki/walkthrough/symbolic-and-validation/06-the-single-valuedness-gate) ·
+Next: [08 — Opaque guards and the signpost](/docs/keiki/walkthrough/symbolic-and-validation/08-opaque-guards-and-the-signpost)

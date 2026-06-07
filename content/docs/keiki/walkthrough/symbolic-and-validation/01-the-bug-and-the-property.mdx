@@ -1,0 +1,109 @@
+---
+title: "01 — The bug and the property"
+description: "The guard-overlap non-determinism bug, why ordinary tests miss it, and the single-valuedness property that retires it — the motivation for everything in Keiki.Symbolic."
+---
+
+<Callout type="info">
+Part of the [symbolic-and-validation tour](/docs/keiki/walkthrough/symbolic-and-validation/00-start-here).
+This chapter is the *why*; the next chapter starts reading the *how* in `keiki/src/Keiki/Symbolic.hs`.
+</Callout>
+
+Before we read a line of `Keiki.Symbolic`, we need the bug it exists to prevent. The conceptual
+treatment is [Why keiki uses an SMT solver](/docs/keiki/explanation/why-smt); this chapter ports the
+essentials so the source tour stands on its own.
+
+## A keiki guard, and where it goes wrong
+
+A keiki aggregate is a `SymTransducer phi rs s ci co`. At each control vertex `s` it has some number
+of outgoing `Edge`s, and each edge carries a **guard** — a predicate over the register file and the
+input command. The runtime fires an edge when its guard is true for the current `(RegFile rs, ci)`.
+
+The problem appears the moment two edges leaving the *same* vertex can both be true on the *same*
+input. Take the canonical pair from the explanation page:
+
+```text
+Edge "Process"  fires when:  input is Submit  AND  submittedAt <= deadline
+Edge "Reject"   fires when:  input is Submit  AND  submittedAt >= deadline
+```
+
+Each guard reads correctly in isolation. Read together they share a boundary: when
+`submittedAt == deadline`, **both** fire. The runtime now has two edges that both want to react to one
+input — different update, different output, possibly a different target vertex. It must pick one, and
+whichever it picks, the other edge's effect is silently dropped. The machine is no longer
+**single-valued**: one input maps to more than one possible result, and no exception is ever raised.
+The wrong event is emitted on the day a `Submit` lands at exactly the deadline, months after release.
+
+## Why tests miss it
+
+A unit test checks the cases you wrote; it cannot catch an overlap unless someone happens to test the
+exact boundary input — which is precisely the input nobody knew was a problem. The bug lives in the
+infinite gap *between* the inputs you tried, here a one-character difference (`<=` vs `>=`) live only
+on a single value. Property tests do better, but a generator that draws `submittedAt` and `deadline`
+independently from large domains will essentially never land them on the same value, so the boundary
+bug hides indefinitely.
+
+What we want is a method that does not sample, does not depend on which cases someone thought to test,
+and establishes the property over the **entire** input space. That is what an SMT solver gives us, and
+it is the whole reason `Keiki.Symbolic` exists.
+
+## The property: single-valuedness
+
+The fix is phrased as one mechanical question. Two outgoing edges from the same vertex are mutually
+exclusive **if and only if** their guards are never simultaneously true — that is, the conjunction
+`g1 AND g2` is unsatisfiable. A transducer is *single-valued* when that holds for every pair of
+outgoing edges at every reachable vertex.
+
+`Keiki.Symbolic`'s module header states the goal in exactly these terms:
+
+```haskell
+-- keiki/src/Keiki/Symbolic.hs
+-- After EP-2 of MasterPlan 2, asking "are these two edge guards mutually
+-- exclusive?" is a mechanical question with a precise answer; the
+-- synthesis-§7 invariant that edge guards form an /effective/ Boolean
+-- algebra is honored at v2.
+```
+
+The "v2" framing matters for the rest of the tour. There is an older v1 `BoolAlg HsPred` instance in
+`Keiki.Core` whose `isBot` is a **syntactic over-approximation** — it can only spot an overlap when
+the guards are literally contradictory in shape. The v2 surface in this module replaces that guess
+with a real solver decision while keeping v1 intact for back-compat. Same module header:
+
+```haskell
+-- This module is the v2 symbolic upgrade of the v1 best-effort
+-- @BoolAlg HsPred@ instance pinned by EP-4 of MasterPlan 1's
+-- Outcomes & Retrospective.
+```
+
+## What "precise" buys you, concretely
+
+The boundary example is the easy case. The property's real teeth show on guards that depend on
+register values and on *computed* values. The shipped capstone is the loan-application aggregate,
+whose `UnderReview` vertex has an approval edge guarded by a comparison against a register
+(`appCreditScore >= threshold`) and a cap that *multiplies* a register (`appRequestedAmount <=
+appCreditScore * 1000`). Single-valuedness there requires proving `approvalGuard AND NOT approvalGuard`
+unsatisfiable — which only works once the solver sees the two reads of `#appCreditScore` as the same
+variable and sees the multiply as real arithmetic. The test anchor records exactly that:
+
+```haskell
+-- keiki/jitsurei/test/Jitsurei/LoanApplicationSymbolicSpec.hs
+describe "isSingleValuedSym (withSymPred loanApplication)" $
+  it "answers True (the v2 retrospective gate)" $
+    isSingleValuedSym (withSymPred loanApplication) `shouldBe` True
+```
+
+That one assertion is the property this whole module delivers. The chapters that follow build it up
+piece by piece: the `Sym` registry that decides which types the solver can see, the translator that
+turns a guard into an SBV formula (with the memo cache that makes the two `#appCreditScore` reads
+agree), the `SymPred` wrapper that routes `isBot` through z3, and finally the gate itself.
+
+<Callout type="warn">
+A green gate is closer to a proof than to a passed test, but it is honest only within the curated set
+of types the translator understands. The over-approximation is one-directional: an un-translatable
+guard can cost you a false alarm (the gate fails when the guards really are exclusive), never a false
+sense of safety. Chapter 08 covers this in full.
+</Callout>
+
+---
+
+Previous: [00 — Start here](/docs/keiki/walkthrough/symbolic-and-validation/00-start-here)
+· Next: [02 — The Sym typeclass and registry](/docs/keiki/walkthrough/symbolic-and-validation/02-the-sym-typeclass-and-registry)

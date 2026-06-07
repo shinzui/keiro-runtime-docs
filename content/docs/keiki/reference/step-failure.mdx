@@ -1,0 +1,135 @@
+---
+title: "Step failure"
+description: "The runtime step explainer stepEither and its StepFailure, EdgeRef, RejectedEdgeSummary, and MatchedEdgeSummary types in Keiki.Core."
+---
+
+`stepEither` is the explaining sibling of [`step`](/docs/keiki/reference/core). Where `step`
+collapses every failure to `Nothing`, `stepEither` returns a precise `StepFailure` on the `Left`
+telling you *why* a step could not advance — while returning **exactly** the same success triple on
+the `Right`. It is purely additive: `step` is left unchanged. All of these live in `Keiki.Core`.
+
+## `stepEither`
+
+```haskell
+stepEither ::
+    (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co ->
+    (s, RegFile rs) ->
+    ci ->
+    Either (StepFailure s) (s, RegFile rs, [co])
+```
+
+<Callout type="warn">
+There is **no `StepResult` type**. A successful step is the bare triple
+`(s, RegFile rs, [co])` — the next vertex, the updated register file, and the emitted events
+(`[]` for an ε-edge, `[o]` for a letter edge, `[o1, o2, …]` for a multi-event edge). `stepEither`
+returns exactly that triple inside `Right`, identical to what `step` returns inside `Just`.
+</Callout>
+
+<Callout type="warn">
+`stepEither` decides guards by **concrete evaluation**, never z3 — just like `delta`, `omega`,
+`step`, and `reconstitute`. Each candidate edge is tested with `models (guard e) (regs, ci)`,
+which for keiki's predicate carriers reduces to `evalPred`. The z3-backed surface
+([`Keiki.Symbolic`](/docs/keiki/reference/symbolic)) is build/CI-time only and is never on the
+per-event hot path.
+</Callout>
+
+## `StepFailure`
+
+```haskell
+data StepFailure s
+    = NoOutgoingEdges s
+    | NoMatchingEdge s [RejectedEdgeSummary s]
+    | AmbiguousEdges s [MatchedEdgeSummary s]
+    deriving stock (Eq, Show)
+```
+
+<TypeTable
+  type={{
+    NoOutgoingEdges: { type: "s", description: "The source vertex has no outgoing edges at all" },
+    NoMatchingEdge: { type: "s [RejectedEdgeSummary s]", description: "There are outgoing edges, but none matched the command; one RejectedEdgeSummary per edge, in declaration order" },
+    AmbiguousEdges: { type: "s [MatchedEdgeSummary s]", description: "Two or more guards matched the same command; one MatchedEdgeSummary per matched edge" },
+  }}
+/>
+
+<Callout>
+Read the three variants in two groups. `NoOutgoingEdges` and `NoMatchingEdge` are ordinary
+**rejections** — the command simply does not fire in this state, nothing is written, nothing is
+wrong. `AmbiguousEdges` is different: it is a **single-valuedness violation, i.e. a defect**. It is
+the runtime witness of the build-time
+[`NondeterministicPair`](/docs/keiki/reference/validate) warning, and the two share the `EdgeRef`
+vocabulary so a runtime ambiguity points back at the same edges the build-time validator flags. If
+you see `AmbiguousEdges` in production, the transducer was shipped non-single-valued — catch it
+earlier with [`checkTransitionDeterminismSym`](/docs/keiki/reference/symbolic).
+</Callout>
+
+## Edge locators and summaries
+
+```haskell
+data EdgeRef s = EdgeRef
+    { edgeSource :: s
+    , edgeIndex  :: Int
+    }
+    deriving stock (Eq, Show)
+```
+
+`EdgeRef` is the canonical edge-identity vocabulary: the vertex an edge leaves from and its
+zero-based position in `edgesOut t source`. It is shared with the build-time diagnostics in
+[Validate](/docs/keiki/reference/validate).
+
+```haskell
+data RejectedEdgeSummary s = RejectedEdgeSummary
+    { rejectedEdge   :: EdgeRef s
+    , rejectedTarget :: s
+    , rejectedGuard  :: Bool
+    }
+    deriving stock (Eq, Show)
+
+data MatchedEdgeSummary s = MatchedEdgeSummary
+    { matchedEdge   :: EdgeRef s
+    , matchedTarget :: s
+    }
+    deriving stock (Eq, Show)
+```
+
+<TypeTable
+  type={{
+    "RejectedEdgeSummary.rejectedEdge": { type: "EdgeRef s", description: "Locator for the rejected edge" },
+    "RejectedEdgeSummary.rejectedTarget": { type: "s", description: "The edge's declared target vertex" },
+    "RejectedEdgeSummary.rejectedGuard": { type: "Bool", description: "Whether its guard matched (always False here; the field keeps the shape uniform with MatchedEdgeSummary)" },
+    "MatchedEdgeSummary.matchedEdge": { type: "EdgeRef s", description: "Locator for the matched edge" },
+    "MatchedEdgeSummary.matchedTarget": { type: "s", description: "The edge's declared target vertex" },
+  }}
+/>
+
+Both summaries carry the edge locator and its declared target but deliberately carry **no register
+values** — diagnostics summarize, they do not dump state.
+
+## Relationship to `step`
+
+`step` and `stepEither` agree exactly on the success path:
+
+```haskell
+-- step collapses every failure to Nothing:
+step :: (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co -> (s, RegFile rs) -> ci -> Maybe (s, RegFile rs, [co])
+
+-- stepEither preserves the success triple verbatim and explains the failure:
+case stepEither t (s, regs) ci of
+  Right (s', regs', outs)        -> ...   -- identical to step's Just (s', regs', outs)
+  Left (NoOutgoingEdges s)       -> ...   -- ordinary rejection: dead-end vertex
+  Left (NoMatchingEdge s rs')    -> ...   -- ordinary rejection: no guard matched
+  Left (AmbiguousEdges s ms)     -> ...   -- defect: single-valuedness violation
+```
+
+Reach for `stepEither` whenever a runtime needs to surface *why* a command did not advance (a
+rejection log, a 4xx response, a defect alert on `AmbiguousEdges`); reach for `step` when a bare
+`Maybe` is enough.
+
+## See also
+
+- [Keiki.Core](/docs/keiki/reference/core) — `step`, `delta`, `omega`, `reconstitute`, and the
+  predicate algebra.
+- [Validate](/docs/keiki/reference/validate) — the build-time `NondeterministicPair` whose runtime
+  witness is `AmbiguousEdges`.
+- The behaviours on this page are exercised in `test/Keiki/StepEitherSpec.hs`.

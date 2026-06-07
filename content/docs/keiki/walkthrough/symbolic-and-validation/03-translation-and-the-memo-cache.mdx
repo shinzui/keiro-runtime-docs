@@ -1,0 +1,207 @@
+---
+title: "03 — Translation and the memo cache"
+description: "Reading translateTermSym and translatePred: the SymEnv translation context, deterministic slot naming (reg/… and inp/…), the shared input-constructor tag, and the seVarCache memo that makes proj #x .== proj #x valid rather than merely satisfiable."
+---
+
+<Callout type="info">
+Part of the [symbolic-and-validation tour](/docs/keiki/walkthrough/symbolic-and-validation/00-start-here).
+Read [02 — The Sym typeclass and registry](/docs/keiki/walkthrough/symbolic-and-validation/02-the-sym-typeclass-and-registry) first.
+</Callout>
+
+With `Sym` evidence in hand, the translator walks a guard's AST and emits an SBV formula. Two pieces
+of *shared* state make the walk correct: a single symbolic constructor tag (so distinct `PInCtor`
+atoms are seen as mutually exclusive) and a per-translation memo cache (so two reads of the same
+register share one variable). Both live in `SymEnv`. This chapter reads `keiki/src/Keiki/Symbolic.hs`.
+
+## The translation context: `SymEnv`
+
+```haskell
+-- keiki/src/Keiki/Symbolic.hs
+data SymEnv = SymEnv
+    { seInputCtor :: SBV.SBV String
+    , seVarCache :: IORef (Map String SomeSBV)
+    }
+```
+
+<TypeTable
+  type={{
+    seInputCtor: { type: "SBV.SBV String", description: "The shared symbolic input-constructor tag. A PInCtor atom asserts seInputCtor .== literal (icName ic), so two such constraints with distinct names are recognized as mutually unsatisfiable." },
+    seVarCache: { type: "IORef (Map String SomeSBV)", description: "A per-translation memo: a deterministic variable name maps to the single SBV variable allocated for it during this walk. Scoped to one mkSymEnv, so variables are shared within a query but never leak across queries." },
+  }}
+/>
+
+`SomeSBV` is the existential that lets one map hold variables of different representation types; its
+`SBV.SymVal` constraint carries a `Typeable` superclass, which is what lets the cache check a recovered
+variable's type matches the requested one:
+
+```haskell
+data SomeSBV where
+    SomeSBV :: (SBV.SymVal a) => SBV.SBV a -> SomeSBV
+```
+
+A fresh env is allocated inside `SBV.Symbolic` because both fields are effectful — `seInputCtor` is a
+free variable and the cache is a freshly created `IORef`:
+
+```haskell
+mkSymEnv :: SBV.Symbolic SymEnv
+mkSymEnv = do
+    ctor <- SBV.free "inputCtor"
+    cache <- liftIO (newIORef Map.empty)
+    pure (SymEnv ctor cache)
+```
+
+The cache is created **per `mkSymEnv` call**, so each independent query gets its own memo and variables
+never bleed across queries.
+
+## Translating terms, and deterministic naming
+
+`translateTermSym` maps a `Term` to an SBV expression of the carrier's `SymRep`. The structural cases
+are direct; the interesting part is the *names* it allocates, because witness extraction in
+[chapter 05](/docs/keiki/walkthrough/symbolic-and-validation/05-symisbot-and-witness-extraction) reads
+values back out by those exact names:
+
+```haskell
+translateTermSym _env (TLit r) = pure (symLit r)
+translateTermSym env (TReg ix) =
+    memoFree env ("reg/" <> indexName ix)
+translateTermSym env (TInpCtorField ic ix) =
+    memoFree env ("inp/" <> icName ic <> "/" <> indexName ix)
+translateTermSym _env (TApp1 _f _t) = SBV.free "app1"
+translateTermSym _env (TApp2 _f _a _b) = SBV.free "app2"
+translateTermSym env (TArith op a b) = case discoverSymNum @r of
+    Nothing -> SBV.free "arith" -- sound opaque fallback
+    Just SymNumDict -> do
+        sa <- translateTermSym env a
+        sb <- translateTermSym env b
+        let apply = case op of
+                OpAdd -> (+)
+                OpSub -> (-)
+                OpMul -> (*)
+        pure (apply sa sb)
+```
+
+The naming scheme is the contract between this module's two halves:
+
+- `TReg` allocates `reg/<slotName>`, where `slotName` comes from the `Index`'s `KnownSymbol` evidence.
+- `TInpCtorField` allocates `inp/<icName>/<slotName>` — the constructor's name plus the field's label.
+- `TApp1` / `TApp2` keep anonymous names (`app1` / `app2`); their values are **not** part of any
+  extracted witness, because an opaque Haskell function has no `Eq` and so two applications can never be
+  recognized as the same.
+- `TArith` is structural *only if* `discoverSymNum` hits — then a computed operand becomes a real `+` /
+  `-` / `*` the solver reads. A registry miss falls back to a fresh `arith` variable (sound, imprecise).
+
+The slot name is recovered by walking the `Index` to its leaf and reading the `KnownSymbol`:
+
+```haskell
+indexName :: forall rs r. Index rs r -> String
+indexName (ZIdx @s) = symbolVal (Proxy @s)
+indexName (SIdx i) = indexName i
+```
+
+## The memo cache: why `proj #x .== proj #x` is *valid*
+
+`TReg` and `TInpCtorField` do **not** call `SBV.free` directly — they go through `memoFree`. This is
+the EP-42 change that turns the symbolic surface from "satisfiable" to "valid" reasoning about repeated
+reads:
+
+```haskell
+memoFree env name = do
+    m <- liftIO (readIORef (seVarCache env))
+    case Map.lookup name m of
+        Just (SomeSBV (v :: SBV.SBV b)) ->
+            case eqTypeRep (typeRep @a) (typeRep @b) of
+                Just HRefl -> pure v
+                Nothing ->
+                    error ("memoFree: type mismatch for cached variable " <> name)
+        Nothing -> do
+            v <- SBV.free name
+            liftIO (modifyIORef' (seVarCache env) (Map.insert name (SomeSBV v)))
+            pure v
+```
+
+The first read of a name allocates one `SBV.free` and stores it; every later read of the *same* name
+returns the cached variable. The type check on a hit is unreachable in practice — a deterministic name
+maps to exactly one representation type — but it makes the existential recovery total.
+
+Why it matters: without memoization, two reads of `#x` would mint two independent fresh variables, and
+the solver would happily satisfy `x /= x` by giving them different values. With it, both reads *are*
+the same variable, so `x /= x` is genuinely unsat and `proj #x .== proj #x` is **valid**, not merely
+satisfiable. The header states the consequence:
+
+```haskell
+-- This makes the solver see two reads of @#x@ as the /same/ value,
+-- so @proj #x .== proj #x@ is valid (not merely satisfiable). The
+-- 'TApp1' \/ 'TApp2' escape hatches are deliberately /not/ cached:
+-- they wrap opaque Haskell functions with no 'Eq', so two
+-- applications cannot be recognized as equal ...
+```
+
+`SymbolicSpec` pins this directly. The negated self-equality is bot, and the two-edge fixture whose
+guards both read `#amount` is single-valued only because the reads share one variable:
+
+```haskell
+-- keiki/test/Keiki/SymbolicSpec.hs  (describe "memoization (EP-42)")
+it "x /= x is empty: symIsBot (PNot (PEq #amount #amount)) is True" $
+  symIsBot pNeq `shouldBe` True
+
+it "two edges PEq #amount 0 / PEq #amount 1 are single-valued" $
+  isSingleValuedSym (withSymPred twoReadEdgeFixture) `shouldBe` True
+```
+
+<Callout type="info">
+The fixture comment in the spec records the *before* behavior precisely: prior to EP-42 the two reads
+were independent fresh variables, so `#amount == 0 ∧ #amount == 1` stayed satisfiable and the verdict
+was `False`; the shared variable flips it to a real contradiction and `True`.
+</Callout>
+
+## Translating predicates
+
+`translatePred` walks an `HsPred` to an SBV `SBool`. It is structural for every constructor and routes
+each leaf through the registry from the previous chapter:
+
+```haskell
+translatePred env = go
+  where
+    go PTop = pure SBV.sTrue
+    go PBot = pure SBV.sFalse
+    go (PAnd p q) = (SBV..&&) <$> go p <*> go q
+    go (POr p q) = (SBV..||) <$> go p <*> go q
+    go (PNot p) = SBV.sNot <$> go p
+    go (PEq a b) = goEq a b
+    go (PInCtor ic) = pure (seInputCtor env SBV..== SBV.literal (icName ic))
+    go (PCmp op a b) = goCmp op a b
+```
+
+Two cases carry the weight:
+
+`PInCtor` is where the shared tag pays off. Every constructor atom asserts `seInputCtor .== literal
+(icName ic)` against the *same* `seInputCtor`, so the solver sees that two atoms over distinct
+constructors cannot both hold:
+
+```haskell
+-- keiki/test/Keiki/SymbolicSpec.hs
+it "PInCtor inCtorTinyFoo AND PInCtor inCtorTinyBar is unsatisfiable" $ do
+  satP ( PAnd (PInCtor inCtorTinyFoo) (PInCtor inCtorTinyBar)
+         :: HsPred '[] TinyCmd ) `shouldReturn` False
+```
+
+`PEq` and `PCmp` consult `discoverSym` / `discoverSymOrd`; on a hit they emit `(.==)` or the matching
+comparison, on a miss a fresh opaque `SBool`:
+
+```haskell
+goEq a b = case discoverSym @r of
+    Nothing -> SBV.free "neq"
+    Just SymDict -> do
+        sa <- translateTermSym env a
+        sb <- translateTermSym env b
+        pure (sa SBV..== sb)
+```
+
+The `neq` / `cmp` / `arith` fallbacks are the opaque escape hatches; chapter 08 treats what they cost.
+With the AST now translatable, the next chapter wraps the predicate so the `BoolAlg` algebra can drive
+these analyses.
+
+---
+
+Previous: [02 — The Sym typeclass and registry](/docs/keiki/walkthrough/symbolic-and-validation/02-the-sym-typeclass-and-registry)
+· Next: [04 — SymPred and the BoolAlg instance](/docs/keiki/walkthrough/symbolic-and-validation/04-sympred-and-the-boolalg-instance)

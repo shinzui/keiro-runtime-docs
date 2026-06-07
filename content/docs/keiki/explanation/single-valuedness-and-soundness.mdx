@@ -1,0 +1,204 @@
+---
+title: "Single-valuedness and soundness"
+description: "A precise account of what keiki's (継起) single-valuedness check proves, where it under- and over-approximates, and the curated-type and Unknown caveats that bound its honesty."
+---
+
+<Callout type="info">
+  This page goes deeper than the surrounding explanation pages. You can author keiki (継起)
+  aggregates and rely on the CI gate without reading it; read it to understand exactly what the
+  gate proves, where it can give a false alarm, and the one place it can quietly under-verify.
+  For *why* an SMT solver is used at all — and what `sat`/`unsat`/`unknown` mean — read
+  [Why keiki uses an SMT solver](/docs/keiki/explanation/why-smt) first. This page does not
+  re-derive that motivation.
+</Callout>
+
+## The property, formally
+
+Fix a transducer with state set `S`, register file type `RegFile rs`, and command type `ci`.
+At a vertex `s` the outgoing edges carry guards `g₁, …, gₙ`, each a predicate over the pair
+`(RegFile rs, ci)`. Write `⟦g⟧` for the set of inputs the guard accepts:
+
+```text
+⟦g⟧ = { (regs, c) : models g (regs, c) = True }
+```
+
+The transducer is **single-valued at `s`** when those accepting sets are pairwise disjoint:
+
+```text
+for all i ≠ j :  ⟦gᵢ⟧ ∩ ⟦gⱼ⟧ = ∅
+```
+
+and **single-valued** when this holds at every vertex `s ∈ S`. Disjointness is what makes
+`step` deterministic — at most one edge ever accepts a given input — and it is the keiki
+analogue of the edge guards forming an *effective Boolean algebra*: a `conj` of two distinct
+guards must be `bot`. The check `isSingleValuedSym` decides exactly this, by testing
+`isBot (gᵢ conj gⱼ)` for each pair (the
+[per-pair-per-vertex decomposition](/docs/keiki/explanation/the-symbolic-ci-gate)).
+
+Everything below is about the gap between `⟦gᵢ⟧ ∩ ⟦gⱼ⟧ = ∅` (the truth) and what a given
+`isBot` implementation actually decides (the approximation).
+
+## Soundness vs precision: two directions of error
+
+A decision procedure for an undecidable-in-general property can err in one of two directions.
+keiki ships two `isBot` implementations, and they err in *opposite* directions:
+
+<TypeTable
+  type={{
+    "Symbolic isBot (SymPred / z3)": {
+      type: "under-approximates",
+      description: "Treats fewer pairs as empty than truly are. No false 'single-valued' verdict on a real overlap (sound); may report a spurious overlap (false alarm). This is the gate you put in CI.",
+    },
+    "Syntactic isBot (raw HsPred)": {
+      type: "over-approximates",
+      description: "Proves emptiness only by inspecting the predicate AST. Catches only structurally-evident overlaps; cheap, pure, no solver. Misses overlaps it cannot see syntactically.",
+    },
+  }}
+/>
+
+The distinction that matters for trust is **soundness**: never claim single-valued when the
+machine is not. The symbolic check is sound. `symIsBot` answers `True` (empty) only when z3
+returns `unsat` for `gᵢ AND gⱼ`; for any other outcome — `sat`, or the conservative fallbacks
+below — it answers `False`. So the worst the symbolic gate does is fail when the guards really
+*are* mutually exclusive: a false alarm, never a false sense of safety.
+
+```haskell
+-- symIsBot is True only when no model exists; every other case is False.
+symIsBot p = unsafePerformIO $ do
+    res <- SBV.sat (mkSymEnv >>= \env -> translatePred env p)
+    pure (not (SBV.modelExists res))
+```
+
+The two checks are complementary, not redundant. The syntactic check
+(`validateTransducer defaultValidationOptions`, used by the v1 `HsPred` carrier) runs in
+microseconds with no external process and catches the obvious structural overlaps. The symbolic
+check (`isSingleValuedSym . withSymPred`) is the exact, solver-backed answer for the
+register-value-dependent and arithmetic overlaps the syntactic one cannot prove.
+
+## Caveat 1 — curated types and the opaque escape
+
+The solver only sees what the SBV translation can express, and the translation is built over a
+**curated registry** of types. `discoverSym` recognizes exactly: `Bool`, `Int`, `Integer`,
+`Text`, `UTCTime`, and the fixed-width integers `Word8`/`Word16`/`Word32`/`Word64`/
+`Int32`/`Int64`. A guard over any of these translates *precisely* — `PEq` becomes `(.==)`,
+`PCmp` becomes a real `.<`/`.<=`/`.>`/`.>=` comparison.
+
+Outside that set, two escape hatches appear in the term language: `TApp1` and `TApp2`, which
+wrap opaque Haskell functions. They have no symbolic meaning, so `translateTermSym` maps each to
+a **fresh free variable**:
+
+```haskell
+translateTermSym _env (TApp1 _f _t)   = SBV.free "app1"
+translateTermSym _env (TApp2 _f _a _b) = SBV.free "app2"
+```
+
+A `PEq` over a type that misses `discoverSym` is treated the same way — `goEq` emits a fresh
+`SBV.free "neq"`. This is normally fine for the *gate*: a fresh variable makes the solver assume
+the guards *could* overlap, so the worst outcome is a false alarm (the sound direction).
+
+But there is one subtlety worth stating plainly: because an opaque term becomes a fresh,
+unconstrained variable, a pair of guards that branch *only* on the same opaque condition can
+look mutually exclusive to the solver when they are not — the solver is free to pick different
+values for two occurrences of an opaque application (opaque functions have no `Eq`, so the two
+occurrences never share a variable). An opaque guard is therefore **silently under-verified**:
+its real single-valuedness was not actually proved.
+
+keiki does not leave this implicit. The `warnOpaqueGuards` audit (opt-in via
+`ValidationOptions`) walks the predicate AST and emits an `OpaqueGuard` warning for every edge
+whose guard contains an opaque `TApp` term — signposting exactly the edges whose verification you
+should not trust:
+
+```haskell
+-- Turn on the opaque-guard audit in your validation step:
+validateTransducer defaultValidationOptions { warnOpaqueGuards = True } yourAggregate
+```
+
+If a type has a natural symbolic representation, the honest fix is to extend the curated
+registry to cover it rather than reaching for an opaque `TApp`. See
+[Registers vs state](/docs/keiki/explanation/registers-vs-state) for what belongs in a slot.
+
+## Caveat 2 — the Unknown/timeout rule
+
+z3 can return a third answer: `unknown`, when it cannot decide within its budget. keiki collapses
+this into the sound direction. `symIsBot` is defined as `not (modelExists res)`, and a
+non-`sat`, non-decided result does not count as "a model was found to *not* exist" — it is
+treated as **possibly overlapping**. Concretely, an `unknown`/timeout makes `isBot` answer
+`False`: the gate assumes a possible overlap and fails closed rather than open. You may see a
+spurious failure on a pathological guard; you will never see a timeout silently pass an
+overlapping pair as single-valued.
+
+## Caveat 3 — integers are modelled unbounded
+
+Every numeric carrier — `Int`, and all the fixed-width `Word*`/`Int*` types — encodes to the
+unbounded mathematical `Integer` in SBV, not to a bit-vector:
+
+```haskell
+instance Sym Word64 where
+    type SymRep Word64 = Integer
+    toSym = fromIntegral
+    fromSym = fromIntegral
+```
+
+This is an **over-approximation of the type's value set**: the modular wraparound of a `Word*`
+or `Int*` is not modelled. The consequence is one-directional and stays sound for the gate. Any
+concrete model z3 finds is a real witness once decoded through `fromSym`, so `symSatExt` never
+fabricates a phantom breaking input. What it *can* miss is an unsatisfiability that depends on
+wraparound — for example `x + 1 == 0` over `Word64` is satisfiable at the type's wrap point, but
+the `Integer` encoding reports it `unsat`. In keiki's money and count guards this never bites:
+they are equality and ordering checks against in-range literals. The motivating money type is
+`OrderCart`'s `Money = Word64` (fixed-point minor units), exercised in
+`jitsurei/test/Jitsurei/OrderCartSymbolicSpec.hs`, where `10 < 5` over `Money` is correctly
+`symIsBot` and a `ConfirmPayment` guard with `amountPaid >= 1000` reconstructs a real witness.
+
+## Memoization — one variable per slot
+
+A precise overlap answer needs more than per-type translation; it needs two reads of the *same*
+slot to be the *same* value in the solver's eyes. The translation environment (`SymEnv`) carries
+a memo cache keyed by a deterministic variable name (`TReg` allocates `reg/<slot>`,
+`TInpCtorField` allocates `inp/<ctor>/<field>`). The first read of a name allocates one
+`SBV.free` variable and caches it; every later read of the same name returns the *cached*
+variable:
+
+```haskell
+translateTermSym env (TReg ix) =
+    memoFree env ("reg/" <> indexName ix)   -- same name → same SBV variable
+```
+
+This is why a guard like `proj #x .== proj #x` is **valid** in every model, not merely
+satisfiable: both reads of `#x` resolve to one variable, so `x /= x` is genuinely `unsat`. The
+cache is scoped to a single `translatePred` walk, so variables are shared *within* one query and
+never leak across independent queries. The opaque `TApp1`/`TApp2` escape hatches are deliberately
+*not* cached — their functions have no `Eq`, so two applications cannot be recognized as equal,
+which is precisely the under-verification Caveat 1 signposts.
+
+## What a green gate means, exactly
+
+Put the three caveats together and the guarantee is honest and bounded. When
+`isSingleValuedSym (withSymPred t)` returns `True`:
+
+<Steps>
+  <Step>
+    Every pair of outgoing edges at every enumerated vertex was checked, and z3 proved each
+    `gᵢ AND gⱼ` `unsat` over the entire (infinite) input space — for the slots and fields the
+    guards read through the curated, precisely-translated types.
+  </Step>
+  <Step>
+    The result is sound: no overlap that the concrete runtime would hit is reported as empty.
+    Integer over-approximation, `unknown` results, and the syntactic fallback all err toward
+    *failing* the gate, never toward a false pass.
+  </Step>
+  <Step>
+    The one residual gap is opaque guards (Caveat 1). Run the gate together with
+    `warnOpaqueGuards` so any edge whose verification was skipped is named, not assumed sound.
+  </Step>
+</Steps>
+
+That is a far stronger statement than any property test can make, with its boundaries written
+down rather than hidden.
+
+<Cards>
+  <Card title="The symbolic CI gate" href="/docs/keiki/explanation/the-symbolic-ci-gate" />
+  <Card title="Why keiki uses an SMT solver" href="/docs/keiki/explanation/why-smt" />
+  <Card title="Registers vs state" href="/docs/keiki/explanation/registers-vs-state" />
+  <Card title="Symbolic reference" href="/docs/keiki/reference" />
+</Cards>

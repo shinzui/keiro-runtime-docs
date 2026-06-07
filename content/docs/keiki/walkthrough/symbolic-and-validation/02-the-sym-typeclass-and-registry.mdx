@@ -1,0 +1,214 @@
+---
+title: "02 — The Sym typeclass and registry"
+description: "Reading the Sym typeclass: SymRep / toSym / fromSym / symDefault, the unbounded-Integer over-approximation for every integer width, and the discoverSym / discoverSymOrd / discoverSymNum runtime registry."
+---
+
+<Callout type="info">
+Part of the [symbolic-and-validation tour](/docs/keiki/walkthrough/symbolic-and-validation/00-start-here).
+Read [01 — The bug and the property](/docs/keiki/walkthrough/symbolic-and-validation/01-the-bug-and-the-property) first.
+</Callout>
+
+The translator can only push a value into the solver if it knows how to *represent* that value in
+SBV's symbolic universe. `Keiki.Symbolic` pins that knowledge in the `Sym` typeclass and a curated
+runtime registry. This chapter reads both, from `keiki/src/Keiki/Symbolic.hs`.
+
+## The `Sym` class
+
+```haskell
+-- keiki/src/Keiki/Symbolic.hs
+class (SBV.SymVal (SymRep a), Typeable a) => Sym a where
+    type SymRep a :: Type
+    toSym :: a -> SymRep a
+    fromSym :: SymRep a -> a
+    symDefault :: a
+```
+
+<TypeTable
+  type={{
+    SymRep: { type: "Type (associated)", description: "The SBV-friendly carrier type the value is encoded as — e.g. Integer for every integer width, String for Text." },
+    toSym: { type: "a -> SymRep a", description: "Push a concrete Haskell value into its SBV representation (used by symLit / extraction inputs)." },
+    fromSym: { type: "SymRep a -> a", description: "Pull a concrete witness back out of a model value." },
+    symDefault: { type: "a", description: "Fallback value symSatExt uses for a slot/field the model left unconstrained — sound because such slots satisfy the predicate at any value." },
+  }}
+/>
+
+The `SBV.SymVal (SymRep a)` superclass is doing real work: it hands the translator `SBV.literal`,
+`SBV.free`, and `SBV.unliteral` for the carrier type for free. The header spells out why
+`symDefault` exists at all:
+
+```haskell
+-- 'symDefault' is consumed by 'symSatExt': when the solver's model
+-- has no value for a slot or input field that the predicate did not
+-- reference, the witness extractor falls back to 'symDefault'. Sound
+-- because such slots are unconstrained — any value satisfies the
+-- predicate.
+```
+
+We will see `symDefault` again in [chapter 05](/docs/keiki/walkthrough/symbolic-and-validation/05-symisbot-and-witness-extraction)
+where `readModel` calls it on a model miss.
+
+## The instances, and the unbounded-Integer over-approximation
+
+`Bool` and `Integer` are identities — they encode as themselves:
+
+```haskell
+instance Sym Bool where
+    type SymRep Bool = Bool
+    toSym = id
+    fromSym = id
+    symDefault = False
+
+instance Sym Integer where
+    type SymRep Integer = Integer
+    toSym = id
+    fromSym = id
+    symDefault = 0
+```
+
+Every *other* integer type — `Int` and the six fixed-width integers `Word8` / `Word16` / `Word32` /
+`Word64` / `Int32` / `Int64` — encodes as the unbounded mathematical `Integer`. The `Int` instance
+sets the pattern:
+
+```haskell
+{- | Encoded as 'Integer'. SBV does not provide an 'SInt'-of-arbitrary-
+size; using 'Integer' avoids overflow surprises during translation.
+-}
+instance Sym Int where
+    type SymRep Int = Integer
+    toSym = fromIntegral
+    fromSym = fromIntegral
+    symDefault = 0
+```
+
+This is a deliberate **over-approximation**, and the source is explicit about the trade. The source
+comment above the fixed-width block is the one to read carefully:
+
+```haskell
+-- The fixed-width integer instances below all encode as the unbounded
+-- mathematical 'Integer', exactly like 'Sym Int'. This is an
+-- /over-approximation/: the modular wraparound of the Haskell @Word*@ /
+-- @Int*@ type is not modeled. The consequence is sound for
+-- satisfiability (every concrete model the solver finds is a real
+-- witness once decoded through 'fromSym') but may miss an
+-- unsatisfiability that depends on overflow (e.g. @x + 1 == 0@ over
+-- 'Word64' is satisfiable at the type's wrap point but the 'Integer'
+-- encoding reports it unsat). keiki's money and count guards are
+-- equality and ordering checks against in-range literals, where the
+-- over-approximation never bites.
+```
+
+So `Sym Word64` and the rest are copy-paste of the `Int` shape with the relevant doc note — for
+example money:
+
+```haskell
+{- | Money and large counts. Encoded as 'Integer'; see the note above
+on the unbounded-'Integer' over-approximation.
+-}
+instance Sym Word64 where
+    type SymRep Word64 = Integer
+    toSym = fromIntegral
+    fromSym = fromIntegral
+    symDefault = 0
+```
+
+<Callout type="warn">
+The over-approximation runs in the **safe** direction. Every model the solver returns is a genuine
+witness once decoded; the only thing it can miss is an unsatisfiability that depends on modular
+wraparound. keiki's real guards compare in-range literals, so this never bites in practice — the
+motivating money type is jitsurei's `OrderCart` `Money = Word64`.
+</Callout>
+
+### Text and time
+
+`Text` encodes through SBV's string theory, `UTCTime` as epoch seconds:
+
+```haskell
+-- | 'Text' is encoded as Haskell 'String' for SBV's 'SString' theory.
+instance Sym Text where
+    type SymRep Text = String
+    toSym = T.unpack
+    fromSym = T.pack
+    symDefault = T.empty
+
+{- | 'UTCTime' is encoded as Unix epoch seconds (an 'Integer').
+The round-trip drops sub-second precision; this is intentional ...
+-}
+instance Sym UTCTime where
+    type SymRep UTCTime = Integer
+    toSym = round . utcTimeToPOSIXSeconds
+    fromSym = posixSecondsToUTCTime . fromIntegral
+    symDefault = posixSecondsToUTCTime 0
+```
+
+## The runtime registry: discovering evidence from `Typeable`
+
+The translator works over a `Term ... r` whose `r` is only known to be `Typeable`. To translate an
+equality it needs to *recover* the `Sym` instance for `r` at runtime. That is what the `SymDict`
+reified dictionary and `discoverSym` do:
+
+```haskell
+data SymDict r where
+    SymDict :: (Sym r) => SymDict r
+
+discoverSym :: forall r. (Typeable r) => Maybe (SymDict r)
+discoverSym
+    | Just HRefl <- eqTypeRep (typeRep @r) (typeRep @Bool) = Just SymDict
+    | Just HRefl <- eqTypeRep (typeRep @r) (typeRep @Int) = Just SymDict
+    | Just HRefl <- eqTypeRep (typeRep @r) (typeRep @Integer) = Just SymDict
+    | Just HRefl <- eqTypeRep (typeRep @r) (typeRep @Text) = Just SymDict
+    | Just HRefl <- eqTypeRep (typeRep @r) (typeRep @UTCTime) = Just SymDict
+    | Just HRefl <- eqTypeRep (typeRep @r) (typeRep @Word64) = Just SymDict
+    -- ... Word32, Word16, Word8, Int64, Int32 ...
+    | otherwise = Nothing
+```
+
+`eqTypeRep` compares the requested type's `TypeRep` against each curated type; a match returns the
+`HRefl` proof that brings the `Sym r` instance into scope, packed as `SymDict`. A miss is `Nothing`,
+and the translator's fallback (a fresh opaque variable) keeps the answer sound but imprecise. The
+registry is closed and hand-maintained — exactly the curated set the
+[why-smt explanation](/docs/keiki/explanation/why-smt) calls out.
+
+`SymbolicSpec` checks the registry's membership directly, including the deliberate miss:
+
+```haskell
+-- keiki/test/Keiki/SymbolicSpec.hs
+it "discovers Sym Word64"  $ symKnown (Proxy @Word64)  `shouldBe` True
+-- ...
+it "rejects unknown types" $ symKnown (Proxy @())      `shouldBe` False
+```
+
+### Two companion registries: ordering and arithmetic
+
+Equality only needs `Sym`. A *comparison* (`PCmp`) additionally needs SBV ordering evidence, and a
+*computed* operand (`TArith`) needs SBV numeric evidence. Those are reified by `SymOrdDict` /
+`discoverSymOrd` and `SymNumDict` / `discoverSymNum`:
+
+```haskell
+data SymOrdDict r where
+    SymOrdDict :: (Sym r, SBV.OrdSymbolic (SBV.SBV (SymRep r))) => SymOrdDict r
+
+data SymNumDict r where
+    SymNumDict :: (Sym r, Num (SBV.SBV (SymRep r))) => SymNumDict r
+```
+
+Both registries are narrower than `discoverSym`. `discoverSymOrd` covers the numeric types and
+`UTCTime` (epoch seconds are orderable) but deliberately drops `Bool` and `Text` — ordering a boolean
+guard is meaningless and `SString` ordering is out of scope. `discoverSymNum` covers only the numeric
+types, dropping `Bool`, `Text`, and `UTCTime`. The source explains the philosophy of the miss case,
+which is the same one-directional fallback as `discoverSym`:
+
+```haskell
+-- 'Nothing' makes the 'PCmp' translator fall back to a fresh opaque
+-- 'SBool', exactly as 'goEq' does for non-'Sym' operands — sound, just
+-- imprecise.
+```
+
+These three `discover*` functions are the only place a type's symbolic capabilities are decided.
+Everything downstream — the translator in the next chapter, the analyses after it — routes through
+them. If a type is absent, the worst that happens is a fresh opaque variable and a lost-precision
+answer that still errs toward a false alarm rather than a missed bug.
+
+---
+
+Previous: [01 — The bug and the property](/docs/keiki/walkthrough/symbolic-and-validation/01-the-bug-and-the-property)
+· Next: [03 — Translation and the memo cache](/docs/keiki/walkthrough/symbolic-and-validation/03-translation-and-the-memo-cache)

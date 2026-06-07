@@ -1,0 +1,214 @@
+---
+title: "08 — Opaque guards and the signpost"
+description: "The opt-in opaque-guard audit: how predHasOpaqueTerm finds TApp closures the solver translates to a free variable, and why the OpaqueGuard warning is a signpost for silent under-verification, not a soundness error."
+---
+
+<Callout type="info">
+This chapter is part of the symbolic-and-validation source tour. Start at
+[00 — Start here](/docs/keiki/walkthrough/symbolic-and-validation/00-start-here) for the overview and
+the chapter map.
+</Callout>
+
+The [validation umbrella](/docs/keiki/walkthrough/symbolic-and-validation/07-build-time-validation-umbrella)
+runs three soundness checks by default and one more behind a flag. This chapter is about that fourth,
+opt-in check: the **opaque-guard audit**. It exists because the symbolic analyses have a blind spot, and
+the audit is the signpost that tells you when you have wandered into it.
+
+## The blind spot
+
+Recall from [chapter 03](/docs/keiki/walkthrough/symbolic-and-validation/03-translation-and-the-memo-cache)
+how `translateTermSym` handles the `TApp1` / `TApp2` escape hatches — the term constructors that wrap an
+opaque Haskell function:
+
+```haskell
+-- src/Keiki/Symbolic.hs
+translateTermSym _env (TApp1 _f _t) = SBV.free "app1"
+translateTermSym _env (TApp2 _f _a _b) = SBV.free "app2"
+```
+
+A `TApp` translates to a **fresh, unconstrained free variable**. The solver knows nothing about what the
+wrapped function computes — the function has no `Eq`, no structure z3 can inspect. So a guard that
+branches on a `TApp` is, to the solver, "some boolean we know nothing about." The symbolic
+single-valuedness and dead-edge checks will translate it to a free variable and silently
+*under-verify* the edge: they will not report a problem, but they also did not actually prove anything
+about that guard.
+
+The canonical case is a collection-content condition. The structural predicate language has no node for
+"is `5` in `items`?" or "are all resources resolved?" — so an author lifts `elem` (or `all`, or a size
+check) through a closure, and it lands in a `TApp1`. The `TransducerValidationWarning` Haddock for the
+`OpaqueGuard` constructor names this directly:
+
+```haskell
+-- src/Keiki/Core.hs
+    | {- | An edge whose guard contains an opaque 'TApp' term. The symbolic
+      single-valuedness and dead-edge analyses translate such a term to an
+      unconstrained free variable ('Keiki.Symbolic.translateTermSym' emits
+      @SBV.free "app1"@), so they cannot see through the guard and silently
+      under-verify it. Most often this is a collection-content condition
+      (membership, "all resolved", size) lifted through a closure because the
+      structural predicate language has no node for it; see the user guide and
+      @docs\/plans\/60-first-class-collection-registers-design-gated.md@ for the
+      options. Advisory, not a soundness error: opt in via 'warnOpaqueGuards'.
+      -}
+      OpaqueGuard
+        { tvwEdge :: EdgeRef s
+        , tvwDetail :: String
+        }
+```
+
+This is **the collection-slot opaque-mutation signpost**: when a guard reads a collection register
+through a closure, the solver sees a fresh free variable, and the audit plants a sign saying "this edge
+was not verified."
+
+## Finding opaque terms: `termHasOpaqueApp` and `predHasOpaqueTerm`
+
+The audit walks the predicate AST looking for any `TApp`. The term walk mirrors the structural recursion
+elsewhere in the core — note that `TArith` is *transparent* (it recurses into its operands), because
+`TArith` over a numeric type does translate to a real `+` / `-` / `*` and is visible to the solver:
+
+```haskell
+-- src/Keiki/Core.hs
+termHasOpaqueApp :: Term rs ci ifs r -> Bool
+termHasOpaqueApp (TLit _) = False
+termHasOpaqueApp (TReg _) = False
+termHasOpaqueApp (TInpCtorField _ _) = False
+termHasOpaqueApp (TApp1 _ _) = True
+termHasOpaqueApp (TApp2 _ _ _) = True
+termHasOpaqueApp (TArith _ a b) = termHasOpaqueApp a || termHasOpaqueApp b
+```
+
+The predicate walk lifts that test to whole guards. The interesting lines are `PEq` and `PCmp`: those
+are the only constructors that carry `Term`s, so they are the only ones that can hide a `TApp`.
+`PInCtor` carries no term and is never opaque; the boolean connectives just recurse:
+
+```haskell
+-- src/Keiki/Core.hs
+predHasOpaqueTerm :: HsPred rs ci -> Bool
+predHasOpaqueTerm PTop = False
+predHasOpaqueTerm PBot = False
+predHasOpaqueTerm (PAnd p q) = predHasOpaqueTerm p || predHasOpaqueTerm q
+predHasOpaqueTerm (POr p q) = predHasOpaqueTerm p || predHasOpaqueTerm q
+predHasOpaqueTerm (PNot p) = predHasOpaqueTerm p
+predHasOpaqueTerm (PEq a b) = termHasOpaqueApp a || termHasOpaqueApp b
+predHasOpaqueTerm (PInCtor _) = False
+predHasOpaqueTerm (PCmp _ a b) = termHasOpaqueApp a || termHasOpaqueApp b
+```
+
+## The audit: `opaqueGuardWarnings`
+
+The audit itself is the familiar per-vertex, per-edge enumeration, emitting an `OpaqueGuard` for each
+edge whose guard contains an opaque term:
+
+```haskell
+-- src/Keiki/Core.hs
+opaqueGuardWarnings ::
+    (Bounded s, Enum s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [TransducerValidationWarning s]
+opaqueGuardWarnings t =
+    [ OpaqueGuard
+        { tvwEdge = EdgeRef{edgeSource = s, edgeIndex = n}
+        , tvwDetail =
+            "guard contains an opaque TApp term the symbolic analyses cannot "
+                ++ "see through; its single-valuedness was not verified"
+        }
+    | s <- [minBound .. maxBound]
+    , (n, e) <- zip [(0 :: Int) ..] (edgesOut t s)
+    , predHasOpaqueTerm (guard e)
+    ]
+```
+
+The detail string is the signpost spelled out: the guard was *not verified*, and you should know that
+when you reason about the machine's single-valuedness. It locates the edge with the same `EdgeRef` every
+other diagnostic uses.
+
+## Off by default, on by choice
+
+The audit only runs when `warnOpaqueGuards` is `True`. As
+[chapter 07](/docs/keiki/walkthrough/symbolic-and-validation/07-build-time-validation-umbrella) showed,
+`defaultValidationOptions` sets it `False`:
+
+```haskell
+-- src/Keiki/Core.hs
+    , warnOpaqueGuards :: Bool
+    {- ^ run the opaque-guard audit (opt-in; default off). Flags edges whose
+    guard branches on an opaque 'TApp' term the symbolic analyses cannot
+    see through. Off by default so 'defaultValidationOptions' keeps its
+    meaning for existing consumers.
+    -}
+```
+
+This is a deliberate choice. An opaque guard is **not a soundness error** — the machine still runs
+correctly, the guard still evaluates concretely at runtime. The audit is *advisory*: it tells you the
+symbolic verifier could not vouch for an edge. Turning it on by default would have changed the meaning
+of `defaultValidationOptions` for every existing consumer, possibly turning a green CI red on a perfectly
+working aggregate. So it is opt-in, for projects that want the stricter signal.
+
+## The audit in a test
+
+`test/Keiki/ValidationSpec.hs` builds `opaqueT` — a one-edge transducer whose guard asks "is `5` in
+`items`?" by forcing `elem` through a `TApp1` over a collection register:
+
+```haskell
+-- test/Keiki/ValidationSpec.hs
+type ItemRegs = '[ '("items", [Int])]
+
+opaqueT :: SymTransducer (HsPred ItemRegs Cmd) ItemRegs V Cmd ()
+opaqueT =
+    SymTransducer
+        { edgesOut = \case
+            Start ->
+                [ Edge
+                    { guard =
+                        PEq
+                            (TApp1 (5 `elem`) (TReg (ZIdx :: Index ItemRegs [Int])))
+                            (TLit True)
+                    , update = UKeep
+                    , output = []
+                    , target = Mid
+                    }
+                ]
+            _ -> []
+        , initial = Start
+        , initialRegs = RCons (Proxy @"items") [] RNil
+        , isFinal = (== Mid)
+        }
+```
+
+The fixture comment is explicit: `elem` "has no structural keiki node, so it is forced through `TApp1`."
+The audit spec then pins all three behaviors — flagged when on, never flagged for a structural
+transducer even with the audit on, and silent under the defaults:
+
+```haskell
+-- test/Keiki/ValidationSpec.hs
+    describe "opaque-guard audit (EP-67, opt-in)" $ do
+        let optsOn = defaultValidationOptions{warnOpaqueGuards = True}
+            isOpaqueStart (OpaqueGuard{tvwEdge = EdgeRef{edgeSource = Start, edgeIndex = 0}}) = True
+            isOpaqueStart _ = False
+
+        it "an opaque collection-style guard is flagged when the audit is on" $
+            validateTransducer optsOn opaqueT `shouldSatisfy` any isOpaqueStart
+
+        it "a fully structural transducer is never flagged, even with the audit on" $ do
+            let isOpaque (OpaqueGuard{}) = True
+                isOpaque _ = False
+            filter isOpaque (validateTransducer optsOn cleanT) `shouldBe` []
+
+        it "the audit is silent under defaultValidationOptions (backward compat)" $
+            validateTransducer defaultValidationOptions opaqueT `shouldBe` []
+```
+
+That last assertion — `opaqueT` yields `[]` under the defaults — is the backward-compatibility contract:
+flipping the flag is the *only* way to see an `OpaqueGuard`, so no existing test changes its result. The
+audit is the signpost; you choose whether to read it.
+
+<Callout type="warn">
+An `OpaqueGuard` warning does not mean the edge is wrong — it means the symbolic checks could not see
+through it. If you turn the audit on and get warnings, the next move is judgement: either accept that
+those guards are verified only by hand, or restructure them so the predicate language can see the
+condition. The design alternatives for first-class collection guards are tracked in
+`docs/plans/60-first-class-collection-registers-design-gated.md` in the keiki repo.
+</Callout>
+
+Previous: [07 — The build-time validation umbrella](/docs/keiki/walkthrough/symbolic-and-validation/07-build-time-validation-umbrella) ·
+Next: [09 — Solver-backed diagnostics](/docs/keiki/walkthrough/symbolic-and-validation/09-solver-backed-diagnostics)

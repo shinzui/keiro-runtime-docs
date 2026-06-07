@@ -1,0 +1,204 @@
+---
+title: "Validate"
+description: "The pure, solver-free build-time validation umbrella validateTransducer and its warning, options, and per-check helper types in Keiki.Core."
+---
+
+`validateTransducer` is keiki's build-time validation umbrella. You drop
+`validateTransducer defaultValidationOptions t == []` straight into a unit test and it passes or
+fails in **microseconds with no external z3 process** — it walks the `HsPred` carrier
+syntactically. For the design rationale see [Why SMT](/docs/keiki/explanation/why-smt) and
+[The symbolic CI gate](/docs/keiki/explanation).
+
+<Callout type="warn">
+keiki's transducer validator `validateTransducer` lives in **`Keiki.Core`** (re-exported from
+[`Keiki.Symbolic`](/docs/keiki/reference/symbolic)). It is unrelated to `Keiki.Render.Validate`,
+which is a Mermaid-diagram and atlas **text** checker exporting `validateMermaidDiagram` and
+`validateMermaidAtlas` (documented under rendering, operating on rendered `Text`, sharing no
+code). Do not confuse the two — they only resemble each other in the pure list-of-warnings house
+style.
+</Callout>
+
+## `validateTransducer`
+
+```haskell
+validateTransducer ::
+    (Bounded s, Enum s, Ord s, Show s) =>
+    ValidationOptions ->
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [TransducerValidationWarning s]
+```
+
+It runs the enabled checks over the `HsPred` carrier and concatenates their structured warnings,
+in order: hidden-input, determinism, dead-edge, then the opt-in opaque-guard audit. The default
+path is deliberately specialised to `HsPred` and is **cheap and pure**.
+
+<Callout type="warn">
+**Gotcha — the pure path is under-approximating, the polymorphic path over-approximates.**
+`validateTransducer` calls `checkTransitionDeterminismPure`, which emits a warning only when
+overlap is *structurally provable* (no false positives, but it can miss overlaps it cannot prove
+syntactically). The separate `BoolAlg`-polymorphic `checkTransitionDeterminism` over-approximates
+on the raw `HsPred` carrier (its `isBot` only recognises literal `PBot`, so it would flag almost
+every multi-edge vertex) and is only meaningful through
+[`checkTransitionDeterminismSym`](/docs/keiki/reference/symbolic), which routes `isBot` to z3. So:
+`validateTransducer` for a fast pure no-false-positive gate; `checkTransitionDeterminismSym` /
+`checkDeadEdgesSym` (need z3 on `PATH`) for the exact answer.
+</Callout>
+
+## `ValidationOptions` and `defaultValidationOptions`
+
+Which checks run. All three soundness checks default on; the opaque-guard audit is opt-in.
+
+<TypeTable
+  type={{
+    failOnEpsilonReadsInput: { type: "Bool", description: "Run the hidden-input check (un-replayable events)", default: "True" },
+    checkDeterminism: { type: "Bool", description: "Run the pure, structural determinism check", default: "True" },
+    checkReachability: { type: "Bool", description: "Run the structural dead-edge check", default: "True" },
+    warnOpaqueGuards: { type: "Bool", description: "Run the opaque-guard audit; off by default so defaultValidationOptions keeps its meaning for existing consumers", default: "False" },
+  }}
+/>
+
+```haskell
+-- The three soundness checks enabled; the opt-in opaque-guard audit off.
+defaultValidationOptions :: ValidationOptions
+```
+
+## `TransducerValidationWarning`
+
+A structured warning parameterized over the vertex type `s`, so it carries the real source vertex.
+It reuses the canonical [`EdgeRef`](/docs/keiki/reference/step-failure) locator owned by the
+runtime explainer `stepEither`, so build-time and runtime diagnostics speak one vocabulary.
+
+```haskell
+data TransducerValidationWarning s
+    = HiddenInput
+        { tvwEdge         :: EdgeRef s
+        , tvwInCtor       :: Maybe String   -- input constructor name, when known
+        , tvwMissingSlots :: [String]       -- slot/field names left off the wire
+        , tvwDetail       :: String         -- human-readable summary
+        }
+    | NondeterministicPair
+        { tvwSource :: s
+        , tvwEdgeA  :: Int
+        , tvwEdgeB  :: Int
+        , tvwInCtor :: Maybe String
+        , tvwDetail :: String
+        }
+    | PossiblyDeadEdge
+        { tvwEdge   :: EdgeRef s
+        , tvwDetail :: String
+        }
+    | OpaqueGuard
+        { tvwEdge   :: EdgeRef s
+        , tvwDetail :: String
+        }
+    deriving stock (Eq, Show)
+```
+
+- **`HiddenInput`** — an edge consumes command information its output does not emit, so the command
+  cannot be reconstructed on replay (the un-replayable-event mistake; the UserRegistrationV0 foil).
+- **`NondeterministicPair`** — two outgoing edges of one vertex whose guards can both hold for one
+  command: a single-valuedness violation whose *dynamic* witness is
+  [`AmbiguousEdges`](/docs/keiki/reference/step-failure).
+- **`PossiblyDeadEdge`** — an edge that can never fire: its source vertex is unreachable from
+  `initial`, or its guard is statically unsatisfiable. Labelled "possibly" because the structural
+  pass is conservative.
+- **`OpaqueGuard`** — an edge whose guard branches on an opaque `TApp` term the symbolic analyses
+  translate to an unconstrained free variable, so they silently under-verify it. Advisory, not a
+  soundness error; opt in via `warnOpaqueGuards`.
+
+## The per-component checks
+
+`validateTransducer` concatenates four components. The first and last are exposed directly:
+
+```haskell
+hiddenInputWarnings ::
+    (Bounded s, Enum s) =>
+    SymTransducer phi rs s ci co ->
+    [TransducerValidationWarning s]
+
+opaqueGuardWarnings ::
+    (Bounded s, Enum s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [TransducerValidationWarning s]
+```
+
+`hiddenInputWarnings` is the structured form of the hidden-input check: per edge, it reports the
+input-constructor name and the slot names left off the wire — the UserRegistrationV0 foil where an
+edge reads a command field it never emits. `opaqueGuardWarnings` is the opt-in audit, walking the
+predicate AST via `predHasOpaqueTerm` / `termHasOpaqueApp` (`TArith` is transparent and recurses
+into its operands; only `TApp1`/`TApp2` count as opaque).
+
+### Determinism
+
+The determinism component is driven by the **pure** `provablyOverlap`, which is `True` only when
+overlap is certain — both guards `PTop`, or both naming the same input constructor:
+
+```haskell
+provablyOverlap :: HsPred rs ci -> HsPred rs ci -> Bool
+provablyOverlap PTop PTop = True
+provablyOverlap (PInCtor a) (PInCtor b) = icName a == icName b
+provablyOverlap _ _ = False
+```
+
+So `NondeterministicPair` is emitted **only when two guards provably overlap** — conservative, with
+**no false positives**. The two reusable forms:
+
+```haskell
+data DeterminismWarning s = DeterminismWarning
+    { dwSource :: s
+    , dwEdgeA  :: Int   -- first overlapping edge index
+    , dwEdgeB  :: Int   -- second overlapping edge index
+    , dwDetail :: String
+    }
+    deriving stock (Eq, Show)
+
+checkTransitionDeterminism ::
+    forall phi rs s ci co.
+    (BoolAlg phi (RegFile rs, ci), Bounded s, Enum s, Show s) =>
+    SymTransducer phi rs s ci co ->
+    [DeterminismWarning s]
+```
+
+`checkTransitionDeterminism t == []` iff `isSingleValuedSym t` **under the same carrier** — which
+is why it is meant for the `SymPred` carrier (run it via
+[`checkTransitionDeterminismSym`](/docs/keiki/reference/symbolic)), not the raw `HsPred` carrier
+where it over-approximates.
+
+### Dead edges (reachability)
+
+```haskell
+data DeadEdgeOptions = DeadEdgeOptions
+    { deoFlagBotGuards :: Bool
+    }
+    deriving stock (Eq, Show)
+
+defaultDeadEdgeOptions :: DeadEdgeOptions   -- deoFlagBotGuards = True
+
+data DeadEdgeWarning s = DeadEdgeWarning
+    { dewEdge   :: EdgeRef s
+    , dewReason :: String
+    }
+    deriving stock (Eq, Show)
+
+checkDeadEdges ::
+    (Bounded s, Enum s, Ord s, Show s) =>
+    DeadEdgeOptions ->
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [DeadEdgeWarning s]
+```
+
+`checkDeadEdges` is **purely structural**: it flags an edge whose source vertex is unreachable from
+`initial` (computed by a `reachableVertices` finite fixpoint over the `Bounded`/`Enum` vertex set,
+following `target` pointers) or, when `deoFlagBotGuards` is on, whose guard is the literal `PBot`.
+It **cannot reason about register values** — a self-loop guarded `available == True` whose
+`available` is set `False` on entry is not catchable here — which is why every result is labelled
+"possibly dead", and the register-aware escalation is
+[`checkDeadEdgesSym`](/docs/keiki/reference/symbolic).
+
+## See also
+
+- [Step failure](/docs/keiki/reference/step-failure) — the runtime explainer `stepEither` and the
+  `AmbiguousEdges` dynamic witness of a `NondeterministicPair`.
+- [Keiki.Symbolic](/docs/keiki/reference/symbolic) — the z3-backed escalations
+  `checkTransitionDeterminismSym` / `checkDeadEdgesSym`.
+- The behaviours on this page are exercised in `test/Keiki/ValidationSpec.hs`.

@@ -1,0 +1,186 @@
+---
+title: "Assert a transducer is well-formed in CI"
+description: "Pin a microsecond, solver-free validateTransducer assertion in your test suite per aggregate and process manager, then optionally escalate to the z3-backed checks."
+---
+
+You have a `SymTransducer` and you want CI to fail the moment an edit introduces overlapping guards,
+a hidden replay input, or a dead edge. The cheapest reliable check is the pure
+`validateTransducer defaultValidationOptions t == []` assertion — it runs in microseconds with no
+external process. This guide shows how to wire one assertion per aggregate and per process manager,
+how to toggle the individual checks, and when to escalate to the z3-backed analyses.
+
+<Callout type="info">
+  Assumes you can already author a `SymTransducer` and run an hspec suite. If not, start with [the
+  keiki getting-started tutorial](/docs/keiki/tutorials).
+</Callout>
+
+<Callout type="warn">
+  keiki's transducer validator `validateTransducer` lives in `Keiki.Core`. `Keiki.Render.Validate`
+  is an unrelated Mermaid-diagram text checker — do not confuse the two. This guide is entirely about
+  `Keiki.Core` (re-exported from `Keiki.Symbolic`).
+</Callout>
+
+## Goal
+
+Have CI assert, in microseconds and with no solver, that every aggregate and process manager you
+ship validates clean — and know how to opt into the slower, exact symbolic checks where they earn
+their keep.
+
+## Steps
+
+<Steps>
+
+<Step>
+
+**Assert the pure umbrella per aggregate.** `validateTransducer defaultValidationOptions t` returns
+`[]` when the three default checks (hidden inputs, structural determinism, structural reachability)
+all pass. Put that equality in one hspec case per aggregate:
+
+```haskell
+module MyDomain.ValidationSpec (spec) where
+
+import Keiki.Core
+import MyDomain.Order (orderAggregate)
+import MyDomain.Shipment (shipmentAggregate)
+import Test.Hspec
+
+spec :: Spec
+spec = describe "validateTransducer (pure, no solver)" $ do
+  it "orderAggregate is well-formed" $
+    validateTransducer defaultValidationOptions orderAggregate `shouldBe` []
+
+  it "shipmentAggregate is well-formed" $
+    validateTransducer defaultValidationOptions shipmentAggregate `shouldBe` []
+```
+
+The vertex type only needs `(Bounded s, Enum s, Ord s, Show s)` — already true of any
+`deriving (Enum, Bounded, Ord, Show)` state enum. No z3, no `IO`: this is a pure equality on a list
+of `TransducerValidationWarning`. See `test/Keiki/ValidationSpec.hs` for the canonical fixtures.
+
+</Step>
+
+<Step>
+
+**Add the same assertion per process manager.** A composed process manager is just another
+`SymTransducer` (its vertex is a `Composite`, its register file an `Append`), so it validates with
+the identical call:
+
+```haskell
+  it "the order→shipment process manager is well-formed" $
+    validateTransducer defaultValidationOptions orderShipmentProcess `shouldBe` []
+```
+
+Keep one case per managed aggregate *and* one for the composite: a clean pair can still compose into
+a vertex with overlapping outgoing edges, and this pure check catches the structurally-provable
+cases of that immediately.
+
+</Step>
+
+<Step>
+
+**Toggle individual checks when you need to scope a failure.** `ValidationOptions` has one `Bool`
+per check; `defaultValidationOptions` enables the three soundness checks and leaves the opaque-guard
+audit off:
+
+```haskell
+-- defaultValidationOptions, spelled out:
+ValidationOptions
+  { failOnEpsilonReadsInput = True   -- hidden-input check
+  , checkDeterminism        = True   -- structural (pure) determinism
+  , checkReachability       = True   -- structural dead-edge check
+  , warnOpaqueGuards        = False  -- opt-in opaque-guard audit
+  }
+```
+
+To isolate one failing category, disable the others. For example, to confirm a determinism warning
+is the *only* thing firing:
+
+```haskell
+  it "the only structural problem is the overlapping pair" $ do
+    let onlyDeterminism =
+          defaultValidationOptions
+            { failOnEpsilonReadsInput = False
+            , checkReachability = False
+            }
+    validateTransducer onlyDeterminism overlapT
+      `shouldSatisfy` all isNondeterministicPair
+```
+
+Each warning is a typed constructor — `HiddenInput`, `NondeterministicPair`, `PossiblyDeadEdge`,
+`OpaqueGuard` — carrying the `EdgeRef` locator (or `tvwSource`/`tvwEdgeA`/`tvwEdgeB` for a pair), so
+you pattern-match the kind you expect rather than parsing a string.
+
+</Step>
+
+<Step>
+
+**Add an opaque-audit case with `warnOpaqueGuards = True`.** A guard that branches through a `TApp`
+closure — the usual shape for a collection-slot condition like `5 \`elem\` items`, which the
+structural predicate language has no node for — is invisible to the symbolic analyses (it translates
+to a free SBV variable). The audit surfaces those signposts so you know which edges were *not*
+verified for single-valuedness:
+
+```haskell
+  it "surfaces opaque collection-slot guards when the audit is on" $ do
+    let auditOn = defaultValidationOptions { warnOpaqueGuards = True }
+    validateTransducer auditOn opaqueT `shouldSatisfy` any isOpaqueGuard
+```
+
+This is advisory, not a soundness error: the audit is off under `defaultValidationOptions` for
+backward compatibility, so add it as a deliberate, separate case. A fully structural transducer is
+never flagged even with the audit on. See the opaque-collection fixture in
+`test/Keiki/ValidationSpec.hs`.
+
+</Step>
+
+<Step>
+
+**Optionally escalate to the z3-backed checks.** The pure determinism component is an
+*under-approximation*: it flags only structurally-provable overlaps (both guards `PTop`, or both
+naming the same input constructor), so its silence does *not* prove single-valuedness. For the exact
+answer, call the solver-backed analyses from `Keiki.Symbolic` directly:
+
+```haskell
+import Keiki.Symbolic (checkTransitionDeterminismSym, checkDeadEdgesSym)
+
+  it "orderAggregate is single-valued (exact, z3-backed)" $
+    checkTransitionDeterminismSym orderAggregate `shouldBe` []
+
+  it "orderAggregate has no isolated-unsatisfiable edges (z3-backed)" $
+    checkDeadEdgesSym orderAggregate `shouldBe` []
+```
+
+`checkTransitionDeterminismSym` catches register-value-dependent and `PTop`-vs-`PInCtor` overlaps the
+pure path cannot prove; `checkDeadEdgesSym` flags guards unsatisfiable in isolation (e.g.
+`amount .> 0 .&& amount .< 0`) beyond the literal-`PBot` case. The symbolic-side gate for the
+worked example lives in `jitsurei/test/Jitsurei/UserRegistrationSymbolicSpec.hs`, which asserts
+`isSingleValuedSym (withSymPred userReg) == True`.
+
+<Callout type="warn">
+  `checkTransitionDeterminismSym` / `checkDeadEdgesSym` / `isSingleValuedSym` require **z3 on
+  `PATH`** in CI — they are BUILD/CI-TIME only. Gate these cases behind a tag or a separate test
+  target so a developer machine without z3 still runs the pure `validateTransducer` assertions. The
+  runtime hot path never calls a solver. See [why an SMT solver](/docs/keiki/explanation/why-smt).
+</Callout>
+
+</Step>
+
+</Steps>
+
+## Verify it worked
+
+Run the suite. A well-formed aggregate produces a passing case whose assertion is literally
+`[] == []`; introduce a second always-true edge out of one vertex and the pure determinism check
+turns the list non-empty, failing the case in microseconds with a `NondeterministicPair` naming both
+edge indices and the source vertex. If you added the z3 cases, a clean run prints no solver output;
+a register-value overlap that the pure check missed surfaces only there.
+
+## Related
+
+- [Diagnose a rejected command](/docs/keiki/how-to/diagnose-a-rejected-command) — the runtime side:
+  `stepEither` and the `StepFailure` witnesses that share the `EdgeRef` vocabulary with these
+  build-time warnings.
+- [Why an SMT solver](/docs/keiki/explanation/why-smt) — what the symbolic checks decide and why the
+  hot path stays solver-free.
+- The validation surface (`validateTransducer`, `ValidationOptions`, `TransducerValidationWarning`)
+  and the symbolic diagnostics under [the keiki reference](/docs/keiki/reference).

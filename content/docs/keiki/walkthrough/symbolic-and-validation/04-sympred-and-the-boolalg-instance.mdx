@@ -1,0 +1,146 @@
+---
+title: "04 — SymPred and the BoolAlg instance"
+description: "Reading the SymPred newtype and its v2 BoolAlg instance: the structural top / bot / conj / disj / neg, models delegating to concrete evalPred, isBot routing through symIsBot, and the separate Sat instance that carries witness-extraction evidence."
+---
+
+<Callout type="info">
+Part of the [symbolic-and-validation tour](/docs/keiki/walkthrough/symbolic-and-validation/00-start-here).
+Read [03 — Translation and the memo cache](/docs/keiki/walkthrough/symbolic-and-validation/03-translation-and-the-memo-cache) first.
+</Callout>
+
+The translator from the last chapter is plumbing. To make the analyses *polymorphic* — so the same
+single-valuedness check works over either the v1 syntactic guess or the v2 solver decision — keiki
+wraps a predicate in a newtype whose `BoolAlg` instance picks the v2 behavior. This chapter reads that
+wrapper and its instances from `keiki/src/Keiki/Symbolic.hs`.
+
+## The `SymPred` wrapper
+
+```haskell
+-- keiki/src/Keiki/Symbolic.hs
+newtype SymPred (rs :: [Slot]) (ci :: Type) = SymPred {unSymPred :: HsPred rs ci}
+```
+
+It is a newtype over the very same `HsPred`. The whole point is *instance selection*: `Keiki.Core`
+already has a v1 `BoolAlg HsPred` instance whose `isBot` is the syntactic over-approximation. Wrapping
+the identical predicate in `SymPred` selects the v2 instance below instead, while leaving v1 untouched
+for back-compat. The header is explicit:
+
+```haskell
+-- The v1 'BoolAlg HsPred' instance in "Keiki.Core" stays unchanged for
+-- back-compat; consumers that want symbolic answers wrap with 'SymPred'.
+```
+
+There is a matching type alias for a transducer whose guards are symbolic — the symbolic analogue of
+`Keiki.Core.Guarded`:
+
+```haskell
+type SymGuarded rs s ci co = SymTransducer (SymPred rs ci) rs s ci co
+```
+
+## The v2 `BoolAlg` instance
+
+```haskell
+instance BoolAlg (SymPred rs ci) (RegFile rs, ci) where
+    top = SymPred PTop
+    bot = SymPred PBot
+    conj (SymPred p) (SymPred q) = SymPred (PAnd p q)
+    disj (SymPred p) (SymPred q) = SymPred (POr p q)
+    neg (SymPred p) = SymPred (PNot p)
+    models (SymPred p) (regs, ci) = evalPred p regs ci
+    isBot (SymPred p) = symIsBot p
+```
+
+Three layers in seven lines:
+
+<Steps>
+<Step>
+**The five structural methods** (`top` / `bot` / `conj` / `disj` / `neg`) just build `HsPred`
+constructors. No solver, no evaluation — they assemble the formula the analyses will later ask about.
+`SymbolicSpec` checks each one wraps the constructor you expect, e.g. `conj p q` wraps `PAnd`.
+</Step>
+<Step>
+**`models` is concrete.** It delegates to the v1 `evalPred` — plain Haskell evaluation of the predicate
+against a `(RegFile rs, ci)`, **no solver call**. This is the same evaluator the runtime hot path uses,
+which is why checking a witness is cheap and solver-free.
+</Step>
+<Step>
+**`isBot` is symbolic.** It routes through `symIsBot`, which dispatches to z3 (the subject of the next
+chapter). This is the one method where the v2 instance differs in *answer*, not just in wrapper, from
+v1 — replacing the syntactic over-approximation with a precise solver decision.
+</Step>
+</Steps>
+
+The instance is deliberately **unconstrained** — no `ExtractRegFile` or `KnownInCtors` requirement.
+The source explains why: keeping witness-extraction evidence off `BoolAlg` lets the witness-free
+analyses (`isSingleValuedSym`) type-check on carriers that have no such evidence at all:
+
+```haskell
+-- Witness extraction ('Keiki.Core.sat') lives in the separate 'Sat'
+-- instance below, which carries the 'ExtractRegFile' / 'KnownInCtors'
+-- evidence it needs; this instance is deliberately /unconstrained/ so
+-- the witness-free analyses ('isSingleValuedSym') keep type-checking on
+-- register-file-existential carriers and on @ci@ types with no
+-- 'KnownInCtors'.
+```
+
+`SymbolicSpec` pins both the concrete `models` and the symbolic `isBot` on the same wrapper:
+
+```haskell
+-- keiki/test/Keiki/SymbolicSpec.hs
+it "models delegates to evalPred (top is True)" $
+  models (top :: SymPred '[] ()) (RNil, ()) `shouldBe` True
+
+it "isBot (PEq lit5 lit6) is True (SBV unsat)" $
+  isBot (SymPred (PEq (TLit (5 :: Int)) (TLit 6)) :: SymPred '[] ()) `shouldBe` True
+
+it "isBot (PInCtor TinyFoo AND PInCtor TinyBar) is True (constructor mutex)" $
+  isBot (SymPred (PAnd (PInCtor inCtorTinyFoo) (PInCtor inCtorTinyBar))
+         :: SymPred '[] TinyCmd) `shouldBe` True
+```
+
+## The separate `Sat` instance
+
+Witness extraction needs more evidence than `BoolAlg` carries, so it lives in its own instance. The
+`Keiki.Core.Sat` method `sat` on `SymPred` *is* `symSatExt` — the full witness extractor from the next
+chapter:
+
+```haskell
+instance
+    (ExtractRegFile rs, KnownInCtors ci) =>
+    Sat (SymPred rs ci) (RegFile rs, ci)
+    where
+    sat (SymPred p) = symSatExt p
+```
+
+The `ExtractRegFile rs` / `KnownInCtors ci` constraints sit here and nowhere else, so only callers who
+actually want a concrete witness pay for them. The header records that this replaced an older crashing
+placeholder — before this instance, `sat` on `SymPred` returned something whose components threw when
+forced:
+
+```haskell
+-- @'sat' (SymPred p)@ returns the same real, forceable witness as
+-- 'symSatExt' — a concrete @(RegFile rs, ci)@ reconstructed from the
+-- solver model.
+```
+
+The spec forces the witness (via `models`) to prove it is real, not a placeholder:
+
+```haskell
+-- keiki/test/Keiki/SymbolicSpec.hs  (describe "real BoolAlg.sat witness (EP-44)")
+it "sat's witness is forceable and satisfies models (register guard)" $
+  case sat (SymPred pAmt) of
+    Nothing -> expectationFailure "expected pAmt satisfiable"
+    Just w  -> models (SymPred pAmt) w `shouldBe` True
+
+it "sat agrees with symSatExt on satisfiability" $ do
+  isJust (sat (SymPred pAmt))  `shouldBe` isJust (symSatExt pAmt)
+  isJust (sat (SymPred pCtor)) `shouldBe` isJust (symSatExt pCtor)
+```
+
+With the algebra in place — structural building, concrete `models`, symbolic `isBot`, and real `sat` —
+the next chapter opens the two solver-backed functions those last two methods delegate to.
+
+---
+
+Previous: [03 — Translation and the memo cache](/docs/keiki/walkthrough/symbolic-and-validation/03-translation-and-the-memo-cache)
+· Next: [05 — symIsBot and witness extraction](/docs/keiki/walkthrough/symbolic-and-validation/05-symisbot-and-witness-extraction)

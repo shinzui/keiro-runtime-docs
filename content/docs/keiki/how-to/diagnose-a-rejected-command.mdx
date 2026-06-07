@@ -1,0 +1,120 @@
+---
+title: "Diagnose a rejected command"
+description: "Swap step for stepEither and pattern-match StepFailure to tell an ordinary rejection apart from a single-valuedness defect."
+---
+
+A command did not advance the transducer and `step` only told you `Nothing`. You need to know
+*why* — was there simply no matching edge (a legitimate rejection the caller should handle), or did
+two guards both fire (a defect that should have been caught at build time)? Swap `step` for
+`stepEither` and pattern-match the `StepFailure`.
+
+<Callout type="info">
+  Assumes you can already run a transducer with `step` and read its state/register types. If not,
+  start with [the keiki getting-started tutorial](/docs/keiki/tutorials).
+</Callout>
+
+## Goal
+
+Replace a `Nothing` from `step` with a precise `StepFailure` so your runtime adapter can treat
+*no matching edge* as an ordinary rejection and *ambiguous edges* as a loud defect.
+
+## Steps
+
+<Steps>
+
+<Step>
+
+**Swap `step` for `stepEither`.** `stepEither` returns exactly the triple `step` returns on the
+`Right`, and a precise explanation on the `Left` instead of collapsing every failure into `Nothing`.
+`step` is unchanged; this is purely additive, so the migration is a one-line substitution:
+
+```haskell
+import Keiki.Core
+
+-- before: Maybe (s, RegFile rs, [co])
+-- after:  Either (StepFailure s) (s, RegFile rs, [co])
+case stepEither t (s, regs) command of
+  Right (s', regs', events) -> commit s' regs' events
+  Left failure              -> diagnose failure
+```
+
+Both `step` and `stepEither` decide guards **concretely** via `evalPred` — never through z3. There is
+no solver on this path; the symbolic analyses are a separate build-time concern.
+
+</Step>
+
+<Step>
+
+**Match the two rejection arms as ordinary rejections.** `NoOutgoingEdges` means the source vertex
+has no edges at all (often a terminal state). `NoMatchingEdge` means there were candidate edges but
+none of their guards held; it carries one `RejectedEdgeSummary` per edge, in declaration order, so
+you can report which edges were considered:
+
+```haskell
+diagnose :: StepFailure MyVertex -> IO ()
+diagnose = \case
+  NoOutgoingEdges s ->
+    rejectCommand ("no outgoing edges from " <> show s)
+
+  NoMatchingEdge s rejected ->
+    rejectCommand $
+      "no edge out of " <> show s
+        <> " matched; considered "
+        <> show (map (edgeIndex . rejectedEdge) rejected)
+        <> " (targets "
+        <> show (map rejectedTarget rejected)
+        <> ")"
+
+  AmbiguousEdges s matched -> ...
+```
+
+Each `RejectedEdgeSummary` carries its `EdgeRef` locator (`rejectedEdge`), the edge's declared
+`rejectedTarget`, and `rejectedGuard` (always `False` here). It deliberately carries **no register
+values** — diagnostics summarize, they do not dump state. Both arms are normal control flow: the
+command simply was not applicable in this state.
+
+</Step>
+
+<Step>
+
+**Treat `AmbiguousEdges` as a defect, not a rejection.** Two or more guards matched the same command,
+so the step could not pick one. This is the **runtime witness of a single-valuedness violation** —
+the dynamic counterpart of the build-time `NondeterministicPair` that `validateTransducer` (or the
+exact `checkTransitionDeterminismSym`) is meant to catch *before* you ship. It carries one
+`MatchedEdgeSummary` per matched edge, sharing the same `EdgeRef` vocabulary as the build-time
+warning, so the locator points at the very edges to fix:
+
+```haskell
+  AmbiguousEdges s matched ->
+    -- A DEFECT: build-time validation should have caught this.
+    error $
+      "single-valuedness violation at " <> show s
+        <> ": edges "
+        <> show (map (edgeIndex . matchedEdge) matched)
+        <> " all matched one command"
+```
+
+Do not paper over this with a retry or a default branch. The correct fix is upstream: re-run
+`validateTransducer defaultValidationOptions t` (and, for non-syntactic overlaps,
+`checkTransitionDeterminismSym t`) until the matching `NondeterministicPair` is gone. See
+[Assert a transducer is well-formed in CI](/docs/keiki/how-to/assert-a-transducer-is-well-formed-in-ci).
+
+</Step>
+
+</Steps>
+
+## Verify it worked
+
+Drive `stepEither` against a vertex with no edges and confirm you get `Left (NoOutgoingEdges s)`;
+against an always-false guard, confirm `Left (NoMatchingEdge s [RejectedEdgeSummary{..}])` with one
+summary per edge; against a vertex with two always-true edges, confirm
+`Left (AmbiguousEdges s [MatchedEdgeSummary{..}, ...])` listing every matched edge in declaration
+order. On the accepting path, `stepEither` returns `Right` with the same target, registers, and
+events as `step`. The fixtures and exact expected values are in `test/Keiki/StepEitherSpec.hs`.
+
+## Related
+
+- [Assert a transducer is well-formed in CI](/docs/keiki/how-to/assert-a-transducer-is-well-formed-in-ci)
+  — catch the `AmbiguousEdges` defect at build time as a `NondeterministicPair`.
+- The runtime step surface (`stepEither`, `StepFailure`, `EdgeRef`, `RejectedEdgeSummary`,
+  `MatchedEdgeSummary`) and the validation diagnostics under [the keiki reference](/docs/keiki/reference).

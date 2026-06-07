@@ -1,0 +1,220 @@
+---
+title: "05 — symIsBot and witness extraction"
+description: "Reading the two solver-backed functions: the NOINLINE symIsBot wrapping an SBV sat call via unsafePerformIO, and symSatExt with full witness reconstruction through ExtractRegFile / pickCi / readModel and the models round-trip."
+---
+
+<Callout type="info">
+Part of the [symbolic-and-validation tour](/docs/keiki/walkthrough/symbolic-and-validation/00-start-here).
+Read [04 — SymPred and the BoolAlg instance](/docs/keiki/walkthrough/symbolic-and-validation/04-sympred-and-the-boolalg-instance) first.
+</Callout>
+
+`SymPred`'s `isBot` and `sat` both delegate here. `symIsBot` answers "is this guard empty?" with a
+single solver call; `symSatExt` answers "is it satisfiable, and if so what does a witness look like?"
+by reconstructing a concrete `(RegFile rs, ci)` from the model. This chapter reads both from
+`keiki/src/Keiki/Symbolic.hs`.
+
+## `symIsBot`: the emptiness check
+
+```haskell
+-- keiki/src/Keiki/Symbolic.hs
+{-# NOINLINE symIsBot #-}
+symIsBot :: HsPred rs ci -> Bool
+symIsBot p = unsafePerformIO $ do
+    res <- SBV.sat $ do
+        env <- mkSymEnv
+        translatePred env p
+    pure (not (SBV.modelExists res))
+```
+
+The body is small but every word is deliberate:
+
+- It builds a fresh `SymEnv` (new tag, new memo cache), translates the predicate, and asks `SBV.sat`
+  whether **any** model exists. The predicate is bot exactly when none does — hence
+  `not (SBV.modelExists res)`.
+- The result is `True` only when the solver says unsat. An `Unknown` answer (the solver gave up within
+  budget) falls under "a model might exist," so it reads as `False` — the **conservative** direction.
+  A guard is only declared empty when the solver positively proves it so.
+- `unsafePerformIO` presents the solver call as a pure `Bool`. That is sound because an SBV query is
+  deterministic for a given predicate and side-effect-free outside the solver process. The `NOINLINE`
+  pragma stops GHC from duplicating or floating the effectful call.
+
+The header states the justification verbatim:
+
+```haskell
+-- The 'unsafePerformIO' wrapper is justified because every SBV query is
+-- deterministic for a given predicate and side-effect-free outside the
+-- solver process.
+```
+
+`SymbolicSpec` and the jitsurei specs pin both directions, including the constant contradictions that
+only became solver-visible once the numeric instances landed:
+
+```haskell
+-- keiki/jitsurei/test/Jitsurei/OrderCartSymbolicSpec.hs
+it "constant equality contradiction over Money (5 == 6) is symIsBot" $
+  symIsBot (PEq (lit (5 :: Money)) (lit 6)
+            :: HsPred OrderCartRegs OrderCmd) `shouldBe` True
+it "satisfiable money ordering (10 >= 5) is not symIsBot" $
+  symIsBot (PCmp CmpGe (lit (10 :: Money)) (lit 5)
+            :: HsPred OrderCartRegs OrderCmd) `shouldBe` False
+```
+
+## `symSatExt`: satisfiability with a witness
+
+`symSatExt` is the heavier function. On a satisfiable predicate it returns `Just (regs, cmd)` where
+both components are concrete values rebuilt from the SBV model:
+
+```haskell
+{-# NOINLINE symSatExt #-}
+symSatExt ::
+    forall rs ci.
+    ( ExtractRegFile rs
+    , KnownInCtors ci
+    ) =>
+    HsPred rs ci -> Maybe (RegFile rs, ci)
+symSatExt p = unsafePerformIO $ do
+    res <- SBV.sat $ do
+        env <- mkSymEnv
+        b <- translatePred env p
+        let ctorNames = [icName ic | SomeInCtor ic <- allInCtors @ci]
+        when (not (null ctorNames)) $
+            SBV.constrain $
+                SBV.sOr [seInputCtor env SBV..== SBV.literal n | n <- ctorNames]
+        pure b
+    pure $
+        if SBV.modelExists res
+            then do
+                ctorTag <- SBV.getModelValue "inputCtor" res
+                let regReader :: forall r. (Sym r) => String -> r
+                    regReader name = readModel res ("reg/" <> name)
+                let regs = extractRegFile @rs regReader
+                ci <-
+                    pickCi @ci
+                        ctorTag
+                        ( \icN fieldName ->
+                            readModel res ("inp/" <> icN <> "/" <> fieldName) )
+                pure (regs, ci)
+            else Nothing
+```
+
+The same `unsafePerformIO` + `NOINLINE` discipline as `symIsBot` applies. Three things make it work:
+
+<Steps>
+<Step>
+**The constructor-domain constraint.** Before solving, it `constrain`s `seInputCtor` to be one of the
+*known* constructor names. Without this, a predicate that has no `PInCtor` atom leaves the tag free, the
+solver could pick a string matching no constructor, `pickCi` would find no match, and a satisfiable
+predicate would wrongly yield no witness. The source comment is the canonical explanation:
+
+```haskell
+-- Confining the tag to the real finite domain keeps the reconstructed
+-- witness sound (it always satisfies 'models') and improves
+-- completeness on @PNot (PInCtor …)@ guards.
+```
+</Step>
+<Step>
+**Reading registers back by name.** `regReader` looks up each slot under `reg/<slotName>` — the exact
+name `translateTermSym` allocated in [chapter 03](/docs/keiki/walkthrough/symbolic-and-validation/03-translation-and-the-memo-cache).
+`extractRegFile` walks the slot list and calls the reader for every slot.
+</Step>
+<Step>
+**Rebuilding the command.** `pickCi` matches the model's `inputCtor` tag against `allInCtors`, then
+reads that constructor's fields under `inp/<icName>/<fieldName>` and calls `icBuild`.
+</Step>
+</Steps>
+
+### `ExtractRegFile`, `readModel`, and `pickCi`
+
+`ExtractRegFile` materializes a `RegFile` from a name-keyed reader — two instances cover the slot list:
+
+```haskell
+class ExtractRegFile (rs :: [Slot]) where
+    extractRegFile :: (forall r. (Sym r) => String -> r) -> RegFile rs
+
+instance ExtractRegFile '[] where
+    extractRegFile _ = RNil
+
+instance
+    ( KnownSymbol s, Sym t, ExtractRegFile rs ) =>
+    ExtractRegFile ('(s, t) ': rs)
+    where
+    extractRegFile reader =
+        RCons (Proxy @s) (reader @t (symbolVal (Proxy @s)))
+              (extractRegFile @rs reader)
+```
+
+The reader is **total**: `readModel` returns the model value on a hit and falls back to `symDefault`
+(from [chapter 02](/docs/keiki/walkthrough/symbolic-and-validation/02-the-sym-typeclass-and-registry))
+on a miss, which is sound because an unbound slot is unconstrained and any value satisfies the
+predicate:
+
+```haskell
+readModel :: forall r. (Sym r) => SBV.SatResult -> String -> r
+readModel res name =
+    case SBV.getModelValue name res :: Maybe (SymRep r) of
+        Just rep -> fromSym rep
+        Nothing -> symDefault
+```
+
+`pickCi` walks the `allInCtors` bag, finds the entry whose `icName` equals the tag, extracts its
+fields, and builds the command — returning `Nothing` when no entry matches (the over-allocated-tag
+case the domain constraint above prevents for real predicates):
+
+```haskell
+pickCi tag readField = go (allInCtors @ci)
+  where
+    go [] = Nothing
+    go (SomeInCtor ic@InCtor{} : rest)
+        | icName ic == tag =
+            let regs = extractRegFile (readField (icName ic))
+             in Just (icBuild ic regs)
+        | otherwise = go rest
+```
+
+The `KnownInCtors` class is the per-`ci` list of constructors; `SomeInCtor` packs each `InCtor` with
+the `ExtractRegFile` evidence its field-list shape needs. For a command type with no information (`()`)
+the module ships `inCtorUnit` and a `KnownInCtors ()` instance so even `SymPred '[] ()` reconstructs a
+real `()`.
+
+## The round-trip guarantee, and its one limitation
+
+The contract is that `models p witness == True` for any witness `symSatExt` returns — **modulo opaque
+terms**. The escape-hatch terms (`TApp1`, `TApp2`, and the `neq` fallback for a non-`Sym` `PEq`)
+translate to fresh anonymous variables whose values are not extracted; the witness reflects only the
+slots and fields the predicate reaches through `TReg` / `TInpCtorField`. The header is precise:
+
+```haskell
+-- @models p (regs, cmd) == True@ holds for the returned witness,
+-- modulo one known limitation:
+--   * /Escape-hatch terms/ ('TApp1', 'TApp2', and 'PEq' over a
+--     non-'Sym' operand type, the @neq@ fallback in 'goEq').
+```
+
+Repeated reads are handled correctly because of the memo cache: two reads of `#x` share one variable,
+so the by-name extraction satisfies `proj #x .== proj #x`-style structural equality. The jitsurei
+OrderCart spec exercises the full round-trip on a shipped, `Word*`-bearing aggregate:
+
+```haskell
+-- keiki/jitsurei/test/Jitsurei/OrderCartSymbolicSpec.hs
+it "symSatExt reconstructs a ConfirmPayment witness with amountPaid >= 1000" $ do
+  let p = PAnd (PInCtor inCtorConfirmPayment)
+               (PCmp CmpGe (proj amountPaidIdx) (lit (1000 :: Money)))
+          :: HsPred OrderCartRegs OrderCmd
+  case symSatExt p of
+    Nothing          -> expectationFailure "amountPaid >= 1000 reported unsat"
+    Just (regs, cmd) -> do
+      (regs ! amountPaidIdx >= 1000) `shouldBe` True
+      case cmd of
+        ConfirmPayment _ -> pure ()
+        other            -> expectationFailure
+                              ("expected a ConfirmPayment witness, got " <> show other)
+```
+
+These two functions are the floor of the whole tour: `symIsBot` is what `SymPred`'s `isBot` calls, and
+that `isBot` is what the single-valuedness gate asks for every pair of edges. The next chapter assembles
+them into the gate itself.
+
+---
+
+Previous: [04 — SymPred and the BoolAlg instance](/docs/keiki/walkthrough/symbolic-and-validation/04-sympred-and-the-boolalg-instance)
+· Next: [06 — The single-valuedness gate](/docs/keiki/walkthrough/symbolic-and-validation/06-the-single-valuedness-gate)

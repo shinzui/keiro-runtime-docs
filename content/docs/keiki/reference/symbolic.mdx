@@ -1,0 +1,328 @@
+---
+title: "Keiki.Symbolic"
+description: "The SBV/z3-backed symbolic surface: the Sym registry, predicate translation, the SymPred BoolAlg instance, witness extraction, and the solver-backed determinism and dead-edge diagnostics."
+---
+
+`Keiki.Symbolic` is the build-time symbolic upgrade of keiki's predicate algebra. It
+**re-exports all of [`Keiki.Core`](/docs/keiki/reference/core)** — one import gives you both the
+pure transducer surface and the symbolic machinery — and adds an `sbv`/z3-backed `BoolAlg`
+instance that decides "are these two edge guards mutually exclusive?" precisely rather than
+syntactically. For the why, see [Why SMT](/docs/keiki/explanation/why-smt) and
+[The symbolic transducer](/docs/keiki/explanation/the-symtransducer).
+
+<Callout type="warn">
+z3 (via `sbv`) is a **build/CI-time dependency only** — it is never on the per-event runtime hot
+path. The everyday step functions (`delta`/`omega`/`step`/`stepEither`/`reconstitute`) decide
+guards by **concrete evaluation**: `models (guard e) (regs, ci)` reduces to `evalPred`, never a
+solver call. Only `isBot`, `symIsBot`, `symSatExt`, `checkTransitionDeterminismSym`, and
+`checkDeadEdgesSym` invoke z3, and they are meant for tests and the symbolic CI gate (see
+[The symbolic CI gate](/docs/keiki/explanation)).
+</Callout>
+
+## The `Sym` typeclass
+
+A type has a `Sym` instance when it has a curated representation in the SBV symbolic universe.
+The associated type `SymRep a` pins the SBV-friendly carrier; `toSym`/`fromSym` round-trip a
+concrete Haskell value through the solver; `symDefault` supplies a fallback for unconstrained
+slots during witness extraction.
+
+```haskell
+class (SBV.SymVal (SymRep a), Typeable a) => Sym a where
+    type SymRep a :: Type
+    toSym :: a -> SymRep a
+    fromSym :: SymRep a -> a
+    symDefault :: a
+```
+
+The `SBV.SymVal (SymRep a)` superclass gives `SBV.literal`, `SBV.free`, and `SBV.unliteral`
+for free. `symDefault` is consumed by `symSatExt`: when the solver model binds no value for a
+slot the predicate never referenced, the witness extractor falls back to it — sound, because an
+unreferenced slot is unconstrained and any value satisfies the predicate.
+
+### The instance registry
+
+<TypeTable
+  type={{
+    Bool: { type: "SymRep = Bool", description: "Identity round-trip; symDefault = False" },
+    Integer: { type: "SymRep = Integer", description: "Identity round-trip; symDefault = 0" },
+    Int: { type: "SymRep = Integer", description: "Encoded as unbounded Integer (no SInt of arbitrary size)" },
+    Word8: { type: "SymRep = Integer", description: "Encoded as unbounded Integer" },
+    Word16: { type: "SymRep = Integer", description: "Quantities, basis points" },
+    Word32: { type: "SymRep = Integer", description: "Item counts and 32-bit unsigned registers" },
+    Word64: { type: "SymRep = Integer", description: "Money and large counts" },
+    Int32: { type: "SymRep = Integer", description: "32-bit signed (completeness)" },
+    Int64: { type: "SymRep = Integer", description: "64-bit signed (completeness)" },
+    Text: { type: "SymRep = String", description: "SBV's SString theory" },
+    UTCTime: { type: "SymRep = Integer", description: "Unix epoch seconds; sub-second precision dropped" },
+  }}
+/>
+
+<Callout type="warn">
+Every fixed-width integer (`Int`, `Word8`/`Word16`/`Word32`/`Word64`, `Int32`/`Int64`) encodes
+as the **unbounded mathematical `Integer`** — machine-word wraparound is **not modelled**. This
+is a deliberate, sound **over-approximation**: every concrete model the solver finds is a real
+witness once decoded through `fromSym`, but an unsatisfiability that depends on overflow (e.g.
+`x + 1 == 0` at the `Word64` wrap point) is reported satisfiable. keiki's money and count guards
+are equality and ordering checks against in-range literals, where the over-approximation never
+bites. `UTCTime` encodes as epoch seconds (at-second granularity), so the round-trip drops
+sub-second precision.
+</Callout>
+
+## The runtime registry: `SymDict` and `discoverSym`
+
+`Sym` evidence is reified so the translator can dispatch on `Typeable` at runtime.
+
+```haskell
+data SymDict r where
+    SymDict :: (Sym r) => SymDict r
+
+discoverSym :: forall r. (Typeable r) => Maybe (SymDict r)
+```
+
+`discoverSym` returns `Just SymDict` for any curated supported type and `Nothing` otherwise. The
+translator uses it to route `PEq` over an arbitrary operand type: a `Sym` hit translates to
+`(.==)` on SBV terms; a miss falls back to a fresh `SBool` (sound, loses precision). Two
+companion dictionaries carry the extra evidence the ordering and arithmetic translators need:
+
+```haskell
+data SymOrdDict r where
+    SymOrdDict :: (Sym r, SBV.OrdSymbolic (SBV.SBV (SymRep r))) => SymOrdDict r
+
+discoverSymOrd :: forall r. (Typeable r) => Maybe (SymOrdDict r)
+
+data SymNumDict r where
+    SymNumDict :: (Sym r, Num (SBV.SBV (SymRep r))) => SymNumDict r
+
+discoverSymNum :: forall r. (Typeable r) => Maybe (SymNumDict r)
+```
+
+`discoverSymOrd` reifies `SBV.OrdSymbolic` evidence (what `PCmp` needs to emit a real
+`.<`/`.<=`/`.>`/`.>=`); it covers the numeric and time types (`Int`, `Integer`, the fixed-width
+integers, and `UTCTime`) but **deliberately omits `Bool` and `Text`** — ordering a `Bool` guard
+is not meaningful and `SString` ordering is out of scope. `discoverSymNum` reifies `Num` evidence
+(what `TArith` needs to emit a real `+`/`-`/`*`); it covers the numeric integers and omits `Bool`,
+`Text`, and `UTCTime`. A `Nothing` from either makes the relevant translator fall back to a fresh
+opaque variable — sound, just imprecise.
+
+### Literals and free variables
+
+```haskell
+symLit  :: forall a. (Sym a) => a -> SBV.SBV (SymRep a)
+symFree :: forall a. (Sym a) => String -> SBV.Symbolic (SBV.SBV (SymRep a))
+```
+
+`symLit` lifts a concrete value to an SBV literal of its `SymRep`; `symFree` allocates a fresh
+symbolic variable of the carrier's `SymRep`.
+
+## Translation: `SymEnv`, `translateTermSym`, `translatePred`
+
+A single predicate's walk threads a shared context so that distinct `PInCtor` atoms agree they
+cannot both hold and so that repeated reads of one register share one solver variable.
+
+```haskell
+data SymEnv = SymEnv
+    { seInputCtor :: SBV.SBV String
+    , seVarCache  :: IORef (Map String SomeSBV)
+    }
+
+mkSymEnv :: SBV.Symbolic SymEnv
+```
+
+<TypeTable
+  type={{
+    seInputCtor: { type: "SBV.SBV String", description: "Shared symbolic input-constructor tag; PInCtor atoms assert seInputCtor .== literal (icName ic), so two atoms over distinct constructors are mutually unsatisfiable" },
+    seVarCache: { type: "IORef (Map String SomeSBV)", description: "Per-translation memo cache keyed by deterministic variable name; lazily populated so unread slots stay unconstrained" },
+  }}
+/>
+
+The memo cache (`seVarCache`) is the key correctness mechanism. `TReg` allocates under
+`"reg/<slot>"`; `TInpCtorField` allocates under `"inp/<ctor>/<field>"`. The **first** read of a
+name allocates one `SBV.free` variable and caches it; **every later read of the same name returns
+the cached variable**. So the solver sees two reads of `#x` as the *same* value, and
+`proj #x .== proj #x` is **valid**, not merely satisfiable. The cache is scoped to one
+`translatePred` walk (one `mkSymEnv`), so variables are shared *within* a query but never leak
+across independent queries.
+
+### `translateTermSym`
+
+```haskell
+translateTermSym ::
+    forall rs ci ifs r.
+    (Sym r) =>
+    SymEnv ->
+    Term rs ci ifs r ->
+    SBV.Symbolic (SBV.SBV (SymRep r))
+```
+
+The translation is structural for `TLit`, `TReg`, `TInpCtorField`, and `TArith`. A `TArith` over
+a type whose `SymRep` is SBV-numeric (a `discoverSymNum` hit) emits a real `+`/`-`/`*` over the
+translated operands, so a guard over a *computed* value is visible to the solver. `TApp1` and
+`TApp2` wrap opaque Haskell functions and translate to **fresh** `SBV.free "app1"`/`"app2"`
+variables of the result type — **sound but under-verifying**: two occurrences of the same opaque
+application do not share a variable (opaque functions have no `Eq`), and their values are not part
+of the extracted witness.
+
+### `translatePred`
+
+```haskell
+translatePred ::
+    forall rs ci. SymEnv -> HsPred rs ci -> SBV.Symbolic SBV.SBool
+```
+
+`translatePred` walks an `HsPred` structurally into an SBV `SBool`:
+
+- `PTop` / `PBot` map to `sTrue` / `sFalse`.
+- `PAnd` / `POr` / `PNot` map to `.&&` / `.||` / `sNot` on the recursive translations.
+- `PEq a b` tries `discoverSym` on the operand type; a hit emits `(.==)` between the two
+  translated terms, a miss emits a fresh `SBool` (the equality is opaque).
+- `PInCtor ic` emits `seInputCtor .== literal (icName ic)`; the shared `seInputCtor` makes
+  constructor mutual-exclusion decidable.
+- `PCmp op a b` tries `discoverSymOrd`; a hit emits the matching SBV comparison, a miss emits a
+  fresh `SBool`.
+
+## The symbolic predicate wrapper: `SymPred`
+
+```haskell
+newtype SymPred (rs :: [Slot]) (ci :: Type) = SymPred {unSymPred :: HsPred rs ci}
+
+type SymGuarded rs s ci co = SymTransducer (SymPred rs ci) rs s ci co
+```
+
+`SymPred` is a newtype over `HsPred` that **selects the v2 SBV-backed `BoolAlg` instance** instead
+of the pure syntactic one in `Keiki.Core`. The v1 `BoolAlg HsPred` instance stays unchanged for
+back-compat; consumers that want symbolic answers wrap with `SymPred`. `SymGuarded` is the
+SBV-backed analogue of `Keiki.Core`'s `Guarded`.
+
+### The `BoolAlg` instance
+
+```haskell
+instance BoolAlg (SymPred rs ci) (RegFile rs, ci) where
+    top  = SymPred PTop
+    bot  = SymPred PBot
+    conj (SymPred p) (SymPred q) = SymPred (PAnd p q)
+    disj (SymPred p) (SymPred q) = SymPred (POr p q)
+    neg  (SymPred p)             = SymPred (PNot p)
+    models (SymPred p) (regs, ci) = evalPred p regs ci
+    isBot  (SymPred p)            = symIsBot p
+```
+
+The five structural methods just compose `HsPred` constructors. `models` delegates to
+`Keiki.Core`'s `evalPred` — **concrete evaluation, no solver call** — which is exactly why the
+runtime hot path never touches z3. `isBot` routes through `symIsBot`, which asks z3. Witness
+extraction lives in a separate `Sat` instance so the witness-free analyses keep type-checking on
+register-file-existential carriers:
+
+```haskell
+instance
+    (ExtractRegFile rs, KnownInCtors ci) =>
+    Sat (SymPred rs ci) (RegFile rs, ci)
+    where
+    sat (SymPred p) = symSatExt p
+```
+
+## Solver-backed primitives
+
+```haskell
+{-# NOINLINE symIsBot #-}
+symIsBot :: HsPred rs ci -> Bool
+
+{-# NOINLINE symSatExt #-}
+symSatExt ::
+    forall rs ci.
+    (ExtractRegFile rs, KnownInCtors ci) =>
+    HsPred rs ci -> Maybe (RegFile rs, ci)
+```
+
+Both are pure-API wrappers around an SBV solver call via `unsafePerformIO`, marked `NOINLINE`.
+This is justified because every SBV query is deterministic for a given predicate and
+side-effect-free outside the solver process.
+
+`symIsBot` translates the predicate and asks z3 whether any model exists: `True` when none does
+(the predicate is bot), `False` otherwise — **including the conservative `Unknown`/timeout
+fallback**, so an undecided query is treated as "possibly non-empty". A warm `isBot` query runs in
+roughly ~10ms.
+
+`symSatExt` is full **witness extraction**: on a satisfiable predicate it returns
+`Just (regs, cmd)` where both are concrete values reconstructed from the SBV model, and
+`models p (regs, cmd) == True` holds for the returned witness — modulo escape-hatch terms
+(`TApp1`/`TApp2` and `PEq` over a non-`Sym` operand) whose values are not extracted. The model's
+input-constructor tag is confined to the known constructor domain (`KnownInCtors ci`), so a
+predicate without a `PInCtor` atom still reconstructs a real command. Since EP-44, `symSatExt`
+*is* the implementation of `Keiki.Core`'s `sat` method on `SymPred`.
+
+## Witness-extraction evidence
+
+```haskell
+class ExtractRegFile (rs :: [Slot]) where
+    extractRegFile :: (forall r. (Sym r) => String -> r) -> RegFile rs
+
+data SomeInCtor (ci :: Type) where
+    SomeInCtor :: (ExtractRegFile ifs) => InCtor ci ifs -> SomeInCtor ci
+
+class KnownInCtors ci where
+    allInCtors :: [SomeInCtor ci]
+```
+
+`ExtractRegFile` materializes a `RegFile` from a name-keyed reader (the reader's input is a slot
+name, the same string `translateTermSym` allocates under `"reg/" <> slotName`). Its two instances
+walk the slot list — `'[]` returns `RNil`; `'(s, t) ': rs` reads the head slot's name and recurses
+— so the instance is automatic for any concrete slot list whose value types are in the curated
+`Sym` registry. `SomeInCtor` is an existential wrapper hiding an `InCtor`'s field-list shape while
+carrying the `ExtractRegFile` evidence to rebuild it; `KnownInCtors` is the statically-known bag of
+a `ci`'s constructors (`()` has a built-in singleton instance). For a User Registration aggregate,
+`KnownInCtors` is a five-line list pairing the existing `inCtor*` declarations.
+
+## Single-valuedness
+
+```haskell
+isSingleValuedSym ::
+    forall phi rs s ci co.
+    (BoolAlg phi (RegFile rs, ci), Bounded s, Enum s) =>
+    SymTransducer phi rs s ci co ->
+    Bool
+
+withSymPred ::
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    SymTransducer (SymPred rs ci) rs s ci co
+```
+
+A transducer is **single-valued** when, at every reachable vertex, at most one outgoing edge's
+guard is satisfied for any given input. `isSingleValuedSym` checks, for every vertex and every
+distinct pair of outgoing edges, that `isBot (guard e1 `conj` guard e2)`. It is
+`BoolAlg`-polymorphic, so precision depends on the chosen `isBot`: wrap with `withSymPred` first to
+get the exact SBV-backed answer. `withSymPred` re-tags every edge guard from the v1 `HsPred`
+carrier to the v2 `SymPred` carrier, leaving the control graph and the update/output terms
+unchanged. See [Single-valuedness and soundness](/docs/keiki/explanation).
+
+## Solver-backed validation diagnostics
+
+```haskell
+checkTransitionDeterminismSym ::
+    (Bounded s, Enum s, Show s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [DeterminismWarning s]
+
+checkDeadEdgesSym ::
+    (Bounded s, Enum s, Show s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [DeadEdgeWarning s]
+```
+
+These are the z3-backed escalations of the pure checks in
+[`Keiki.Core`](/docs/keiki/reference/validate) (they require z3 on `PATH`).
+`checkTransitionDeterminismSym` lifts the transducer with `withSymPred` and runs the
+`BoolAlg`-polymorphic `checkTransitionDeterminism` at the `SymPred` carrier, whose `isBot` is the
+exact z3 decision — so it catches register-value-dependent overlaps the pure path cannot prove
+syntactically. `checkDeadEdgesSym` flags edges whose guard is unsatisfiable **in isolation** (via
+`symIsBot`), which the structural `checkDeadEdges` misses unless the guard is literally `PBot`. It
+does **not** compute the register configurations reachable at each vertex, so it still cannot catch
+a guard satisfiable in isolation but never under the registers reachable there; that needs a full
+reachable-state fixpoint and is left as future work.
+
+## See also
+
+- [Keiki.Core](/docs/keiki/reference/core) — everything re-exported here, plus the pure
+  [`validateTransducer`](/docs/keiki/reference/validate) umbrella.
+- [What gets derived](/docs/keiki/explanation/what-gets-derived) and
+  [Why SMT](/docs/keiki/explanation/why-smt).
+- The behaviours on this page are exercised in `test/Keiki/SymbolicSpec.hs`.
