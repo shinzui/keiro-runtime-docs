@@ -1,0 +1,217 @@
+---
+title: "01 — The pretty-printer"
+description: "The pure, domain-readable printer for keiki's guard, term, and update sub-trees, and the unprintable-marking convention every renderer reuses."
+---
+
+<Callout type="info">
+Part of the [rendering and codecs](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here) tour.
+This chapter reads `keiki/src/Keiki/Render/Pretty.hs` end to end.
+</Callout>
+
+Before any diagram renders, something has to turn a guard predicate, a term, or a register update into
+text a domain reader recognises. That something is `Keiki.Render.Pretty` — a pure module with no solver
+and no IO that produces `Data.Text.Text`. The Mermaid renderer's pretty guard mode (chapter
+[03](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels)) and the
+sibling edge-inspector and multiline-label renderers all delegate their sub-tree text here, so this is
+the right place to start.
+
+The module header states its job and its single hardest decision up front:
+
+```haskell
+-- keiki/src/Keiki/Render/Pretty.hs
+{- | Pure, domain-readable pretty-printer for keiki's predicate, term,
+and update syntax trees ('HsPred', 'Term', 'Update'). Produces
+'Data.Text.Text'. No solver, no IO. Shared by the Mermaid topology
+renderer ('Keiki.Render.Mermaid') and the sibling edge-inspector /
+multiline-label renderers.
+
+Two things are provably unprintable and are marked, not dropped:
+applied opaque Haskell functions render as @<fn>(...)@; literal
+values render as @<lit>@ (a 'TLit' carries an unconstrained type
+with no 'Show').
+-}
+```
+
+The public surface is four functions:
+
+```haskell
+module Keiki.Render.Pretty (
+    indexName,
+    prettyTerm,
+    prettyPred,
+    prettyUpdate,
+) where
+```
+
+## `indexName`: recovering a slot's name from its index
+
+A register read is a typed `Index rs r` — a Peano-style pointer (`ZIdx`/`SIdx`) into the register
+schema. To print it as a name, `indexName` walks down to the `ZIdx` and reads the `KnownSymbol` it
+carries:
+
+```haskell
+indexName :: Index rs r -> String
+indexName (ZIdx @s) = symbolVal (Proxy @s)
+indexName (SIdx i) = indexName i
+```
+
+The `ZIdx @s` pattern (a `TypeAbstractions` binding) pulls the existential slot symbol straight out of
+the constructor, so no extra class constraint is needed — the index *is* its own evidence.
+
+## `prettyTerm`: register reads, field reads, arithmetic, and the two marks
+
+`prettyTerm` is structural recursion over `Term`. The two cases that cannot recover a real value mark
+themselves rather than fail:
+
+```haskell
+prettyTerm :: Term rs ci ifs r -> Text
+prettyTerm (TLit _) = T.pack "<lit>"
+prettyTerm (TReg ix) = T.pack (indexName ix)
+prettyTerm (TInpCtorField ic ix) =
+    T.pack (icName ic) <> T.pack "." <> T.pack (indexName ix)
+prettyTerm (TApp1 _ a) = T.pack "<fn>(" <> prettyTerm a <> T.pack ")"
+prettyTerm (TApp2 _ a b) =
+    T.pack "<fn>(" <> prettyTerm a <> T.pack ", " <> prettyTerm b <> T.pack ")"
+prettyTerm (TArith op a b) =
+    T.pack "("
+        <> prettyTerm a
+        <> T.pack " "
+        <> numOpSym op
+        <> T.pack " "
+        <> prettyTerm b
+        <> T.pack ")"
+  where
+    numOpSym OpAdd = T.pack "+"
+    numOpSym OpSub = T.pack "-"
+    numOpSym OpMul = T.pack "*"
+```
+
+Read the cases against what each one *knows*:
+
+<TypeTable
+  type={{
+    TReg: { type: "<slot>", description: "A register read prints by its slot name, recovered via indexName." },
+    TInpCtorField: { type: "<ctor>.<field>", description: "An input-field read joins the constructor name (icName) and the field's slot name with a dot." },
+    TArith: { type: "(a <op> b)", description: "Arithmetic prints structurally with + - * and explicit parentheses." },
+    TApp1: { type: "<fn>(a)", description: "An opaque applied unary function is MARKED, not dropped — its argument still prints." },
+    TApp2: { type: "<fn>(a, b)", description: "An opaque applied binary function is marked; both arguments print." },
+    TLit: { type: "<lit>", description: "A literal carries an unconstrained type with no Show, so it cannot print its value — it prints <lit>." },
+  }}
+/>
+
+<Callout type="warn">
+The **unprintable-marking convention** is the heart of this module. A `TLit` holds a value of an
+unconstrained type — there is no `Show` to call, so the value is genuinely unrecoverable. A `TApp1` /
+`TApp2` holds an opaque Haskell function. Rather than throw or silently drop these, the printer marks
+them (`<lit>`, `<fn>(…)`) and keeps recursing into whatever *is* printable. The result is total and
+faithful: it never claims to show something it cannot. Every downstream renderer inherits this property
+for free.
+</Callout>
+
+`PrettySpec` pins each case exactly. A register read renders by slot name; the second register renders
+as `limit`; an input-field read renders `Deposit.amount`; and the marks are nailed down too:
+
+```haskell
+-- test/Keiki/Render/PrettySpec.hs
+it "renders a literal opaquely as <lit>" $
+    prettyTerm (TLit (42 :: Int) :: Term Regs Cmd '[] Int)
+        `shouldBe` T.pack "<lit>"
+it "renders TApp1 as <fn>(arg)" $
+    prettyTerm (TApp1 (+ (1 :: Int)) (TReg balanceIx) :: Term Regs Cmd '[] Int)
+        `shouldBe` T.pack "<fn>(balance)"
+it "renders TApp2 as <fn>(a, b)" $
+    prettyTerm
+        ( TApp2 ((+) :: Int -> Int -> Int) (TReg balanceIx) (TReg limitIx) ::
+            Term Regs Cmd '[] Int
+        )
+        `shouldBe` T.pack "<fn>(balance, limit)"
+```
+
+Note `<fn>(balance)`: the function is opaque, but its *argument* `balance` is a printable register read,
+so it still appears inside the mark.
+
+## `prettyPred`: boolean structure around printable atoms
+
+`prettyPred` renders an `HsPred` guard. Boolean structure prints with `&& || !` and explicit
+parentheses; the leaf predicates print their operands via `prettyTerm`:
+
+```haskell
+prettyPred :: HsPred rs ci -> Text
+prettyPred PTop = T.pack "true"
+prettyPred PBot = T.pack "false"
+prettyPred (PAnd a b) =
+    T.pack "(" <> prettyPred a <> T.pack " && " <> prettyPred b <> T.pack ")"
+prettyPred (POr a b) =
+    T.pack "(" <> prettyPred a <> T.pack " || " <> prettyPred b <> T.pack ")"
+prettyPred (PNot p) = T.pack "!(" <> prettyPred p <> T.pack ")"
+prettyPred (PEq l r) = prettyTerm l <> T.pack " == " <> prettyTerm r
+prettyPred (PInCtor ic) = T.pack (icName ic)
+prettyPred (PCmp c l r) =
+    prettyTerm l <> T.pack " " <> cmpSym c <> T.pack " " <> prettyTerm r
+  where
+    cmpSym CmpLt = T.pack "<"
+    cmpSym CmpLe = T.pack "<="
+    cmpSym CmpGt = T.pack ">"
+    cmpSym CmpGe = T.pack ">="
+```
+
+`PInCtor` prints just the constructor name — this is the atom the Mermaid renderer also mines for an
+edge's input-constructor name (chapter [02](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core)).
+The nested-boolean golden in `PrettySpec` shows how the pieces compose, marks included:
+
+```haskell
+-- test/Keiki/Render/PrettySpec.hs
+prettyPred
+    ( PAnd
+        (PInCtor inCtorDeposit)
+        ( POr
+            (PCmp CmpGe (TReg balanceIx) (TLit (0 :: Int)))
+            (PNot (PEq (TReg limitIx) (TLit (0 :: Int))))
+        ) :: HsPred Regs Cmd
+    )
+    `shouldBe` T.pack "(Deposit && (balance >= <lit> || !(limit == <lit>)))"
+```
+
+That exact string — `(Deposit && (balance >= <lit> || !(limit == <lit>)))` — is what
+`MermaidGuardPretty` mode embeds in an edge label.
+
+## `prettyUpdate`: the written-slot side
+
+`prettyUpdate` renders a register `Update`. `UKeep` is `(keep)`; `USet` prints `slot := term` using the
+name-tagged `IndexN` (via `indexNName`); `UCombine` joins comma-separated:
+
+```haskell
+prettyUpdate :: Update rs w ci -> Text
+prettyUpdate UKeep = T.pack "(keep)"
+prettyUpdate (USet ix t) = T.pack (indexNName ix) <> T.pack " := " <> prettyTerm t
+prettyUpdate (UCombine a b) = prettyUpdate a <> T.pack ", " <> prettyUpdate b
+```
+
+`PrettySpec` pins all three, including the unprintable mark on the RHS of a set:
+
+```haskell
+-- test/Keiki/Render/PrettySpec.hs
+prettyUpdate (UKeep :: Update Regs '[] Cmd) `shouldBe` T.pack "(keep)"
+prettyUpdate (USet balanceN (TLit (0 :: Int)) :: Update Regs '["balance"] Cmd)
+    `shouldBe` T.pack "balance := <lit>"
+prettyUpdate
+    ( UCombine
+        (USet balanceN (TReg limitIx))
+        (USet balanceN (TLit (1 :: Int))) :: Update Regs '["balance", "balance"] Cmd
+    )
+    `shouldBe` T.pack "balance := limit, balance := <lit>"
+```
+
+The `UCombine` order is preserved verbatim — left arm first, right arm second. The Mermaid renderer's
+written-slot summary reuses the same recursion (it calls `indexNName` per `USet`), so the slot order you
+see in a `[w: …]` suffix is exactly this `UCombine` nesting order.
+
+## Why these four are exported together
+
+Everything in this module is total and pure: it never throws, never consults a solver, and always
+returns `Text`. The marking convention is what makes that possible over ASTs that legitimately hold
+unshowable values and opaque functions. Every later renderer in this tour leans on that guarantee — a
+diagram never crashes because one edge happened to compare against a literal.
+
+Previous: [00 — Start here](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here).
+Next: [02 — Mermaid core](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core).

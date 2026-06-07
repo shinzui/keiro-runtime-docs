@@ -1,0 +1,128 @@
+---
+title: "Build a diagram atlas"
+description: "Assemble several rendered transducer diagrams into one Markdown document and refresh a single block in place with marker round-trips."
+---
+
+You have several transducers — aggregates, process managers, a workflow — and want one Markdown
+document that shows them all, then a way to regenerate one diagram in place without disturbing the
+prose around it. `toMermaidAtlasWith` assembles the document; `replaceMarkdownDiagramBlock` refreshes
+a single marked block.
+
+<Callout type="info">
+  Assumes you can already render a single transducer. If not, start with
+  [Render a Mermaid diagram](/docs/keiki/how-to/render-a-mermaid-diagram).
+</Callout>
+
+## Goal
+
+Build a multi-section Markdown atlas from already-rendered Mermaid `Text`, wrap each section in
+begin/end markers, and later refresh one section's fenced block in place — idempotently.
+
+## Assemble the atlas
+
+Transducers are heterogeneously typed, so the atlas takes already-rendered `Text`, not transducers.
+Each section is a typed `MermaidSection`: a stable `sectionId`, a `sectionTitle`, a `sectionKind`,
+and the `sectionDiagram` produced by any renderer in `Keiki.Render.Mermaid`.
+
+```haskell
+import Keiki.Render.Mermaid
+  ( toMermaid
+  , toMermaidComposite
+  , toMermaidAtlasWith
+  , defaultMermaidAtlasOptions
+  , MermaidAtlasOptions (..)
+  , MermaidSection (..)
+  , MermaidSectionKind (..)
+  )
+
+atlas :: Text
+atlas =
+  toMermaidAtlasWith
+    defaultMermaidAtlasOptions
+      { atlasTitle      = Just (T.pack "Loan workflow diagrams")
+      , atlasWrapMarkers = Just (T.pack "keiki")
+      }
+    [ MermaidSection
+        { sectionId      = T.pack "loan-application"
+        , sectionTitle   = T.pack "Loan application"
+        , sectionKind    = AggregateDiagram
+        , sectionDiagram = toMermaid loanApplication
+        }
+    , MermaidSection
+        { sectionId      = T.pack "loan-pipeline"
+        , sectionTitle   = T.pack "Loan pipeline"
+        , sectionKind    = WorkflowDiagram
+        , sectionDiagram = toMermaidComposite pipeline
+        }
+    ]
+```
+
+With `defaultMermaidAtlasOptions` each section renders as a level-2 heading followed by a fenced
+`mermaid` block, sections joined by a blank line. Turning on `atlasTitle` prepends a top-level
+heading; turning on `atlasWrapMarkers = Just ns` wraps each section's fenced block in matched
+markers keyed by `sectionId`:
+
+```text
+<!-- keiki: loan-application begin -->
+(fenced mermaid block for the loan-application section)
+<!-- keiki: loan-application end -->
+```
+
+<Callout type="info">
+  `MermaidSectionKind` is `AggregateDiagram`, `ProcessManagerDiagram`, `WorkflowDiagram`, or
+  `CustomDiagram <label>`. It is hidden by default (`atlasShowSectionKind = KindHidden`); set
+  `KindAsLabel` or `KindAsComment` to surface it.
+</Callout>
+
+## Refresh one block in place
+
+`Keiki.Render.Markdown.replaceMarkdownDiagramBlock` rewrites exactly the span between one
+section's begin/end markers and preserves every byte outside them. It references no keiki type — it
+operates on the marker convention the atlas emits, so the two close the loop. Point a
+`MarkdownDiagramBlock` at the `(namespace, id)` you wrapped with, supply the freshly rendered body
+(no fences), and splice it into the existing document:
+
+```haskell
+import Keiki.Render.Markdown
+  ( MarkdownDiagramBlock (..)
+  , replaceMarkdownDiagramBlock
+  )
+
+refresh :: Text -> Either MarkdownDiagramError Text
+refresh doc =
+  replaceMarkdownDiagramBlock
+    MarkdownDiagramBlock
+      { blockNamespace = T.pack "keiki"
+      , blockId        = T.pack "loan-application"
+      , blockLanguage  = T.pack "mermaid"
+      , blockContent   = toMermaid loanApplication   -- the new body, no fences
+      }
+    doc
+```
+
+The helper normalizes the block to a fenced block tagged with `blockLanguage`, placing the body on
+its own lines between the preserved markers. It strips trailing newlines from `blockContent` before
+the closing fence — which is what makes it **idempotent**: re-applying it to a document it already
+produced yields the identical document.
+
+<Callout type="warn">
+  Validation is strict: exactly one begin and one end marker must be present. A missing begin yields
+  `MissingBeginMarker`, a missing end yields `MissingEndMarker`, and a repeated marker yields
+  `DuplicateMarker <marker> <count>`. A stale or duplicated marker fails loudly rather than
+  silently mangling the document.
+</Callout>
+
+## Verify it worked
+
+The round-trip is pinned in `Keiki.Render.MarkdownSpec`: replacing a marked block preserves the
+prose above and below byte-for-byte, and replacing the already-normalized block reproduces it
+exactly (`replaceMarkdownDiagramBlock blk expectedDoc == Right expectedDoc`). The atlas shape is
+pinned in `Keiki.Render.MermaidSpec`. To confirm in your own repo: run the regenerator twice and
+diff — the second run produces no change.
+
+## Related
+
+- [Render a Mermaid diagram](/docs/keiki/how-to/render-a-mermaid-diagram) — produce the per-section
+  `sectionDiagram` text.
+- The render reference (`Keiki.Render.Mermaid`, `Keiki.Render.Markdown`) under
+  [the keiki reference](/docs/keiki/reference).

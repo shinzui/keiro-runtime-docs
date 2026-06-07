@@ -1,0 +1,110 @@
+---
+title: "Render: pretty-printer"
+description: "indexName, prettyTerm, prettyPred, and prettyUpdate — a pure, domain-readable pretty-printer for keiki's predicate, term, and update syntax trees."
+---
+
+The functions on this page live in `Keiki.Render.Pretty`: a pure, domain-readable pretty-printer for
+keiki's predicate, term, and update syntax trees (`HsPred`, `Term`, `Update` from
+[`Keiki.Core`](/docs/keiki/reference/core)). Everything produces `Text`. No solver, no IO. It is
+shared by the Mermaid topology renderer and the [edge inspector](/docs/keiki/reference/render-inspector).
+
+<Callout type="info">
+Two shapes are *provably* unprintable and are **marked, not dropped**: applied opaque Haskell
+functions render as `<fn>(…)`, and literal values render as `<lit>` (a `TLit` carries an
+unconstrained type with no `Show` instance). The renderer never silently omits them.
+</Callout>
+
+## `indexName`
+
+```haskell
+indexName :: Index rs r -> String
+```
+
+Recover the slot name an `Index` points at by walking `SIdx` down to the `ZIdx` and reading its
+`KnownSymbol`. No extra class constraint is needed: `ZIdx` carries the slot's symbol, bound directly
+via a type-application pattern.
+
+## `prettyTerm`
+
+```haskell
+prettyTerm :: Term rs ci ifs r -> Text
+```
+
+Render a `Term` as domain-readable `Text`:
+
+<TypeTable
+  type={{
+    TReg: { type: "register read", description: "Rendered by slot name, e.g. balance" },
+    TInpCtorField: { type: "input-field read", description: "Rendered as ctor.field, e.g. Deposit.amount" },
+    TArith: { type: "arithmetic", description: "Rendered structurally and parenthesised: (a + b), (a - b), (a * b)" },
+    TApp1: { type: "applied opaque fn (1 arg)", description: "Marked as <fn>(arg)" },
+    TApp2: { type: "applied opaque fn (2 args)", description: "Marked as <fn>(a, b)" },
+    TLit: { type: "literal", description: "Marked as <lit> — no Show is available" },
+  }}
+/>
+
+```haskell
+prettyTerm (TReg balanceIx)                          == "balance"
+prettyTerm (TInpCtorField inCtorDeposit amountIx)    == "Deposit.amount"
+prettyTerm (TLit (42 :: Int))                        == "<lit>"
+prettyTerm (TApp1 (+ 1) (TReg balanceIx))            == "<fn>(balance)"
+prettyTerm (TApp2 (+) (TReg balanceIx) (TReg limitIx)) == "<fn>(balance, limit)"
+prettyTerm (TArith OpAdd (TReg balanceIx) (TReg limitIx)) == "(balance + limit)"
+prettyTerm (TArith OpSub (TReg balanceIx) (TReg limitIx)) == "(balance - limit)"
+prettyTerm (TArith OpMul (TReg balanceIx) (TReg limitIx)) == "(balance * limit)"
+```
+
+## `prettyPred`
+
+```haskell
+prettyPred :: HsPred rs ci -> Text
+```
+
+Render an `HsPred` guard as domain-readable `Text`. Boolean structure renders with `&& || !` and
+parentheses; `PInCtor` renders the constructor name; `PEq` / `PCmp` render their operand `Term`s
+around `== < <= > >=`. `PTop` and `PBot` render `true` and `false`.
+
+```haskell
+prettyPred PTop                                 == "true"
+prettyPred PBot                                 == "false"
+prettyPred (PInCtor inCtorDeposit)              == "Deposit"
+prettyPred (PEq (TReg balanceIx) (TLit 0))      == "balance == <lit>"
+prettyPred (PCmp CmpLt (TReg balanceIx) (TReg limitIx)) == "balance < limit"
+prettyPred (PCmp CmpGe (TReg balanceIx) (TReg limitIx)) == "balance >= limit"
+```
+
+Boolean structure is fully parenthesised:
+
+```haskell
+prettyPred
+  (PAnd
+    (PInCtor inCtorDeposit)
+    (POr
+      (PCmp CmpGe (TReg balanceIx) (TLit 0))
+      (PNot (PEq (TReg limitIx) (TLit 0)))))
+  == "(Deposit && (balance >= <lit> || !(limit == <lit>)))"
+```
+
+## `prettyUpdate`
+
+```haskell
+prettyUpdate :: Update rs w ci -> Text
+```
+
+Render an `Update` as domain-readable `Text`. `UKeep` renders `(keep)`; `USet` renders `slot := term`
+(the slot name comes from the name-tagged `IndexN` via `indexNName`); `UCombine` joins its parts
+comma-separated.
+
+```haskell
+prettyUpdate UKeep                            == "(keep)"
+prettyUpdate (USet balanceN (TLit 0))         == "balance := <lit>"
+prettyUpdate
+  (UCombine
+    (USet balanceN (TReg limitIx))
+    (USet balanceN (TLit 1)))                 == "balance := limit, balance := <lit>"
+```
+
+<Callout type="info">
+The unit tests in `Keiki.Render.PrettySpec` pin every example above as exact `Text` assertions
+against a two-slot register file (`balance`, `limit`) and a one-field `Deposit` command.
+</Callout>

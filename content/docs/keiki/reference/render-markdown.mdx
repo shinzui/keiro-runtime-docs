@@ -1,0 +1,163 @@
+---
+title: "Render: Markdown atlas"
+description: "Splice a rendered diagram into a marked Markdown block in place, idempotently — plus the pure text-level validators for Mermaid diagrams and atlases."
+---
+
+The functions on this page live in `Keiki.Render.Markdown` and `Keiki.Render.Validate`. The first
+keeps a diagram document in sync with regenerated diagrams by replacing one marked block at a time;
+the second scans rendered diagram **text** for common mistakes. Neither references any keiki domain
+type — both work on plain `Data.Text.Text`.
+
+## Marker-replacement helper
+
+`Keiki.Render.Markdown` rewrites a marked fenced block inside an arbitrary Markdown document. The
+marker convention is a matched pair of HTML comments — exactly the pair that
+[`toMermaidAtlasWith`](/docs/keiki/reference/render-mermaid) emits when `atlasWrapMarkers = Just ns`,
+keyed by each section's `sectionId`. That closes the loop: render an atlas with markers once, then
+refresh one block in place whenever its diagram changes, preserving every byte outside the markers.
+
+### `MarkdownDiagramBlock`
+
+A diagram block to splice into a document. `blockContent` is the already-rendered block body (no
+fences); `replaceMarkdownDiagramBlock` wraps it in a normalized fenced block tagged with
+`blockLanguage`.
+
+<TypeTable
+  type={{
+    blockNamespace: { type: "Text", description: "Marker namespace, e.g. a service name." },
+    blockId: { type: "Text", description: "Marker id; the atlas sectionId." },
+    blockLanguage: { type: "Text", description: "Fenced-block language tag, e.g. \"mermaid\"." },
+    blockContent: { type: "Text", description: "Already-rendered block body (no fences)." },
+  }}
+/>
+
+### `MarkdownDiagramError`
+
+Why a replacement could not be performed. Each constructor carries enough text to print the expected
+marker.
+
+```haskell
+data MarkdownDiagramError
+  = MissingBeginMarker Text     -- the expected begin marker text was not found
+  | MissingEndMarker Text       -- the expected end marker text was not found
+  | DuplicateMarker Text Int    -- a marker text was found more than once (with the count)
+  deriving stock (Eq, Show)
+```
+
+### `replaceMarkdownDiagramBlock`
+
+Replace everything between the begin and end markers for `(blockNamespace, blockId)` with a
+normalized fenced block, preserving the markers and every byte outside them.
+
+```haskell
+replaceMarkdownDiagramBlock ::
+  MarkdownDiagramBlock -> Text -> Either MarkdownDiagramError Text
+```
+
+The normalized block is `` ```{blockLanguage}\n{content}\n``` `` where `content` is `blockContent`
+with trailing newlines stripped before the closing fence. Because the trailing newlines are stripped,
+the helper is **idempotent**: re-applying it to a document it already produced yields the identical
+document.
+
+Validation requires **exactly one** begin and **exactly one** end marker. A missing begin yields
+`MissingBeginMarker begin`; a missing end yields `MissingEndMarker end`; a repeated marker yields
+`DuplicateMarker marker count`.
+
+### `beginMarker` / `endMarker`
+
+The marker text for a `(namespace, id)` pair.
+
+```haskell
+beginMarker :: Text -> Text -> Text
+-- beginMarker ns id = "<!-- {ns}: {id} begin -->"
+
+endMarker :: Text -> Text -> Text
+-- endMarker ns id = "<!-- {ns}: {id} end -->"
+```
+
+<Callout type="info">
+`Keiki.Render.Markdown` references **no** keiki type. It rewrites any fenced block — Mermaid, JSON,
+or anything else — that sits between a matching marker pair. The atlas integration above is the
+intended use, but the helper is fully general.
+</Callout>
+
+## Text-level diagram validators
+
+`Keiki.Render.Validate` provides pure, cheap structural-heuristic validators for rendered Mermaid
+diagrams and atlas documents. They are **not** a Mermaid parser: they scan rendered `Text` for a
+small set of common problems and return a deterministic, document-ordered list of warnings. An empty
+list means *no problem detected* — never *guaranteed valid Mermaid*. The checks can both miss
+problems Mermaid would reject and flag text Mermaid accepts; they exist so a downstream unit test can
+catch cheap-to-detect mistakes before a document is committed.
+
+<Callout type="info">
+This is a diagram-**text** checker. It is distinct from `Keiki.Core`'s `validateTransducer`, which
+validates a `SymTransducer` **value** (its AST) — see [Validate](/docs/keiki/reference/validate). The
+two share no code and operate on different inputs. `validateMermaidDiagram`'s `DuplicateStateId`
+warning keys off the same id token that
+[`duplicateStateIds`](/docs/keiki/reference/render-mermaid) uses at the AST level, so the text and
+AST checks agree on what an id is by construction.
+</Callout>
+
+### `validateMermaidDiagram` / `validateMermaidAtlas`
+
+```haskell
+validateMermaidDiagram ::
+  MermaidValidationOptions -> Text -> [MermaidValidationWarning]
+
+validateMermaidAtlas ::
+  MermaidValidationOptions -> Text -> [MermaidValidationWarning]
+```
+
+`validateMermaidDiagram` validates a single rendered diagram, returning warnings in document order:
+the header check, then the empty-diagram check, then the per-transition-line label checks in line
+order, then the duplicate-id warnings in first-declaration order. `validateMermaidAtlas` splits a
+document into `` ```mermaid `` blocks and runs `validateMermaidDiagram` on each, aggregating warnings
+in block order.
+
+### `MermaidValidationWarning`
+
+One detected problem; every constructor carries enough context to act on it. Line numbers are
+1-based, counted in the diagram text handed to `validateMermaidDiagram`.
+
+```haskell
+data MermaidValidationWarning
+  = MissingStateDiagramHeader
+      -- the first non-blank line is not (and does not start with) stateDiagram-v2
+  | EmptyDiagram
+      -- a header but no transition, declaration, or grouping line under it
+  | LabelTooLong { warnLine :: Int, warnLength :: Int, warnLabel :: Text }
+      -- a transition label exceeds maxLabelLength
+  | DuplicateStateId { warnStateId :: Text }
+      -- the same state "…" as <id> identifier is declared twice, or with conflicting displays
+  | SuspiciousUnescapedChar { warnLine :: Int, warnChar :: Char, warnLabel :: Text }
+      -- a transition label contains a denylisted character
+  deriving stock (Eq, Show)
+```
+
+`DuplicateStateId` reports only repeated `state "<display>" as <id>` **declarations** (or the same id
+declared with conflicting displays); ids that merely recur as transition endpoints are normal and are
+never flagged.
+
+### `MermaidValidationOptions` / `defaultMermaidValidationOptions`
+
+Tunable knobs for the heuristic checks, so a downstream test can match its own house rules.
+
+<TypeTable
+  type={{
+    maxLabelLength: { type: "Maybe Int", description: "If Just n, a transition label longer than n characters yields LabelTooLong; Nothing disables the check.", default: "Just 80" },
+    checkSuspiciousChars: { type: "Bool", description: "Whether to run the suspicious-unescaped-character check at all.", default: "True" },
+    suspiciousChars: { type: "[Char]", description: "The denylist of characters that commonly break Mermaid labels. The literal substring <br/> is always exempt.", default: "['\"', '<', '>', '|', '{', '}']" },
+  }}
+/>
+
+```haskell
+defaultMermaidValidationOptions :: MermaidValidationOptions
+```
+
+## Verified by
+
+- `Keiki.Render.MarkdownSpec` — pins `replaceMarkdownDiagramBlock`'s idempotence and its validation
+  errors.
+- `Keiki.Render.ValidateSpec` — pins the warning set and document ordering of
+  `validateMermaidDiagram` / `validateMermaidAtlas`.

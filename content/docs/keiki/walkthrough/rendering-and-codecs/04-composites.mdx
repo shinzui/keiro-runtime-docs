@@ -1,0 +1,200 @@
+---
+title: "04 — Composites"
+description: "The composite renderers — flat, nested, alternative, and feedback1 — over the same topology walk, and the underscore-joined composite identifier."
+---
+
+<Callout type="info">
+Part of the [rendering and codecs](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here) tour.
+This chapter reads the composite renderers of `keiki/src/Keiki/Render/Mermaid.hs`.
+</Callout>
+
+A `Keiki.Composition.compose` (and friends) produces a `SymTransducer` whose vertex type is a nested
+`Composite`. Its `Show` instance emits `"Composite a b"` — spaces and parentheses, **not** a legal
+Mermaid identifier. So composites do not reuse `vertexLabel`; each composite renderer supplies a label
+function that destructures the composite tuple and joins the component shows with underscores. Everything
+else is the topology walk from chapter [02](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core).
+
+## The composite identifier
+
+The 2-deep label is `compositeLabel`:
+
+```haskell
+compositeLabel :: (Show s1, Show s2) => Composite s1 s2 -> Text
+compositeLabel (Composite a b) =
+    T.pack (show a) <> T.pack "_" <> T.pack (show b)
+```
+
+The 3-deep right-associative label (`compose3Label`) and the `feedback1` label (`feedback1Label`) do the
+same, one more level down — destructuring `Composite a (Composite b c)` and joining three shows:
+
+```haskell
+compose3Label (Composite a (Composite b c)) =
+    T.pack (show a) <> T.pack "_" <> T.pack (show b) <> T.pack "_" <> T.pack (show c)
+```
+
+<Callout type="warn">
+The whole reason these labels exist is the **underscore join**. `<show a>_<show b>` (and the 3-deep
+`<show a>_<show b>_<show c>`) is a legal Mermaid identifier (`[A-Za-z_][A-Za-z0-9_]*`); the default
+`Show "Composite a b"` is not. None of the composite renderers ever use Mermaid's `Outer.Inner` dotted
+cross-block syntax — every transition arrow uses these flat underscore-joined ids, even inside nested
+subgraph blocks.
+</Callout>
+
+## Flat: `toMermaidComposite` and `toMermaidCompose3`
+
+The flat renderers are `renderTopology` with the composite label swapped in:
+
+```haskell
+toMermaidComposite = renderTopology compositeLabel
+toMermaidCompose3  = renderTopology compose3Label
+```
+
+So the structure is identical to `toMermaid` — same initial/final/edge rules, same `edgeLabel` — only
+the vertex ids change. The small email pipeline golden in `MermaidSpec` shows the shape; the renderer
+omits the two reachable composite vertices that are neither edge sources nor final, exactly like the
+single-transducer walk:
+
+```text
+stateDiagram-v2
+    [*] --> AlertQuiescent_EmailPending
+    AlertQuiescent_EmailPending --> AlertEmitted_EmailSentVertex : TriggerAlert / EmailSent
+    AlertEmitted_EmailSentVertex --> [*]
+```
+
+The serious flat golden is the 3-deep loan workflow in `Jitsurei.Render.MermaidLoanSpec`, which pins
+**54 vertices** worth of cross-product edges from `toMermaidCompose3 loanWorkflow`. It is the same walk —
+just a much larger `[minBound .. maxBound]`:
+
+```text
+stateDiagram-v2
+    [*] --> Intake_SyncIdle_LoanInitial
+    Intake_SyncIdle_LoanInitial --> CollectingDocuments_SyncRequested_LoanAwaiting : StartApplication / LoanCreated
+    Intake_SyncIdle_LoanInitial --> Withdrawn_SyncRequested_LoanAwaiting : WithdrawApplication / LoanCreated
+    …
+    Approved_SyncSettled_LoanLinked --> [*]
+    Declined_SyncSettled_LoanLinked --> [*]
+    Withdrawn_SyncSettled_LoanLinked --> [*]
+```
+
+## Nested: `toMermaidCompositeNested` and `toMermaidCompose3Nested`
+
+When the cross-product is hard to scan as one flat list, the nested variants group vertices under their
+outer aggregate using a `state <outer> { … }` block. The cross-cutting transitions and finals still live
+at the top level, with the same flat underscore-joined ids:
+
+```haskell
+outerBlock o =
+    T.intercalate (T.pack "\n") $
+        [ind <> T.pack "state " <> vertexLabel o <> T.pack " {"]
+            ++ [ind2 <> compositeLabel (Composite o i) | i <- inners]
+            ++ [ind <> T.pack "}"]
+```
+
+The `compose3` nested variant is deliberately **one level deep**, not two — the header notes that a
+two-level `state s1 { state s2 { … } }` nest would mirror `compose`'s shape more faithfully but adds
+renderer-compat risk, since some Mermaid backends parse nested `state` blocks inconsistently. The loan
+workflow nested golden is the **6 outer × 9 inner** shape: six
+`LoanAppVertex` blocks, each listing nine `Composite SyncVertex LoanVertex` inner identifiers, followed
+by the identical edge and final lines from the flat variant:
+
+```text
+stateDiagram-v2
+    [*] --> Intake_SyncIdle_LoanInitial
+    state Intake {
+        Intake_SyncIdle_LoanInitial
+        Intake_SyncIdle_LoanAwaiting
+        …
+        Intake_SyncSettled_LoanLinked
+    }
+    state CollectingDocuments {
+        …
+    }
+    …
+    Intake_SyncIdle_LoanInitial --> CollectingDocuments_SyncRequested_LoanAwaiting : StartApplication / LoanCreated
+    …
+    Withdrawn_SyncSettled_LoanLinked --> [*]
+```
+
+The smaller `alertEmailCompositeNestedCanonical` golden in `MermaidSpec` pins the same structure on the
+tiny email pipeline — two `state AlertQuiescent { … } / state AlertEmitted { … }` blocks, then the
+top-level edge and final.
+
+## Alternative: parallel side-by-side arms
+
+`compose` composites have **zero same-outer edges** — every composite edge advances the outer component.
+`alternative` is different: each `Either`-tagged input advances exactly one arm and leaves the other
+untouched. `toMermaidAlternative` reflects that by drawing the two component machines as independent
+arms:
+
+```haskell
+toMermaidAlternative =
+    toMermaidAlternativeWith (T.pack "LeftArm") (T.pack "RightArm")
+```
+
+The body emits two top-level `[*] -->` markers (one initial per arm), two named `state <arm> { … }`
+blocks holding each arm's edges, and two top-level `--> [*]` finals. `toMermaidAlternativeWith` lets you
+name the arms for your domain (e.g. `EmailArm` / `PingerArm`). The cross-product vertex space
+(`Composite s1 s2`) is *implicit* in the diagram — the reader infers that the system's real state is the
+combination of both arms. The `emailPingerAltCanonical` golden:
+
+```text
+stateDiagram-v2
+    [*] --> EmailPending
+    [*] --> PingIdle
+    state LeftArm {
+        EmailPending --> EmailSentVertex : SendEmail / EmailSent
+    }
+    state RightArm {
+        PingIdle --> PingDone : Ping / Pong
+    }
+    EmailSentVertex --> [*]
+    PingDone --> [*]
+```
+
+## Feedback1: a flat 3-deep cross-product
+
+`feedback1 t f = compose t (compose f t)`, so its vertex type is
+`Composite s1 (Composite s2 s1)` — outer-t state, policy state, inner-t state. `toMermaidFeedback1`
+constructs the composite and renders it flat with `feedback1Label`:
+
+```haskell
+toMermaidFeedback1 t f = renderTopology feedback1Label (feedback1 t f)
+```
+
+The renderer does not inspect the cascade structure beyond decomposing the tuple for labelling — it
+treats the result as a flat enumerable cross-product. The toggle golden shows a subtlety worth flagging:
+the enumeration walks the *static* cross-product, so vertices unreachable from the initial state
+(the `Off_Pol_On` / `On_Pol_Off` pair) still appear, and both component transducers use
+`isFinal = const True`, so every composite vertex gets a `--> [*]` line:
+
+```text
+stateDiagram-v2
+    [*] --> Off_Pol_Off
+    Off_Pol_Off --> On_Pol_On : TgFlip / TgFlipped
+    Off_Pol_On --> On_Pol_Off : TgFlip / TgFlipped
+    On_Pol_Off --> Off_Pol_On : TgFlip / TgFlipped
+    On_Pol_On --> Off_Pol_Off : TgFlip / TgFlipped
+    Off_Pol_Off --> [*]
+    Off_Pol_On --> [*]
+    On_Pol_Off --> [*]
+    On_Pol_On --> [*]
+```
+
+## Picking a shape
+
+<TypeTable
+  type={{
+    toMermaidComposite: { type: "flat 2-deep", description: "Tiny composites (1–4 vertices) where outer grouping adds visual overhead with no payoff." },
+    toMermaidCompositeNested: { type: "nested 2-deep", description: "Larger 2-deep composites that read better grouped under their outer aggregate." },
+    toMermaidCompose3: { type: "flat 3-deep", description: "Right-associative t1 ⨾ (t2 ⨾ t3); every reachable composite edge listed directly (the 54-vertex loan workflow)." },
+    toMermaidCompose3Nested: { type: "one-level nested 3-deep", description: "Same edges, grouped into one state block per outer aggregate (the 6×9 loan workflow)." },
+    toMermaidAlternative: { type: "parallel arms", description: "alternative composites: two independent side-by-side machines sharing top-level initial/final markers." },
+    toMermaidFeedback1: { type: "flat 3-deep cascade", description: "feedback1 composites; flat outer_policy_inner ids, static cross-product enumeration." },
+  }}
+/>
+
+All these shapes coexist — pick the one that reads best for the composite at hand. They share the same
+emission rules and the same `edgeLabel`, so a label means the same thing in every diagram.
+
+Previous: [03 — Options and labels](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels).
+Next: [05 — Atlas and Markdown](/docs/keiki/walkthrough/rendering-and-codecs/05-atlas-and-markdown).

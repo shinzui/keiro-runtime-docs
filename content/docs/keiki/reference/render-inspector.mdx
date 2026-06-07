@@ -1,0 +1,192 @@
+---
+title: "Render: edge inspector"
+description: "EdgeInspectorOptions and renderEdgeInspector — a Markdown edge-detail renderer that lays out every transition of a SymTransducer in full."
+---
+
+The types and functions on this page live in `Keiki.Render.Inspector`. Where the Mermaid renderer
+(`Keiki.Render.Mermaid`, see the parallel [render reference](/docs/keiki/reference)) shows the *shape*
+of a workflow — one line per edge — the inspector lays out every edge in *full*: source and target
+state, 0-based edge index, input (command) constructor, output (event) constructor(s), the guard
+(structural and/or domain-readable), the register slots it writes, and optionally each output field's
+term.
+
+The output is a deterministic `Text` Markdown document. It is pure: no IO, no SMT solver.
+
+## `EdgeInspectorOptions`
+
+Which detail fields each edge block carries. Every field is opt-in via a `Bool`. The two pretty
+options (`includePrettyGuard`, `includeOutputFields`) reuse the
+[pretty-printer](/docs/keiki/reference/render-pretty) (`Keiki.Render.Pretty`) and default to `False`.
+
+<TypeTable
+  type={{
+    includeEdgeIndex: { type: "Bool", description: "Show 'edge index: N', the 0-based position in edgesOut t s", default: "True" },
+    includeStructuralGuard: { type: "Bool", description: "Show the structural guard summary, e.g. PAnd PInCtor PEq", default: "True" },
+    includePrettyGuard: { type: "Bool", description: "Show the domain-readable guard from prettyPred, e.g. (ConfirmAccount && ConfirmAccount.confirmCode == confirmCode)", default: "False" },
+    includeWrittenSlots: { type: "Bool", description: "Show the register slots the edge writes", default: "True" },
+    includeOutputFields: { type: "Bool", description: "Show each output field's term positionally (field 0, field 1, …) via prettyTerm", default: "False" },
+  }}
+/>
+
+```haskell
+data EdgeInspectorOptions = EdgeInspectorOptions
+  { includeEdgeIndex       :: Bool
+  , includeStructuralGuard :: Bool
+  , includePrettyGuard     :: Bool
+  , includeWrittenSlots    :: Bool
+  , includeOutputFields    :: Bool
+  }
+```
+
+## `defaultEdgeInspectorOptions`
+
+Everything on except the two pretty options that reuse `Keiki.Render.Pretty`: index, structural
+guard, and written slots are `True`; pretty guard and output fields are `False`.
+
+```haskell
+defaultEdgeInspectorOptions :: EdgeInspectorOptions
+```
+
+## `renderEdgeInspector`
+
+```haskell
+renderEdgeInspector ::
+  (Bounded s, Enum s, Show s) =>
+  EdgeInspectorOptions ->
+  SymTransducer (HsPred rs ci) rs s ci co ->
+  Text
+```
+
+Render a `SymTransducer` to a Markdown edge-detail document. The state type's `Bounded`/`Enum`
+enumerate the states (in `[minBound .. maxBound]` order) and `Show` names them, mirroring
+`Keiki.Render.Mermaid.toMermaid`.
+
+## Output structure
+
+The document is a single deterministic `Text`:
+
+<Steps>
+<Step>
+A top-level `# Edge inspector` heading.
+</Step>
+<Step>
+A `### <state>` heading per source vertex, in `[minBound .. maxBound]` order. States with **no
+outgoing edges** produce no section at all.
+</Step>
+<Step>
+Under each state, one block per outgoing edge (in `edgesOut` order). The block opens with a header
+bullet `- **src -> tgt**`, then one indented detail bullet (`  - …`) per enabled, non-empty field.
+</Step>
+</Steps>
+
+Within an edge block the detail bullets appear in this order: `edge index`, `input`, `output`,
+`output fields` (if enabled), `guard (structural)`, `guard (pretty)` (if enabled), `written slots`.
+An ε-edge (one with no output) renders its output as the literal ε (U+03B5). Where a field can carry
+more than one item — multiple output constructors, multiple written slots, multiple output-field
+groups — the items are joined with `; `.
+
+<Callout type="info">
+The `written slots` and `output fields` bullets are **omitted entirely** when empty rather than
+rendered blank: an edge that writes nothing has no `written slots` bullet, and the ε-edge gets no
+`output fields` bullet.
+</Callout>
+
+### Default options
+
+Rendering the `userReg` fixture with `defaultEdgeInspectorOptions`:
+
+```markdown
+# Edge inspector
+
+### PotentialCustomer
+
+- **PotentialCustomer -> RequiresConfirmation**
+  - edge index: 0
+  - input: StartRegistration
+  - output: RegistrationStarted; ConfirmationEmailSent
+  - guard (structural): PInCtor
+  - written slots: registeredAt; confirmCode; email
+
+### RequiresConfirmation
+
+- **RequiresConfirmation -> Confirmed**
+  - edge index: 0
+  - input: ConfirmAccount
+  - output: AccountConfirmed
+  - guard (structural): PAnd PInCtor PEq
+  - written slots: confirmedAt
+- **RequiresConfirmation -> RequiresConfirmation**
+  - edge index: 1
+  - input: ResendConfirmation
+  - output: ConfirmationResent
+  - guard (structural): PInCtor
+  - written slots: registeredAt; confirmCode
+- **RequiresConfirmation -> Deleted**
+  - edge index: 2
+  - input: FulfillGDPRRequest
+  - output: ε
+  - guard (structural): PInCtor
+  - written slots: deletedAt
+
+### Confirmed
+
+- **Confirmed -> Deleted**
+  - edge index: 0
+  - input: FulfillGDPRRequest
+  - output: AccountDeleted
+  - guard (structural): PInCtor
+  - written slots: deletedAt
+```
+
+Note that `Deleted` has no outgoing edges, so it produces no section; the self-loop sits at index 1
+and the delete edge at index 2 of `RequiresConfirmation`.
+
+### With `includePrettyGuard`
+
+Setting `includePrettyGuard = True` adds a `guard (pretty)` bullet beside the structural one. The
+contrast is the payoff — the `ConfirmAccount` edge reads `PAnd PInCtor PEq` structurally and the
+domain-readable form below:
+
+```markdown
+- **RequiresConfirmation -> Confirmed**
+  - edge index: 0
+  - input: ConfirmAccount
+  - output: AccountConfirmed
+  - guard (structural): PAnd PInCtor PEq
+  - guard (pretty): (ConfirmAccount && ConfirmAccount.confirmCode == confirmCode)
+  - written slots: confirmedAt
+```
+
+### With `includeOutputFields`
+
+Setting `includeOutputFields = True` adds an `output fields` bullet listing each field's term
+positionally (via `prettyTerm`), grouped by output constructor as `<ctor>[field 0: t0; field 1: t1]`.
+Fields are labelled by position only — `WireCtor` carries no field names. The ε-edge gets no such
+bullet:
+
+```markdown
+- **PotentialCustomer -> RequiresConfirmation**
+  - edge index: 0
+  - input: StartRegistration
+  - output: RegistrationStarted; ConfirmationEmailSent
+  - output fields: RegistrationStarted[field 0: StartRegistration.email; field 1: StartRegistration.confirmCode; field 2: StartRegistration.at]; ConfirmationEmailSent[field 0: StartRegistration.email]
+  - guard (structural): PInCtor
+  - written slots: registeredAt; confirmCode; email
+```
+
+The terms mix input-field reads (`StartRegistration.email`) and register reads (`email`).
+
+## Walkthrough detail: replicated helpers
+
+The inspector reuses `prettyPred` and `prettyTerm` from `Keiki.Render.Pretty` directly. But two of
+its helpers — `guardSummary` (the structural one-line guard summary) and `writtenSlots` (recovering
+the names of the slots an `Update` writes) — are **replicated byte-identically from
+`Keiki.Render.Mermaid`** rather than imported, because that module does not export them. Keeping the
+copies identical means the inspector document and the Mermaid diagram describe the same edges with the
+same structural vocabulary, so a reviewer can diff one against the other.
+
+<Callout type="info">
+The golden tests in `Keiki.Render.InspectorSpec` pin the exact document above for the
+`Keiki.Fixtures.UserRegistration.userReg` fixture — the same transducer the Mermaid golden renders —
+so the inspector document can be diffed against the diagram.
+</Callout>

@@ -1,0 +1,277 @@
+---
+title: "05 — Atlas and Markdown"
+description: "How keiki assembles many rendered diagrams into one Markdown atlas, refreshes a single marked block in place idempotently, and runs cheap structural checks over the rendered text."
+---
+
+<Callout type="info">
+Part of the rendering-and-codecs source tour. Start at
+[00 — Start here](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here) for the overview and the
+full chapter list.
+</Callout>
+
+The previous chapters rendered **one** transducer at a time. This chapter reads the three pieces that
+turn those rendered fragments into a maintainable Markdown document: `toMermaidAtlasWith` assembles
+many diagrams into one atlas, `replaceMarkdownDiagramBlock` refreshes a single block in a
+hand-authored file without touching anything else, and `Keiki.Render.Validate` scans the rendered
+**text** for cheap, common mistakes.
+
+All three live in the aeson-free `keiki` package. None of them inspects a `SymTransducer` — they all
+operate on already-rendered `Text`, which is exactly what makes them transducer-type-agnostic.
+
+## `toMermaidAtlasWith`: many diagrams, one document
+
+`Keiki.Render.Mermaid` exposes two atlas entry points. The simple one takes
+`(sectionLabel, renderedDiagram)` pairs; the options-aware one takes typed `MermaidSection` values.
+
+```haskell
+-- src/Keiki/Render/Mermaid.hs
+toMermaidAtlasWith :: MermaidAtlasOptions -> [MermaidSection] -> Text
+toMermaidAtlasWith opts secs =
+    let body = T.intercalate (T.pack "\n\n") (map (renderSection opts) secs)
+     in case atlasTitle opts of
+            Nothing -> body
+            Just t
+                | T.null body -> T.pack "# " <> t
+                | otherwise -> T.pack "# " <> t <> T.pack "\n\n" <> body
+```
+
+The crucial design fact is in the type: `sectionDiagram` is `Text`, not a transducer.
+
+```haskell
+-- src/Keiki/Render/Mermaid.hs
+data MermaidSection = MermaidSection
+    { sectionId :: Text
+    , sectionTitle :: Text
+    , sectionKind :: MermaidSectionKind
+    , sectionDiagram :: Text
+    }
+    deriving stock (Eq, Show)
+```
+
+Transducers are heterogeneously typed — each has its own vertex, register, input, and output types — so
+a single list of transducers would not type-check. Taking already-rendered `Text` lets each caller pick
+the matching renderer ([`toMermaid`](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core),
+`toMermaidComposite`, and the rest from
+[chapter 04](/docs/keiki/walkthrough/rendering-and-codecs/04-composites)) for its own transducer, then
+hand the result here as opaque text.
+
+<TypeTable
+  type={{
+    sectionId: { type: "Text", description: "Stable token used as the Markdown replacement-marker id; the bridge to replaceMarkdownDiagramBlock." },
+    sectionTitle: { type: "Text", description: "Emitted as a Markdown heading whose level is atlasSectionHeadingLevel." },
+    sectionKind: { type: "MermaidSectionKind", description: "Aggregate / process-manager / workflow / custom; surfaced only when atlasShowSectionKind is not KindHidden." },
+    sectionDiagram: { type: "Text", description: "Already-rendered Mermaid text from any renderer in this module." },
+  }}
+/>
+
+Every field of `MermaidAtlasOptions` defaults — in `defaultMermaidAtlasOptions` — to a value that
+reproduces the legacy `toMermaidAtlas` output byte-for-byte:
+
+```haskell
+-- src/Keiki/Render/Mermaid.hs
+defaultMermaidAtlasOptions :: MermaidAtlasOptions
+defaultMermaidAtlasOptions =
+    MermaidAtlasOptions
+        { atlasTitle = Nothing
+        , atlasSectionHeadingLevel = 2
+        , atlasShowSectionKind = KindHidden
+        , atlasWrapMarkers = Nothing
+        , atlasFenceLanguage = T.pack "mermaid"
+        }
+```
+
+With those defaults the per-section output is exactly `## {title}` followed by a blank line and a
+fenced `mermaid` block; sections are joined by a blank line. Turning on one field adds output — a
+top-level title, a per-section kind line, or begin/end markers — without disturbing the rest.
+
+## The begin/end marker round-trip
+
+The one field that makes the atlas *re-generatable* is `atlasWrapMarkers`. When it is `Just ns`,
+`renderSection` wraps each fenced block in a matched pair of HTML-comment markers keyed by
+`sectionId`:
+
+```haskell
+-- src/Keiki/Render/Mermaid.hs (renderSection)
+block = case atlasWrapMarkers opts of
+    Nothing -> fenced
+    Just ns ->
+        T.pack "<!-- "
+            <> ns
+            <> T.pack ": "
+            <> sectionId sec
+            <> T.pack " begin -->\n"
+            <> fenced
+            <> T.pack "\n<!-- "
+            <> ns
+            <> T.pack ": "
+            <> sectionId sec
+            <> T.pack " end -->"
+```
+
+So a section with `sectionId = "incident-command"` and namespace `seihou` is emitted between
+`<!-- seihou: incident-command begin -->` and `<!-- seihou: incident-command end -->`. Those markers
+are exactly what the Markdown helper looks for, which closes the loop: an atlas you generate today can
+be regenerated into a hand-edited document tomorrow.
+
+## `replaceMarkdownDiagramBlock`: refresh one block, preserve the rest
+
+`Keiki.Render.Markdown` references **no** keiki type. It rewrites a single marked fenced block inside
+an arbitrary Markdown document, using the same `<!-- {namespace}: {id} begin/end -->` convention the
+atlas emits.
+
+```haskell
+-- src/Keiki/Render/Markdown.hs
+data MarkdownDiagramBlock = MarkdownDiagramBlock
+    { blockNamespace :: Text
+    , blockId :: Text
+    , blockLanguage :: Text
+    , blockContent :: Text
+    }
+    deriving stock (Eq, Show)
+```
+
+The core is a small, total state machine over marker counts:
+
+```haskell
+-- src/Keiki/Render/Markdown.hs
+replaceMarkdownDiagramBlock blk doc =
+    let b = beginMarker (blockNamespace blk) (blockId blk)
+        e = endMarker (blockNamespace blk) (blockId blk)
+        nb = T.count b doc
+        ne = T.count e doc
+     in if
+            | nb == 0 -> Left (MissingBeginMarker b)
+            | nb > 1 -> Left (DuplicateMarker b nb)
+            | ne == 0 -> Left (MissingEndMarker e)
+            | ne > 1 -> Left (DuplicateMarker e ne)
+            | otherwise ->
+                let (pre, restB) = T.breakOn b doc
+                    afterBegin = T.drop (T.length b) restB
+                    (_, post) = T.breakOn e afterBegin
+                    fenced =
+                        T.pack "```"
+                            <> blockLanguage blk
+                            <> T.pack "\n"
+                            <> stripTrailingNewlines (blockContent blk)
+                            <> T.pack "\n```"
+                 in Right (pre <> b <> T.pack "\n" <> fenced <> T.pack "\n" <> post)
+```
+
+Three properties are worth pinning down:
+
+<Steps>
+<Step>
+**It rewrites only the marked span.** Everything before the begin marker (`pre`) and everything from
+the end marker onward (`post`) is preserved byte-for-byte. `MarkdownSpec` checks this directly:
+`# Architecture\n\nSome prose above.` survives as a prefix and `Some prose below.` as a suffix.
+</Step>
+<Step>
+**It validates marker uniqueness.** Exactly one begin and one end marker must be present. A missing
+begin yields `MissingBeginMarker`, a missing end `MissingEndMarker`, and a marker found twice yields
+`DuplicateMarker` carrying the count — the spec asserts the count is `2` for a doubled marker.
+</Step>
+<Step>
+**It is idempotent.** `blockContent` has its trailing newlines stripped before the closing fence, so
+re-applying the helper to a document it already produced yields the identical document. `MarkdownSpec`
+states this as the "replacing the already-normalized block reproduces it" case.
+</Step>
+</Steps>
+
+The idempotence hinges on one line — `stripTrailingNewlines (blockContent blk)` — so the normalized
+block has a single newline before the closing fence whether or not the caller's content ended in one.
+
+<Callout type="info">
+**Test anchors.** `Keiki.Render.MarkdownSpec` pins the happy path (replace + preserve + idempotent) and
+all four error cases against a hand-maintained `inputDoc` whose markers are
+`<!-- seihou: incident-command begin/end -->`.
+</Callout>
+
+## Diagram-text validation: `validateMermaidDiagram` / `validateMermaidAtlas`
+
+`Keiki.Render.Validate` is the third text-only tool. It is **not** a Mermaid parser. It scans rendered
+`Text` for a small set of common problems and returns a deterministic, document-ordered list of
+warnings.
+
+```haskell
+-- src/Keiki/Render/Validate.hs
+validateMermaidDiagram ::
+    MermaidValidationOptions -> Text -> [MermaidValidationWarning]
+```
+
+An empty result means "no problems detected" — never "guaranteed valid Mermaid". The module header is
+explicit that the checks can both miss problems Mermaid would reject and flag text Mermaid accepts;
+they exist so a downstream unit test catches the cheap, common mistakes before a document is
+committed. The warning vocabulary:
+
+```haskell
+-- src/Keiki/Render/Validate.hs
+data MermaidValidationWarning
+    = MissingStateDiagramHeader
+    | EmptyDiagram
+    | LabelTooLong {warnLine :: Int, warnLength :: Int, warnLabel :: Text}
+    | DuplicateStateId {warnStateId :: Text}
+    | SuspiciousUnescapedChar {warnLine :: Int, warnChar :: Char, warnLabel :: Text}
+    deriving stock (Eq, Show)
+```
+
+The defaults encode the house rules — an 80-character label budget and the curated denylist
+`{ '"', '<', '>', '|', '{', '}' }`:
+
+```haskell
+-- src/Keiki/Render/Validate.hs
+defaultMermaidValidationOptions =
+    MermaidValidationOptions
+        { maxLabelLength = Just 80
+        , checkSuspiciousChars = True
+        , suspiciousChars = ['"', '<', '>', '|', '{', '}']
+        }
+```
+
+One subtlety repays attention: the literal substring `<br/>` is always exempt from the
+suspicious-character check, regardless of the denylist, because keiki emits `<br/>` deliberately for
+multi-event and multiline labels. `stripBrTags` blanks it out before the per-character scan, so the
+angle brackets in a deliberate line break are never flagged. `ValidateSpec` pins this as the "does not
+flag the deliberate `<br/>` tag" case.
+
+`validateMermaidAtlas` simply splits a document into fenced `mermaid` blocks and runs the
+per-diagram checks on each, aggregating warnings in block order:
+
+```haskell
+-- src/Keiki/Render/Validate.hs
+validateMermaidAtlas opts doc =
+    concatMap (validateMermaidDiagram opts) (mermaidBlocks (T.lines doc))
+```
+
+<Callout type="info">
+**Test anchors.** `Keiki.Render.ValidateSpec` pins one warning value per crafted diagram — missing
+header, empty diagram, an over-length label reported with line/length/text, a denylisted character,
+the `<br/>` exemption, and a duplicate declared id — plus the atlas aggregation case.
+</Callout>
+
+### Disambiguation: this is *not* `validateTransducer`
+
+keiki ships two things both spelled "validate", and they live at different altitudes.
+
+<Tabs items={["validateMermaidDiagram / validateMermaidAtlas", "validateTransducer"]}>
+<Tab value="validateMermaidDiagram / validateMermaidAtlas">
+A **diagram-text** checker. It takes rendered `Text`, applies cheap structural heuristics, and is
+explicitly *not* a guarantee of validity. It knows nothing about your transducer — only about the
+characters in a rendered diagram. It lives in `Keiki.Render.Validate`.
+</Tab>
+<Tab value="validateTransducer">
+A **transducer-AST** checker in `Keiki.Core`. It inspects a `SymTransducer` value structurally and is
+documented at [`/docs/keiki/reference/validate`](/docs/keiki/reference/validate). It is the source-of-truth
+analysis; the diagram checkers above are a downstream lint over the *rendering* of that source.
+</Tab>
+</Tabs>
+
+The module header says it plainly: `Keiki.Render.Validate` mirrors the pure list-of-warnings house
+style of `Keiki.Core.validateTransducer`, "but operates on rendered `Text` rather than a
+`Keiki.Core.SymTransducer`, so there is no shared code." Reach for `validateTransducer` when you want
+to know whether the *machine* is well-formed; reach for `validateMermaidDiagram` when you want to know
+whether the *picture you are about to commit* has an obvious rendering mistake.
+
+---
+
+Previous: [04 — Composites](/docs/keiki/walkthrough/rendering-and-codecs/04-composites) ·
+Next: [06 — Edge inspector](/docs/keiki/walkthrough/rendering-and-codecs/06-edge-inspector)

@@ -1,0 +1,271 @@
+---
+title: "03 — Options and labels"
+description: "MermaidOptions and the single guard-text chokepoint, the [w: …; g: …] suffix, and the stable-id / display-label variant with its collision check."
+---
+
+<Callout type="info">
+Part of the [rendering and codecs](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here) tour.
+This chapter reads the options-aware path of `keiki/src/Keiki/Render/Mermaid.hs`: `MermaidOptions`,
+`renderGuardSegment`, `edgeLabelWith`, and `toMermaidWithLabels`.
+</Callout>
+
+Chapter [02](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core) read the guard-free default.
+This chapter reads everything you opt into: written-slot and guard suffixes, three guard-rendering
+modes, multiline layout, truncation, and the stable-id / display-label split. The design discipline
+throughout is **additive**: every option defaults to the value that reproduces `toMermaid` byte-for-byte.
+
+## `MermaidOptions` and its default
+
+```haskell
+data MermaidOptions = MermaidOptions
+    { showWrittenSlots :: Bool
+    , showGuardSummary :: Bool
+    , guardMode :: MermaidGuardMode
+    , labelLayout :: MermaidLabelLayout
+    , maxInlineWrittenSlots :: Maybe Int
+    , maxInlineGuardWidth :: Maybe Int
+    , outputLayout :: MermaidOutputLayout
+    }
+
+defaultMermaidOptions :: MermaidOptions
+defaultMermaidOptions =
+    MermaidOptions
+        { showWrittenSlots = False
+        , showGuardSummary = False
+        , guardMode = MermaidGuardHidden
+        , labelLayout = MermaidLabelInline
+        , maxInlineWrittenSlots = Nothing
+        , maxInlineGuardWidth = Nothing
+        , outputLayout = MermaidOutputSemicolon
+        }
+```
+
+The header documents the extension contract: new fields are appended with a default that reproduces the
+existing behaviour, and existing fields are never removed or reordered.
+
+<TypeTable
+  type={{
+    showWrittenSlots: { type: "Bool", default: "False", description: "Append the update's written-slot names, e.g. [w: email; confirmCode; registeredAt]." },
+    showGuardSummary: { type: "Bool", default: "False", description: "Legacy spelling of guardMode = MermaidGuardStructuralSummary; honoured only when guardMode is Hidden." },
+    guardMode: { type: "MermaidGuardMode", default: "MermaidGuardHidden", description: "How the guard segment renders: hidden, structural summary, or pretty. Wins over showGuardSummary." },
+    labelLayout: { type: "MermaidLabelLayout", default: "MermaidLabelInline", description: "Inline [seg; seg] or multiline <br/>-separated segments." },
+    maxInlineWrittenSlots: { type: "Maybe Int", default: "Nothing", description: "When Just k, show the first k slots then a single +{n-k} more token." },
+    maxInlineGuardWidth: { type: "Maybe Int", default: "Nothing", description: "When Just w, truncate guard text to w chars plus an ellipsis." },
+    outputLayout: { type: "MermaidOutputLayout", default: "MermaidOutputSemicolon", description: "Multi-event output rendering: semicolon (length-based), multiline, or counted." },
+  }}
+/>
+
+## The guard-segment chokepoint
+
+There are two ways to ask for guard text — the legacy boolean `showGuardSummary` and the newer
+`guardMode` — and `renderGuardSegment` is the **single place** that reconciles them and produces guard
+text. Nothing else in the module turns a guard into a string:
+
+```haskell
+renderGuardSegment :: MermaidOptions -> HsPred rs ci -> Maybe Text
+renderGuardSegment opts g =
+    case effectiveMode of
+        MermaidGuardHidden -> Nothing
+        MermaidGuardStructuralSummary -> Just (guardSummary g)
+        MermaidGuardPretty -> Just (prettyPred g)
+  where
+    effectiveMode
+        | guardMode opts /= MermaidGuardHidden = guardMode opts
+        | showGuardSummary opts = MermaidGuardStructuralSummary
+        | otherwise = MermaidGuardHidden
+```
+
+The precedence rule: an explicit `guardMode` (anything other than `MermaidGuardHidden`) wins; otherwise
+`showGuardSummary` is honoured as the legacy spelling of `MermaidGuardStructuralSummary`. The header
+calls this out as "the single chokepoint for guard /text/ production" — a sibling renderer that changes
+how *segments are laid out* wraps the assembly and leaves this function's text untouched.
+
+The three modes produce three flavours of guard text:
+
+- **`MermaidGuardStructuralSummary`** uses `guardSummary` — the constructor-tag walk, e.g.
+  `PAnd PInCtor PEq`. It deliberately does **not** print operand terms, because those can hold opaque
+  functions and unprintable input-constructor match/build closures:
+
+  ```haskell
+  guardSummary :: HsPred rs ci -> Text
+  guardSummary = T.intercalate (T.pack " ") . go
+    where
+      go (PAnd a b) = T.pack "PAnd" : go a ++ go b
+      go (PEq _ _) = [T.pack "PEq"]
+      go (PInCtor _) = [T.pack "PInCtor"]
+      go (PCmp c _ _) = [T.pack "PCmp " <> T.pack (show c)]
+      -- … PTop / PBot / POr / PNot likewise
+  ```
+
+- **`MermaidGuardPretty`** uses `prettyPred` from chapter
+  [01](/docs/keiki/walkthrough/rendering-and-codecs/01-pretty-printer) — domain-readable text.
+- **`MermaidGuardHidden`** produces `Nothing`, no segment at all.
+
+`MermaidSpec` pins the same `userReg` transducer under both the structural and the pretty mode, so the
+difference is visible side by side. Structural:
+
+```text
+RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed [w: confirmedAt; g: PAnd PInCtor PEq]
+```
+
+Pretty (real names, no written-slot segment because `showWrittenSlots` is left `False`):
+
+```text
+RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed [g: (ConfirmAccount && ConfirmAccount.confirmCode == confirmCode)]
+```
+
+## `edgeLabelWith`: assembling the `[w: …; g: …]` suffix
+
+`edgeLabelWith` is where the base label gains its bracketed suffix. It owns segment *layout* and
+*truncation* and the output rendering — but guard *text* still comes from the chokepoint:
+
+```haskell
+edgeLabelWith opts e@Edge{update = u, guard = g} =
+    let base = edgeLabelWithLayout (outputLayout opts) e
+        ws = if showWrittenSlots opts then writtenSlots u else []
+        wPart =
+            case truncateSlots (maxInlineWrittenSlots opts) ws of
+                [] -> []
+                xs -> [T.pack "w: " <> T.intercalate (T.pack "; ") xs]
+        gPart = case renderGuardSegment opts g of
+            Just t -> [T.pack "g: " <> truncateGuard (maxInlineGuardWidth opts) t]
+            Nothing -> []
+        parts = wPart ++ gPart
+     in case labelLayout opts of
+            MermaidLabelInline ->
+                if null parts
+                    then base
+                    else base <> T.pack " [" <> T.intercalate (T.pack "; ") parts <> T.pack "]"
+            MermaidLabelMultiline ->
+                T.intercalate (T.pack "<br/>") (base : parts)
+```
+
+A few load-bearing details:
+
+- The `w:` segment is **omitted entirely** when the edge writes nothing — an empty `w:` would be noise.
+  `writtenSlots` recovers names by the same `Update` recursion the pretty-printer uses, so the slot
+  order is the `UCombine` nesting order.
+- With both flags on and inline layout, you get the single-line suffix
+  `… [w: registeredAt; confirmCode; email; g: PInCtor]` — the `userRegAnnotatedCanonical` golden.
+- With `labelLayout = MermaidLabelMultiline`, the base, the `w:` segment, and the `g:` segment land on
+  separate `<br/>`-joined lines (`userRegMultilineCanonical`). Note the 2-event output keeps its own
+  `;` separator — that is the *base* segment's length-based output rendering, not a label segment.
+
+Truncation is two small helpers. `truncateSlots` keeps the first `k` and replaces the rest with one
+`+{n-k} more` token; `truncateGuard` takes `w` characters and appends `…` (U+2026):
+
+```haskell
+truncateSlots (Just k) xs
+    | length xs > k =
+        take k xs ++ [T.pack ("+" <> show (length xs - k) <> " more")]
+    | otherwise = xs
+
+truncateGuard (Just w) t
+    | T.length t > w = T.take w t <> T.pack "\x2026"
+    | otherwise = t
+```
+
+`MermaidSpec` pins both. The only `userReg` edge writing more than two slots truncates to
+`[w: registeredAt; confirmCode; +1 more]`; and `ConfirmAccount`'s `PAnd PInCtor PEq` (length 16)
+truncated at 10 becomes `[g: PAnd PInCt…]`.
+
+## The output-layout knob
+
+`outputLayout` feeds straight into `edgeLabelWithLayout` (chapter
+[02](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core)). The `multiEvt` fixture — a 3-event
+edge and a 2-event edge — pins all three layouts:
+
+<Tabs items={["Semicolon (default)", "Multiline", "Counted"]}>
+<Tab value="Semicolon (default)">
+```text
+MS0 --> MS1 : Go / A<br/>B<br/>C
+MS1 --> MS2 : Go / A; B
+```
+Length-based: `;` for exactly two events, `<br/>` for three or more.
+</Tab>
+<Tab value="Multiline">
+```text
+MS0 --> MS1 : Go / A<br/>B<br/>C
+MS1 --> MS2 : Go / A<br/>B
+```
+Always one event per line, so the 2-event edge becomes `A<br/>B`.
+</Tab>
+<Tab value="Counted">
+```text
+MS0 --> MS1 : Go / 3 events
+MS1 --> MS2 : Go / 2 events
+```
+Two or more events collapse to an `N events` count.
+</Tab>
+</Tabs>
+
+## `toMermaidWithLabels`: stable ids, friendly display labels
+
+The default path derives both the Mermaid node id and the visible label from `Show`. `toMermaidWithLabels`
+splits them via a `MermaidStateLabels` record so the id can stay a legal Mermaid identifier while the
+display label carries spaces:
+
+```haskell
+data MermaidStateLabels s = MermaidStateLabels
+    { stateId :: s -> Text
+    , stateDisplayLabel :: s -> Text
+    }
+
+toMermaidWithLabels ::
+    (Bounded s, Enum s) =>
+    MermaidOptions ->
+    MermaidStateLabels s ->
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    Text
+toMermaidWithLabels opts lbls =
+    renderTopologyWith opts (stateId lbls) (stateDisplayLabel lbls)
+```
+
+This is the same `renderTopologyWith` from chapter
+[02](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core), now with `idOf = stateId` and
+`displayOf = stateDisplayLabel`. The declaration lines that the walk emits are the payoff:
+
+```haskell
+declLines =
+    [ ind <> T.pack "state \"" <> displayOf s <> T.pack "\" as " <> idOf s
+    | s <- vertices
+    , displayOf s /= idOf s
+    ]
+```
+
+A `state "<display>" as <id>` line appears **only** when the display differs from the id. When they are
+equal — the `Show`-based default — `declLines` is empty, so feeding identical functions reproduces
+`toMermaidWith` byte-for-byte (a fact `MermaidSpec` pins directly). With friendly labels for the two
+spaced vertices, the golden gains exactly two declarations and the topology below is unchanged:
+
+```text
+stateDiagram-v2
+    state "Potential Customer" as PotentialCustomer
+    state "Requires Confirmation" as RequiresConfirmation
+    [*] --> PotentialCustomer
+    PotentialCustomer --> RequiresConfirmation : StartRegistration / RegistrationStarted; ConfirmationEmailSent
+    …
+```
+
+### `duplicateStateIds`: the AST-level collision check
+
+Because the caller supplies `stateId`, two vertices could map to the same id and silently merge in the
+diagram. `duplicateStateIds` is the pre-flight check that catches it on the AST, before rendering:
+
+```haskell
+duplicateStateIds lbls _t =
+    let ids = Prelude.map (stateId lbls) [minBound .. maxBound]
+     in [i | i <- nubInOrder ids, count i ids > (1 :: Int)]
+```
+
+<Callout type="warn">
+Rendering itself stays **total** — it never throws on a collision. `duplicateStateIds` is the check you
+run *before* trusting a labelled diagram. It returns the colliding ids in first-occurrence order; an
+empty result means every vertex maps to a unique id. `MermaidSpec` pins both directions: empty for the
+good labels, `["X"]` for a record that collapses every vertex onto `X`. The header notes the sibling
+text-level validators in `Keiki.Render` key off the same id token, so the AST check and the text check
+agree on what an "id" is by construction.
+</Callout>
+
+Previous: [02 — Mermaid core](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core).
+Next: [04 — Composites](/docs/keiki/walkthrough/rendering-and-codecs/04-composites).

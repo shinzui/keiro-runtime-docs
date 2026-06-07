@@ -173,7 +173,7 @@ phase — the explicit lesson recorded in MasterPlan #2's Surprises & Discoverie
 | 22 | Keiki derivations: decider, acceptors, projections, and generics | docs/plans/22-keiki-derivations-decider-acceptors-projections-and-generics.md | EP-20 | EP-21 | 2 | Complete |
 | 23 | Keiki composition: process managers, sagas, and choreography | docs/plans/23-keiki-composition-process-managers-sagas-and-choreography.md | EP-20 | EP-21, EP-22 | 2 | Complete |
 | 24 | Keiki symbolic analysis, build-time validation, and diagnostics | docs/plans/24-keiki-symbolic-analysis-build-time-validation-and-diagnostics.md | EP-20 | EP-21 | 2 | Complete |
-| 25 | Keiki rendering, diagrams, and JSON codecs | docs/plans/25-keiki-rendering-diagrams-and-json-codecs.md | EP-20 | EP-21, EP-22 | 2 | Not Started |
+| 25 | Keiki rendering, diagrams, and JSON codecs | docs/plans/25-keiki-rendering-diagrams-and-json-codecs.md | EP-20 | EP-21, EP-22 | 2 | Complete |
 | 26 | Keiki domain cookbook, worked-example tutorials, FAQ, and finalization | docs/plans/26-keiki-domain-cookbook-worked-example-tutorials-faq-and-finalization.md | EP-20 | EP-21, EP-22, EP-23, EP-24, EP-25 | 3 | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -386,8 +386,8 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 - [x] EP-23: Composition how-tos + `walkthrough/composition/` tour authored (process-manager emphasis).
 - [x] EP-24: Symbolic/validation explanation + reference (Symbolic, validate, step-failure) authored.
 - [x] EP-24: Symbolic/validation how-tos + `walkthrough/symbolic-and-validation/` tour authored.
-- [ ] EP-25: Rendering + codecs explanation + reference (Render.*, keiki-codec-json) authored.
-- [ ] EP-25: Rendering + codecs how-tos + `walkthrough/rendering-and-codecs/` tour authored.
+- [x] EP-25: Rendering + codecs explanation + reference (Render.*, keiki-codec-json) authored.
+- [x] EP-25: Rendering + codecs how-tos + `walkthrough/rendering-and-codecs/` tour authored.
 - [ ] EP-26: Domain cookbook recipes + worked-example tutorials + FAQ authored.
 - [ ] EP-26: Finalization — all meta.json ordered, section landings carry `<Cards>`, hub hrefs wired, build + link-check pass over the keiki tree.
 

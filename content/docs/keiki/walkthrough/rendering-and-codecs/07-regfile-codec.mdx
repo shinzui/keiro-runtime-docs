@@ -1,0 +1,192 @@
+---
+title: "07 — The RegFile codec"
+description: "The keiki-codec-json package: the RegFileWalk induction over a slot list, the two encoder paths (Value and streaming), and the strict per-slot decoder."
+---
+
+<Callout type="info">
+Part of the rendering-and-codecs source tour. Start at
+[00 — Start here](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here) for the overview and the
+full chapter list.
+</Callout>
+
+This chapter crosses the package boundary. Everything so far has lived in `keiki`, which carries no
+`aeson` dependency. The JSON codec lives in the **sibling** package `keiki-codec-json`, whose public
+entry point is `Keiki/Codec/JSON.hs`. It turns a `RegFile rs` — a register file whose type is a
+type-level slot list — into JSON and back.
+
+The module exports a deliberately small surface:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON.hs
+module Keiki.Codec.JSON
+  ( -- * The codec class
+    RegFileToJSON (..)
+    -- * Internal helper (exported so its instances are reachable; users
+    -- typically program against 'RegFileToJSON' only)
+  , RegFileWalk
+  ) where
+```
+
+Users program against `RegFileToJSON`. The real work is done by an inductive helper class,
+`RegFileWalk`, that recurses over the slot list one slot at a time.
+
+## The `RegFileWalk` induction
+
+`RegFileWalk` has one method per codec direction, and exactly two instances — a base case for the
+empty slot list and a step case for a cons cell.
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON.hs
+class RegFileWalk (rs :: [Slot]) where
+  regFilePairs :: RegFile rs -> [Aeson.Pair]
+  regFileSeries :: RegFile rs -> Aeson.Series
+  regFileReadObject
+    :: Aeson.Object
+    -> Either String (RegFile rs, Aeson.Object)
+```
+
+The base case is trivial: no pairs, an empty series, and a decode that consumes nothing and returns the
+whole object as leftover.
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON.hs
+instance RegFileWalk '[] where
+  regFilePairs _ = []
+  regFileSeries _ = mempty
+  regFileReadObject km = Right (RNil, km)
+```
+
+The step case handles one slot `'(s, t)` then recurses on the tail `rs`. Each instance requires the
+slot's symbol be `KnownSymbol` (so its name can be read at runtime) and the slot's value type carry
+both `Aeson.ToJSON` and `Aeson.FromJSON`:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON.hs
+instance
+  ( KnownSymbol s
+  , Aeson.ToJSON t
+  , Aeson.FromJSON t
+  , RegFileWalk rs
+  )
+  => RegFileWalk ('(s, t) ': rs)
+  where
+  regFilePairs (RCons _ x rest) =
+    let k = Key.fromString (symbolVal (Proxy @s))
+     in (k .= x) : regFilePairs rest
+
+  regFileSeries (RCons _ x rest) =
+    let k = Key.fromString (symbolVal (Proxy @s))
+     in (k .= x) <> regFileSeries rest
+```
+
+The slot name comes from `symbolVal (Proxy @s)` — the slot's *symbol* literally becomes the JSON
+object key. Because the recursion walks the cons list in order, both encoders emit keys in
+**slot-list order**.
+
+A slot list `rs` supports JSON serialisation **iff** every slot value type carries both `ToJSON` and
+`FromJSON`. There is no hand-written instance work: the public class is auto-derived for any such slot
+list.
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON.hs
+instance RegFileWalk rs => RegFileToJSON rs
+```
+
+## The two encoder paths
+
+`RegFileToJSON` exposes two encoders, and they are deliberately *different*.
+
+<Tabs items={["regFileToJSON (Value)", "regFileToEncoding (streaming)"]}>
+<Tab value="regFileToJSON (Value)">
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON.hs
+regFileToJSON :: RegFile rs -> Aeson.Value
+regFileToJSON = Aeson.object . regFilePairs
+```
+
+Builds a strict `Aeson.Value` by collecting the slot pairs into an object. Simple, and fine for
+ordinary register files.
+</Tab>
+<Tab value="regFileToEncoding (streaming)">
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON.hs
+regFileToEncoding :: RegFile rs -> Aeson.Encoding
+regFileToEncoding = Aeson.pairs . regFileSeries
+```
+
+Walks the slot list directly into an `Aeson.Series` via `Aeson.pairs`, avoiding the
+O(output-size) intermediate `Aeson.Value` allocation. The module header recommends it for RegFiles
+whose slot *values* are large (multi-MB): use
+`Aeson.encodingToLazyByteString . regFileToEncoding` instead of `Aeson.encode . regFileToJSON`.
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+**The two paths do not promise byte-equal output.** The `Value` path round-trips through
+`Aeson.KeyMap`, which (in aeson 2.2) iterates an `Object` in alphabetical key order; the streaming
+path emits in slot-list order via `Aeson.Series`. So the two encoders can produce the same *JSON
+value* with the keys in a different *byte order*. `PropSpec` therefore exercises each path
+independently and asserts round-trip and within-path determinism, but deliberately does **not** assert
+cross-path byte equality. Pick one path per persistence site and stay on it.
+</Callout>
+
+The within-path guarantee that *does* hold is determinism: re-encoding the same RegFile via the same
+path yields byte-equal output every time. That is what `valueDeterministic` and `encodingDeterministic`
+pin in `PropSpec`.
+
+## The strict decoder
+
+The decoder is `regFileToJSON`'s inverse, and it is strict on all four failure modes: a missing slot, a
+type-mismatched slot, malformed JSON, and an unknown extra field at the top level. Every per-slot
+failure is a `Left "<slotName>: <reason>"`.
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON.hs (step instance)
+  regFileReadObject km =
+    let slotName = symbolVal (Proxy @s)
+        k = Key.fromString slotName
+     in case KeyMap.lookup k km of
+          Nothing -> Left (slotName <> ": missing slot")
+          Just slotVal -> case Aeson.fromJSON slotVal of
+            Aeson.Error msg -> Left (slotName <> ": " <> msg)
+            Aeson.Success x -> do
+              (rest, km') <- regFileReadObject (KeyMap.delete k km)
+              Right (RCons (Proxy @s) x rest, km')
+```
+
+Each consumed slot is `delete`d from the working object, so what survives the recursion is precisely the
+set of keys *not* claimed by any slot. The top-level method then rejects any leftover:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON.hs
+regFileFromJSON v = case v of
+    Aeson.Object km -> do
+      (rf, leftover) <- regFileReadObject km
+      if KeyMap.null leftover
+        then Right rf
+        else
+          Left
+            ( "regfile: unknown extra fields: "
+                <> show (map Key.toString (KeyMap.keys leftover))
+            )
+    _ -> Left "regfile: expected JSON Object"
+```
+
+This is the no-silent-fallback discipline at the data layer: an extra key is never tolerated, a missing
+key is never defaulted, and a type mismatch is never coerced. The error message always names the slot
+(or, for the top-level shape errors, the `regfile:` prefix) so a persistence failure points straight at
+the offending field.
+
+<Callout type="info">
+**Test anchor.** `Keiki.Codec.JSON.PropSpec` runs QuickCheck round-trip on both encoder paths over the
+`ExemplarSlots` fixture (`regFileFromJSON . regFileToJSON ≡ Right rf`, and the same for the streaming
+path) plus within-path determinism — and documents in its header why cross-path byte equality is not
+asserted. The strict decoder's three rejection messages are pinned in
+[`THSpec`](/docs/keiki/walkthrough/rendering-and-codecs/08-th-derivers): a slot-prefixed missing-slot
+error, an unknown-extra-field error, and a slot-prefixed type-mismatch error.
+</Callout>
+
+---
+
+Previous: [06 — Edge inspector](/docs/keiki/walkthrough/rendering-and-codecs/06-edge-inspector) ·
+Next: [08 — TH derivers](/docs/keiki/walkthrough/rendering-and-codecs/08-th-derivers)

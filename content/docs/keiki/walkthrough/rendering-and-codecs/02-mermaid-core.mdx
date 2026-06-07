@@ -1,0 +1,235 @@
+---
+title: "02 — Mermaid core"
+description: "The single-transducer topology walk: how toMermaid emits a stateDiagram-v2, how an edge label is built, and why the default is guard-free."
+---
+
+<Callout type="info">
+Part of the [rendering and codecs](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here) tour.
+This chapter reads the core of `keiki/src/Keiki/Render/Mermaid.hs` — the single-transducer path and the
+edge-label primitives.
+</Callout>
+
+`Keiki.Render.Mermaid` renders a `SymTransducer` whose vertex type is enumerable to a Mermaid
+`stateDiagram-v2` block as `Text`. The module header explains the one specialisation that pervades the
+whole module:
+
+```haskell
+-- keiki/src/Keiki/Render/Mermaid.hs
+{- | Mermaid 'stateDiagram-v2' renderer for 'SymTransducer' values whose
+vertex type is enumerable.
+
+…
+
+The renderer is specialised to @phi ~ 'HsPred' rs ci@ — extracting
+the input-constructor name from an edge guard requires walking the
+guard's AST, and 'HsPred' is the only first-class guard AST in the
+repository.
+-}
+```
+
+The entry point is `toMermaid`; the supporting helpers (`vertexLabel`, `edgeInputName`,
+`edgeOutputName`, `edgeLabel`) are exported so callers can build custom pipelines on the same
+primitives. This chapter reads those primitives and the topology walk; options and labelling are
+chapter [03](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels), composites are
+chapter [04](/docs/keiki/walkthrough/rendering-and-codecs/04-composites).
+
+## `toMermaid`: the guard-free default
+
+```haskell
+toMermaid ::
+    (Enum s, Bounded s, Show s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    Text
+toMermaid = toMermaidWith defaultMermaidOptions
+```
+
+`toMermaid` is `toMermaidWith defaultMermaidOptions`, and `defaultMermaidOptions` turns every annotation
+off, so the default output carries **no `[w: …]` and no `[g: …]` suffix** — just topology and
+`<input> / <output>` labels. The header makes the contract explicit: the diagrams in the explanation
+material depend on this guard-free default staying byte-identical. `MermaidSpec` guards it twice — the
+primary golden and a redundant equality check:
+
+```haskell
+-- test/Keiki/Render/MermaidSpec.hs
+describe "toMermaid (single SymTransducer)" $
+    it "renders userReg to the canonical stateDiagram-v2 block" $
+        toMermaid userReg `shouldBe` userRegCanonical
+
+describe "toMermaidWith defaultMermaidOptions (byte-identical default)" $
+    it "equals toMermaid userReg exactly" $
+        toMermaidWith defaultMermaidOptions userReg `shouldBe` toMermaid userReg
+```
+
+## The topology walk
+
+The shared rendering core is `renderTopologyWith`. It walks `[minBound .. maxBound]`, emits the header,
+the initial-state line, one line per outgoing edge, and one final-state line per accepting vertex. The
+`idOf`/`displayOf` split (the only difference between `toMermaid` and the labelled variant) is read in
+chapter [03](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels); here, treat
+both as `vertexLabel`:
+
+```haskell
+renderTopologyWith opts idOf displayOf t =
+    let vertices = [minBound .. maxBound]
+        header = T.pack "stateDiagram-v2"
+        ind = T.pack "    "
+        arrow = T.pack " --> "
+        colon = T.pack " : "
+        …
+        initLine = ind <> T.pack "[*]" <> arrow <> idOf (initial t)
+        edgeLines =
+            [ ind
+                <> idOf s
+                <> arrow
+                <> idOf (target e)
+                <> colon
+                <> edgeLabelWith opts e
+            | s <- vertices
+            , e <- edgesOut t s
+            ]
+        finalLines =
+            [ ind <> idOf s <> arrow <> T.pack "[*]"
+            | s <- vertices
+            , isFinal t s
+            ]
+     in T.intercalate
+            (T.pack "\n")
+            (header : declLines ++ initLine : edgeLines ++ finalLines)
+```
+
+Three structural rules fall straight out of this:
+
+<Steps>
+<Step>
+**The start.** A single `[*] --> <initial>` line, from `initial t`.
+</Step>
+<Step>
+**One line per outgoing edge.** For every vertex `s` and every `e` in `edgesOut t s`, a
+`<src> --> <tgt> : <label>` line, four-space indented, with the target from `target e`.
+</Step>
+<Step>
+**One final line per accepting vertex.** `<v> --> [*]` for every `s` where `isFinal t s` is `True`.
+A vertex that is neither a source of an edge nor final produces no lines at all — the renderer simply
+omits it.
+</Step>
+</Steps>
+
+The `vertexLabel` function is `show`, which works because every shipped aggregate's vertex constructors
+already obey Mermaid's identifier regex:
+
+```haskell
+vertexLabel :: (Show s) => s -> Text
+vertexLabel = T.pack . show
+```
+
+You can see all three rules in the `userReg` golden — note that the `Deleted` vertex is the only final
+state, and the renderer omits no source/non-final vertices because every vertex here is reachable:
+
+```text
+stateDiagram-v2
+    [*] --> PotentialCustomer
+    PotentialCustomer --> RequiresConfirmation : StartRegistration / RegistrationStarted; ConfirmationEmailSent
+    RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed
+    RequiresConfirmation --> RequiresConfirmation : ResendConfirmation / ConfirmationResent
+    RequiresConfirmation --> Deleted : FulfillGDPRRequest / ε
+    Confirmed --> Deleted : FulfillGDPRRequest / AccountDeleted
+    Deleted --> [*]
+```
+
+## `edgeLabel`: `<input ctor> / <output ctor>`
+
+Every transition line ends with an edge label of the form `<input> / <output>`. `edgeLabel` is the
+default, output-semicolon spelling:
+
+```haskell
+edgeLabel :: Edge (HsPred rs ci) rs ci co s -> Text
+edgeLabel = edgeLabelWithLayout MermaidOutputSemicolon
+
+edgeLabelWithLayout layout e =
+    let inp = maybe (T.pack "?") id (edgeInputName e)
+        out = maybe (T.pack "\x03B5") id (edgeOutputNameWith layout e)
+     in inp <> T.pack " / " <> out
+```
+
+Two fallbacks are worth memorising: a missing input-constructor name becomes `?`, and a missing output
+(an ε-edge) becomes `ε` (U+03B5). You can see the `ε` in the `userReg` golden on the
+`RequiresConfirmation --> Deleted : FulfillGDPRRequest / ε` line — that edge consumes a command but
+emits nothing.
+
+### `edgeInputName`: mining the guard for the input constructor
+
+The input half comes from walking the guard's `HsPred` AST for the leftmost `PInCtor`:
+
+```haskell
+edgeInputName :: Edge (HsPred rs ci) rs ci co s -> Maybe Text
+edgeInputName Edge{guard = g} = walk g
+  where
+    walk :: HsPred rs ci -> Maybe Text
+    walk (PInCtor InCtor{icName = n}) = Just (T.pack n)
+    walk (PAnd a b) = walk a <|> walk b
+    walk (POr a b) = walk a <|> walk b
+    walk (PNot p) = walk p
+    walk PTop = Nothing
+    walk PBot = Nothing
+    walk (PEq _ _) = Nothing
+    walk (PCmp{}) = Nothing
+```
+
+The header notes *why* this almost always succeeds: every edge introduced through
+`Keiki.Builder.onCmd` wraps its guard as `PAnd (PInCtor ic) inner`, so the leftmost-`PInCtor` walk finds
+the command name. Only a hand-written AST edge that omits `PInCtor` returns `Nothing` — and then
+`edgeLabel` substitutes `?`.
+
+### `edgeOutputName`: one, two, or many events
+
+The output half comes from the edge's `output` list. An ε-edge (`output = []`) is `Nothing`; otherwise
+the rendering is length-based by default:
+
+```haskell
+edgeOutputNameWith layout Edge{output = outs} = case outs of
+    [] -> Nothing
+    [o] -> Just (wcN o)
+    many -> Just (render layout (Prelude.map wcN many))
+  where
+    wcN :: OutTerm rs ci co -> Text
+    wcN (OPack _ wc _) = T.pack (wcName wc)
+    render :: MermaidOutputLayout -> [Text] -> Text
+    render MermaidOutputSemicolon ns
+        | length ns == 2 = T.intercalate (T.pack "; ") ns
+        | otherwise = T.intercalate (T.pack "<br/>") ns
+    render MermaidOutputMultiline ns = T.intercalate (T.pack "<br/>") ns
+    render MermaidOutputCounted ns = T.pack (show (length ns) <> " events")
+```
+
+<TypeTable
+  type={{
+    "length 1": { type: "e1", description: "Just the single event's wire-constructor name (wcName), same as the letter case." },
+    "length 2": { type: "e1; e2", description: "Compact inline separator under the default semicolon layout." },
+    "length 3+": { type: "e1<br/>e2<br/>…<br/>eN", description: "Mermaid multi-line, one event per line." },
+    "length 0": { type: "ε", description: "An ε-edge: edgeOutputName returns Nothing, edgeLabel substitutes ε." },
+  }}
+/>
+
+The length-2 case is exactly the `userReg` entrance edge:
+`StartRegistration / RegistrationStarted; ConfirmationEmailSent`. The other output layouts
+(`MermaidOutputMultiline`, `MermaidOutputCounted`) are chapter
+[03](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels); the default
+`MermaidOutputSemicolon` is what `edgeLabel` uses, so behaviour here matches the goldens above and the
+`multiEvt` fixture pinned in `MermaidSpec`.
+
+## Composites reuse the same walk
+
+The composite renderers — over a loan workflow and the email pipeline — share this exact emission shape;
+only the vertex-label function changes (composite ids join with `_`). `Jitsurei.Render.MermaidLoanSpec`
+pins the single-aggregate goldens (`loanApplication`, `loan`, `coreBankingSync`) that feed those
+composites, all produced by this same `toMermaid` walk. We follow them into composite shapes in chapter
+[04](/docs/keiki/walkthrough/rendering-and-codecs/04-composites).
+
+<Callout type="warn">
+The default is **guard-free on purpose.** `toMermaid` never prints a `[g: …]` segment, so the topology
+reads cleanly. If you want guard text in the label, you opt in through `MermaidOptions` — and that text
+goes through a single chokepoint, which is the subject of the next chapter.
+</Callout>
+
+Previous: [01 — The pretty-printer](/docs/keiki/walkthrough/rendering-and-codecs/01-pretty-printer).
+Next: [03 — Options and labels](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels).

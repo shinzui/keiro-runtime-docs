@@ -1,0 +1,265 @@
+---
+title: "Codec: JSON"
+description: "The aeson-backed JSON codec for register files and the two Template Haskell derivers for record snapshots and kind-discriminated event sums."
+---
+
+The types and functions on this page live in the **separate** `keiki-codec-json` package — not in
+`keiki` core. keiki core stays aeson-free; the codec depends on aeson and is the keiki-side
+counterpart of the shape hash in [`Keiki.Shape`](/docs/keiki/reference/shape). For why the split
+exists, see [The RegFile codec and snapshots](/docs/keiki/explanation/the-regfile-codec-and-snapshots).
+
+The package has three modules:
+
+<Cards>
+  <Card title="Keiki.Codec.JSON" href="#the-codec-class" />
+  <Card title="Keiki.Codec.JSON.TH — record snapshots" href="#the-record-deriver" />
+  <Card title="Keiki.Codec.JSON.Event — event sums" href="#the-event-deriver" />
+</Cards>
+
+## The codec class
+
+A slot list `rs` supports JSON serialisation iff every slot value type carries both `Aeson.ToJSON`
+and `Aeson.FromJSON`. The instance is **auto-derived** — you never write a `RegFileToJSON` instance
+yourself.
+
+```haskell
+class RegFileWalk rs => RegFileToJSON (rs :: [Slot]) where
+  regFileToJSON     :: RegFile rs -> Aeson.Value
+  regFileToEncoding :: RegFile rs -> Aeson.Encoding
+  regFileFromJSON   :: Aeson.Value -> Either String (RegFile rs)
+```
+
+The JSON object's keys are the **slot symbols, in slot-list order**.
+
+<Callout type="info">
+There is a single blanket instance — `instance RegFileWalk rs => RegFileToJSON rs`. Any slot list
+that the inductive `RegFileWalk` machinery covers is automatically a `RegFileToJSON`. Program against
+`RegFileToJSON`; the `RegFileWalk` class below is the internal helper that does the work.
+</Callout>
+
+### The three methods
+
+<TypeTable
+  type={{
+    regFileToJSON: { type: "RegFile rs -> Aeson.Value", description: "Strict encoder. Builds an aeson Value (object) — use when you also manipulate the JSON tree." },
+    regFileToEncoding: { type: "RegFile rs -> Aeson.Encoding", description: "Streaming encoder. Walks the slot list straight into Aeson.pairs, with no intermediate Value. Recommended for large or hot-path payloads." },
+    regFileFromJSON: { type: "Aeson.Value -> Either String (RegFile rs)", description: "Strict decoder. Rejects missing, extra, and type-mismatched slots with a per-slot error message." },
+  }}
+/>
+
+The decoder is **strict** in three ways. Any of these is a `Left`:
+
+- a **missing** slot → `Left "<slot>: missing slot"`
+- a **type-mismatched** (or malformed) slot → `Left "<slot>: <aeson reason>"`
+- an **extra** top-level field → `Left "regfile: unknown extra fields: [...]"`
+
+A non-object input is `Left "regfile: expected JSON Object"`.
+
+### `RegFileWalk` — the internal walker
+
+```haskell
+class RegFileWalk (rs :: [Slot]) where
+  regFilePairs      :: RegFile rs -> [Aeson.Pair]
+  regFileSeries     :: RegFile rs -> Aeson.Series
+  regFileReadObject :: Aeson.Object -> Either String (RegFile rs, Aeson.Object)
+```
+
+It has two structural instances:
+
+```haskell
+instance RegFileWalk '[]
+
+instance
+  ( KnownSymbol s
+  , Aeson.ToJSON t
+  , Aeson.FromJSON t
+  , RegFileWalk rs
+  ) => RegFileWalk ('(s, t) ': rs)
+```
+
+`regFileReadObject` consumes one slot key at a time and returns the leftover object; the top-level
+`regFileFromJSON` uses that leftover to reject extra fields.
+
+## Two encoder paths
+
+There are two encoders, and the choice between them is a performance decision, not a semantic one.
+
+<Tabs items={["Value path", "Encoding path"]}>
+  <Tab value="Value path">
+`regFileToJSON` builds an `Aeson.Value` via `Aeson.object`. Reach for it when you also need to
+**inspect or rewrite** the JSON tree before emitting it — e.g. merging in metadata, or re-keying.
+
+```haskell
+Aeson.encode (regFileToJSON rf)
+```
+  </Tab>
+  <Tab value="Encoding path">
+`regFileToEncoding` streams the slot list directly into an `Aeson.Encoding` via `Aeson.pairs`,
+skipping the intermediate `Value` allocation entirely. Recommended for large payloads (multi-MB slot
+values, or roughly >100KB) and hot paths — about 1.5× faster with about 33% less allocation.
+
+```haskell
+Aeson.encodingToLazyByteString (regFileToEncoding rf)
+```
+  </Tab>
+</Tabs>
+
+<Callout type="warn">
+**Cross-path byte equality is not guaranteed and is not asserted.** The `Value` path serialises by
+iterating aeson's `KeyMap`, which orders keys alphabetically; the `Encoding` path emits slot-list
+order. The two paths can therefore produce byte-different (but semantically equal) JSON. What *is*
+guaranteed and property-tested is: each path is deterministic on its own, and each round-trips
+(`regFileFromJSON` accepts the output of either encoder). See `Keiki.Codec.JSON.PropSpec`.
+</Callout>
+
+## The record deriver
+
+`Keiki.Codec.JSON.TH` emits `RegFile`-routed codec functions for a plain Haskell **record** type — a
+single-constructor record-syntax `data`/`newtype`. This is the snapshot case: one record, one slot
+list.
+
+```haskell
+deriveRegFileCodec   :: Name -> Q [Dec]
+deriveRegFileCodecAs :: String -> Name -> Q [Dec]
+```
+
+`deriveRegFileCodec` derives the prefix by lower-casing the first letter of the type name;
+`deriveRegFileCodecAs` takes the prefix explicitly. For a record `T` deriving `Generic`, the splice
+emits three top-level functions routing through `RegFileToJSON @(RegFieldsOf T)`:
+
+```haskell
+data MySnapshot = MySnapshot
+  { retryCount    :: Int
+  , correlationId :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+
+$(deriveRegFileCodec ''MySnapshot)
+
+-- emits:
+mySnapshotToJSON     :: MySnapshot -> Aeson.Value
+mySnapshotToEncoding :: MySnapshot -> Aeson.Encoding
+mySnapshotFromJSON   :: Aeson.Value -> Either String MySnapshot
+```
+
+The record's field names become the JSON keys. Each field type must have `Aeson.ToJSON` and
+`Aeson.FromJSON` in scope, or compilation fails at the emitted function's use site with a
+missing-instance error naming the field's type.
+
+<Callout type="warn">
+The splice **rejects** type synonyms (and any non-`data`/`newtype` shape), **multi-constructor sum
+types** (a single slot list cannot represent a sum), and **positional (non-record-syntax)
+constructors** (there are no field names to use as slot symbols). Each rejection is a precise
+compile-time `fail`. A **no-field singleton** (`data Empty = Empty`) is **accepted** — its slot list
+is `'[]` and the codec round-trips the empty JSON object `{}`.
+</Callout>
+
+See `Keiki.Codec.JSON.THSpec` for the accepted and rejected shapes.
+
+## The event deriver
+
+`Keiki.Codec.JSON.Event` handles an **event sum** — a `data` type with several constructors, each
+wrapping a single record payload (or a no-arg singleton). It emits a `"kind"`-discriminated codec
+skeleton.
+
+### Options
+
+```haskell
+data FieldCodec = FieldCodec
+  { fcEncode :: Name   -- names a function  fieldType -> Aeson.Value
+  , fcDecode :: Name   -- names a function  Aeson.Value -> Either String fieldType
+  }
+
+data OnMissingCodec
+  = FailAtCompileTime   -- default: abort the splice, listing every unhandled field
+  | EmitTodoBindings    -- emit named _todo_<Ctor>_<field> stubs that compile but error
+```
+
+<TypeTable
+  type={{
+    fieldCodecOverrides: { type: "Map String FieldCodec", description: "Per-field encode/decode hooks, keyed by payload field name" },
+    passthroughFields: { type: "Set String", description: "Field names whose type already has aeson instances and may use them directly" },
+    kindFieldName: { type: "String", description: "The discriminator key" },
+    onMissingCodec: { type: "OnMissingCodec", description: "Behaviour for a field in neither overrides nor passthrough" },
+  }}
+/>
+
+```haskell
+-- Empty overrides, empty passthrough, kind = "kind", FailAtCompileTime.
+defaultEventCodecOptions :: EventCodecOptions
+```
+
+### Splices
+
+```haskell
+deriveEventCodecSkeleton   :: EventCodecOptions -> Name -> Q [Dec]
+deriveEventCodecSkeletonAs :: String -> EventCodecOptions -> Name -> Q [Dec]
+```
+
+For `data E = C1 P1 | … | Singleton`, the splice emits **four** top-level bindings (prefix derived by
+lower-casing the first letter):
+
+```haskell
+data OrderEvent
+  = Placed PlacedData
+  | Shipped ShippedData
+  | Cancelled
+  deriving stock (Eq, Show)
+
+$(deriveEventCodecSkeleton defaultEventCodecOptions ''OrderEvent)
+
+-- emits:
+orderEventToJSON     :: OrderEvent -> Aeson.Value
+orderEventFromJSON   :: Aeson.Value -> Either String OrderEvent
+orderEventEventTypes :: [Text]            -- ctor names, in declaration order
+orderEventKindMap    :: [(Text, Text)]    -- (ctor, kind) pairs
+```
+
+`orderEventEventTypes` and `orderEventKindMap` are **plain `Text`** — the generated code carries no
+keiro import, so they feed a keiro registration surface without coupling the two packages.
+
+Each constructor encodes to a JSON object carrying a `"kind"` discriminator (the constructor name)
+plus one entry per payload field. The decoder reads `"kind"`, dispatches through a nested `if`, and
+ends in `Left "unknown event kind: …"`. A singleton encodes to just `{"kind":"Singleton"}`.
+
+<Callout type="warn">
+The splice **rejects** multi-argument constructors, constructors that use record syntax directly
+(wrap a single record payload type instead — `Placed PlacedData`), and GADT/infix shapes. Each is a
+precise compile-time `fail`.
+</Callout>
+
+### No silent fallback
+
+This is the anti-drift property. A payload field is encoded by exactly one of three paths, chosen by
+**field name**:
+
+<Steps>
+  <Step>
+If the name is a key of `fieldCodecOverrides`, the author-supplied `FieldCodec` functions are spliced
+in.
+  </Step>
+  <Step>
+Else if the name is in `passthroughFields`, the field's own `Aeson.ToJSON`/`Aeson.FromJSON` instances
+are used.
+  </Step>
+  <Step>
+Otherwise the field is **unhandled**, and `onMissingCodec` decides. `FailAtCompileTime` (the default)
+aborts the splice, listing every unhandled field with its constructor and type. `EmitTodoBindings`
+emits a clearly named `_todo_<Ctor>_<field>` binding that compiles but is
+`error "TODO: …"`-bodied, routing the field through it.
+  </Step>
+</Steps>
+
+There is never a quiet generic guess. Adding a field to a payload record forces the author to make a
+decision at compile time — that is the structural sensitivity guarantee. See
+`Keiki.Codec.JSON.THEventSpec` for the documented negative-test procedure exercising both
+`FailAtCompileTime` and `EmitTodoBindings` (one is a compile failure, so they cannot both live as a
+passing unit test).
+
+## See also
+
+<Cards>
+  <Card title="The RegFile codec and snapshots" href="/docs/keiki/explanation/the-regfile-codec-and-snapshots" />
+  <Card title="Shape hash reference" href="/docs/keiki/reference/shape" />
+  <Card title="What gets derived" href="/docs/keiki/explanation/what-gets-derived" />
+</Cards>

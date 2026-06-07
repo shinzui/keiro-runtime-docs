@@ -1,0 +1,367 @@
+---
+title: "Render: Mermaid"
+description: "Render a SymTransducer's topology to a Mermaid stateDiagram-v2 block — single, composite, and atlas renderers, plus the label and option types they take."
+---
+
+The functions and types on this page live in `Keiki.Render.Mermaid`. They turn a
+[`SymTransducer`](/docs/keiki/reference/core) whose vertex type is enumerable into a Mermaid
+`stateDiagram-v2` block (as `Data.Text.Text`) that GitHub, Notion, and Markdown previewers render
+inline. The control skeleton you see is the one you reason about — see
+[The SymTransducer](/docs/keiki/explanation/the-symtransducer).
+
+<Callout type="info">
+`Keiki.Render.Validate` checks rendered Mermaid **text** (`validateMermaidDiagram` /
+`validateMermaidAtlas`, documented on [Render: Markdown atlas](/docs/keiki/reference/render-markdown)).
+It is **not** the transducer validator `validateTransducer` in `Keiki.Core`, which checks a
+`SymTransducer` value — see [Validate](/docs/keiki/reference/validate). The two operate on different
+inputs (diagram text vs. AST) and share no code.
+</Callout>
+
+## The default is guard-free
+
+`toMermaid` emits the **control skeleton** and hides predicate guards. This is golden-pinned and
+load-bearing pedagogy: the guard-free topology is the one-way-door view you scan to spot a wrong
+edge — a transition that should not exist, or a missing one — before you ever read a guard. Turn
+guards on deliberately with `toMermaidWith` when you need them.
+
+Every `toMermaid` block has the same shape:
+
+- the `stateDiagram-v2` header;
+- a start line `[*] --> <initial>`;
+- one `<src> --> <tgt> : <edgeLabel>` line per outgoing edge of every vertex; and
+- a `<vertex> --> [*]` line for every vertex where `isFinal` returns `True`.
+
+The default edge label is `<input ctor> / <output ctor>`: a missing input constructor (no `PInCtor`
+in the guard) renders `?`, and an ε-edge (empty output) renders `ε`. See
+[Edge label primitives](#edge-label-primitives) for the exact format.
+
+## Single-transducer renderers
+
+### `toMermaid`
+
+The single-transducer entry point. The vertex type `s` must derive `Enum`, `Bounded`, and `Show`;
+the enumeration walks `[minBound .. maxBound]` and vertex labels come from `show`.
+
+```haskell
+toMermaid ::
+  (Enum s, Bounded s, Show s) =>
+  SymTransducer (HsPred rs ci) rs s ci co ->
+  Text
+```
+
+### `toMermaidWith`
+
+Like `toMermaid`, but takes [`MermaidOptions`](#mermaidoptions) controlling the structural
+edge-summary suffix. With `defaultMermaidOptions` it is byte-identical to `toMermaid`. With
+`showWrittenSlots` and/or a `guardMode` enabled, each edge label gains a compact bracketed suffix
+`[w: <slots>; g: <guard>]`. **Only the single-transducer path is annotated** — the composite
+renderers keep the guard-free default.
+
+```haskell
+toMermaidWith ::
+  (Enum s, Bounded s, Show s) =>
+  MermaidOptions ->
+  SymTransducer (HsPred rs ci) rs s ci co ->
+  Text
+```
+
+### `toMermaidWithLabels`
+
+Like `toMermaidWith`, but the caller supplies separate stable identifiers and friendly display
+labels via [`MermaidStateLabels`](#mermaidstatelabels) instead of deriving both from `Show` (the
+`Show s` constraint is dropped). The `stableId` is emitted **verbatim and not sanitised** — it is
+the caller's job to return a legal Mermaid identifier (`[A-Za-z_][A-Za-z0-9_]*`). A
+`state "<display>" as <id>` declaration line is emitted **only** when a vertex's display differs
+from its id; feeding identical functions reproduces `toMermaidWith` byte-for-byte.
+
+```haskell
+toMermaidWithLabels ::
+  (Bounded s, Enum s) =>
+  MermaidOptions ->
+  MermaidStateLabels s ->
+  SymTransducer (HsPred rs ci) rs s ci co ->
+  Text
+```
+
+### `duplicateStateIds`
+
+A pure AST-level collision check: the ASCII ids produced by `stateId` for two or more distinct
+vertices, in first-occurrence order. An empty result (`[]`) means every vertex maps to a unique id.
+Rendering itself stays total and never throws on a collision; this is the check you run before
+trusting a labeled diagram. It keys off the same id token the
+[text-level `DuplicateStateId` warning](/docs/keiki/reference/render-markdown) uses, so the AST and
+text checks agree on what an id is by construction.
+
+```haskell
+duplicateStateIds ::
+  (Bounded s, Enum s) =>
+  MermaidStateLabels s ->
+  SymTransducer (HsPred rs ci) rs s ci co ->
+  [Text]
+```
+
+## A worked example
+
+`toMermaid` over the `userReg` aggregate (pinned by `Keiki.Render.MermaidSpec`) produces:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PotentialCustomer
+    PotentialCustomer --> RequiresConfirmation : StartRegistration / RegistrationStarted; ConfirmationEmailSent
+    RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed
+    RequiresConfirmation --> RequiresConfirmation : ResendConfirmation / ConfirmationResent
+    RequiresConfirmation --> Deleted : FulfillGDPRRequest / ε
+    Confirmed --> Deleted : FulfillGDPRRequest / AccountDeleted
+    Deleted --> [*]
+```
+
+Note the guard-free labels, the two-event output rendered with a `;` separator
+(`RegistrationStarted; ConfirmationEmailSent`), and the ε-edge on `FulfillGDPRRequest` from
+`RequiresConfirmation`.
+
+## Composite renderers
+
+These render composites built with the [composition algebra](/docs/keiki/reference/composition).
+Each composite state id joins its components with an underscore (`<a>_<b>`), because the default
+`Show` for `Composite` emits `"Composite a b"` with spaces and parentheses — not a legal Mermaid
+identifier.
+
+<TypeTable
+  type={{
+    "toMermaidComposite": { type: "SymTransducer … (Composite s1 s2) … -> Text", description: "Flat cross-product: each Composite a b becomes <show a>_<show b>. Same emission rules as toMermaid." },
+    "toMermaidCompositeNested": { type: "SymTransducer … (Composite s1 s2) … -> Text", description: "Nested-subgraph (Shape B): each outer s1 hosts a state block listing its inner ids; cross-cutting transitions stay flat at top level." },
+    "toMermaidCompose3": { type: "SymTransducer … (Composite s1 (Composite s2 s3)) … -> Text", description: "Flat cross-product for a right-associative 3-deep compose; ids join as <s1>_<s2>_<s3>." },
+    "toMermaidCompose3Nested": { type: "SymTransducer … (Composite s1 (Composite s2 s3)) … -> Text", description: "One-level nested-subgraph for a 3-deep compose; groups by the outer s1 aggregate." },
+    "toMermaidAlternative": { type: "SymTransducer … s1 … -> SymTransducer … s2 … -> Text", description: "Renders an alternative-shaped composite as two parallel arms (default names LeftArm / RightArm)." },
+    "toMermaidAlternativeWith": { type: "Text -> Text -> SymTransducer … s1 … -> SymTransducer … s2 … -> Text", description: "Arm-name-overridable variant of toMermaidAlternative; the two Text args name the arm blocks." },
+    "toMermaidFeedback1": { type: "SymTransducer … s1 … -> SymTransducer … s2 … -> Text", description: "Renders a feedback1 composite (vertex Composite s1 (Composite s2 s1)) as a flat 3-deep cross-product." },
+  }}
+/>
+
+Full signatures (transcribed verbatim):
+
+```haskell
+toMermaidComposite ::
+  (Enum s1, Bounded s1, Show s1, Enum s2, Bounded s2, Show s2) =>
+  SymTransducer (HsPred rs ci) rs (Composite s1 s2) ci co ->
+  Text
+
+toMermaidCompositeNested ::
+  forall rs s1 s2 ci co.
+  (Enum s1, Bounded s1, Show s1, Enum s2, Bounded s2, Show s2) =>
+  SymTransducer (HsPred rs ci) rs (Composite s1 s2) ci co ->
+  Text
+
+toMermaidCompose3 ::
+  forall rs s1 s2 s3 ci co.
+  ( Enum s1, Bounded s1, Show s1
+  , Enum s2, Bounded s2, Show s2
+  , Enum s3, Bounded s3, Show s3
+  ) =>
+  SymTransducer (HsPred rs ci) rs (Composite s1 (Composite s2 s3)) ci co ->
+  Text
+
+toMermaidCompose3Nested ::
+  forall rs s1 s2 s3 ci co.
+  ( Enum s1, Bounded s1, Show s1
+  , Enum s2, Bounded s2, Show s2
+  , Enum s3, Bounded s3, Show s3
+  ) =>
+  SymTransducer (HsPred rs ci) rs (Composite s1 (Composite s2 s3)) ci co ->
+  Text
+
+toMermaidAlternative ::
+  (Enum s1, Bounded s1, Show s1, Enum s2, Bounded s2, Show s2) =>
+  SymTransducer (HsPred rs1 ci1) rs1 s1 ci1 co1 ->
+  SymTransducer (HsPred rs2 ci2) rs2 s2 ci2 co2 ->
+  Text
+
+toMermaidAlternativeWith ::
+  forall rs1 rs2 s1 s2 ci1 ci2 co1 co2.
+  (Enum s1, Bounded s1, Show s1, Enum s2, Bounded s2, Show s2) =>
+  Text ->                                                 -- left arm's block name
+  Text ->                                                 -- right arm's block name
+  SymTransducer (HsPred rs1 ci1) rs1 s1 ci1 co1 ->
+  SymTransducer (HsPred rs2 ci2) rs2 s2 ci2 co2 ->
+  Text
+
+toMermaidFeedback1 ::
+  ( Enum s1, Bounded s1, Show s1, Enum s2, Bounded s2, Show s2
+  , WeakenR rs1, WeakenR rs2
+  , Disjoint (Names rs2) (Names rs1)
+  , Disjoint (Names rs1) (Names (Append rs2 rs1))
+  ) =>
+  SymTransducer (HsPred rs1 ci) rs1 s1 ci co ->
+  SymTransducer (HsPred rs2 co) rs2 s2 co ci ->
+  Text
+```
+
+<Callout type="info">
+Pick the shape that reads best: use the flat renderers (`toMermaidComposite`, `toMermaidCompose3`)
+for small composites where a single line per vertex is scannable, and the nested variants
+(`toMermaidCompositeNested`, `toMermaidCompose3Nested`) when the cross-product is too large to scan
+flat. Both shapes coexist; the nested renderers never rely on Mermaid's dotted cross-block reference
+syntax.
+</Callout>
+
+## Atlas: many diagrams in one document
+
+An **atlas** stitches several already-rendered diagrams into one Markdown document, each under a
+labelled section. Transducers are heterogeneously typed, so a single list of transducers would not
+type-check — the atlas takes already-rendered `Text` and lets each caller pick the matching renderer.
+
+```haskell
+toMermaidAtlas :: [(Text, Text)] -> Text
+
+toMermaidAtlasWith :: MermaidAtlasOptions -> [MermaidSection] -> Text
+
+defaultMermaidAtlasOptions :: MermaidAtlasOptions
+```
+
+`toMermaidAtlas` takes `(sectionLabel, renderedDiagram)` pairs: each label becomes a Markdown
+level-2 heading and each diagram is wrapped in a fenced `mermaid` block. An empty list yields empty
+`Text`. `toMermaidAtlasWith` is the typed, option-aware form; with `defaultMermaidAtlasOptions` over
+sections built from `(title, diagram)` pairs it is byte-identical to `toMermaidAtlas`.
+
+## Edge label primitives
+
+These are exported so callers can build custom rendering pipelines on the same primitives that
+`toMermaid` uses.
+
+<TypeTable
+  type={{
+    "vertexLabel": { type: "Show s => s -> Text", description: "The Mermaid id for a vertex: T.pack . show." },
+    "compositeLabel": { type: "(Show s1, Show s2) => Composite s1 s2 -> Text", description: "<show a>_<show b> — underscore-joined so it matches the identifier regex." },
+    "compose3Label": { type: "(Show s1, Show s2, Show s3) => Composite s1 (Composite s2 s3) -> Text", description: "<show s1>_<show s2>_<show s3> for a 3-deep compose vertex." },
+    "edgeInputName": { type: "Edge (HsPred rs ci) rs ci co s -> Maybe Text", description: "The leftmost PInCtor name walked out of the guard AST; Nothing if the guard has none." },
+    "edgeOutputName": { type: "Edge (HsPred rs ci) rs ci co s -> Maybe Text", description: "The output constructor name(s); Nothing for an ε-edge (empty output)." },
+    "edgeLabel": { type: "Edge (HsPred rs ci) rs ci co s -> Text", description: "<input ctor> / <output ctor>: missing input → ?, ε-edge → ε." },
+  }}
+/>
+
+`edgeOutputName` uses a length-based switchover for multi-event edges: `e1` for one, `e1; e2` for
+exactly two, and `e1<br/>e2<br/>…<br/>eN` for three or more.
+
+## Option and section types
+
+### `MermaidGuardMode`
+
+How an edge's guard predicate renders into the `[g: …]` segment.
+
+<TypeTable
+  type={{
+    "MermaidGuardHidden": { type: "constructor", description: "No guard segment at all (the default)." },
+    "MermaidGuardStructuralSummary": { type: "constructor", description: "The structural constructor-tag walk, e.g. PAnd PInCtor PEq. Selected by the legacy showGuardSummary flag." },
+    "MermaidGuardPretty": { type: "constructor", description: "The domain-readable rendering from Keiki.Render.Pretty.prettyPred." },
+  }}
+/>
+
+### `MermaidLabelLayout`
+
+How dense edge labels are laid out: `MermaidLabelInline` (the single-line `[seg; seg]` form, default)
+or `MermaidLabelMultiline` (base on line one, each further segment on its own `<br/>`-separated line).
+
+### `MermaidOutputLayout`
+
+How a multi-event edge renders its output names.
+
+<TypeTable
+  type={{
+    "MermaidOutputSemicolon": { type: "constructor", description: "Length-based default: ; for exactly two events, <br/> for three or more." },
+    "MermaidOutputMultiline": { type: "constructor", description: "Always one event per line (<br/>-joined)." },
+    "MermaidOutputCounted": { type: "constructor", description: "A compact N events count for two or more; a single event stays its name, an ε-edge stays ε." },
+  }}
+/>
+
+### `MermaidOptions`
+
+Rendering options for the structural edge-summary suffix. Every field defaults (in
+`defaultMermaidOptions`) to the no-suffix setting, so the default rendering is byte-identical to
+`toMermaid`. An explicit `guardMode` (anything other than `MermaidGuardHidden`) wins over the legacy
+`showGuardSummary` flag.
+
+<TypeTable
+  type={{
+    showWrittenSlots: { type: "Bool", description: "Append the update's written-slot names, e.g. [w: email; confirmCode; registeredAt].", default: "False" },
+    showGuardSummary: { type: "Bool", description: "Legacy spelling of guardMode = MermaidGuardStructuralSummary; honoured only when guardMode is left at MermaidGuardHidden.", default: "False" },
+    guardMode: { type: "MermaidGuardMode", description: "How the guard segment is rendered; takes precedence over showGuardSummary.", default: "MermaidGuardHidden" },
+    labelLayout: { type: "MermaidLabelLayout", description: "Inline or multiline layout of an edge label's segments.", default: "MermaidLabelInline" },
+    maxInlineWrittenSlots: { type: "Maybe Int", description: "When Just k and n > k slots are written, show the first k then a single +{n-k} more token.", default: "Nothing" },
+    maxInlineGuardWidth: { type: "Maybe Int", description: "When Just w and the guard text exceeds w chars, take w chars then append the ellipsis.", default: "Nothing" },
+    outputLayout: { type: "MermaidOutputLayout", description: "How a multi-event edge renders its output names.", default: "MermaidOutputSemicolon" },
+  }}
+/>
+
+```haskell
+defaultMermaidOptions :: MermaidOptions
+```
+
+### `MermaidStateLabels`
+
+A pair of per-vertex label functions for `toMermaidWithLabels`.
+
+<TypeTable
+  type={{
+    stateId: { type: "s -> Text", description: "The stable ASCII Mermaid identifier — emitted verbatim, never sanitised. The caller must return a legal identifier ([A-Za-z_][A-Za-z0-9_]*)." },
+    stateDisplayLabel: { type: "s -> Text", description: "The friendly visible label, which may contain spaces. A declaration is emitted only when it differs from the id." },
+  }}
+/>
+
+### `MermaidSection`
+
+One section of a diagram atlas. `sectionDiagram` is already-rendered Mermaid `Text`, so the atlas is
+independent of the transducer's vertex/register/input/output types.
+
+<TypeTable
+  type={{
+    sectionId: { type: "Text", description: "Stable token suitable as a Markdown replacement-marker id." },
+    sectionTitle: { type: "Text", description: "The section heading text." },
+    sectionKind: { type: "MermaidSectionKind", description: "What kind of transducer the diagram depicts." },
+    sectionDiagram: { type: "Text", description: "Already-rendered Mermaid block (produced by any renderer on this page)." },
+  }}
+/>
+
+### `MermaidSectionKind`
+
+<TypeTable
+  type={{
+    "AggregateDiagram": { type: "constructor", description: "An aggregate state diagram." },
+    "ProcessManagerDiagram": { type: "constructor", description: "A process-manager diagram." },
+    "WorkflowDiagram": { type: "constructor", description: "A workflow diagram." },
+    "CustomDiagram Text": { type: "constructor", description: "A caller-chosen label for anything outside the three named kinds." },
+  }}
+/>
+
+### `AtlasKindDisplay`
+
+How (or whether) to surface a section's kind in the rendered atlas.
+
+<TypeTable
+  type={{
+    "KindHidden": { type: "constructor", description: "Do not render the kind at all (default)." },
+    "KindAsLabel": { type: "constructor", description: "Render the kind as a visible italic line under the heading." },
+    "KindAsComment": { type: "constructor", description: "Render the kind as an HTML comment (invisible in previews)." },
+  }}
+/>
+
+### `MermaidAtlasOptions`
+
+Options for `toMermaidAtlasWith`. Every field defaults (in `defaultMermaidAtlasOptions`) to a value
+that reproduces the legacy `toMermaidAtlas` output byte-for-byte.
+
+<TypeTable
+  type={{
+    atlasTitle: { type: "Maybe Text", description: "Optional top-level heading prepended above all sections.", default: "Nothing" },
+    atlasSectionHeadingLevel: { type: "Int", description: "Markdown heading level for each section heading.", default: "2" },
+    atlasShowSectionKind: { type: "AtlasKindDisplay", description: "Whether/how to show each section's kind.", default: "KindHidden" },
+    atlasWrapMarkers: { type: "Maybe Text", description: "When Just ns, wrap each fenced block in begin/end markers keyed by sectionId, so replaceMarkdownDiagramBlock can update it in place.", default: "Nothing" },
+    atlasFenceLanguage: { type: "Text", description: "Fenced-block language tag.", default: "\"mermaid\"" },
+  }}
+/>
+
+## Verified by
+
+- `Keiki.Render.MermaidSpec` — pins the canonical single, composite, atlas, and labeled blocks
+  (including the `userReg` golden shown above).
+- `Jitsurei.Render.MermaidLoanSpec` — the loan capstone: a 54-vertex flat `toMermaidCompose3`
+  block and a 6-outer × 9-inner nested `toMermaidCompose3Nested` block.

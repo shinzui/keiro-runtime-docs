@@ -1,0 +1,130 @@
+---
+title: "Derive a JSON event codec"
+description: "Derive a kind-discriminated JSON encoder/decoder for an event sum with deriveEventCodecSkeleton, then wire the emitted surfaces into a keiro event-type registry."
+---
+
+You have an event sum type and want a JSON codec whose `kind` discriminator and per-field handling
+are explicit — no quiet generic guess for a field you forgot to think about. The
+`deriveEventCodecSkeleton` splice in `keiki-codec-json` derives the codec and forces a compile-time
+decision for every payload field.
+
+<Callout type="info">
+  Assumes your event type is a sum where each constructor wraps a single record payload (or is a
+  no-arg singleton), as in the order example below.
+</Callout>
+
+## Goal
+
+Derive `<event>ToJSON`, `<event>FromJSON`, `<event>EventTypes`, and `<event>KindMap` for an event
+sum, control how each field is encoded, and feed the emitted registry surfaces into a keiro
+`eventTypes` registry.
+
+## Derive the skeleton
+
+`deriveEventCodecSkeleton opts ''EventType` emits four top-level bindings, prefixed by the type name
+with its first letter lower-cased. For `data OrderEvent = Placed PlacedData | Shipped ShippedData |
+Cancelled`, the splice emits `orderEventToJSON`, `orderEventFromJSON`, `orderEventEventTypes`, and
+`orderEventKindMap`. Each constructor encodes to an object carrying a `"kind"` discriminator (the
+constructor name) plus one entry per payload field:
+
+```haskell
+{-# LANGUAGE TemplateHaskell #-}
+
+import Keiki.Codec.JSON.Event
+  ( EventCodecOptions (..)
+  , FieldCodec (..)
+  , defaultEventCodecOptions
+  , deriveEventCodecSkeleton
+  )
+
+$( deriveEventCodecSkeleton
+     defaultEventCodecOptions
+       { fieldCodecOverrides =
+           Map.fromList [("orderId", FieldCodec 'orderIdToJSON 'orderIdFromJSON)]
+       , passthroughFields = Set.fromList ["qty", "trackingNo"]
+       }
+     ''OrderEvent
+ )
+```
+
+## Choose how each field is handled
+
+A payload field is encoded one of three ways, chosen by **field name**:
+
+<Cards>
+
+<Card title="fieldCodecOverrides">
+Keyed by field name. The author-supplied `FieldCodec` (an `fcEncode` name and an `fcDecode` name)
+is spliced in. Use this when a field's JSON form differs from its `ToJSON` instance — e.g.
+`orderId` rendered as an `"ord-<n>"` string.
+</Card>
+
+<Card title="passthroughFields">
+A set of field names whose type already has aeson instances and may use them directly. Use this for
+ordinary scalar fields like `qty` or `trackingNo`.
+</Card>
+
+<Card title="unhandled">
+A field in neither set. There is no quiet fallback — `onMissingCodec` decides what happens (below).
+</Card>
+
+</Cards>
+
+## The no-silent-fallback choice
+
+Here "sensitivity" means **no silent fallback**: adding a field to a payload record forces the
+author to make a decision at compile time rather than letting a generic instance quietly take over.
+The `onMissingCodec` option governs an unhandled field:
+
+```haskell
+import Keiki.Codec.JSON.Event (OnMissingCodec (..))
+
+-- default: abort the splice, listing every unhandled field
+defaultEventCodecOptions { onMissingCodec = FailAtCompileTime }
+
+-- opt-in: emit a named placeholder that compiles but throws if used
+defaultEventCodecOptions { onMissingCodec = EmitTodoBindings }
+```
+
+`FailAtCompileTime` (the default) aborts the splice with a message naming each unhandled field,
+e.g. `Placed.discount :: GHC.Types.Int`, and tells you to add it to `fieldCodecOverrides` or
+`passthroughFields`. `EmitTodoBindings` instead emits a clearly-named `_todo_Placed_discount`
+binding whose body is `error "TODO: provide a FieldCodec for Placed.discount :: Int"` — the module
+compiles, but any actual encode/decode of that field throws the named error instead of guessing.
+
+<Callout type="warn">
+  Sensitivity here is structural-drift detection, not redaction. A payload field is never silently
+  dropped or masked — it is either handled explicitly or it stops the build (or throws a named
+  error). The negative-test procedure is documented in `Keiki.Codec.JSON.THEventSpec`.
+</Callout>
+
+## Wire the surfaces into a keiro registry
+
+`<event>EventTypes :: [Text]` lists the constructor names in declaration order, and
+`<event>KindMap :: [(Text, Text)]` pairs each constructor with its kind string. Both are plain
+`Text` with no keiro import, so a keiro adapter module can consume them to build an `eventTypes`
+registry without keiki depending on keiro:
+
+```haskell
+-- In a keiro-side adapter module. orderEventEventTypes is the emitted [Text].
+orderRegistry :: [Text]
+orderRegistry = orderEventEventTypes
+  -- e.g. ["Placed", "Shipped", "Cancelled"], the wire `kind` values keiro
+  -- routes on. orderEventKindMap pairs each with its kind string for any
+  -- ctor/kind divergence.
+```
+
+## Verify it worked
+
+`Keiki.Codec.JSON.THEventSpec` pins the round-trip and the discriminator:
+`orderEventFromJSON (orderEventToJSON placed) == Right placed`, and
+`orderEventToJSON (Placed (PlacedData (OrderId 7) 3))` is
+`{"kind":"Placed","orderId":"ord-7","qty":3}` — the `"ord-7"` string proving the override ran
+rather than a generic `Int` codec. An unknown kind decodes to `Left "unknown event kind: <k>"`, and
+`orderEventEventTypes == ["Placed", "Shipped", "Cancelled"]`.
+
+## Related
+
+- [Persist a register snapshot](/docs/keiki/how-to/persist-a-register-snapshot) — the record-codec
+  splice (`deriveRegFileCodec`) for a single snapshot record.
+- The codec reference (`Keiki.Codec.JSON.Event`) under [the keiki reference](/docs/keiki/reference).

@@ -1,0 +1,139 @@
+---
+title: "Persist a register snapshot"
+description: "Serialize a register file with the streaming JSON encoder, compute its shape hash, and gate hydration on the two snapshot discriminants."
+---
+
+You want to persist a transducer's register file as a snapshot and safely hydrate it later — without
+ever loading a snapshot whose structure no longer matches the code. keiki gives you two halves: a
+JSON codec that serialises the register file, and a *shape hash* that discriminates eligible
+snapshots from structurally drifted ones.
+
+<Callout type="info">
+  Assumes a snapshot record with `deriving (Generic)` whose field types each carry `Aeson.ToJSON`
+  and `Aeson.FromJSON`. See [the shape reference](/docs/keiki/reference/shape) for the hash contract.
+</Callout>
+
+## Goal
+
+Serialise a register file with the streaming encoder, compute its `regFileShapeHash`, and write/read
+a snapshot gated on two discriminants so a structurally drifted snapshot is rejected and replayed
+from event 0 instead of silently mis-decoding.
+
+## Serialise the register file
+
+For a snapshot record, `deriveRegFileCodec` emits three functions routed through the `RegFileToJSON`
+class. Prefer `<record>ToEncoding` — the **streaming** encoder — which walks the slot list directly
+into an `Aeson.Encoding` and avoids the `O(output-size)` intermediate `Aeson.Value` allocation:
+
+```haskell
+{-# LANGUAGE TemplateHaskell #-}
+
+import qualified Data.Aeson.Encoding as AesonEnc
+import Keiki.Codec.JSON.TH (deriveRegFileCodec)
+
+data MySnapshot = MySnapshot
+  { retryCount    :: Int
+  , correlationId :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+
+$(deriveRegFileCodec ''MySnapshot)
+-- emits mySnapshotToJSON, mySnapshotToEncoding, mySnapshotFromJSON
+
+snapshotBytes :: MySnapshot -> ByteString
+snapshotBytes = AesonEnc.encodingToLazyByteString . mySnapshotToEncoding
+```
+
+The strict decoder `mySnapshotFromJSON` rejects missing, extra, or type-mismatched fields with a
+per-slot message — e.g. `Left "retryCount: missing slot"` — so a malformed snapshot never decodes to
+a partially-populated value.
+
+<Callout type="info">
+  At a register file's *type* level, the same machinery is the `RegFileToJSON` class with
+  `regFileToEncoding` (streaming), `regFileToJSON` (strict `Value`), and `regFileFromJSON` (strict
+  decoder). The splice is the ergonomic wrapper that derives these for a plain record.
+</Callout>
+
+## Compute the shape hash
+
+`regFileShapeHash` is the compact, GHC-upgrade-safe discriminator for the type-level slot list. It is
+a pure `Text` keyed on the structure of the slot list — sensitive to a slot rename, addition,
+removal, reordering, or type change, and insensitive to incidental changes like GHC patch version or
+the slot type's typeclass instances:
+
+```haskell
+import Data.Proxy (Proxy (..))
+import Keiki.Shape (regFileShapeHash)
+import Keiki.Generics (RegFieldsOf)
+
+snapshotShapeHash :: Text
+snapshotShapeHash = regFileShapeHash (Proxy @(RegFieldsOf MySnapshot))
+```
+
+See [the shape reference](/docs/keiki/reference/shape) for the canonical encoding and the
+schema-evolution cases the hash catches.
+
+## Gate hydration on the two discriminants
+
+Store **two** discriminants alongside the serialised bytes:
+
+<TypeTable
+  type={{
+    state_codec_version: {
+      description: "Your snapshot codec's version number, bumped by hand when you change how the snapshot is encoded.",
+      type: "Int",
+    },
+    regfile_shape_hash: {
+      description: "regFileShapeHash for the snapshot's slot list — the structural fingerprint.",
+      type: "Text",
+    },
+  }}
+/>
+
+A stored snapshot is **eligible iff both match** the running code. If either differs, the snapshot is
+discarded and the workflow replays from event 0:
+
+```haskell
+data SnapshotEnvelope = SnapshotEnvelope
+  { envCodecVersion :: Int
+  , envShapeHash    :: Text
+  , envBody         :: ByteString
+  }
+
+snapshotEligible :: Int -> Text -> SnapshotEnvelope -> Bool
+snapshotEligible currentVersion currentHash env =
+  envCodecVersion env == currentVersion
+    && envShapeHash env == currentHash
+
+-- on hydrate: eligible -> decode; otherwise replay from 0
+hydrate :: Int -> Text -> SnapshotEnvelope -> Either String (Maybe MySnapshot)
+hydrate currentVersion currentHash env
+  | snapshotEligible currentVersion currentHash env =
+      Just <$> (mySnapshotFromJSON =<< decodeValue (envBody env))
+  | otherwise = Right Nothing   -- ineligible: caller replays from event 0
+```
+
+<Callout type="warn">
+  The hash alone is not enough: it catches *structural* drift, but a same-shape encoding change (a
+  field's semantics changed without its name or type changing) is invisible to it. That is why
+  `state_codec_version` is a separate discriminant you bump by hand. Both must match — there is no
+  silent fallback to a best-effort decode.
+</Callout>
+
+## Verify it worked
+
+The round-trip and strict-decoder behaviour are pinned in `Keiki.Codec.JSON.THSpec`: the value path
+round-trips (`testRecFromJSON (testRecToJSON tr) == Right tr`), the streaming path's bytes parse back
+to the same value, and a missing slot decodes to `Left "trCount: missing slot"`.
+`Keiki.Codec.JSON.PropSpec` checks the encoding-path / value-path agreement across generated inputs.
+To confirm the gate: compute `regFileShapeHash` before and after a slot rename — the hash changes,
+so the old snapshot becomes ineligible and replay kicks in.
+
+## Related
+
+- [Derive a JSON event codec](/docs/keiki/how-to/derive-a-json-event-codec) — the sum-type
+  (`deriveEventCodecSkeleton`) counterpart to this record splice.
+- [The shape reference](/docs/keiki/reference/shape) — `regFileShapeHash`, `KnownRegFileShape`,
+  and the canonical encoding.
+- The codec reference (`Keiki.Codec.JSON`, `Keiki.Codec.JSON.TH`) under
+  [the keiki reference](/docs/keiki/reference).

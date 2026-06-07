@@ -1,0 +1,251 @@
+---
+title: "08 — TH derivers"
+description: "The two Template Haskell splices: deriveRegFileCodec for a record snapshot and deriveEventCodecSkeleton for an event sum, with the no-silent-fallback contract that forces a compile-time decision on every payload field."
+---
+
+<Callout type="info">
+Part of the rendering-and-codecs source tour. Start at
+[00 — Start here](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here) for the overview and the
+full chapter list.
+</Callout>
+
+Chapter 07 read the runtime codec that works against a type-level slot list. Most callers never write a
+`RegFile` by hand, though — they have an ordinary record or an event sum. Two Template Haskell splices
+in `keiki-codec-json` close that gap by emitting the codec functions for you: `deriveRegFileCodec` for
+a single-record snapshot, and `deriveEventCodecSkeleton` for an event sum. Both live in
+`keiki-codec-json` rather than `keiki` core precisely because the generated code references `aeson`,
+and keiki core must stay aeson-free.
+
+## `deriveRegFileCodec`: the record snapshot
+
+For a record type, `$(deriveRegFileCodec ''MySnapshot)` emits three top-level functions, with names
+derived by lower-casing the first character of the type name:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/TH.hs (Haddock)
+mySnapshotToJSON     :: MySnapshot -> Aeson.Value
+mySnapshotToEncoding :: MySnapshot -> Aeson.Encoding
+mySnapshotFromJSON   :: Aeson.Value -> Either String MySnapshot
+```
+
+Each one routes through the `RegFileToJSON` class from chapter 07 against the slot list
+`RegFieldsOf MySnapshot`. The record's field names become the JSON object keys; each field type must
+carry `ToJSON` and `FromJSON` or compilation fails with a per-field error. The splice body is just three
+function definitions that compose the generic bridge with the runtime codec:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/TH.hs
+  toJSONDef <- funD toJSONN
+                 [ clause [] (normalB
+                     [| regFileToJSON
+                          @(RegFieldsOf $recTy)
+                          . gToRegFile . Generics.from |])
+                     []
+                 ]
+```
+
+`Generics.from` turns the record into its generic representation, `gToRegFile` projects that into a
+`RegFile`, and `regFileToJSON` (chapter 07) encodes it. The record only needs `deriving (Generic)`; the
+splice does not emit a `Generic` instance.
+
+### What the splice rejects — and what it accepts
+
+`validateRecord` and `validateCtors` reject every shape that cannot map onto a single slot list, each
+with a precise message:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/TH.hs
+validateCtors tyName ctors = case ctors of
+  [RecC _ _]     -> pure ()
+  [NormalC _ []] -> pure ()
+  [NormalC _ _]  -> fail $ "deriveRegFileCodec: " <> show tyName
+                        <> " has a positional (non-record-syntax) "
+                        <> "constructor; switch to record syntax so "
+                        <> "field names are available as slot symbols, "
+                        <> "e.g. `data Foo = Foo { x :: Int }`."
+  []             -> fail $ "deriveRegFileCodec: " <> show tyName
+                        <> " has no constructors; pass a record type."
+  (_ : _ : _)    -> fail $ "deriveRegFileCodec: " <> show tyName
+                        <> " has multiple constructors; a single slot "
+                        <> "list cannot represent a sum type."
+  _              -> fail $ ...
+```
+
+<Cards>
+  <Card title="Rejected: type synonyms" description="Only data and newtype declarations are accepted; a TySynD fails." />
+  <Card title="Rejected: sum types" description="Multi-constructor data Foo = A | B — a single slot list cannot represent a sum." />
+  <Card title="Rejected: positional ctors" description="No field names means no slot symbols; switch to record syntax." />
+  <Card title="Accepted: singleton" description="data Empty = Empty gives the empty slot list '[]; the functions codec the empty JSON object {}." />
+</Cards>
+
+The singleton no-field constructor is the deliberate edge case: its slot list is `'[]`, and the emitted
+functions encode it to — and decode it from — the empty JSON object. `THSpec` pins this with an `Empty`
+type, asserting the streaming path emits the literal bytes `{}` and that a non-empty object is rejected
+as unknown extra fields.
+
+<Callout type="info">
+**Test anchor.** `Keiki.Codec.JSON.THSpec` drives `deriveRegFileCodec` against a two-field `TestRec`
+and the singleton `Empty`: round-trip, encoding agreement, slot-list-order key emission, and the three
+strict-decoder rejections (missing field, unknown extra field, type-mismatched field — each
+slot-prefixed). It documents the compile-fail negative cases as a manual procedure, since a compile
+failure cannot be a passing unit test.
+</Callout>
+
+## `deriveEventCodecSkeleton`: the event sum
+
+Where the record splice handles one product, this one handles a *sum* — a `data` type with several
+constructors, each wrapping a single record payload (or a no-arg singleton). For
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs (Haddock)
+data OrderEvent
+  = Placed PlacedData
+  | Shipped ShippedData
+  | Cancelled
+  deriving stock (Eq, Show)
+```
+
+the splice `$(deriveEventCodecSkeleton opts ''OrderEvent)` emits **four** top-level bindings:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs (Haddock)
+orderEventToJSON     :: OrderEvent -> Aeson.Value
+orderEventFromJSON   :: Aeson.Value -> Either String OrderEvent
+orderEventEventTypes :: [Data.Text.Text]                    -- ctor names, in order
+orderEventKindMap    :: [(Data.Text.Text, Data.Text.Text)]  -- (ctor, kind)
+```
+
+<TypeTable
+  type={{
+    "<p>ToJSON": { type: "Event -> Aeson.Value", description: "One encode clause per constructor; each emits a kind discriminator plus one entry per payload field." },
+    "<p>FromJSON": { type: "Aeson.Value -> Either String Event", description: "Reads kind, branches on it, and reassembles the payload field by field." },
+    "<p>EventTypes": { type: "[Text]", description: "The constructor names in declaration order — a Keiro-feeding surface, plain Text, no Keiro import." },
+    "<p>KindMap": { type: "[(Text, Text)]", description: "Each (constructor name, kind string) pair." },
+  }}
+/>
+
+### The `kind` discriminator
+
+Each constructor encodes to a JSON object carrying a `"kind"` key (the constructor name) plus one entry
+per payload field. The encoder generates the `kind` pair per clause:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs (encodeClause)
+  kindPair =
+    [|
+        $(keyE (kindFieldName opts))
+            Aeson..= (T.pack $(stringE (nameBase (ecCtorName ec))) :: Text)
+        |]
+```
+
+The decoder reads `"kind"`, then walks a nested `if kind == "C" then <build C> else …` chain ending in
+an unknown-kind `Left`:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs (dispatch)
+foldr
+    ( \ec elseQ ->
+        [|
+            if $(varE kVar) == T.pack $(stringE (nameBase (ecCtorName ec)))
+                then $(buildCtorDecode opts oVar ec)
+                else $elseQ
+            |]
+    )
+    [|Left ("unknown event kind: " <> T.unpack $(varE kVar))|]
+```
+
+The discriminator key defaults to `"kind"` but is configurable via `kindFieldName`.
+
+### The no-silent-fallback contract
+
+This is the load-bearing property. A payload field is encoded one of three ways, chosen by **field
+name**:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs
+classify opts fn =
+    case Map.lookup fn (fieldCodecOverrides opts) of
+        Just fc -> Override fc
+        Nothing
+            | fn `Set.member` passthroughFields opts -> Passthrough
+            | otherwise -> Unhandled
+```
+
+<Steps>
+<Step>
+**Override.** If the field name is a key of `fieldCodecOverrides`, the author-supplied `FieldCodec`
+functions are spliced in. (In the fixture, `orderId` is overridden to encode as an `"ord-<n>"` string
+rather than a bare integer.)
+</Step>
+<Step>
+**Passthrough.** Else if the field name is in `passthroughFields`, the field's own `ToJSON`/`FromJSON`
+instances are used directly.
+</Step>
+<Step>
+**Unhandled.** Otherwise the field is *unhandled*, and `onMissingCodec` decides what happens — at
+compile time.
+</Step>
+</Steps>
+
+There is never a quiet generic guess. Adding a field to a payload record forces the author to make a
+decision. The two policies:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs
+data OnMissingCodec
+    = FailAtCompileTime
+    | EmitTodoBindings
+```
+
+`FailAtCompileTime` (the default) aborts the splice with `fail`, listing every unhandled field
+qualified by constructor and type:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs
+        FailAtCompileTime
+            | not (null unhandled) ->
+                fail $
+                    "deriveEventCodecSkeleton: "
+                        <> show tyName
+                        <> " has field(s) with no provided codec and "
+                        <> "onMissingCodec = FailAtCompileTime:\n"
+                        <> intercalate
+                            "\n"
+                            [ "  - " <> nameBase c <> "." <> fn <> " :: " <> pprint ft
+                            | (c, fn, ft) <- unhandled
+                            ]
+                        <> "\nAdd each field to fieldCodecOverrides or passthroughFields, "
+                        <> "or set onMissingCodec = EmitTodoBindings."
+```
+
+`EmitTodoBindings` instead emits, for each unhandled field, a clearly-named `_todo_<Event>_<field>`
+binding that *compiles* but whose body is an `error "TODO: …"`:
+
+```haskell
+-- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs (mkTodoBinding)
+    def <- funD nm [clause [] (normalB [|error $(stringE msg)|]) []]
+```
+
+So `EmitTodoBindings` lets the module build while leaving an obviously-named landmine: any actual
+encode or decode of that field throws the named error rather than silently round-tripping through a
+generic instance. Either way, the author is forced to confront the new field — that is the anti-drift
+property in full.
+
+<Callout type="warn">
+This is what "sensitivity" means in keiki — **structural drift caught loudly, no silent fallback** — not
+redaction. A payload that gains a field is a structural change, and the deriver refuses to paper over it.
+</Callout>
+
+<Callout type="info">
+**Test anchor.** `Keiki.Codec.JSON.THEventSpec` drives the splice against a 3-constructor `OrderEvent`
+(an overridden newtype field, an all-passthrough payload, and a singleton): round-trip, that the
+`kind` key and the override actually run, the unknown-kind and non-object error paths, and the
+`EventTypes`/`KindMap` surfaces. The two `onMissingCodec` behaviours are documented as a manual
+negative-test procedure (one is a compile failure, one is a successful build with a `_todo_` stub),
+verified by hand on 2026-06-06.
+</Callout>
+
+---
+
+Previous: [07 — The RegFile codec](/docs/keiki/walkthrough/rendering-and-codecs/07-regfile-codec) ·
+Next: [09 — Shape hash and snapshots](/docs/keiki/walkthrough/rendering-and-codecs/09-shape-hash-and-snapshots)

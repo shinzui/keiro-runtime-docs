@@ -1,0 +1,211 @@
+---
+title: "06 — Edge inspector"
+description: "The Markdown edge-detail renderer: renderEdgeInspector, its per-field EdgeInspectorOptions, the per-state report layout, and the byte-identically replicated guardSummary and writtenSlots helpers."
+---
+
+<Callout type="info">
+Part of the rendering-and-codecs source tour. Start at
+[00 — Start here](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here) for the overview and the
+full chapter list.
+</Callout>
+
+Where [`toMermaid`](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core) shows the *shape* of
+a workflow — one line per edge — the edge inspector lays out every edge in *full*: its source and
+target states, its 0-based edge index, the input command constructor, the output event
+constructor(s), the guard predicate, the register slots it writes, and optionally each output field's
+term. It is a sibling renderer in `src/Keiki/Render/Inspector.hs`, and like the Mermaid renderer it is
+pure: no IO, no SMT solver.
+
+## `renderEdgeInspector` and the report layout
+
+The entry point enumerates states and emits one section per state that has outgoing edges:
+
+```haskell
+-- src/Keiki/Render/Inspector.hs
+renderEdgeInspector ::
+    (Bounded s, Enum s, Show s) =>
+    EdgeInspectorOptions ->
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    Text
+renderEdgeInspector opts t =
+    let states = [minBound .. maxBound]
+        section s = case edgesOut t s of
+            [] -> Nothing
+            edges -> Just (renderState opts s edges)
+     in T.intercalate
+            (T.pack "\n\n")
+            ( T.pack "# Edge inspector"
+                : [blk | Just blk <- map section states]
+            )
+```
+
+The `Bounded`/`Enum` pair enumerates the states, `Show` names them — mirroring `toMermaid` exactly, so
+an inspector document and a diagram for the same transducer describe the same edges. A state with no
+outgoing edges produces no section at all (the `[] -> Nothing` arm).
+
+The document is a three-level Markdown structure. The top is a single `# Edge inspector` heading. Each
+state is a `### <state>` section; each edge is a header bullet plus indented detail bullets:
+
+```haskell
+-- src/Keiki/Render/Inspector.hs (renderEdge)
+header =
+    T.pack "- **"
+        <> T.pack (show s)
+        <> T.pack " -> "
+        <> T.pack (show tgt)
+        <> T.pack "**"
+```
+
+So a single edge renders as `- **PotentialCustomer -> RequiresConfirmation**`, followed by indented
+`  - <field>: …` bullets. Here is one whole section from the canonical golden for the
+`userReg` fixture:
+
+```markdown
+### RequiresConfirmation
+
+- **RequiresConfirmation -> Confirmed**
+  - edge index: 0
+  - input: ConfirmAccount
+  - output: AccountConfirmed
+  - guard (structural): PAnd PInCtor PEq
+  - written slots: confirmedAt
+- **RequiresConfirmation -> RequiresConfirmation**
+  - edge index: 1
+  - input: ResendConfirmation
+  - output: ConfirmationResent
+  - guard (structural): PInCtor
+  - written slots: registeredAt; confirmCode
+- **RequiresConfirmation -> Deleted**
+  - edge index: 2
+  - input: FulfillGDPRRequest
+  - output: ε
+  - guard (structural): PInCtor
+  - written slots: deletedAt
+```
+
+Two details are visible here. The edge index is the 0-based position in `edgesOut t s` — note the
+self-loop at index 1 and the delete edge at index 2. And the `FulfillGDPRRequest` edge emits no event,
+so its output renders the literal ε (U+03B5), the same epsilon convention the Mermaid renderer uses for
+an empty output list.
+
+## `EdgeInspectorOptions`: every field opt-in
+
+Each detail field is a `Bool`. The default turns on everything that needs no domain-readable
+rendering; the two "pretty" options that reuse `Keiki.Render.Pretty` default off.
+
+```haskell
+-- src/Keiki/Render/Inspector.hs
+defaultEdgeInspectorOptions =
+    EdgeInspectorOptions
+        { includeEdgeIndex = True
+        , includeStructuralGuard = True
+        , includePrettyGuard = False
+        , includeWrittenSlots = True
+        , includeOutputFields = False
+        }
+```
+
+<TypeTable
+  type={{
+    includeEdgeIndex: { type: "Bool", default: "True", description: "Show the 0-based position of the edge in edgesOut t s." },
+    includeStructuralGuard: { type: "Bool", default: "True", description: "Show the structural guard summary, e.g. PAnd PInCtor PEq." },
+    includePrettyGuard: { type: "Bool", default: "False", description: "Show the domain-readable guard from prettyPred." },
+    includeWrittenSlots: { type: "Bool", default: "True", description: "Show the register slots the edge writes (omitted when none)." },
+    includeOutputFields: { type: "Bool", default: "False", description: "Show each output field's term positionally, via prettyTerm." },
+  }}
+/>
+
+Turning on `includePrettyGuard` shows **both** guards side by side — the contrast is the payoff. The
+`ConfirmAccount` edge reads `PAnd PInCtor PEq` structurally and
+`(ConfirmAccount && ConfirmAccount.confirmCode == confirmCode)` pretty:
+
+```markdown
+- **RequiresConfirmation -> Confirmed**
+  - edge index: 0
+  - input: ConfirmAccount
+  - output: AccountConfirmed
+  - guard (structural): PAnd PInCtor PEq
+  - guard (pretty): (ConfirmAccount && ConfirmAccount.confirmCode == confirmCode)
+  - written slots: confirmedAt
+```
+
+Turning on `includeOutputFields` adds, for each output that carries at least one field, a bullet
+listing each field's term positionally. `WireCtor` carries no field names, so fields are labelled by
+position only — and the terms mix input-field reads and register reads:
+
+```markdown
+  - output fields: RegistrationStarted[field 0: StartRegistration.email; field 1: StartRegistration.confirmCode; field 2: StartRegistration.at]; ConfirmationEmailSent[field 0: StartRegistration.email]
+```
+
+A bullet is omitted when it would be empty: the written-slots bullet disappears for an edge that
+writes nothing, and the output-fields bullet disappears for an ε-edge.
+
+## The replicated helpers: `guardSummary` and `writtenSlots`
+
+The inspector needs two helpers that already exist in `Keiki.Render.Mermaid` —
+[`guardSummary`](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels) and
+`writtenSlots`. But neither is *exported* from the Mermaid module, so the inspector cannot import them.
+Rather than widen the Mermaid module's public surface, both are **replicated byte-identically** here,
+with a Haddock note saying so:
+
+```haskell
+-- src/Keiki/Render/Inspector.hs
+{- | A structural, total summary of a guard predicate: its constructor
+tags in left-to-right (prefix) order, with 'PCmp' carrying its
+direction. Replicated from "Keiki.Render.Mermaid" (where it is not
+exported); kept byte-identical to that original.
+-}
+guardSummary :: HsPred rs ci -> Text
+guardSummary = T.intercalate (T.pack " ") . go
+  where
+    go :: HsPred rs ci -> [Text]
+    go PTop = [T.pack "PTop"]
+    go PBot = [T.pack "PBot"]
+    go (PAnd a b) = T.pack "PAnd" : go a ++ go b
+    go (POr a b) = T.pack "POr" : go a ++ go b
+    go (PNot p) = T.pack "PNot" : go p
+    go (PEq _ _) = [T.pack "PEq"]
+    go (PInCtor _) = [T.pack "PInCtor"]
+    go (PCmp c _ _) = [T.pack "PCmp " <> T.pack (show c)]
+```
+
+`writtenSlots` is replicated the same way, recurring structurally over the `Update` value:
+
+```haskell
+-- src/Keiki/Render/Inspector.hs
+writtenSlots :: Update rs w ci -> [Text]
+writtenSlots UKeep = []
+writtenSlots (USet ix _) = [T.pack (indexNName ix)]
+writtenSlots (UCombine a b) = writtenSlots a ++ writtenSlots b
+```
+
+<Callout type="warn">
+The duplication is **deliberate**, not an oversight. Exporting these from `Keiki.Render.Mermaid` would
+enlarge its public API for two tiny pure functions; copying them keeps each module's surface minimal.
+The "kept byte-identical" comment is the contract: if one changes, the other must change in lockstep —
+both the inspector golden and the Mermaid golden would otherwise drift.
+</Callout>
+
+Note also what the inspector *does* import from `Keiki.Render.Mermaid`: `edgeInputName`, the guard-AST
+walk that recovers the input-constructor name. That one *is* exported, so it is shared, not replicated.
+
+### Why `update` is bound by pattern, never by selector
+
+`renderEdge` and `edgeLabelWith` (in the Mermaid module) both bind the `Update` through the `Edge`
+pattern — `e@Edge{guard = g, update = u, target = tgt}` — and never via the `update` record selector.
+The Haddock spells out why: the existential write-set in the `Update` field must not escape, and a
+record selector cannot be used as a function for an existential field. Pattern-binding brings the
+`KnownSymbol s` constraint on a `USet` into scope, which is exactly what lets `indexNName` read the
+slot name off the index — no type-level write-set machinery required.
+
+<Callout type="info">
+**Test anchor.** `Keiki.Render.InspectorSpec` pins three goldens against the real multi-edge
+`Keiki.Fixtures.UserRegistration.userReg` — default options, `includePrettyGuard`, and
+`includeOutputFields` — the same transducer the Mermaid golden renders, so a reviewer can diff the two
+and confirm they describe the same edges.
+</Callout>
+
+---
+
+Previous: [05 — Atlas and Markdown](/docs/keiki/walkthrough/rendering-and-codecs/05-atlas-and-markdown) ·
+Next: [07 — The RegFile codec](/docs/keiki/walkthrough/rendering-and-codecs/07-regfile-codec)
