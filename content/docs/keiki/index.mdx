@@ -1,24 +1,75 @@
 ---
 title: keiki
-description: A pure, dependency-free mathematical core — a symbolic-register transducer.
+description: A pure, dependency-free symbolic-register transducer — the decision core of the keiro runtime.
 ---
 
-keiki (継起, "successive occurrence") is a pure, dependency-free mathematical core:
-a symbolic-register transducer (a kind of state machine) with composable, IO-free
-stream and transducer composition governed by algebraic laws. It is "the foundation"
-of the keiro runtime in the _pure-semantics_ sense.
+keiki (継起, "successive occurrence") is a **pure, dependency-free, IO-free Haskell library you
+import** — not a server, not a runtime. Its one formalism, the **symbolic-register finite-state
+transducer** written `SymTransducer phi rs s ci co`, models event sourcing, workflow engines, and
+durable execution as a **single mathematical object**. keiki is a hybrid of two classical ideas: a
+**Symbolic Finite Transducer** (edges labelled by *predicates* over an infinite input domain, not
+one edge per enumerated symbol) and a **Streaming String Transducer** (a typed **register file**
+carried alongside the finite control state).
 
-<Callout type="info">
-  Documentation for keiki is in progress. Because keiki's existing docs are an ordered code
-  walkthrough, its skeleton emphasizes the Code Walkthrough and Explanation (theory) sections.
-  Written content arrives in a later plan.
-</Callout>
+The load-bearing property: from **one** `SymTransducer` declaration keiki **mechanically derives**
+the Chassaing-shape decider, the input/output acceptors, the per-vertex views, the composition
+combinators, and an opt-in **SBV + z3** single-valuedness check — so the "decide" half and the
+"replay" half of an aggregate **cannot silently disagree**. Runtime evaluation
+(`delta`/`omega`/`step`/`reconstitute`) is concrete and solver-free; z3 runs only as a build-time
+check.
+
+## Where keiki sits in the keiro family
+
+keiki is the **pure-semantics foundation**. It is distinct from its siblings, and the framework
+that composes them:
+
+```mermaid
+flowchart TB
+  keiro["keiro 経路 · the framework (composes all three)"]
+  keiki["keiki 継起 · pure semantics (SymTransducer)"]
+  kiroku["kiroku 記録 · append-only PostgreSQL event store"]
+  shibuya["shibuya · supervised worker substrate"]
+  keiro --> keiki
+  keiro --> kiroku
+  keiro --> shibuya
+```
+
+keiro's `EventStream` literally marries a keiki `SymTransducer` to a codec, an initial state, and a
+snapshot policy. JSON is provided by the sibling package **`keiki-codec-json`**.
+
+## A taste
+
+The smallest useful aggregate — a two-vertex `EmailDelivery` state machine — authored with the
+`Keiki.Builder` DSL:
+
+```haskell
+emailDelivery :: Guarded EmailRegs EmailVertex EmailCmd EmailEvent
+emailDelivery = B.buildTransducer EmailPending emptyEmailRegs
+                  (\case EmailSentVertex -> True; _ -> False) do
+  B.from EmailPending do
+    B.onCmd inCtorSendEmail $ \d -> B.do
+      B.slot @"emailRecipient" .= d.recipient
+      B.slot @"emailSubject"   .= d.subject
+      B.slot @"emailSentAt"    .= d.at
+      B.emit wireEmailSent EmailSentTermFields
+        { recipient = d.recipient
+        , subject   = d.subject
+        , at        = d.at
+        }
+      B.goto EmailSentVertex
+```
+
+The decider, the acceptors, replay, and the per-vertex view are all **derived from this one
+declaration**. The [Your first aggregate](/docs/keiki/tutorials/your-first-aggregate) tutorial
+builds it end to end and watches `reconstitute` recover state with no hand-written `evolve`.
+
+## Find your way around
 
 <Cards>
-  <Card title="Code Walkthrough" href="/docs/keiki/walkthrough" />
-  <Card title="Explanation" href="/docs/keiki/explanation" />
-  <Card title="Tutorials" href="/docs/keiki/tutorials" />
-  <Card title="How-To Guides" href="/docs/keiki/how-to" />
-  <Card title="Reference" href="/docs/keiki/reference" />
-  <Card title="Cookbook" href="/docs/keiki/cookbook" />
+  <Card title="Tutorials" href="/docs/keiki/tutorials" description="Learn by building. Start with your first aggregate." />
+  <Card title="How-To Guides" href="/docs/keiki/how-to" description="Focused recipes for specific authoring and analysis tasks." />
+  <Card title="Reference" href="/docs/keiki/reference" description="Exact Haskell signatures, module by module." />
+  <Card title="Explanation" href="/docs/keiki/explanation" description="The theory thread — automata, projections, predicates, registers, and why SMT." />
+  <Card title="Cookbook" href="/docs/keiki/cookbook" description="Model your own domain: collections, lifecycles, sagas, schema evolution." />
+  <Card title="Code Walkthrough" href="/docs/keiki/walkthrough" description="Ordered source tours through keiki's real implementation." />
 </Cards>

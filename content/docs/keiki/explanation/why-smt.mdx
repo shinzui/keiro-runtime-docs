@@ -1,0 +1,138 @@
+---
+title: "Why keiki uses an SMT solver"
+description: "Why keiki (継起) proves single-valuedness with z3 at build time instead of trusting tests to find guard overlaps."
+---
+
+This page is for keiki (継起) users who have met the phrase "SMT solver" or "z3" in the
+docs and want to know what it is, what it does, and why an aggregate author should care.
+There are no automata-theory or formal-methods prerequisites: if you have written tests and
+shipped code with bugs in it, you have the background.
+
+<Callout type="info">
+  This is an explanation of *why* the check exists, not a how-to. You can author keiki
+  aggregates without ever reading it. The operational follow-up — wiring the check into a CI
+  pipeline — lives under [keiki how-to guides](/docs/keiki/how-to).
+</Callout>
+
+## The bug we are trying to prevent
+
+A keiki aggregate is a transducer — `SymTransducer phi rs s ci co` — and at each control
+vertex it has some number of outgoing edges. Each edge carries a *guard*: a predicate over the
+register file and the input command that says "fire when this is true."
+
+Suppose at vertex `Pending` you have two edges that both react to a `Submit` command:
+
+```text
+Edge "Process"  fires when:  input is Submit  AND  submittedAt <= deadline
+Edge "Reject"   fires when:  input is Submit  AND  submittedAt >= deadline
+```
+
+Read in isolation, each guard looks correct. Read together, they share a boundary: when
+`submittedAt == deadline`, both guards are true.
+
+This is non-determinism. The runtime has two edges that both want to fire on the same input,
+and they disagree — different update, different output, possibly a different target vertex. The
+runtime has to pick one; whichever it picks, the other edge's effect is silently dropped. The
+machine is no longer **single-valued**: one input maps to more than one possible result. State
+diverges from intent, and no exception is ever raised.
+
+The bug does not surface immediately. It surfaces as the wrong event being emitted on the day a
+`Submit` lands at exactly the deadline, six months after release.
+
+## Why ordinary tests miss it
+
+A unit test checks the cases you wrote. It cannot catch a guard overlap unless someone happens
+to test the offending input — which is exactly the input nobody knew was a problem. The overlap
+hides in the infinite gap *between* the inputs you tried: in the example above it is a
+one-character difference between the two guards (`<` vs `<=`, `>` vs `>=`), live only on a single
+boundary value.
+
+Property tests do better, because a generator produces many random inputs and you can assert "at
+most one edge fires" across them. But a property test is only as good as its generator. If
+`submittedAt` and `deadline` are drawn independently from large domains, the probability that they
+land on exactly the same value is effectively zero, and the boundary bug hides indefinitely.
+
+What we want is a method that does not sample, does not depend on which cases someone thought to
+test, and establishes the property over the *entire* (infinite) input space. That is what an SMT
+solver does.
+
+## What an SMT solver is
+
+"SMT" stands for **Satisfiability Modulo Theories**. An SMT solver — `z3`, in keiki's case — is a
+program that answers one kind of question:
+
+> Given a logical formula over typed variables, is there *any* assignment of values to those
+> variables that makes the formula true?
+
+There are three possible answers: `sat` (yes, and here is an example assignment), `unsat` (no, the
+formula is contradictory for every assignment), or `unknown` (could not decide within the budget).
+
+A tiny example. Let `x` and `y` be integers and consider:
+
+```text
+x > 5   AND   y > 0   AND   x + y < 3
+```
+
+This is `unsat`: if `x > 5` and `y > 0` then `x + y > 5`, which contradicts `x + y < 3`. The
+solver proves there is *no* integer assignment that satisfies it — a strong claim about an
+infinite space, decided in milliseconds. That is the difference from a test: a test samples points;
+the solver decides the whole space.
+
+The "modulo theories" part is what makes it useful for real code. The solver knows bodies of math
+about specific domains — integers, reals, bit vectors, strings, dates, algebraic datatypes — and
+composes them. That is why "do these two date comparisons ever overlap?" is a question it can
+answer at all. You do not write SMT formulas by hand; you write Haskell guards, and a library
+(SBV, in keiki) translates them into the solver's language.
+
+## How keiki uses the solver
+
+Two outgoing edges from the same vertex are mutually exclusive if and only if their guards are
+never simultaneously true. Phrased for the solver: the conjunction `g1 AND g2` is `unsat`.
+
+For the example above:
+
+```text
+g1 = (input is Submit) AND (submittedAt <= deadline)
+g2 = (input is Submit) AND (submittedAt >= deadline)
+g1 AND g2  ==  (input is Submit) AND (submittedAt = deadline)
+```
+
+The solver finds that conjunction *satisfiable* — the assignment `submittedAt = deadline` fires
+both edges — so the single-valuedness check fails and your CI gate goes red.
+
+keiki's check is `isSingleValuedSym`, from `Keiki.Symbolic`. It is **opt-in**: an SBV+z3 proof you
+ask for explicitly. It walks every reachable vertex, takes every pair of outgoing edges, asks the
+solver "is `g1 AND g2` satisfiable?", and returns `True` only when every answer is `unsat`:
+
+```haskell
+isSingleValuedSym (withSymPred yourAggregate) `shouldBe` True
+```
+
+When that returns `True`, the result is closer to a proof than to a passed test: every input that
+could fire two edges has been searched for and ruled out, across the entire input space, by the
+solver's decision procedure. That is the guarantee a property test can never give you.
+
+## The catch: curated types only
+
+The assurance is honest only within its scope. The SBV translation has built-in support for a
+**curated** set of guard types — booleans, the integer types, text, and dates among them. Slot or
+input types outside that set, and opaque Haskell functions lifted into a guard, have no symbolic
+translation: the solver cannot see inside them, so it falls back to a fresh symbolic variable and
+precision drops.
+
+The fallback is deliberately one-directional. When the solver cannot reason about a guard
+precisely it over-approximates, so the gate may fail (`False`) when the truth is "these really are
+mutually exclusive" — but never the reverse. A green gate stays trustworthy; an un-translatable
+guard costs you a false alarm, not a false sense of safety. If a type has a natural symbolic
+representation, you can extend the curated set to cover it.
+
+## Cost, and where it runs
+
+A solver call costs roughly ~10 ms warm. That is fine, because `isSingleValuedSym` is a
+**build/CI-time** check — a test-stage gate, run once before you ship. It is never on the runtime
+hot path: keiki's runtime evaluation is concrete and solver-free, and z3 only needs to be on
+`PATH` when the check is actually invoked at build time. You pay milliseconds in CI to retire a
+class of boundary bug that would otherwise surface in production months later.
+
+For the operational follow-up — wiring `isSingleValuedSym` into a CI pipeline — see the
+[keiki how-to guides](/docs/keiki/how-to).
