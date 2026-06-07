@@ -10,7 +10,10 @@ command to each, exactly once per target.
 <Callout type="info">
   Assumes you understand the command cycle (see
   [The command cycle](/docs/keiro/explanation/the-command-cycle)) and have an `EventStream` for the
-  target commands.
+  target commands. New to the pattern? Read [Routers and content-based
+  dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch) first — especially [Router
+  vs. process manager](/docs/keiro/explanation/routers-and-content-based-dispatch#router-vs-process-manager)
+  if you are unsure which to reach for.
 </Callout>
 
 ## Goal
@@ -20,10 +23,28 @@ subscription.
 
 ## Steps
 
-1. **Define a `Router`** whose `resolve` queries a read model for the targets. The `jitsurei`
-   `pagingRouter` (`jitsurei/src/Jitsurei/Paging.hs`) looks up the on-call roster
-   (`serviceOncallReadModel`) and yields one `SendPage` `PMCommand` per responder, with
-   `targetProjections = const []`.
+1. **Define a `Router`** whose `resolve` queries a read model for the targets. All five fields wired,
+   from the `jitsurei` `pagingRouter` (`jitsurei/src/Jitsurei/Paging.hs`):
+
+   ```haskell
+   pagingRouter :: (IOE :> es, Store :> es) => Router IncidentRaisedData … es
+   pagingRouter =
+     Router
+       { name              = "jitsurei-paging"            -- stable; part of every deterministic id
+       , key               = \raised -> incidentIdText raised.incidentId   -- correlation string
+       , resolve           = \raised -> do               -- the effectful seam: read, don't write
+           result <- runQuery Nothing serviceOncallReadModel raised.service
+           let responders = either (const []) id result
+           pure [ PMCommand { target  = pageCommandStream raised.incidentId responder.responderId
+                            , command = SendPage (SendPageData { incidentId = raised.incidentId, responderId = responder.responderId }) }
+                | responder <- responders ]
+       , targetEventStream = pageEventStream            -- the aggregate every command runs against
+       , targetProjections = const []                   -- append-only dispatch (no inline projection)
+       }
+   ```
+
+   The `resolve` body is a read-model query feeding a pure list comprehension — empty list means
+   "routes nowhere". See [the `resolve` seam](/docs/keiro/reference/router#the-resolve-seam).
 
 2. **Dispatch for one event** with `runRouterOnce`:
 
@@ -53,5 +74,7 @@ the same source event and confirm the second pass writes nothing (each target is
 
 ## Related
 
+- [Routers and content-based dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch) — the mental model, the `resolve` seam, and Router vs. process manager.
 - [Router reference](/docs/keiro/reference/router) — `Router`, `runRouterOnce`, `runRouterWorker`.
+- [Fan out an event with a router](/docs/keiro/cookbook/event-fan-out-with-routers) — a second complete worked recipe.
 - [Make commands idempotent](/docs/keiro/how-to/make-commands-idempotent) — the deterministic-id mechanism the router automates.

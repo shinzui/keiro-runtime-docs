@@ -37,6 +37,32 @@ data Router input targetPhi targetRs targetState targetCi targetCo es = Router
 and `InlineProjection` / `runCommandWithProjections` from `Keiro.Projection` (see the [projection
 reference](/docs/keiro/reference/projection)).
 
+### The `resolve` seam
+
+`resolve :: input -> Eff es [PMCommand targetCi]` is the one effectful field, and the source of most
+confusion: it **computes the target set, it does not dispatch**. Given the decoded source event it
+returns a list of `PMCommand`s (each a target `Stream` paired with the command to run on it); keiro
+performs the idempotent dispatch *after* `resolve` returns.
+
+- It is a **query, not a write** — read a read model (`runQuery`) or config and return; never append
+  events from inside `resolve`. keiro owns the writes.
+- The list may be **empty, one, or many** — that is the dynamic-recipient-list behaviour. `[]` means
+  "routes nowhere" (an intentional no-op, not an error).
+- It can run **more than once** for the same source event (the worker retries on failure), which is
+  safe precisely because it only reads; the dispatch it feeds is idempotent by deterministic id.
+
+The `key :: input -> Text` field is the correlation string (an incident id, a transaction id) folded
+into each `deterministicCommandId`, so re-derived ids are stable per source event. For the EIP
+lineage and the stateless mental model, see [Routers and content-based
+dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch).
+
+### `targetProjections`
+
+`targetProjections :: Stream targetCi -> [InlineProjection targetCo]` runs read-model updates in the
+**same transaction** as each dispatched command's append. Use `const []` for append-only dispatch
+(the common case); return projections when a dispatched event must update a read model atomically
+with its write.
+
 ## `RouterResult`
 
 ```haskell

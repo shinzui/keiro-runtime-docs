@@ -1,0 +1,102 @@
+---
+title: "Fan out an event with a router"
+description: "A complete content-based router that looks up a data-dependent target set from a read model and dispatches one idempotent command to each, with no coordinator state."
+---
+
+**Problem.** One event must become a command on a target set you cannot know from the event alone —
+the set lives in a read model and changes over time. You want the fan-out to be exactly-once per
+target on replay, with no coordinator state to manage.
+
+**Solution.** A [`Keiro.Router`](/docs/keiro/reference/router): resolve the targets effectfully, then
+let keiro dispatch one deterministic command to each. This recipe uses the jitsurei
+agent-qualification router (`jitsurei/src/Jitsurei/AgentQualRouter.hs`): a property-sale
+`Transaction` must be recorded against **every chapter whose service areas overlap the
+transaction's** — a set looked up from the `areaChaptersReadModel`.
+
+For the *why* behind the pattern, read [Routers and content-based
+dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch) first. For the manual,
+router-free version of the same idempotency dance, see [Idempotent
+fan-out](/docs/keiro/cookbook/idempotent-fan-out).
+
+## 1. The routing input and the target aggregate
+
+The `input` is the source event; the target is a minimal `Chapter` aggregate with one command.
+
+```haskell
+data Transaction = Transaction { txnId :: !TxnId, areas :: ![AreaId] }
+
+-- target aggregate: one command, one event
+data ChapterCommand = RecordTransaction !RecordTransactionData
+data ChapterEvent   = TransactionRecorded !TransactionRecordedData
+```
+
+## 2. Resolve the targets, then build the commands
+
+`resolve` is the only effectful part. It queries the read model for each area, dedupes the resolved
+chapters, and turns each into a `PMCommand` (target stream + command). Nothing here writes — the
+query reads, the comprehension is pure:
+
+```haskell
+agentQualRouter :: (IOE :> es, Store :> es) => Router Transaction … es
+agentQualRouter =
+  Router
+    { name    = "agent-qual-router"
+    , key     = \transaction -> txnIdText transaction.txnId          -- correlation for deterministic ids
+    , resolve = \transaction -> do
+        resolved <- traverse (runQuery Nothing areaChaptersReadModel) transaction.areas
+        let targets = nub (concat [chapters | Right chapters <- resolved])
+        pure
+          [ PMCommand
+              { target  = chapterStream target.member target.chapter
+              , command = RecordTransaction (RecordTransactionData { txnId = transaction.txnId })
+              }
+          | target <- targets
+          ]
+    , targetEventStream = chapterEventStream
+    , targetProjections = const []                                   -- append-only dispatch
+    }
+```
+
+<Callout type="info">
+`targetProjections = const []` means "append the dispatched events, run no inline projection in the
+dispatch transaction". Return a non-empty list of `InlineProjection`s here when each dispatched
+command must also update a read model atomically with its append — see the [projection
+reference](/docs/keiro/reference/projection).
+</Callout>
+
+## 3. Run it
+
+Dispatch one event:
+
+```haskell
+RouterResult results <- runRouterOnce defaultRunCommandOptions agentQualRouter recordedEvent transaction
+```
+
+Or run it as a live subscription that drains a shibuya adapter, decoding each message into the
+`(RecordedEvent, input)` the router needs:
+
+```haskell
+-- decodeMessage :: msg -> Maybe (RecordedEvent, Transaction)
+runRouterWorker defaultRunCommandOptions agentQualRouter adapter decodeMessage
+```
+
+## Why it is idempotent
+
+Each dispatched command gets a `deterministicCommandId` from `(router name, key, source event id,
+emit index)`. Re-delivering the same `Transaction` re-derives the same ids, so `eventAlreadyIn`
+turns every second attempt into a `PMCommandDuplicate` that writes nothing. You get
+exactly-once-per-target without a coordinator stream — the recipe's whole point.
+
+<Callout type="warn">
+Keep the target command **total**. If `RecordTransaction` could be rejected in some chapter state, a
+benign rejection would surface as `PMCommandFailed` and `AckHalt` the worker into an infinite retry.
+Model "already recorded / not applicable" as a no-op total transition. See [Keep target commands
+total](/docs/keiro/how-to/keep-target-commands-total).
+</Callout>
+
+## Related
+
+- [Routers and content-based dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch) — the mental model.
+- [Router reference](/docs/keiro/reference/router) — `Router`, `runRouterOnce`, `runRouterWorker`.
+- [Route events to commands](/docs/keiro/how-to/route-events-to-commands) — the task recipe.
+- [Idempotent fan-out](/docs/keiro/cookbook/idempotent-fan-out) — the same idempotency by hand, without a router.

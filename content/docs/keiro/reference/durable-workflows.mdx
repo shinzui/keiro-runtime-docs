@@ -316,8 +316,10 @@ is essential, because a resumed workflow re-allocates the **same** id it already
   `pending → completed` transition; a second signal returns `False` and leaves the stored payload
   unchanged. It **re-appends** the journal entry whenever the row is `completed` (the value just
   written, or the stored payload), so a crash between the row update and the journal append heals on a
-  later signal. A `False` return therefore does not mean "nothing happened". Returns `False` for an
-  unknown id.
+  later signal. That external re-append is itself **idempotent**: it pre-checks the journal for the
+  entry's deterministic id and re-checks after a racing insert, so a concurrent or repeated signal
+  coalesces on the existing entry instead of duplicating it. A `False` return therefore does not mean
+  "nothing happened". Returns `False` for an unknown id.
 - **`cancelAwakeable`** abandons a still-`pending` promise (returns `True` on the transition). A
   workflow that later re-enters the awakeable's `await` then throws `WorkflowAwakeableCancelled`, which
   the author can `catch` for compensation and the resume worker records as a failure.

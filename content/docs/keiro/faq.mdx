@@ -55,6 +55,40 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     [Scaling the workers](/docs/keiro/explanation/scaling-the-workers).
   </Accordion>
 
+  <Accordion title="When should I use a Router vs. a process manager?">
+    Ask one question: **does the next action depend on a history the coordinator must remember?** If
+    *no* — each event maps to its targets independently (page the current on-call roster; record a
+    transaction against every overlapping chapter) — use a **`Keiro.Router`**: it is stateless,
+    resolves the target set from a read model per event, and dispatches one idempotent command to
+    each. If *yes* — the reaction depends on what came before, or needs a durable timer — use a
+    **process manager**, which folds its own event-sourced state. A **saga** is just a process
+    manager whose job is compensation, not a third primitive. They also compose: a process manager
+    can hand a fan-out off to a router. See [Routers and content-based
+    dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch) and [Process managers and
+    sagas](/docs/keiro/explanation/process-managers-and-sagas).
+  </Accordion>
+
+  <Accordion title="What goes in a Router's resolve function?">
+    A **read, not a write.** `resolve :: input -> Eff es [PMCommand targetCi]` computes the target
+    set — it does *not* dispatch. Typically it `runQuery`s a read model and returns one `PMCommand`
+    (target stream + command) per resolved target; keiro does the idempotent dispatch afterward.
+    Returning `[]` means "this event routes nowhere". It can run more than once for the same event
+    (the worker retries), which is safe because it only reads and the dispatch is keyed by a
+    deterministic id. See [the `resolve` seam](/docs/keiro/reference/router#the-resolve-seam).
+  </Accordion>
+
+  <Accordion title="How do I know an event stream is safe to replay?">
+    Validate it. `Keiro.EventStream.Validate` lifts keiki's pure umbrella check
+    (`validateTransducer`) to the `EventStream` boundary: `validateEventStream label es` returns a
+    list of labelled `EventStreamWarning`s (empty when sound), and `mkEventStream label es` is the
+    fail-fast smart constructor returning `Left warnings` for an unsafe stream. It proves
+    *replay-safety* (every command field an edge consumes is recoverable from the events it emits),
+    determinism, and the absence of dead edges — statically, **with no SMT solver and no database**.
+    Run it in a test or at start-up over your streams. See the [event stream
+    reference](/docs/keiro/reference/event-stream-and-stream#replay-safety-validation-keiroeventstreamvalidate)
+    and [Why SymTransducer, not Decider](/docs/keiro/explanation/why-symtransducer-not-decider).
+  </Accordion>
+
   <Accordion title="Is keiro Postgres-only?">
     Yes. keiro persists everything — events, snapshots, read models, timers, the outbox, the inbox —
     to **one** PostgreSQL database. That single-substrate design is deliberate: no second datastore to
