@@ -1,0 +1,130 @@
+---
+title: keiro ⇄ pgmq (background jobs)
+description: How keiro-pgmq composes keiro with the pgmq + shibuya stack into a typed background-job queue — the package layering, the two-layer boundary, its relationship to the shibuya-pgmq adapter and the outbox, and the deferred case B.
+---
+
+`keiro-pgmq` is the cross-package glue that turns [pgmq](/docs/pgmq) (the PostgreSQL-native message
+queue) plus [shibuya](/docs/shibuya) (the supervised worker substrate) into a **typed background-job
+queue** for [keiro](/docs/keiro) applications. This page is the *wiring* story — which packages
+compose, where the boundary is, and how it relates to the layers beneath and beside it. For the
+narrative on *why*, see [Background jobs with PGMQ](/docs/keiro/explanation/background-jobs-with-pgmq);
+for the API and recipes, see the [background-jobs reference](/docs/keiro/reference/pgmq-jobs) and its
+[how-tos](/docs/keiro/how-to/declare-a-background-job).
+
+<Callout type="info">
+`keiro-pgmq` is a **separate package in the keiro repository** (module root `Keiro.PGMQ`), not part
+of `keiro-core` — exactly as shibuya keeps its adapters out of `shibuya-core` and keiro keeps
+`hw-kafka-client` out of the framework. It depends on `pgmq-core`, `pgmq-effectful`, and
+`shibuya-pgmq-adapter`; a keiro app adds it as one dependency to get a job queue.
+</Callout>
+
+## What composes
+
+A background job is a four-package collaboration, and `keiro-pgmq` is the seam that hides it:
+
+```mermaid
+flowchart TD
+  App["Your keiro app — a Job + a p -> Eff es JobOutcome handler"]
+  KP["keiro-pgmq — Keiro.PGMQ.Job / .Runtime / .Codec"]
+  SPA["shibuya-pgmq-adapter — pgmqAdapter, PgmqAdapterConfig"]
+  SC["shibuya-core — runApp, mkProcessor, Ingested / AckDecision"]
+  PE["pgmq-effectful — the Pgmq effect: sendMessage, createQueue, …"]
+  PG[("PostgreSQL + PGMQ — pgmq.q_* / pgmq.q_*_dlq")]
+  KC["keiro-core — Keiro.Codec (optional, versioned payloads)"]
+
+  App --> KP
+  KP --> SPA
+  KP --> PE
+  KP -. keiroJobCodec .-> KC
+  SPA --> SC
+  SPA --> PE
+  PE --> PG
+```
+
+Before `keiro-pgmq`, every app wired the middle three boxes by hand: derive a PGMQ-legal queue name,
+build a `PgmqAdapterConfig`, write a producer over `sendMessage`, and write a handler of type
+`Ingested es Value -> Eff es AckDecision` that decodes JSON and maps failures to acks. `keiro-pgmq`
+absorbs all of that behind a [`Job`](/docs/keiro/reference/pgmq-jobs#job) declaration and a plain
+`p -> Eff es JobOutcome` handler.
+
+## The two-layer boundary
+
+The package is split into two layers, on purpose:
+
+- **`Keiro.PGMQ.Runtime`** (layer 1, transport-agnostic) — the plumbing *any* PGMQ user repeats:
+  turning a logical queue name into a PGMQ-legal [`QueueRef`](/docs/keiro/reference/pgmq-jobs#queueref-and-queueref)
+  (physical + `_dlq` names, sanitized to PGMQ's 47-char/`[a-z0-9_]` rules), and running the
+  `Pgmq : Tracing : Error PgmqRuntimeError : IOE` stack against a pool with an optional tracer
+  ([`JobRuntime`](/docs/keiro/reference/pgmq-jobs#jobruntime-and-the-runners)). It knows nothing about
+  jobs.
+- **`Keiro.PGMQ.Job`** (layer 2, the ergonomics) — the typed `Job`, the producers, and the two run
+  shapes ([`runJobWorkers`](/docs/keiro/how-to/choose-a-job-run-cadence) /
+  [`runJobOnce`](/docs/keiro/how-to/choose-a-job-run-cadence)), built on layer 1.
+  `Keiro.PGMQ.Codec` holds the [payload codecs](/docs/keiro/reference/pgmq-jobs#jobcodec) both share.
+
+That boundary is not cosmetic — it is what keeps the [deferred case B](#the-deferred-design-case-b)
+cheap.
+
+## Its relationship to the shibuya ⇄ pgmq adapter (below)
+
+`keiro-pgmq` sits directly on top of the [shibuya ⇄ pgmq adapter](/docs/integrations/shibuya-pgmq-adapter):
+`jobProcessor` calls `pgmqAdapter` with a `PgmqAdapterConfig` it derives from the job's
+[`RetryPolicy`](/docs/keiro/reference/pgmq-jobs#retrypolicy) — `maxRetries` from the policy, and
+`deadLetterConfig = directDeadLetter dlqName True` when the policy enables a DLQ. The adapter's
+message type is always `aeson`'s `Value` (raw JSON); `keiro-pgmq` wraps the handler so it decodes that
+`Value` with the job's codec (dead-lettering an undecodable one as `InvalidPayload`), runs your typed
+handler, and maps the returned `JobOutcome` back to the adapter's `AckDecision`
+(`Done → AckOk`, `Retry → AckRetry`, `Dead → AckDeadLetter`).
+
+**You generally do not use the adapter directly in a keiro app** — reach for `keiro-pgmq` and let it
+own the config and the decode/ack boilerplate. Drop to the adapter only when you need a knob the `Job`
+abstraction does not expose (custom polling, FIFO read strategy, prefetch).
+
+## Its relationship to the outbox (beside it)
+
+`keiro-pgmq` is the **worker** primitive for **case A — transient background jobs that are not domain
+events**: "go do this thing". It is deliberately *not* the messaging primitive. When the thing you
+are sending is a domain event other contexts consume, that is an [integration
+event](/docs/keiro/explanation/integration-events) — publish it transactionally with the
+[outbox](/docs/keiro/explanation/the-outbox-pattern) and consume it idempotently through the
+[inbox](/docs/keiro/explanation/the-inbox-pattern). Two consequences of that boundary worth
+internalizing:
+
+- A job queue has **no dedupe table** and **no transactional-publication guarantee**. `enqueue` runs
+  in its own PGMQ transaction, so it is *not* atomic with a domain write — when you need exactly-once
+  enqueue tied to a row, send via raw SQL in the same transaction (see [Enqueue a job
+  transactionally](/docs/keiro/cookbook/transactional-job-enqueue)).
+- Jobs, the outbox/inbox, and process managers/workflows are three different tools:
+  jobs are the *worker*, the outbox/inbox are the *messaging*, and process managers and durable
+  workflows are the *coordination* primitive. `keiro-pgmq` owns only the first.
+
+## The deferred design (case B)
+
+The two-layer split exists so a real future enhancement stays cheap: using PGMQ itself as a
+**transport for integration events** — a Kafka alternative that leverages PGMQ topics/fan-out under
+the inbox and outbox. That "case B" is **recorded but deferred** — not built. When it is picked up, it
+will add `Keiro.PGMQ`-flavoured transport codecs on top of **`Keiro.PGMQ.Runtime`** (layer 1) and
+must *not* depend on `Keiro.PGMQ.Job` (layer 2). Today's job queue (case A) and a future
+event-transport (case B) thus share the runtime plumbing without entangling the abstractions.
+
+## Proven against two real cadences
+
+The abstraction was validated by migrating two real apps off hand-rolled plumbing onto the package,
+each exercising a different slice of the API:
+
+- **`rei`** — four queues (git sync, reminders, reflections, agent work) run **continuously** under
+  one supervisor with `runJobWorkers`, using `aesonJobCodec` and a shared no-DLQ policy.
+- **`hospital-capacity`** — one reservation-work queue **drained one-shot** with `runJobOnce` on an
+  external cadence, using a literal `JobCodec` (to preserve its exact wire format) and a DLQ policy.
+
+Both shrank their queue modules to a `Job` declaration plus a domain handler, and both dropped their
+direct `shibuya-pgmq-adapter` dependency.
+
+## Where to go next
+
+<Cards>
+  <Card title="Background jobs with PGMQ" href="/docs/keiro/explanation/background-jobs-with-pgmq" description="The narrative: the boilerplate it removes, the cadences, and when not to reach for a job." />
+  <Card title="Background jobs reference" href="/docs/keiro/reference/pgmq-jobs" description="Every signature across Keiro.PGMQ.Runtime / .Codec / .Job." />
+  <Card title="Declare and run a background job" href="/docs/keiro/how-to/declare-a-background-job" description="From a payload type to a supervised, running worker." />
+  <Card title="shibuya ⇄ pgmq adapter" href="/docs/integrations/shibuya-pgmq-adapter" description="The lower-level bridge keiro-pgmq composes." />
+</Cards>

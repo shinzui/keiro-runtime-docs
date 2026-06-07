@@ -1,0 +1,80 @@
+---
+title: "Choose a job run cadence"
+description: "Pick between runJobWorkers (continuous, multi-processor, supervised) and runJobOnce (one-shot drain of up to n messages) for a keiro-pgmq job — with the rei and hospital-capacity cadences as the two reference shapes."
+---
+
+`keiro-pgmq` ships two run shapes for the same [`Job`](/docs/keiro/reference/pgmq-jobs#job). This
+guide helps you pick.
+
+## The two shapes
+
+| | [`runJobWorkers`](/docs/keiro/reference/pgmq-jobs#consuming-work) | [`runJobOnce`](/docs/keiro/reference/pgmq-jobs#consuming-work) |
+|---|---|---|
+| What it does | Supervises N processors **continuously** | Drains **up to `n`** messages, then stops |
+| Blocks? | No — returns an `AppHandle` you choose to block on | Yes — until the `n` are drained |
+| Processors | Many jobs in one supervisor (`runApp`) | One job |
+| Who decides when work runs | The worker — it polls forever | **Something external** — a cron tick, a fan-out |
+| Reference consumer | `rei` (four queues, one long-lived worker) | `hospital-capacity` (one queue, drained per tick) |
+
+## Use `runJobWorkers` when you have a long-lived worker process
+
+This is the default for "I have a service that should always be draining these queues". You build one
+processor per job and supervise them together; the call returns an `AppHandle` so you own the
+lifecycle (block on a shutdown signal, then `stopAppGracefully`).
+
+```haskell
+appResult <-
+  runJobWorkers IgnoreFailures 100
+    [ jobProcessor gitSyncJob         noteGitSyncHandler
+    , jobProcessor reminderTriggerJob (reminderTriggerHandler cfg)
+    -- … one per queue …
+    ]
+```
+
+- `SupervisionStrategy` — `IgnoreFailures` keeps the other processors running when one fails (rei's
+  choice); `StopAllOnFailure` tears the app down on the first failure.
+- The `Int` is the supervisor inbox size (rei uses `100`).
+
+See [Declare and run a background job](/docs/keiro/how-to/declare-a-background-job) for the full
+wiring, including the shutdown path.
+
+## Use `runJobOnce` when an external scheduler decides the cadence
+
+This is "drain a little, then exit" — ideal when *something else* decides when work should be picked
+up: a `pg_cron` sweep, a Kubernetes `CronJob`, or a keiro [`Router`](/docs/keiro/reference/router)
+fan-out that enqueues and then triggers a drain. `runJobOnce n job handle` takes `n` from the queue,
+processes each, and returns.
+
+```haskell
+-- hospital-capacity drains one reservation-work message per invocation:
+runReservationWorkConsumerOnce store pool =
+  runPgmqIO pool $ do
+    ensureJobQueue reservationWorkJob
+    runJobOnce 1 reservationWorkJob (handleReservationWork store)
+```
+
+It reproduces the hand-rolled "`Stream.take n` over the adapter source, run with metrics" loop, so
+the per-invocation drain semantics are identical to a bespoke one-shot consumer — only the
+boilerplate is gone. See [Drain a queue on a schedule](/docs/keiro/cookbook/scheduled-job-drain) for
+the surrounding cron wiring.
+
+## Decision guide
+
+- **Always-on service, possibly many queues, you want supervision and graceful drain on shutdown** →
+  `runJobWorkers`.
+- **The cadence is owned elsewhere (cron, a fan-out), you want a process that drains and exits, or
+  you want back-pressure by only ever pulling `n` at a time** → `runJobOnce`.
+- **Both** — nothing stops you running some queues continuously and draining others on a tick; they
+  are independent uses of the same `Job` values.
+
+<Callout type="info">
+`runJobOnce` taking up to `n` per call also gives you a natural rate limit and predictable resource
+use: a tick that pulls `runJobOnce 10 job h` does bounded work and stops, instead of an unbounded
+loop. Size `n` to what one tick should accomplish.
+</Callout>
+
+## Related
+
+- [Declare and run a background job](/docs/keiro/how-to/declare-a-background-job)
+- [Drain a queue on a schedule](/docs/keiro/cookbook/scheduled-job-drain)
+- [Background jobs reference](/docs/keiro/reference/pgmq-jobs)

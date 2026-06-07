@@ -1,0 +1,95 @@
+---
+title: "Version a job payload"
+description: "Choose a JobCodec — aesonJobCodec for raw payloads, keiroJobCodec for versioned schema evolution, or a literal JobCodec for an exact wire format — and evolve a payload shape without breaking in-flight messages."
+---
+
+A [`Job`](/docs/keiro/reference/pgmq-jobs#job)'s `jobCodec` decides how its payload `p` is turned
+into the JSON PGMQ stores and back. This guide picks the right
+[`JobCodec`](/docs/keiro/reference/pgmq-jobs#jobcodec) for your situation, and shows how to evolve a
+payload safely.
+
+## The three options
+
+```haskell
+data JobCodec p = JobCodec
+  { encodeJob :: p -> Value
+  , decodeJob :: Value -> Either Text p
+  }
+```
+
+### `aesonJobCodec` — raw, mechanical
+
+```haskell
+jobCodec = aesonJobCodec   -- requires (ToJSON p, FromJSON p)
+```
+
+Use it when your payload already has `ToJSON`/`FromJSON` and you do **not** need versioned evolution.
+This is the drop-in choice — it is what both proving-ground consumers reach for first, so migrating a
+hand-rolled queue is mechanical. The trade-off: a breaking change to `p`'s JSON is an **unversioned
+break** — an old message still on the queue may fail to decode (and dead-letter as `InvalidPayload`).
+
+### A literal `JobCodec` — exact wire format
+
+```haskell
+reservationWorkJobCodec :: JobCodec ReservationWorkItem
+reservationWorkJobCodec =
+  JobCodec
+    { encodeJob = reservationWorkItemToValue                       -- hand-written snake_case JSON
+    , decodeJob = first renderFailure . reservationWorkItemFromValue
+    }
+```
+
+Build the record directly when you need to pin a specific on-the-wire shape — for example to preserve
+bytes across a migration, or to use snake-case keys. `hospital-capacity` does this over its existing,
+test-covered JSON codecs so the wire format is unchanged from before the migration. `decodeJob`
+returns `Either Text p`; render your own decode error to `Text` for the dead-letter reason.
+
+### `keiroJobCodec` — versioned schema evolution
+
+```haskell
+jobCodec = keiroJobCodec myCodec   -- myCodec :: Keiro.Codec.Codec p
+```
+
+The opt-in upgrade. It gives job payloads the same evolution story event streams have, by reusing
+keiro's [`Codec`](/docs/keiro/reference/codec). On encode it produces a versioned envelope:
+
+```json
+{ "v": 2, "data": { /* the current-version payload */ } }
+```
+
+On decode it reads `v`, replays the codec's upcaster chain up to the current `schemaVersion` via
+`migrateToCurrent`, then runs the codec's current decoder. A migration fault surfaces as `Text` (from
+`show`-ing the `CodecError`).
+
+## Evolve a payload with `keiroJobCodec`
+
+When a payload shape must change while old messages are still on the queue:
+
+1. **Bump `schemaVersion`** on the `Codec` and update its `encode`/`decode` to the new shape.
+2. **Add an `Upcaster`** for the old version — a pure `Value -> Either Text Value` that rewrites a
+   v(n−1) body into a v(n) body, paired with the version it upgrades *from*:
+
+   ```haskell
+   upcasters =
+     [ (1, \v -> Right (addDefaultPriorityField v))   -- v1 → v2
+     ]
+   ```
+
+3. **Redeploy.** New messages are written as `{ "v": 2, … }`; an in-flight `{ "v": 1, … }` is read,
+   run through the v1→v2 upcaster, then decoded as v2 — so the handler always sees the current shape.
+
+This is exactly keiro's event [codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution)
+story, applied to transient job payloads.
+
+<Callout type="info">
+You can adopt `keiroJobCodec` *before* you need to evolve — start versioned and your first breaking
+change is then a one-upcaster diff instead of a wire-format migration. Switching an existing queue
+from `aesonJobCodec` to `keiroJobCodec` is itself a wire-format change (the envelope), so drain the
+queue first or treat the cutover as a versioned migration.
+</Callout>
+
+## Related
+
+- [Codec reference](/docs/keiro/reference/codec) — the `Codec`, `Upcaster`, and `migrateToCurrent`.
+- [Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution) — the narrative.
+- [Background jobs reference](/docs/keiro/reference/pgmq-jobs#jobcodec)

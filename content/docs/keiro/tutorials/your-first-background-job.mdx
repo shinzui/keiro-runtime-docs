@@ -1,0 +1,179 @@
+---
+title: "Your first background job"
+description: "Declare a Job over a payload type, enqueue a message, drain it once with runJobOnce, and watch a Done handler delete it, a Retry handler leave it, and a Dead handler route it to the dead-letter queue."
+---
+
+In this tutorial you build a complete `keiro-pgmq` background job from nothing: declare a
+[`Job`](/docs/keiro/reference/pgmq-jobs#job) over your own payload type, put a message on the queue
+with `enqueue`, drain it with `runJobOnce`, and prove the three outcomes — `Done` deletes the
+message, `Retry` leaves it, and `Dead` (or an undecodable payload) routes it to the dead-letter
+queue. No long-running worker, no broker — just a PostgreSQL with PGMQ installed.
+
+<Callout type="info">
+This is a tutorial: a guided lesson — follow every step in order. You need a PostgreSQL with the
+**PGMQ schema** installed (PGMQ is *not* part of keiro's own migrations; install it with
+`pgmq-migration` or the PGMQ extension — see [pgmq](/docs/pgmq)). You do **not** need the keiro event-store
+tables for this lesson. `keiro-pgmq` is a separate package; depend on it and import `Keiro.PGMQ`.
+</Callout>
+
+## What you will build
+
+A tiny job over a `Ping` payload, run through `runJobOnce` (the one-shot drain). You will enqueue one
+message and drain it under three different handlers, reading the queue back each time to see the
+effect.
+
+## Before you begin
+
+- A running PostgreSQL with the PGMQ schema installed, and its connection string.
+- The `keiro-pgmq` package as a dependency; `import Keiro.PGMQ`.
+- These extensions on (keiro's house set): `OverloadedStrings`, `OverloadedRecordDot`, `DataKinds`,
+  `DeriveAnyClass`, `DerivingStrategies`.
+
+## Steps
+
+<Steps>
+<Step>
+
+### Define a payload and its codec
+
+Any type with `ToJSON`/`FromJSON` works with the default [`aesonJobCodec`](/docs/keiro/reference/pgmq-jobs#jobcodec):
+
+```haskell
+import Keiro.PGMQ
+import Data.Aeson (FromJSON, ToJSON)
+import GHC.Generics (Generic)
+import Data.Text (Text)
+
+data Ping = Ping
+  { message :: Text
+  , count   :: Int
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+```
+
+</Step>
+<Step>
+
+### Declare the `Job`
+
+Bundle a queue, the codec, and a retry policy. `queueRef` turns a logical name into a PGMQ-legal
+physical name plus a `_dlq` name; `defaultRetryPolicy` is 5 deliveries with a DLQ enabled.
+
+```haskell
+pingJob :: Job Ping
+pingJob =
+  Job
+    { jobName   = "ping"
+    , jobQueue  = queueRef "tutorial.ping"
+    , jobCodec  = aesonJobCodec
+    , jobPolicy = defaultRetryPolicy
+    }
+-- pingJob.jobQueue.physicalName == "tutorial_ping"
+-- pingJob.jobQueue.dlqName      == "tutorial_ping_dlq"
+```
+
+</Step>
+<Step>
+
+### Open a runtime
+
+For a PGMQ-only program, `withJobRuntime` manages the connection pool and `runJobEff` runs the
+`Pgmq : Tracing : Error PgmqRuntimeError : IOE` stack. `Nothing` means no OpenTelemetry tracer.
+
+```haskell
+import qualified Data.Text as Text
+
+main :: IO ()
+main = do
+  let connStr = "postgresql://localhost/postgres"   -- your connection string
+  result <- withJobRuntime connStr Nothing $ \rt ->
+    runJobEff rt $ do
+      ensureJobQueue pingJob          -- idempotent: creates the queue and its DLQ
+      _ <- enqueue pingJob (Ping "hello" 7)
+      runJobOnce 1 pingJob $ \p -> do
+        -- your real work goes here
+        pure Done
+  either (fail . show) pure result
+```
+
+`runJobOnce 1` builds the job's adapter, takes **one** message from the queue, runs your handler over
+it, acks the result, and returns. A real service would run this on a schedule, or use `runJobWorkers`
+to run continuously — see [Choose a job run cadence](/docs/keiro/how-to/choose-a-job-run-cadence).
+
+</Step>
+<Step>
+
+### Watch `Done` delete the message
+
+The handler above returned `Done`, so `keiro-pgmq` deleted the message. Read the queue length back
+through `pgmq-effectful`'s `queueMetrics` (run it in another `runJobEff` block):
+
+```haskell
+import qualified Pgmq.Effectful as Pgmq
+
+len <- withJobRuntime connStr Nothing $ \rt ->
+  runJobEff rt $ do
+    metrics <- Pgmq.queueMetrics pingJob.jobQueue.physicalName
+    pure metrics.queueLength
+-- len == Right 0   -- the message is gone
+```
+
+</Step>
+<Step>
+
+### Try `Retry` and `Dead`
+
+Re-enqueue and drain again with different outcomes:
+
+```haskell
+-- Retry: the message stays on the queue, redelivered after the delay.
+runJobOnce 1 pingJob (\_ -> pure (Retry (RetryDelay 0)))
+-- queueLength of the main queue is still 1
+
+-- Dead: poison; routed to the dead-letter queue with a reason.
+runJobOnce 1 pingJob (\_ -> pure (Dead "bad ping"))
+-- main queue 0, DLQ (pingJob.jobQueue.dlqName) 1
+```
+
+`RetryDelay` is re-exported from `Keiro.PGMQ` — you do not import it from shibuya.
+
+</Step>
+<Step>
+
+### See an undecodable payload dead-letter itself
+
+Send raw JSON the `Ping` codec cannot decode (bypassing the typed `enqueue`), then drain. The decode
+fails *before* your handler runs, so the package dead-letters it as `InvalidPayload` on its own:
+
+```haskell
+import Pgmq.Effectful (MessageBody (..), SendMessage (..))
+import Data.Aeson (Value (String))
+
+_ <- Pgmq.sendMessage SendMessage
+       { queueName   = pingJob.jobQueue.physicalName
+       , messageBody = MessageBody (String "not a ping")
+       , delay       = Nothing
+       }
+runJobOnce 1 pingJob (\_ -> pure Done)
+-- main queue 0, DLQ 1 — the handler never saw it
+```
+
+</Step>
+</Steps>
+
+## What you proved
+
+A `Job` declaration plus a `p -> Eff es JobOutcome` handler is the whole surface: `enqueue` put work
+on the queue, `runJobOnce` drained it, and the three outcomes mapped to delete / redeliver /
+dead-letter — with malformed payloads dead-lettered for you before the handler runs. These are
+exactly the scenarios `keiro-pgmq`'s own integration test asserts against an ephemeral Postgres.
+
+From here, run jobs continuously and pick a cadence:
+
+<Cards>
+  <Card title="Declare and run a background job" href="/docs/keiro/how-to/declare-a-background-job" />
+  <Card title="Choose a job run cadence" href="/docs/keiro/how-to/choose-a-job-run-cadence" />
+  <Card title="Dead-letter and retry jobs" href="/docs/keiro/how-to/dead-letter-and-retry-jobs" />
+  <Card title="Background jobs reference" href="/docs/keiro/reference/pgmq-jobs" />
+</Cards>

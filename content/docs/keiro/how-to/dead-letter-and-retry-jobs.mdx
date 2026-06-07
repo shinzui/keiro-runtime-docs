@@ -1,0 +1,98 @@
+---
+title: "Dead-letter and retry jobs"
+description: "Set a RetryPolicy, map domain failures to JobOutcome (Done / Retry / Dead), understand when a message goes to the dead-letter queue, and inspect the DLQ — with the hospital-capacity failure mapping as the reference."
+---
+
+A background job fails in three different ways, and each wants a different fate: a *transient* failure
+should retry, a *poison* failure should stop retrying and be parked, and a *malformed* payload should
+never have run at all. This guide wires those into a [`RetryPolicy`](/docs/keiro/reference/pgmq-jobs#retrypolicy)
+and a [`JobOutcome`](/docs/keiro/reference/pgmq-jobs#joboutcome) mapping.
+
+## Set the policy
+
+```haskell
+data RetryPolicy = RetryPolicy
+  { maxRetries        :: !Int64       -- deliveries before the adapter dead-letters
+  , defaultRetryDelay :: !RetryDelay  -- a convenience default; Retry carries its own
+  , useDeadLetter     :: !Bool        -- create + route to a DLQ at all
+  }
+```
+
+`defaultRetryPolicy` is `{ 5, RetryDelay 60, True }`. Override it to match the queue:
+
+```haskell
+-- hospital-capacity: a DLQ, 3 deliveries, 5-second retry.
+reservationPolicy = RetryPolicy { maxRetries = 3, defaultRetryDelay = RetryDelay 5, useDeadLetter = True }
+
+-- rei: NO DLQ (reproducing shibuya's old defaultConfig), 3 deliveries.
+reiQueuePolicy    = RetryPolicy { maxRetries = 3, defaultRetryDelay = RetryDelay 60, useDeadLetter = False }
+```
+
+- **`maxRetries`** is the number of deliveries the adapter allows before it dead-letters a message.
+  It only has somewhere to send it when `useDeadLetter = True` — so set both together.
+- **`useDeadLetter = True`** makes [`ensureJobQueue`](/docs/keiro/reference/pgmq-jobs#queue-lifecycle)
+  create the `_dlq` queue and configures the adapter to route to it.
+
+## Map domain failures to outcomes
+
+Your handler returns a `JobOutcome`. Translate each *kind* of failure deliberately:
+
+```haskell
+-- hospital-capacity's mapping:
+reservationWorkFailureOutcome :: ReservationWorkFailure -> JobOutcome
+reservationWorkFailureOutcome = \case
+  ReservationWorkStoreFailed _err  -> Retry (RetryDelay 5)   -- transient: the DB hiccuped
+  ReservationWorkCommandRejected e -> Dead e                 -- poison: the command is invalid
+  ReservationWorkDecodeFailed e    -> Dead e                 -- defensive: see below
+```
+
+| Failure kind | Outcome | Why |
+|---|---|---|
+| Transient (DB busy, lock timeout, downstream 503) | `Retry d` | It will likely succeed on redelivery; back off with `d`. |
+| Permanent / poison (invalid command, business rule violated) | `Dead reason` | Retrying never helps; park it for inspection. |
+| Benign no-op (nothing to do, already done) | `Done` | Not a failure — delete the message. |
+| Malformed payload (codec rejects it) | *handled for you* | `keiro-pgmq` dead-letters it as `InvalidPayload` **before** your handler runs. |
+
+<Callout type="info">
+Because the package decodes the payload and dead-letters an undecodable one itself, a
+`DecodeFailed`-style arm in your handler only fires for decode-like failures you surface *inside* the
+handler — e.g. parsing a typed id out of an already-decoded field. The wire-level "this isn't even
+the right shape" case never reaches you.
+</Callout>
+
+### How the outcomes map to the queue
+
+`keiro-pgmq` translates `JobOutcome` into shibuya ack decisions, which the adapter turns into PGMQ
+operations:
+
+- `Done` → delete the message.
+- `Retry d` → leave it; it becomes visible again after `d` (the next delivery's `attempt` increments).
+- `Dead why` → route to the DLQ as a `PoisonPill why` (or, for a codec rejection, `InvalidPayload`).
+- A message redelivered past `maxRetries` is dead-lettered by the adapter when a DLQ is configured.
+
+## Inspect the dead-letter queue
+
+The DLQ is an ordinary PGMQ queue named `<physical>_dlq`, stored in table
+`pgmq.q_<physical>_dlq`. Read its depth the same way you read any queue:
+
+```haskell
+metrics <- Pgmq.queueMetrics reservationWorkJob.jobQueue.dlqName
+-- metrics.queueLength  -- number of parked messages
+```
+
+A non-zero DLQ is an operational signal: inspect the parked messages, fix the cause, and (if
+appropriate) re-enqueue them onto the main queue. `keiro-pgmq` does not auto-drain the DLQ — that is
+deliberately an operator decision.
+
+## Verify it worked
+
+Enqueue a message your handler will `Dead`, drain it once, and confirm the main queue is empty and the
+DLQ has one row. Then enqueue one your handler will `Retry (RetryDelay 0)` and confirm it is still on
+the main queue after the drain. (These are two of the scenarios `keiro-pgmq`'s own integration test
+covers.)
+
+## Related
+
+- [Background jobs reference → RetryPolicy](/docs/keiro/reference/pgmq-jobs#retrypolicy)
+- [Choose a job run cadence](/docs/keiro/how-to/choose-a-job-run-cadence)
+- [Background jobs with PGMQ](/docs/keiro/explanation/background-jobs-with-pgmq)

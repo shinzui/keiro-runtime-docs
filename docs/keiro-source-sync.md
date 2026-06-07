@@ -12,18 +12,51 @@ the affected pages, then bump the pointer below.
 - **Path at last sync:** `/Users/shinzui/Keikaku/bokuno/keiro`
 - Relevant packages: `keiro` (framework library), `keiro-core` (pure core: `Codec`, `EventStream`,
   `Stream`, `Integration.Event`, `Snapshot.Policy`), `keiro-migrations` (the `keiro-migrate`
-  executable and embedded schema), `keiro-test-support` (test fixtures); `jitsurei` (the runnable
-  worked example).
+  executable and embedded schema), `keiro-pgmq` (the typed background-job queue — `Keiro.PGMQ.*`),
+  `keiro-test-support` (test fixtures); `jitsurei` (the runnable worked example).
 
 ## Last reviewed commit
 
 ```text
-ac197da3b2b11aae2e00ce2e4587a7fb99b9ffc1  (ac197da)
-2026-06-06 (post-MasterPlan-6: replay-safety validation + runtime idempotency hardening + keiki EP-56 pin)
-keiro 0.1.0.0 (development line; in-tree version still 0.1.0.0, CHANGELOG now carries an [Unreleased] section)
+f6ebb162446f0ad6ae4b37498f77968c594a5c4c  (f6ebb16)
+2026-06-07 (MasterPlan-7: the keiro-pgmq typed background-job queue package + its two consumer migrations)
+keiro 0.1.0.0 (development line; keiro-pgmq is a new package at version 0.1.0.0)
 ```
 
-> **Note.** The `0730ae1..ac197da` range is a **release-hardening** pass: no new doc area, a handful of
+> **Note.** The `ac197da..f6ebb16` range is **MasterPlan 7 — `keiro-pgmq`**, a brand-new package, plus
+> doc-only plan/masterplan entries. The keiro/keiro-core libraries are byte-identical across this range
+> (verified: the diff is `keiro-pgmq/`, `docs/`, and keiro's own `cabal.project`/`mori.dhall` only) —
+> so no existing keiro doc page was invalidated; this round is **additive**.
+> - **New package `keiro-pgmq` (`445b658`, `cdab7b4`, `0498587`):** a typed background-job queue over
+>   PGMQ + shibuya. Two layers — `Keiro.PGMQ.Runtime` (`QueueRef`/`queueRef`, `JobRuntime`,
+>   `withJobRuntime`, `runJobEff`) and `Keiro.PGMQ.Job` (`Job`, `JobOutcome`, `RetryPolicy`,
+>   `defaultRetryPolicy`, `enqueue`/`enqueueWithDelay`, `ensureJobQueue`, `jobProcessor`,
+>   `runJobWorkers`, `runJobOnce`) — plus `Keiro.PGMQ.Codec` (`JobCodec`, `aesonJobCodec`,
+>   `keiroJobCodec`) and the `Keiro.PGMQ` umbrella. EP-1 (plan 55) complete; five-scenario integration
+>   test passes. Two API refinements vs the masterplan's Integration Point 1: `RetryDelay` is
+>   re-exported from `Keiro.PGMQ` (import it there, not `Shibuya.Core.Ack`), and `enqueueWithDelay`'s
+>   delay is `Int32` (seconds). Documented as a new "Background jobs" subsystem:
+>   `reference/pgmq-jobs.mdx`, `explanation/background-jobs-with-pgmq.mdx`,
+>   `tutorials/your-first-background-job.mdx`, four how-tos (`declare-a-background-job`,
+>   `choose-a-job-run-cadence`, `version-a-job-payload`, `dead-letter-and-retry-jobs`), two cookbook
+>   recipes (`scheduled-job-drain`, `transactional-job-enqueue`), two `faq.mdx` entries, the
+>   `getting-started` family/choosing pages, a new `integrations/keiro-with-pgmq` composition page
+>   (+ index card), and the `integrations/shibuya-pgmq-adapter` cross-link.
+> - **Consumer migrations (EP-2 `rei`, EP-3 `hospital-capacity`):** the migration *code* lives in
+>   other repos (`rei-project/rei`, `keiro-runtime-jitsurei`), not in keiro — only their plan docs
+>   (56, 57) are in this range. They are the source of the docs' real worked examples: `rei`'s
+>   continuous `runJobWorkers` over four queues (`aesonJobCodec`, no DLQ) and `hospital-capacity`'s
+>   one-shot `runJobOnce` drain (literal `JobCodec`, DLQ, store-failure→`Retry`/rejected→`Dead`).
+>   Notable real-world caveat folded into the docs: `enqueue` is **not** transactional with a domain
+>   write — `rei`'s live producer sends via raw SQL in the same transaction, so the package covers the
+>   consumer side and the transactional-enqueue cookbook documents the inline-SQL pattern.
+> - **Schema:** keiro's own migrations are unchanged (still **nine** files / **nine** tables).
+>   `keiro-pgmq` owns no keiro tables — it uses PGMQ's `pgmq.q_*` / `pgmq.q_*_dlq` queue tables, which
+>   PGMQ (not keiro) creates.
+> - **Telemetry:** no new keiro instruments; `keiro-pgmq` threads an optional OpenTelemetry tracer
+>   through the shibuya `Tracing` effect and the `pgmq` interpreter.
+
+> **Note (prior range).** The `0730ae1..ac197da` range was a **release-hardening** pass: no new doc area, a handful of
 > additive/correctness changes folded into existing pages. (Two `chore:` commits — a whole-tree
 > `format code` reflow and `prepare package metadata` — account for most of the diff line count but
 > are doc-neutral.)
@@ -68,6 +101,13 @@ keiro 0.1.0.0 (development line; in-tree version still 0.1.0.0, CHANGELOG now ca
 
 ### Previous pointers (for traceability)
 
+- `ac197da3b2b11aae2e00ce2e4587a7fb99b9ffc1` (`ac197da`, 2026-06-06, keiro 0.1.0.0) — the baseline
+  before MasterPlan 7. The `ac197da..f6ebb16` range added the **`keiro-pgmq`** package (the typed
+  background-job queue — `Keiro.PGMQ.Runtime`/`.Codec`/`.Job` + umbrella; EP-1/plan 55) and the two
+  consumer-migration plan docs (EP-2 `rei`, EP-3 `hospital-capacity`; the migration code lives in
+  those repos, not keiro). keiro/keiro-core libraries are byte-identical across the range; the docs
+  round was purely additive (a new "Background jobs" subsystem). No new keiro migrations/tables (still
+  nine/nine).
 - `0730ae1533894ec5398b9dc0728989edb0f1148d` (`0730ae1`, 2026-06-04, keiro 0.1.0.0) — the baseline
   before the release-hardening pass. The `0730ae1..ac197da` range added the `Keiro.EventStream.Validate`
   replay-safety surface (`validateEventStream`/`mkEventStream`, on keiki EP-56's `validateTransducer`),
@@ -104,8 +144,8 @@ keiro 0.1.0.0 (development line; in-tree version still 0.1.0.0, CHANGELOG now ca
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline ac197da..HEAD
-   git -C "$KEIRO" diff --stat ac197da..HEAD
+   git -C "$KEIRO" log --oneline f6ebb16..HEAD
+   git -C "$KEIRO" diff --stat f6ebb16..HEAD
    ```
    keiro also keeps its own `docs/`, `CHANGELOG.md`, and `docs/plans|masterplans` entries — the
    prose diff there is the fastest way to understand intent before touching the source. Note that
@@ -121,7 +161,7 @@ keiro 0.1.0.0 (development line; in-tree version still 0.1.0.0, CHANGELOG now ca
      `reference/process-manager.mdx`, `reference/timers.mdx`, `reference/durable-workflows.mdx`,
      `reference/push-delivery.mdx`, `reference/subscription-sharding.mdx`,
      `reference/integration-event.mdx`, `reference/inbox.mdx`, `reference/outbox.mdx`,
-     `reference/telemetry.mdx`, `reference/migrations-and-schema.mdx`.
+     `reference/pgmq-jobs.mdx`, `reference/telemetry.mdx`, `reference/migrations-and-schema.mdx`.
    - **Walkthroughs** (line-by-line tours of the real source): every chapter under
      `walkthrough/command-cycle/`, `walkthrough/read-side/`, `walkthrough/workflow/`,
      `walkthrough/durable-execution/`, `walkthrough/scaling/`, `walkthrough/operations/`, and

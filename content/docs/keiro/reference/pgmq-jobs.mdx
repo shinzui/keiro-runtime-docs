@@ -1,0 +1,309 @@
+---
+title: "Background jobs (keiro-pgmq)"
+description: "Reference for keiro-pgmq: the typed Job, JobOutcome, RetryPolicy, the producers, the run shapes (runJobWorkers / runJobOnce), the JobCodec, and the QueueRef / JobRuntime plumbing."
+---
+
+`keiro-pgmq` is a separate package in the keiro repository (module root `Keiro.PGMQ`) that gives
+keiro applications a typed background-job queue on top of [PGMQ](/docs/pgmq) (the PostgreSQL-native
+message queue) and [shibuya](/docs/shibuya) (the supervised worker substrate). It is the
+background-work analogue of keiro's [`EventStream`](/docs/keiro/reference/event-stream-and-stream):
+you declare a `Job` value bundling a queue, a payload codec, and a retry/dead-letter policy, then
+write a plain domain handler of type `p -> Eff es JobOutcome` that never touches shibuya's
+`Ingested`/`AckDecision` or PGMQ's wire types. For the narrative, see [Background jobs with
+PGMQ](/docs/keiro/explanation/background-jobs-with-pgmq).
+
+The umbrella module `Keiro.PGMQ` re-exports the whole public surface — import it to get everything.
+It is split into two layers:
+
+- **`Keiro.PGMQ.Runtime`** (layer 1, transport-agnostic): queue-name derivation (`QueueRef`) and the
+  `Pgmq : Tracing : Error PgmqRuntimeError : IOE` effect-stack runner plus pool/tracer lifecycle.
+- **`Keiro.PGMQ.Job`** (layer 2, the ergonomics): the typed `Job`, the producers, the run shapes,
+  built on layer 1. `Keiro.PGMQ.Codec` holds the payload codecs both share.
+
+<Callout type="warn">
+`keiro-pgmq` is for **case A — transient background jobs that are not domain events**. It is *not*
+the [outbox](/docs/keiro/reference/outbox) (transactional publication of domain integration events)
+nor the [inbox](/docs/keiro/reference/inbox). Using PGMQ as a transport for integration events
+(case B) is a recorded-but-deferred design. See [Background jobs with
+PGMQ → When not to reach for a job](/docs/keiro/explanation/background-jobs-with-pgmq#when-not-to-reach-for-a-job).
+</Callout>
+
+## `Job`
+
+```haskell
+data Job p = Job
+  { jobName   :: !Text          -- ^ shibuya ProcessorId + telemetry label
+  , jobQueue  :: !QueueRef
+  , jobCodec  :: !(JobCodec p)
+  , jobPolicy :: !RetryPolicy
+  }
+```
+
+A declarative job: a queue, a payload codec, and a retry policy, named for telemetry. Construct one
+and pair it with a handler of type `p -> Eff es JobOutcome`. `jobName` becomes the shibuya
+`ProcessorId` and the telemetry label.
+
+```haskell
+reservationWorkJob :: Job ReservationWorkItem
+reservationWorkJob =
+  Job
+    { jobName   = "reservation-work"
+    , jobQueue  = queueRef "hospital_capacity.reservation_work"
+    , jobCodec  = aesonJobCodec
+    , jobPolicy = defaultRetryPolicy
+    }
+```
+
+## `JobOutcome`
+
+```haskell
+data JobOutcome
+  = Done            -- ^ processed successfully; delete the message
+  | Retry !RetryDelay  -- ^ leave on the queue; redeliver after the delay
+  | Dead !Text      -- ^ poison; route to the dead-letter queue with this reason
+  deriving stock (Show)
+```
+
+What a job handler decides. It never exposes shibuya/PGMQ wire types to the caller. `keiro-pgmq`
+translates it into a shibuya `AckDecision` internally: `Done → AckOk` (delete), `Retry d → AckRetry
+d` (redeliver), `Dead why → AckDeadLetter (PoisonPill why)` (DLQ).
+
+<Callout type="info">
+`JobOutcome` has a `Show` instance but **no `Eq`** — pattern-match it in tests rather than comparing
+with `==`. A payload the codec rejects never reaches the handler: `keiro-pgmq` dead-letters it for
+you as `AckDeadLetter (InvalidPayload …)`.
+</Callout>
+
+## `RetryDelay`
+
+```haskell
+newtype RetryDelay = RetryDelay { unRetryDelay :: NominalDiffTime }
+```
+
+The delay before a `Retry` redelivers. It is shibuya's type, **re-exported from `Keiro.PGMQ`** —
+import it from there, not from `Shibuya.Core.Ack`. `RetryDelay 5` is five seconds.
+
+## `RetryPolicy`
+
+```haskell
+data RetryPolicy = RetryPolicy
+  { maxRetries        :: !Int64
+  , defaultRetryDelay :: !RetryDelay
+  , useDeadLetter     :: !Bool
+  }
+```
+
+<TypeTable
+  type={{
+    maxRetries:        { type: "Int64", description: "Deliveries the adapter allows before it dead-letters a message (only has somewhere to send it when useDeadLetter is True).", default: "5" },
+    defaultRetryDelay: { type: "RetryDelay", description: "A convenience default a handler can reach for; Retry carries its own delay.", default: "RetryDelay 60" },
+    useDeadLetter:     { type: "Bool", description: "Whether a DLQ is created (ensureJobQueue) and routed to at all.", default: "True" },
+  }}
+/>
+
+```haskell
+-- 5 deliveries, a 60-second default retry delay, and a DLQ enabled.
+defaultRetryPolicy :: RetryPolicy
+```
+
+<Callout type="info">
+Both proving-ground consumers **override** `defaultRetryPolicy`. `hospital-capacity` uses
+`RetryPolicy { maxRetries = 3, defaultRetryDelay = RetryDelay 5, useDeadLetter = True }`; `rei`'s
+shared policy is `{ maxRetries = 3, defaultRetryDelay = RetryDelay 60, useDeadLetter = False }`
+(reproducing shibuya's old `defaultConfig`, which had no DLQ). Pick a policy to match your queue's
+semantics rather than assuming the default. See [Dead-letter and retry
+jobs](/docs/keiro/how-to/dead-letter-and-retry-jobs).
+</Callout>
+
+## Producing work
+
+```haskell
+enqueue          :: (Pgmq :> es, IOE :> es) => Job p -> p -> Eff es MessageId
+enqueueWithDelay :: (Pgmq :> es, IOE :> es) => Job p -> Int32 -> p -> Eff es MessageId
+```
+
+`enqueue` encodes `p` with the job's codec and sends it to the queue's `physicalName` for immediate
+delivery. `enqueueWithDelay` adds a visibility delay (in **seconds**, PGMQ's `Delay` is `Int32`)
+before first delivery — e.g. `enqueueWithDelay job 30 p` makes the message invisible for 30 s.
+`MessageId` is PGMQ's `newtype` over `Int64`.
+
+<Callout type="warn">
+**`enqueue` runs in its own PGMQ transaction — it is *not* atomic with a domain write.** If you need
+exactly-once enqueue coupled to a database change (so a committed domain row always has its job, and
+a rolled-back one never does), send the message via raw SQL inside the *same* `hasql` transaction as
+your write, the way the [outbox](/docs/keiro/reference/outbox) does. `keiro-pgmq` does not provide a
+`Tx`-scoped enqueue. See [Enqueue a job transactionally](/docs/keiro/cookbook/transactional-job-enqueue).
+</Callout>
+
+## Queue lifecycle
+
+```haskell
+ensureJobQueue :: (Pgmq :> es) => Job p -> Eff es ()
+```
+
+Idempotent: create the main queue, and the DLQ too when `jobPolicy.useDeadLetter` is `True`.
+`Pgmq.createQueue` is idempotent in PGMQ, so this is safe to call at every worker startup. If you
+already create your queues with SQL migrations, you can skip it (it is harmless to add later).
+
+## Consuming work
+
+```haskell
+jobProcessor ::
+  (Pgmq :> es, IOE :> es, Tracing :> es) =>
+  Job p -> (p -> Eff es JobOutcome) ->
+  Eff es (ProcessorId, QueueProcessor es)
+
+runJobWorkers ::
+  (Pgmq :> es, IOE :> es, Tracing :> es) =>
+  SupervisionStrategy -> Int ->
+  [Eff es (ProcessorId, QueueProcessor es)] ->
+  Eff es (Either AppError (AppHandle es))
+
+runJobOnce ::
+  (Pgmq :> es, IOE :> es, Tracing :> es) =>
+  Int -> Job p -> (p -> Eff es JobOutcome) -> Eff es ()
+```
+
+- **`jobProcessor`** builds one shibuya `QueueProcessor` from a job and its handler: a `pgmqAdapter`
+  configured from the job's policy (`maxRetries`, DLQ routing) paired with the wrapped handler. Pass
+  the resulting actions to `runJobWorkers`.
+- **`runJobWorkers`** is the **continuous, multi-processor** run shape (the `rei` cadence): it
+  `sequence`s the `jobProcessor` actions and supervises them with shibuya's `runApp` under the given
+  `SupervisionStrategy` and inbox size. It **returns the `AppHandle`** — it does not block; the
+  caller decides whether to block on it (and can later `stopAppGracefully` it). `SupervisionStrategy`
+  is `IgnoreFailures | StopAllOnFailure`.
+- **`runJobOnce`** is the **one-shot drain** of up to `n` messages (the `hospital-capacity` cadence):
+  it builds the job's adapter, takes `n` from its source stream, runs the wrapped handler over each
+  (auto-acking via the returned `AckDecision`), then **stops**. It blocks until those `n` are drained.
+
+See [Choose a job run cadence](/docs/keiro/how-to/choose-a-job-run-cadence) for when to use which.
+
+### What the wrapped handler does for you
+
+The boilerplate `keiro-pgmq` absorbs once, per delivery: decode the raw JSON payload with the job's
+codec, run your domain handler, and translate its `JobOutcome` into a shibuya `AckDecision`. A
+payload the codec rejects is dead-lettered as `InvalidPayload` **without** calling your handler — so
+your handler only ever sees a well-typed `p`. The adapter config it derives is shibuya's
+`defaultConfig job.jobQueue.physicalName` with `maxRetries = jobPolicy.maxRetries` and, when the
+policy uses a DLQ, `deadLetterConfig = Just (directDeadLetter job.jobQueue.dlqName True)`. The shibuya
+adapter's message type is always `aeson`'s `Value` (raw JSON) for PGMQ.
+
+## `JobCodec`
+
+```haskell
+data JobCodec p = JobCodec
+  { encodeJob :: p -> Value
+  , decodeJob :: Value -> Either Text p
+  }
+```
+
+How a job payload is turned into PGMQ JSON and back. PGMQ stores message bodies as JSON
+(`Data.Aeson.Value`); a `JobCodec` is the adapter between a domain payload `p` and that JSON. Three
+ways to get one:
+
+```haskell
+-- Raw aeson. Drop-in for payloads that already have ToJSON/FromJSON.
+aesonJobCodec :: (ToJSON p, FromJSON p) => JobCodec p
+
+-- Versioned bridge to keiro's Keiro.Codec — schema evolution for job payloads.
+keiroJobCodec :: Codec p -> JobCodec p
+```
+
+- **`aesonJobCodec`** — raw `aeson` encode/decode. The mechanical choice when your payload already
+  has `ToJSON`/`FromJSON` instances.
+- **`keiroJobCodec`** — the versioned upgrade. It wraps payloads in a `{ "v": <schemaVersion>,
+  "data": <payload> }` envelope and, on decode, reads the version, replays the
+  [`Codec`](/docs/keiro/reference/codec)'s upcaster chain via `migrateToCurrent`, then runs the
+  codec's current decoder. This gives job payloads the same schema-evolution story event streams
+  have. Codec faults are surfaced as `Text` (via `show` of the `CodecError`).
+- **A literal `JobCodec { encodeJob, decodeJob }`** — when you want an exact, hand-written wire
+  format (e.g. snake-case keys), build the record directly. `hospital-capacity` does this over its
+  existing, test-covered JSON codecs so the on-the-wire bytes are unchanged.
+
+See [Version a job payload](/docs/keiro/how-to/version-a-job-payload).
+
+## `QueueRef` and `queueRef`
+
+```haskell
+data QueueRef = QueueRef
+  { logicalName  :: !Text       -- ^ caller-facing; may contain dots / illegal chars
+  , physicalName :: !QueueName  -- ^ derived, PGMQ-valid name for the main queue
+  , dlqName      :: !QueueName  -- ^ derived "<physical>_dlq" name for the DLQ
+  }
+  deriving stock (Eq, Show)
+
+queueRef :: Text -> QueueRef
+```
+
+PGMQ caps queue names at **47 characters** and rejects dots and any character outside `[a-z0-9_]`.
+`queueRef` owns that sanitization once, centrally, so a caller-facing logical name (which may contain
+dots, e.g. `"hospital_capacity.reservation_work"`) maps deterministically to a PGMQ-legal physical
+name plus a matching `_dlq` name. It is **total** — it sanitizes rather than failing. It:
+
+1. lower-cases the input;
+2. replaces every character that is not `[a-z0-9_]` with `_`;
+3. collapses runs of `_` to one and trims leading/trailing `_`;
+4. guarantees a leading ASCII letter (prefixing `q` otherwise; empty input becomes `"q"`);
+5. trims to **43** characters so the `_dlq` suffix still fits under the 47-char ceiling.
+
+```haskell
+let q = queueRef "hospital_capacity.reservation_work"
+-- q.physicalName == "hospital_capacity_reservation_work"
+-- q.dlqName      == "hospital_capacity_reservation_work_dlq"
+```
+
+<Callout type="info">
+If the sanitizer ever produced an invalid `QueueName` (it should not), `queueRef` fails loudly with
+`error` and a clear message — that is a programmer error, not a runtime input error. PGMQ stores the
+queue's rows in a table named `pgmq.q_<physicalName>`; the DLQ is `pgmq.q_<physicalName>_dlq`.
+</Callout>
+
+## `JobRuntime` and the runners
+
+For a simple service whose only effect needs are PGMQ + tracing, `Keiro.PGMQ.Runtime` provides a
+ready-made pool/tracer lifecycle and runner:
+
+```haskell
+data JobRuntime = JobRuntime
+  { runtimePool   :: !Pool
+  , runtimeTracer :: !(Maybe Tracer)
+  }
+
+withJobRuntime :: Text -> Maybe Tracer -> (JobRuntime -> IO a) -> IO a
+
+runJobEff ::
+  JobRuntime ->
+  Eff '[Pgmq, Tracing, Error PgmqRuntimeError, IOE] a ->
+  IO (Either PgmqRuntimeError a)
+
+-- re-exported for the Left of runJobEff
+PgmqRuntimeError
+```
+
+- **`withJobRuntime connStr tracer action`** acquires a `hasql` pool from a libpq connection string,
+  runs `action` with the resulting `JobRuntime`, and releases the pool afterwards (even on
+  exception).
+- **`runJobEff`** interprets the fixed `Pgmq : Tracing : Error PgmqRuntimeError : IOE` stack against
+  the runtime, surfacing PGMQ errors as `Left`. With no tracer it uses `runTracingNoop` + `runPgmq`;
+  with a tracer it threads it into both shibuya's `Tracing` effect and the `pgmq` interpreter
+  (`runTracing` + `runPgmqTraced`).
+
+<Callout type="warn">
+`runJobEff`'s effect list is **fixed**. A real service usually needs more effects alongside PGMQ — a
+kiroku `Store`, `Hasql`, `Reader`s — and so assembles its own interpreter stack and uses `runPgmq` /
+`runTracing` directly instead of `runJobEff` (both `rei` and `hospital-capacity` do). Reach for
+`withJobRuntime` / `runJobEff` when PGMQ + tracing is genuinely all you run; otherwise treat them as
+a worked reference for the correct interpreter order (`runPgmq`/`runPgmqTraced` require `Error
+PgmqRuntimeError :> es` and `IOE :> es`, so peel `Pgmq` first, then `Tracing`, then `Error`, then
+`IOE`). See [Declare and run a background job](/docs/keiro/how-to/declare-a-background-job).
+</Callout>
+
+## Where to go next
+
+<Cards>
+  <Card title="Background jobs with PGMQ" href="/docs/keiro/explanation/background-jobs-with-pgmq" />
+  <Card title="Your first background job" href="/docs/keiro/tutorials/your-first-background-job" />
+  <Card title="Declare and run a background job" href="/docs/keiro/how-to/declare-a-background-job" />
+  <Card title="Choose a job run cadence" href="/docs/keiro/how-to/choose-a-job-run-cadence" />
+  <Card title="shibuya ⇄ pgmq adapter" href="/docs/integrations/shibuya-pgmq-adapter" />
+</Cards>

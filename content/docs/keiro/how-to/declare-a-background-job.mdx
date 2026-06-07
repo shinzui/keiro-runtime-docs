@@ -1,0 +1,122 @@
+---
+title: "Declare and run a background job"
+description: "Declare a keiro-pgmq Job, write a domain handler, build a processor with jobProcessor, and run several queues continuously with runJobWorkers under one supervisor — including the real effect-stack and graceful shutdown."
+---
+
+This guide takes you from a payload type to a running, supervised worker that drains one or more PGMQ
+queues continuously — the cadence `rei` uses for its four background queues.
+
+## Goal
+
+Run N background queues in one process: each is a [`Job`](/docs/keiro/reference/pgmq-jobs#job) plus a
+`p -> Eff es JobOutcome` handler, supervised together by `runJobWorkers`, with a clean shutdown.
+
+## Steps
+
+1. **Declare the job.** Bundle a queue, a codec, and a retry policy. Keep the policy explicit — it
+   decides retries and whether a DLQ exists:
+
+   ```haskell
+   import Keiro.PGMQ
+
+   gitSyncJob :: Job NoteGitSyncPayload
+   gitSyncJob =
+     Job
+       { jobName   = "workspace-git-sync"          -- ProcessorId + telemetry label
+       , jobQueue  = queueRef "workspace_git_sync" -- → physical + "_dlq" names
+       , jobCodec  = aesonJobCodec                 -- payload already has ToJSON/FromJSON
+       , jobPolicy = reiQueuePolicy                -- see below
+       }
+   ```
+
+   `rei` shares one policy across its queues that reproduces shibuya's old `defaultConfig` (3
+   deliveries, **no** DLQ) — note this differs from `keiro-pgmq`'s `defaultRetryPolicy` (5 + DLQ):
+
+   ```haskell
+   reiQueuePolicy :: RetryPolicy
+   reiQueuePolicy = RetryPolicy
+     { maxRetries        = 3
+     , defaultRetryDelay = RetryDelay 60
+     , useDeadLetter     = False
+     }
+   ```
+
+2. **Write the handler as plain domain code.** Its type is `p -> Eff es JobOutcome` — no shibuya or
+   PGMQ types. Return `Done`, `Retry d`, or `Dead reason`; an undecodable payload is dead-lettered
+   for you before this runs:
+
+   ```haskell
+   noteGitSyncHandler :: (GitSyncEff es) => NoteGitSyncPayload -> Eff es JobOutcome
+   noteGitSyncHandler payload = do
+     result <- commitNote payload
+     pure $ case result of
+       GitSuccess         -> Done
+       GitNothingToCommit -> Done            -- benign no-op is still success
+       GitError err       -> Dead err        -- poison: don't retry forever
+   ```
+
+3. **Build and supervise the processors.** `runJobWorkers` `sequence`s the `jobProcessor` actions and
+   supervises them with shibuya's `runApp`. It takes a `SupervisionStrategy` (`IgnoreFailures |
+   StopAllOnFailure`) and an inbox size, and **returns an `AppHandle` without blocking**:
+
+   ```haskell
+   appResult <-
+     runJobWorkers IgnoreFailures 100
+       [ jobProcessor gitSyncJob            noteGitSyncHandler
+       , jobProcessor reminderTriggerJob    (reminderTriggerHandler reminderConfig)
+       , jobProcessor reflectionSchedulerJob (reflectionSchedulerHandler schedulerConfig)
+       , jobProcessor agentWorkJob          (agentWorkHandler agentWorkConfig)
+       ]
+   ```
+
+4. **Run it inside your real effect stack.** `runJobWorkers` needs `Pgmq`, `IOE`, and `Tracing`. A
+   real service runs *more* than those (a kiroku `Store`, `Hasql`, `Reader`s), so it assembles its own
+   interpreter stack and uses `runPgmq` / `runTracing` directly — **not** `runJobEff` (whose effect
+   list is fixed to PGMQ + tracing only):
+
+   ```haskell
+   runEff
+     . runTracing tracer
+     . runErrorNoCallStack @PgmqRuntimeError
+     . runPgmq pool
+     . runHasqlWithPool pool
+     . runStorePool store
+     $ do
+         appResult <- runJobWorkers IgnoreFailures 100 [ {- processors -} ]
+         case appResult of
+           Left appErr    -> liftIO (report appErr)
+           Right appHandle -> do
+             liftIO (waitForShutdownSignal)        -- e.g. block on an MVar
+             _ <- stopAppGracefully (ShutdownConfig { drainTimeout = 5 }) appHandle
+             pure ()
+   ```
+
+   <Callout type="info">
+   For a program whose *only* effects are PGMQ + tracing, skip the hand-assembled stack and use
+   [`withJobRuntime` / `runJobEff`](/docs/keiro/reference/pgmq-jobs#jobruntime-and-the-runners)
+   instead — they own the pool lifecycle and the correct interpreter order for you.
+   </Callout>
+
+5. **Shut down gracefully.** Because `runJobWorkers` hands back the `AppHandle`, you control the
+   lifecycle: block until a SIGINT/SIGTERM, then `stopAppGracefully` so shibuya signals the adapters,
+   drains in-flight messages, and force-stops anything still running after the drain timeout.
+
+## Should I call `ensureJobQueue`?
+
+[`ensureJobQueue job`](/docs/keiro/reference/pgmq-jobs#queue-lifecycle) idempotently creates the main
+queue (and the DLQ when the policy uses one). Call it at startup if the queue might not exist. `rei`
+**skips** it because it creates its queues in SQL migrations and uses no DLQ; `hospital-capacity`
+**calls** it before enqueue/consume. Either is fine — it is idempotent, so adding it is harmless.
+
+## Verify it worked
+
+Start the worker, enqueue a message (`enqueue job payload`), and watch the handler run and the
+message disappear from `pgmq.q_<name>`. Send SIGINT and confirm the "stopped gracefully" path: a
+message in flight finishes before the process exits.
+
+## Related
+
+- [Choose a job run cadence](/docs/keiro/how-to/choose-a-job-run-cadence) — continuous vs one-shot.
+- [Dead-letter and retry jobs](/docs/keiro/how-to/dead-letter-and-retry-jobs) — `RetryPolicy` and the `JobOutcome` mapping.
+- [Background jobs reference](/docs/keiro/reference/pgmq-jobs) — every signature.
+- [Enqueue a job transactionally](/docs/keiro/cookbook/transactional-job-enqueue) — when `enqueue` is not enough.

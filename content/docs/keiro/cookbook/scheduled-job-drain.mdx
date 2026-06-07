@@ -1,0 +1,67 @@
+---
+title: "Drain a queue on a schedule"
+description: "Run a keiro-pgmq job as a one-shot drain on an external cadence — a pg_cron tick or a CronJob — instead of a long-lived worker."
+---
+
+When the cadence is owned by a scheduler — a `pg_cron` sweep, a Kubernetes `CronJob`, or a keiro
+[`Router`](/docs/keiro/reference/router) fan-out — you do not want a long-lived worker. You want a
+process that **drains a little and exits**. That is [`runJobOnce`](/docs/keiro/reference/pgmq-jobs#consuming-work),
+the cadence `hospital-capacity` uses.
+
+## Problem
+
+Your enqueues are produced by something on a clock or by a fan-out, and you want each tick to drain a
+bounded amount of work and stop — predictable resource use, no always-on supervisor.
+
+## Solution
+
+Wrap `runJobOnce` in a small entry point your scheduler calls. `ensureJobQueue` first so the queue
+(and its DLQ) exist; the handler is plain domain code returning a
+[`JobOutcome`](/docs/keiro/reference/pgmq-jobs#joboutcome):
+
+```haskell
+import Keiro.PGMQ
+
+-- One drain of up to one message. The scheduler decides how often this runs.
+runReservationDrain :: KirokuStore -> Pool -> IO (Either PgmqRuntimeError ())
+runReservationDrain store pool =
+  runPgmqIO pool $ do                         -- your Pgmq : Tracing : Error : IOE runner
+    ensureJobQueue reservationWorkJob
+    runJobOnce 1 reservationWorkJob (handleReservationWork store)
+
+handleReservationWork :: (IOE :> es) => KirokuStore -> ReservationWorkItem -> Eff es JobOutcome
+handleReservationWork store item = do
+  result <- liftIO (dispatchReservationWork store item)
+  pure $ case result of
+    Left (StoreFailed _)      -> Retry (RetryDelay 5)   -- transient
+    Left (CommandRejected e)  -> Dead e                 -- poison → DLQ
+    Right ()                  -> Done
+```
+
+Then point a scheduler at it. Two common shapes:
+
+```sql
+-- pg_cron: drain every minute from inside Postgres (calls your binary via a wrapper,
+-- or schedules the SQL your drain runs). The queue lives in the same database.
+SELECT cron.schedule('reservation-drain', '* * * * *', $$ SELECT drain_reservation_work() $$);
+```
+
+```yaml
+# Kubernetes CronJob: run the one-shot binary every minute.
+schedule: "* * * * *"
+# command: ["reservation-work", "consume", "once"]
+```
+
+## How it works
+
+`runJobOnce n` builds the job's adapter, takes `n` from its source stream, runs the wrapped handler
+over each (decoding the payload, dead-lettering an undecodable one, mapping the `JobOutcome` to an
+ack), then returns. It blocks only until those `n` are drained — so the process exits promptly and the
+scheduler owns the rhythm. Sizing `n` larger (e.g. `runJobOnce 50 …`) lets one tick clear a backlog
+while still bounding the work per run.
+
+Pair this with a producer driven by the same clock — a `Router` that fans an event out to enqueues,
+or a periodic sweep that enqueues due items — and the drain stays decoupled from how work arrives. See
+[Choose a job run cadence](/docs/keiro/how-to/choose-a-job-run-cadence) for continuous vs one-shot,
+and [Declare and run a background job](/docs/keiro/how-to/declare-a-background-job) for the
+`runJobWorkers` alternative when you *do* want an always-on worker.

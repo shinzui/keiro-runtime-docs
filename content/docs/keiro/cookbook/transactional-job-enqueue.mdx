@@ -1,0 +1,70 @@
+---
+title: "Enqueue a job transactionally"
+description: "keiro-pgmq's enqueue runs in its own transaction, so it is not atomic with a domain write. When you need exactly-once enqueue tied to a database change, send via raw SQL in the same transaction."
+---
+
+[`enqueue`](/docs/keiro/reference/pgmq-jobs#producing-work) is convenient, but it runs in its **own**
+PGMQ transaction. If you enqueue a job as part of a domain change, a crash between the two commits
+leaves them inconsistent — a row with no job, or a job with no row. When that matters, do the enqueue
+inside the *same* transaction as the write.
+
+## Problem
+
+You write a domain row and want a background job for it, with an **exactly-once** guarantee: every
+committed row has exactly one job, and a rolled-back write enqueues nothing.
+
+```haskell
+-- The dual-write hazard: two separate transactions.
+saveNote note                         -- commits the row …
+enqueue gitSyncJob (gitSyncPayload note)  -- … then a crash here loses the job
+```
+
+## Solution
+
+`keiro-pgmq` does not offer a `Tx`-scoped enqueue, so reach past it for this case: build the same
+JSON the job's codec produces and `INSERT` it onto the queue with a raw `hasql` statement, in the same
+transaction as your write — and add a dedupe claim so a retried transaction enqueues at most once.
+This is exactly how `rei`'s live git-sync producer works (its `enqueue` helper is reserved for
+out-of-band use):
+
+```haskell
+-- Inside ONE hasql transaction:
+enqueueNoteGitSyncTx :: NoteGitSyncPayload -> Tx.Transaction ()
+enqueueNoteGitSyncTx payload = do
+  -- 1. the domain write (or it happened earlier in this same transaction)
+  Tx.statement payload upsertNoteStmt
+
+  -- 2. an idempotency claim: a unique key so a replayed tx enqueues at most once
+  inserted <- Tx.statement (dedupKey payload) claimGitSyncEnqueueStmt   -- ON CONFLICT DO NOTHING
+  when inserted $
+    -- 3. send onto the PGMQ queue via raw SQL, same transaction
+    Tx.statement
+      (gitSyncJob.jobQueue.physicalName, encodeJob gitSyncJob.jobCodec payload)
+      pgmqSendStmt
+```
+
+Where `pgmqSendStmt` is a `hasql` `Statement` over PGMQ's send function (e.g. `SELECT
+pgmq.send($1, $2)`), and `claimGitSyncEnqueueStmt` inserts into a small dedupe table with `ON CONFLICT
+(key) DO NOTHING RETURNING true`. The two `INSERT`s and your domain write commit or roll back
+together.
+
+<Callout type="info">
+Reuse the job's own codec for the body — `encodeJob gitSyncJob.jobCodec payload` — so the bytes on
+the queue are identical to what `enqueue` would have written, and the consumer (built from the same
+`Job`) decodes it unchanged. You are only swapping out *how the row gets onto the queue*, not the wire
+format.
+</Callout>
+
+## When you do *not* need this
+
+Plain `enqueue` is correct for the common case: the enqueue is the whole point of the action and
+there is no domain row it must be atomic with (a CLI command that schedules work, a periodic sweep
+that enqueues due items). The transactional form is only for "this job must exist if and only if this
+write committed".
+
+If the thing you are sending is actually a **domain event other contexts consume**, this pattern *is*
+the [outbox](/docs/keiro/explanation/the-outbox-pattern) — and keiro already ships that, with
+transactional publication, ordering, and dead-lettering. Use the outbox (and the
+[inbox](/docs/keiro/explanation/the-inbox-pattern) on the consumer) for integration events; use this
+recipe only for transient jobs that happen to need transactional enqueue. See [Background jobs with
+PGMQ → When not to reach for a job](/docs/keiro/explanation/background-jobs-with-pgmq#when-not-to-reach-for-a-job).

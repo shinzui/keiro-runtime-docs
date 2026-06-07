@@ -105,4 +105,25 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     pattern](/docs/keiro/explanation/the-outbox-pattern), and [Choose an inbox dedupe
     policy](/docs/keiro/how-to/choose-an-inbox-dedupe-policy).
   </Accordion>
+
+  <Accordion title="Does keiro have a background job queue?">
+    Yes — `keiro-pgmq`, a **separate package** in the keiro repo (module `Keiro.PGMQ`). You declare a
+    typed `Job` bundling a queue, a payload codec, and a retry/dead-letter policy, then write a plain
+    handler `p -> Eff es JobOutcome` (`Done | Retry delay | Dead reason`) that never touches shibuya
+    or PGMQ wire types. Run many queues continuously with `runJobWorkers`, or drain on a schedule with
+    `runJobOnce`. It is the *worker* primitive for **transient work that is not a domain event** — for
+    domain events crossing contexts, use the [outbox](/docs/keiro/explanation/the-outbox-pattern) and
+    [inbox](/docs/keiro/explanation/the-inbox-pattern) instead. See [Background jobs with
+    PGMQ](/docs/keiro/explanation/background-jobs-with-pgmq) and the [reference](/docs/keiro/reference/pgmq-jobs).
+  </Accordion>
+
+  <Accordion title="Is keiro-pgmq's enqueue transactional with my database write?">
+    **No.** `enqueue` runs in its own PGMQ transaction, so it is not atomic with a domain write — a
+    crash between the two commits leaves them inconsistent. For exactly-once enqueue tied to a row,
+    send onto the queue via raw SQL inside the *same* `hasql` transaction as your write (plus a dedupe
+    claim), the way the outbox does. See [Enqueue a job
+    transactionally](/docs/keiro/cookbook/transactional-job-enqueue). If the thing you are sending is
+    actually a domain event, that pattern *is* the [outbox](/docs/keiro/explanation/the-outbox-pattern) —
+    use it.
+  </Accordion>
 </Accordions>
