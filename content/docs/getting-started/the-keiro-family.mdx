@@ -1,14 +1,14 @@
 ---
 title: The keiro family
-description: The four libraries of the keiro runtime and how they relate.
+description: The five libraries of the keiro runtime and how they relate.
 ---
 
-"keiro runtime" is an umbrella name for a family of four Haskell libraries — there
+"keiro runtime" is an umbrella name for a family of five Haskell libraries — there
 is no single `keiro-runtime` package. Two of them are "the foundation" in different
 senses: kiroku is the foundation for _persistence_, and keiki is the foundation for
 _pure semantics_.
 
-## The four libraries
+## The five libraries
 
 - **kiroku** (記録, "record") — an append-only PostgreSQL event store. The
   persistence foundation everything else writes through.
@@ -18,6 +18,9 @@ _pure semantics_.
   core (a symbolic-register transducer). The pure-semantics foundation.
 - **shibuya** — a supervised, Broadway-style queue-processing framework with
   backpressure, batching, and rate limiting.
+- **pgmq** — a PostgreSQL-native message queue (the queue substrate), used from
+  Haskell through `pgmq-hs` and consumed by shibuya via the
+  [shibuya ⇄ pgmq adapter](/docs/integrations/shibuya-pgmq-adapter).
 
 ## How they depend on each other
 
@@ -27,10 +30,13 @@ flowchart TD
     kiroku[(kiroku — event store)]
     keiki[keiki — pure core]
     shibuya[shibuya — queue processing]
+    pgmq[(pgmq — queue substrate)]
     keiro --> kiroku
     keiro --> keiki
     keiro --> shibuya
+    shibuya -. via shibuya-pgmq-adapter .-> pgmq
 ```
 
 keiro sits on top and depends on kiroku for durable storage, keiki for pure
-semantics, and shibuya for queue processing.
+semantics, and shibuya for queue processing. shibuya, in turn, reads a pgmq queue
+through the shibuya-pgmq-adapter when a project needs a general-purpose work queue.
