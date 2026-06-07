@@ -7,6 +7,28 @@ This final chapter reads `keiro/src/Keiro/Router.hs` — keiro's stateless conte
 turns one source event into a fan-out of commands. Read
 [06 — The typed handles](/docs/keiro/walkthrough/command-cycle/06-the-typed-handles) first.
 
+## The fan-out in one picture
+
+One source event becomes *zero, one, or many* commands. `resolve` looks the target set up; then each
+resolved command is dispatched independently, under a deterministic id, through the same two
+idempotency guards. The result is one `PMCommandResult` per target, in resolution order:
+
+```mermaid
+flowchart TD
+  Src["source event + input"] --> Res["resolve input → [PMCommand] (0, 1, or many)"]
+  Res --> Zip["zip [0..]: tag each command with emitIndex"]
+  Zip --> Id["per target: deterministicCommandId name correlationId sourceEventId emitIndex"]
+  Id --> G1{"eventAlreadyIn target stream?"}
+  G1 -- "yes" --> Dup["PMCommandDuplicate"]
+  G1 -- "no" --> Run["runCommandWithProjections (events + inline projections, one tx)"]
+  Run -- "Right result" --> App["PMCommandAppended"]
+  Run -- "Left DuplicateEvent (lost race)" --> Dup
+  Run -- "Left err" --> Fail["PMCommandFailed"]
+  App --> RR["RouterResult [PMCommandResult]"]
+  Dup --> RR
+  Fail --> RR
+```
+
 ## `Router` and `RouterResult`
 
 ```haskell
@@ -36,6 +58,25 @@ The router is the **stateless** sibling of the process manager: no manager-state
 runs in `Eff es`, so the fan-out set can be *looked up* — typically a
 [`runQuery`](/docs/keiro/reference/process-manager) against a read model — rather than computed purely
 from the event.
+
+## Router vs. process manager, at the source
+
+The kinship is not a metaphor — the source comment on `runRouterOnce` states that its per-target
+dispatch logic is *identical* to `runProcessManagerOnce`'s `dispatchCommand`. What the router strips
+away is everything to do with keeping state:
+
+| Aspect | Process manager (`runProcessManagerOnce`) | Router (`runRouterOnce`) |
+| --- | --- | --- |
+| Per-target dispatch body | `deterministicCommandId` → `eventAlreadyIn` → `runCommandWithProjections` → fold `DuplicateEvent` | **identical** |
+| Own state stream | a manager-state stream, advanced **first** | none |
+| Correlation field | `correlate :: input -> Text` | `key :: input -> Text` (same role) |
+| Target resolution | a **pure** `handle` over manager state | an **effectful** `resolve :: input -> Eff es [PMCommand]` (a lookup) |
+| Result | `ProcessManagerResult` — `managerResult` **plus** command results | `RouterResult` — command results **only** |
+| Outer `Either` | `Eff es (Either CommandError …)` — the manager append can fail before dispatch | **no** outer `Either` — there is no pre-dispatch write that can fail |
+
+The whole tour of the process-manager side lives in the workflow walkthrough:
+[the dispatch loop](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop) and
+[the transaction model](/docs/keiro/walkthrough/workflow/02-the-transaction-model).
 
 ## `runRouterOnce` / `dispatchCommand`
 
@@ -77,6 +118,58 @@ transactional runner from [chapter 04](/docs/keiro/walkthrough/command-cycle/04-
 so a target's events and its inline projections commit together. A genuine failure becomes a
 `PMCommandFailed` *element* of the `RouterResult` — never an exception, never an outer `Left`.
 
+### `retarget = coerce`
+
+The one line elided above is `targetStream = retarget (command ^. #target)`, and `retarget` is a
+`coerce`:
+
+```haskell
+retarget :: Stream targetCi -> Stream (EventStream targetPhi targetRs targetState targetCi targetCo)
+retarget = coerce
+```
+
+`command ^. #target` is a `Stream targetCi` — a stream tagged by the *command input* type — but
+`runCommandWithProjections` wants a `Stream` tagged by the *whole* `EventStream`. A `Stream` is a
+phantom-typed newtype over a stream name ([chapter 06](/docs/keiro/walkthrough/command-cycle/06-the-typed-handles)),
+so the two are the same runtime value and `retarget` is a zero-cost cast that only rewrites the
+phantom. The identical `retarget = coerce` appears in the process manager's
+[dispatch loop](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop).
+
+## The deterministic id, component by component
+
+Idempotency is *entirely* carried by the command id, so it is worth reading
+`deterministicCommandId` (from [`Keiro.ProcessManager`](/docs/keiro/reference/process-manager)) byte
+for byte. It is a v5 (namespaced, deterministic) UUID over four colon-joined components:
+
+```haskell
+deterministicCommandId managerName correlationId sourceEventId emitIndex =
+  EventId $ UUID.V5.generateNamed UUID.V5.namespaceURL $ … $
+    Text.intercalate ":"
+      [ "keiro", "process-manager", managerName, correlationId
+      , UUID.toText (eventIdToUuid sourceEventId), Text.pack (show emitIndex) ]
+```
+
+Each component earns its place — drop any one and a class of distinct commands collapses to the same
+id, where the second is silently swallowed as a `PMCommandDuplicate`:
+
+- **`managerName`** (`router.name`, e.g. `"jitsurei-paging"`) — namespaces the dispatcher, so a router
+  and a process manager that both target the same aggregate never collide on ids.
+- **`correlationId`** (`key input`, e.g. the incident id) — ties the id to the business correlation, so
+  two unrelated incidents fanning out to an overlapping responder set produce *distinct* page commands.
+- **`sourceEventId`** — ties the id to the *specific* source event; without it two different events
+  sharing a correlation would mint colliding ids and the second event would write nothing.
+- **`emitIndex`** (the `zip [0 ..]`) — distinguishes the N commands a *single* source event fans out
+  into; without it every responder paged from one `IncidentRaised` would share an id and only the
+  first would ever be appended.
+
+<Callout type="info">
+The namespace segment is literally `"process-manager"` even for a router — the router reuses the
+process manager's id function rather than minting its own. It is the **`name`** field, not the
+segment, that keeps a router's command ids disjoint from a process manager's. Because the UUID is a
+pure function of these four inputs, re-deriving it on replay yields the *same* id — which is the whole
+basis of the `eventAlreadyIn` pre-check and the `DuplicateEvent` fold.
+</Callout>
+
 ## `runRouterWorker` / `ackDecisionFor`
 
 ```haskell
@@ -110,12 +203,51 @@ with no matching edge) would wedge the worker. Model such rejections as **total*
 ε-complement self-loop) in the target transducer so they never become `PMCommandFailed`.
 </Callout>
 
+## The five fields, filled in: `pagingRouter`
+
+The worked example is jitsurei's `pagingRouter` (`jitsurei/src/Jitsurei/Paging.hs`, run with
+`just jitsurei-paging`) — the entire `Router` value, with every abstract field bound to a concrete
+escalation-domain value:
+
+```haskell
+pagingRouter =
+  Router
+    { name = "jitsurei-paging"
+    , key = \raised -> incidentIdText raised.incidentId
+    , resolve = \raised -> do
+        result <- runQuery Nothing serviceOncallReadModel raised.service
+        let responders = either (const []) id result
+        pure
+          [ PMCommand
+              { target = pageCommandStream raised.incidentId responder.responderId
+              , command = SendPage (SendPageData{incidentId = raised.incidentId, responderId = responder.responderId})
+              }
+          | responder <- responders
+          ]
+    , targetEventStream = pageEventStream
+    , targetProjections = const []
+    }
+```
+
+Reading it against the five fields:
+
+- **`name = "jitsurei-paging"`** — the deterministic-id namespace from the section above.
+- **`key`** projects each `IncidentRaisedData` to its incident-id text — the correlation every page for
+  that incident shares.
+- **`resolve`** is the effectful lookup: `runQuery` the on-call read model for `raised.service`, then
+  emit one `SendPage` `PMCommand` per responder. Note `either (const []) id result` — a *failed* query
+  routes **nowhere** (the empty list), the intentional no-op, not an error.
+- **`targetEventStream = pageEventStream`** — the page aggregate every `SendPage` is dispatched to.
+- **`targetProjections = const []`** — append-only dispatch; no inline read-model write rides along.
+
+This is also where `retarget = coerce` pays off: `pageCommandStream incidentId responderId` builds a
+`Stream PageCommand` (the same `"page-<incident>-<responder>"` name as `pageStream`'s
+`Stream PageEventStream`), and the `coerce` is exactly what reconciles the command-typed stream
+`resolve` returns with the `EventStream`-typed stream the runner appends to.
+
 `PMCommand`, `PMCommandResult`, `deterministicCommandId`, and `eventAlreadyIn` come from
 [`Keiro.ProcessManager`](/docs/keiro/reference/process-manager); `InlineProjection` and
-`runCommandWithProjections` from [`Keiro.Projection`](/docs/keiro/reference/projection). The worked
-example is jitsurei's `pagingRouter` (`just jitsurei-paging`): for each `IncidentRaisedData` it
-`runQuery`s `serviceOncallReadModel` and dispatches one `SendPage` per responder, with
-`targetProjections = const []`.
+`runCommandWithProjections` from [`Keiro.Projection`](/docs/keiro/reference/projection).
 
 That closes the write-path tour — back to
 [00 — Start here](/docs/keiro/walkthrough/command-cycle/00-start-here), or on to the
