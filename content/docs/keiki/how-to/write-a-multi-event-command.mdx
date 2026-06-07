@@ -1,0 +1,178 @@
+---
+title: "Write a multi-event command"
+description: "Emit two or more events from a single command transition, and read each emit's fields from the right place under the single-snapshot rule."
+---
+
+You need one command to produce two or more events in a single transition — the canonical case is
+`StartRegistration → [RegistrationStarted, ConfirmationEmailSent]`. keiki encodes this as a
+**multi-event edge**: one edge whose `output` list has length ≥ 2. This guide shows how to author it
+and the one rule you must obey when a later `emit` wants a value an earlier statement wrote.
+
+<Callout type="info">
+  Assumes you can already author a single-event aggregate with the builder. If not, start with
+  [Your first aggregate](/docs/keiki/tutorials/your-first-aggregate).
+</Callout>
+
+## Goal
+
+From one `onCmd` body, emit a fixed list of events in declaration order, with no intermediate vertex
+and no synthetic internal command.
+
+## Steps
+
+1. **Put two or more `B.emit` calls in one `onCmd` body.** Each `emit` snoc-appends one `OutTerm` to
+   the same edge's output list, so the edge transitions once and emits both events in order. This is
+   the entrance edge of `Jitsurei.UserRegistration` — `StartRegistration` lands in
+   `RequiresConfirmation` while emitting `RegistrationStarted` then `ConfirmationEmailSent`:
+
+   ```haskell
+   B.from PotentialCustomer do
+     B.onCmd inCtorStart $ \d -> B.do
+       B.slot @"email"        .= d.email
+       B.slot @"confirmCode"  .= d.confirmCode
+       B.slot @"registeredAt" .= d.at
+       B.emit wireRegistrationStarted RegistrationStartedTermFields
+         { email       = d.email
+         , confirmCode = d.confirmCode
+         , at          = d.at
+         }
+       B.emit wireConfirmationEmailSent
+         ConfirmationEmailSentTermFields { email = d.email }
+       B.goto RequiresConfirmation
+   ```
+
+2. **Read every emit field from `d.field`, not from `#slot`.** This is the load-bearing rule; it is
+   explained next. Notice the second `emit` above reads `d.email` even though the body's first
+   statement wrote `B.slot @"email" .= d.email`.
+
+## The single-snapshot rule
+
+Every `emit` in one body evaluates against the **same pre-transition `(regs, ci)` snapshot**. The
+register update accumulated by `.=` applies **once, at the edge level**, and is visible only to
+*subsequent* transitions — never to a later `emit` in the same body.
+
+The practical consequence: in a multi-event body, read fields you need from the input projection
+(`d.field`), not from a register read (`#slot`) — even when an earlier `.=` in the same body appears
+to have set the slot you want. A `#slot` read here resolves to the **pre-write** value.
+
+```haskell
+B.onCmd inCtorStart $ \d -> B.do
+  B.slot @"email" .= d.email
+  B.emit wireRegistrationStarted RegistrationStartedTermFields { email = d.email, {- … -} }
+  B.emit wireConfirmationEmailSent
+    ConfirmationEmailSentTermFields { email = d.email }   -- OK: the command payload
+  -- NOT:                          { email = #email }     -- reads the PRE-write value
+  B.goto RequiresConfirmation
+```
+
+This is faithful to the generalised-sequential-machine model the aggregate compiles to: the output
+word is a fixed function of `(state, input)`, so it cannot depend on a partial-update intermediate
+state — there is no such state in the formalism. The update is atomic with the transition.
+
+<Callout type="info">
+  If a body has only a single `emit`, the rule is invisible: no register write of the same edge has
+  executed yet, so `#slot` reads the value you expect. The rule only bites once a body both writes a
+  slot and emits a later event that wants that value.
+</Callout>
+
+## Multiple events is not branching
+
+A command that emits a *different* event (or a different number of events) depending on the input
+value is **not** a multi-event command — it is branching. The widened `Edge.output` is a *static*
+list; it admits no runtime-conditional shape. Model branching as **several edges with disjoint
+guards**, one per branch, keyed on the same input constructor:
+
+```haskell
+B.from UnderReview do
+  B.onCmd inCtorContinue $ \_ -> B.do
+    B.requireGuard approvalGuard
+    B.emit wireApplicationApproved ApprovedTermFields { {- … -} }
+    B.goto Approved
+
+  B.onCmd inCtorContinue $ \_ -> B.do
+    B.requireGuard (pnot approvalGuard)
+    B.emit wireApplicationDeclined DeclinedTermFields { {- … -} }
+    B.goto Declined
+```
+
+The static-list shape is deliberate: it is what keeps `checkHiddenInputs` decidable per edge and
+`solveOutput` mechanical. Disjoint-guarded edges keep both branches inside that fragment, and the
+single-valuedness check then proves the two never co-fire.
+
+## Replay: chunk vs streaming
+
+A multi-event edge replays in two regimes, depending on whether the runtime preserves command
+boundaries.
+
+<Tabs items={["Chunk replay", "Streaming replay"]}>
+<Tab value="Chunk replay">
+
+When the runtime knows which events belong to which command (command-id tags, transactional batches,
+test fixtures), replay one command's events atomically with `applyEvents` (and `reconstitute` over a
+whole log). Pass the full chunk; get back the settled state. A chunk that ends mid-flight returns
+`Nothing`.
+
+```haskell
+applyEvents
+  :: (BoolAlg phi (RegFile rs, ci), Eq co)
+  => SymTransducer phi rs s ci co
+  -> (s, RegFile rs) -> [co]
+  -> Maybe (s, RegFile rs)
+```
+
+```haskell
+-- => Just (RequiresConfirmation, regs)
+applyEvents userReg (PotentialCustomer, emptyRegs)
+  [ RegistrationStarted   (RegistrationStartedData "bob@x" "S0E1" t0)
+  , ConfirmationEmailSent (ConfirmationEmailSentData "bob@x")
+  ]
+```
+
+</Tab>
+<Tab value="Streaming replay">
+
+When the runtime sees one event at a time without knowing which command produced it, the mid-chain
+state during a length-N edge must be representable. The `InFlight` wrapper does this:
+
+```haskell
+data InFlight s co
+  = Settled  !s
+  | InFlight !s ![co]   -- target vertex + tail of expected events
+
+applyEventStreaming
+  :: (BoolAlg phi (RegFile rs, ci), Eq co)
+  => SymTransducer phi rs s ci co
+  -> InFlight s co -> RegFile rs -> co
+  -> Maybe (InFlight s co, RegFile rs)
+```
+
+Start from `Settled initialVertex`. Each observed event advances through `InFlight` for a length-N
+edge and settles back to `Settled` when the queue empties.
+
+</Tab>
+</Tabs>
+
+For most application code, chunk replay is the right tool — the runtime adapter knows the command
+boundary because it knows which command it dispatched. Streaming replay is for runtimes that consume
+an opaque event log event-by-event.
+
+## Verify it worked
+
+Run a `StartRegistration` through the decider and confirm the event list has length 2 in declaration
+order, then confirm chunk replay round-trips the same chunk back to `RequiresConfirmation`:
+
+```haskell
+-- decide on StartRegistration returns exactly:
+-- [ RegistrationStarted   (RegistrationStartedData "alice@x" "Z9F4" t0)
+-- , ConfirmationEmailSent (ConfirmationEmailSentData "alice@x") ]
+```
+
+`Jitsurei.UserRegistrationGSMSpec` asserts exactly this: a length-2 `decide`, an `applyEvents`
+round-trip to `RequiresConfirmation`, and that streaming replay agrees with chunked replay.
+
+## Related
+
+- [Drop down to the AST](/docs/keiki/how-to/drop-down-to-the-ast) — the same multi-event edge as a
+  bare `output = [o1, o2]` list literal.
+- [Ergonomic emit](/docs/keiki/how-to/ergonomic-emit) — record-keyed vs positional `emit`.
+- [Guards and emit](/docs/keiki/explanation/guards-and-emit) — why output is a static word.

@@ -1,0 +1,144 @@
+---
+title: "Slots (internals)"
+description: "Keiki.Internal.Slots: the type-level slot-name machinery — Concat, Member, Disjoint, Names, the IndexN GADT, and HasIndexN — behind slot @\"name\" and compile-time duplicate-write rejection."
+---
+
+<Callout type="warn">
+This page documents `Keiki.Internal.Slots`, an **internal** module. It is advanced reading: the
+machinery here is the implementation behind [`slot @"name"`](/docs/keiki/reference/builder#slot-name--pin-the-slot-for-a-write)
+and the compile-time duplicate-write rejection. Aggregate authors do not import it directly — the
+[builder](/docs/keiki/reference/builder) re-exports everything they need.
+</Callout>
+
+The keiki invariant is that slot names within a register file are pairwise distinct. This module
+promotes that invariant from a runtime check to a type-level constraint by indexing `Keiki.Core.Update`
+over `(w :: [Symbol])` — the set of slot names the update writes — and requiring `Disjoint` on the
+smart constructor that combines two updates. This module owns the type-family / GADT machinery the
+index uses; `Keiki.Core` and `Keiki.Composition` import it.
+
+## Type families on `[Symbol]`
+
+### `Concat`
+
+Type-level list concatenation. Used by [`.=`](/docs/keiki/reference/builder#-and---assign-a-term) to
+extend the written-slot set: a write to `name` takes `w` to `Concat '[name] w`.
+
+```haskell
+type family Concat (xs :: [Symbol]) (ys :: [Symbol]) :: [Symbol] where
+  Concat '[]       ys = ys
+  Concat (x ': xs) ys = x ': Concat xs ys
+```
+
+### `Member`
+
+Type-level membership: `'True` iff `x` appears in `ys`. Decided by `CmpSymbol` (compile-time symbol
+comparison).
+
+```haskell
+type family Member (x :: Symbol) (ys :: [Symbol]) :: Bool where
+  Member _ '[]       = 'False
+  Member x (y ': ys) = MemberCmp (CmpSymbol x y) x ys
+```
+
+### `Disjoint`
+
+The constraint at the heart of the static check. Disjointness of two slot-name sets; it fires a
+`TypeError` **naming the duplicated symbol** when an overlap is detected.
+
+```haskell
+type family Disjoint (xs :: [Symbol]) (ys :: [Symbol]) :: Constraint where
+  Disjoint '[]       _  = ()
+  Disjoint (x ': xs) ys = (NotMember x ys, Disjoint xs ys)
+```
+
+The duplicate-write error message — emitted at the offending `.=` line — reads:
+
+```text
+Keiki.Internal.Slots.Disjoint: slot "<name>" is written by both halves of `combine`.
+Each register slot may be written at most once per edge update.
+```
+
+### `Names`
+
+Project the slot-name list out of a slot list. The kind `[(Symbol, Type)]` is keiki's `[Slot]` at the
+kind level (written in unfolded form here to avoid a circular import). `Disjoint (Names rs1) (Names rs2)`
+is what lets two aggregates with disjointly-prefixed slot names `compose`.
+
+```haskell
+type family Names (rs :: [(Symbol, Type)]) :: [Symbol] where
+  Names '[]                = '[]
+  Names ('(s, _r) ': rest) = s ': Names rest
+```
+
+## The slot-name-tagged index — `IndexN`
+
+Where `Keiki.Core.Index` existentially *hides* the slot symbol it points at, `IndexN` carries it as a
+phantom `s`. This is what lets `Keiki.Core.USet` recover its written slot's symbol at the type level.
+
+```haskell
+data IndexN (s :: Symbol) (rs :: [(Symbol, Type)]) (r :: Type) where
+  IZ :: KnownSymbol s => IndexN s ('(s, r) ': rs) r
+  IS :: IndexN s rs r -> IndexN s ('(s', r') ': rs) r
+```
+
+`IZ` points at the head slot (and witnesses its `KnownSymbol`); `IS` steps past a non-matching head.
+
+### `HasIndexN`
+
+Resolves a label `s` against a slot list `rs` to an `IndexN` for the value at that slot. The functional
+dependency `s rs -> r` ensures a label uniquely determines the slot's type.
+
+```haskell
+class HasIndexN (s :: Symbol) (rs :: [(Symbol, Type)]) (r :: Type)
+                | s rs -> r where
+  indexN :: IndexN s rs r
+
+instance {-# OVERLAPPING #-} (KnownSymbol s)
+      => HasIndexN s ('(s, r) ': rs) r where
+  indexN = IZ
+
+instance {-# OVERLAPPABLE #-} forall s s' r r' rs.
+         (HasIndexN s rs r)
+      => HasIndexN s ('(s', r') ': rs) r where
+  indexN = IS (indexN @s @rs @r)
+```
+
+### The `IsLabel` instance
+
+```haskell
+instance forall s rs r.
+         HasIndexN s rs r
+      => IsLabel s (IndexN s rs r) where
+  fromLabel = indexN @s @rs @r
+```
+
+This is the overloaded-label resolution that lets a hand-written AST write
+`USet (#email :: IndexN "email" UserRegRegs Email) …`. It is also the head that *rejects* `#name` at a
+builder write site: when `name` is a quantified type variable (as it is in `(.=)`'s signature), the
+two-position pattern `IsLabel s (IndexN s rs r)` leaves GHC unable to commit to `s ~ "name"`. That is
+precisely why [`slot @"name"`](/docs/keiki/reference/builder#slot-name--pin-the-slot-for-a-write) pins
+the symbol through a type application instead.
+
+## Helpers
+
+```haskell
+indexNToInt  :: IndexN s rs r -> Int
+indexNName   :: forall s rs r. KnownSymbol s => IndexN s rs r -> String
+```
+
+`indexNToInt` returns the integer position of an `IndexN` in its slot list (`IZ` is `0`, `IS i` is
+`1 + …`). `indexNName` recovers the slot name carried by an `IndexN` from its `KnownSymbol` constraint.
+
+## How it all connects
+
+- `slot @"name"` (in the builder) is just `indexN @name @rs @r` — a pinned `IndexN`.
+- `.=` carries `Disjoint '[name] w`, inheriting the same check `Keiki.Core.combine` uses; each write
+  takes the edge body's index `w` to `Concat '[name] w`.
+- A second write to an already-written slot makes `Disjoint '[name] w` fail, and the `TypeError` above
+  names the duplicated slot — at the offending line, at compile time.
+
+## See also
+
+- [Builder](/docs/keiki/reference/builder) — `slot @"name"`, `reg @"name"`, and the `EdgeBuilder` `(w :: [Symbol])` index.
+- [Operators](/docs/keiki/reference/operators) — the term/predicate operators that consume `IndexN`-backed reads.
+- `Keiki.Core` — `Index`, `Update`, `USet`, and `combine`, which this module's index annotates.

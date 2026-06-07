@@ -1,0 +1,149 @@
+---
+title: "Model a collection"
+description: "Model 'many of something' as scalar facts your guards can see, instead of storing a container in a register where the solver goes blind."
+---
+
+Part of your aggregate's state is naturally "many of something" — cart line items, seat holders,
+blockers, reviews. The object/relational reflex is to put a `Map K V` or a `[X]` in a register and
+mutate it per element. In keiki that reflex is usually wrong: not because keiki can't *store* a
+collection, but because a collection in a register silently forfeits the build-time analyzability of
+guards that keiki exists to give you.
+
+<Callout type="info">
+  Assumes you can author an aggregate with the builder and have read
+  [Registers vs state](/docs/keiki/explanation/registers-vs-state). This guide is the modeling
+  decision; the shipped example is `Jitsurei.OrderCart`.
+</Callout>
+
+## Goal
+
+Keep your guards inside the small, decidable predicate fragment keiki verifies by projecting "many of
+something" down to the **scalar facts** your guards actually need.
+
+## Why a container-in-a-register is a smell
+
+keiki's predicate language is deliberately small: equality (`PEq`), comparison (`PCmp`),
+input-constructor match (`PInCtor`), and the Boolean connectives. That is the fragment the SBV/z3
+layer translates, so it is the fragment over which `isSingleValuedSym` (no two edges fire at once) and
+reachability give you *real answers*.
+
+A guard that branches on a collection's *contents* — "is this key present?", "are all elements
+resolved?", "how many are open?" — has no structural form in that language. It can only be written by
+wrapping `Data.Map`/list code in an opaque `TApp` closure, and the symbolic layer translates a `TApp`
+to a **fresh, unconstrained variable**. That is sound (it never claims a false guarantee) but it
+carries **no information**: the guard becomes invisible to every analysis. The moment your lifecycle
+turns on collection contents, you have moved keiki's headline guarantee off exactly the logic that
+most needs it.
+
+<Callout type="warn">
+  Because the loss is *silent*, keiki ships an opt-in audit. Run `validateTransducer` with
+  `warnOpaqueGuards = True` and it returns an `OpaqueGuard` warning for every edge whose guard
+  branches through a `TApp` the solver can't see. It is off under `defaultValidationOptions`; turn it
+  on to find exactly the guards this page warns about.
+</Callout>
+
+## Pattern A — project to a scalar tally
+
+If your logic only needs *facts about the set* — how many, whether any, whether all, a running total —
+keep those facts as scalar registers and maintain them on the write path. Don't keep the elements.
+
+This is exactly what the shipped `Jitsurei.OrderCart` does. A cart's contents are summarised by a
+single slot, `itemCount :: ItemCount` (a `Word32`); there is no `Map Sku Line` in the register at all:
+
+```haskell
+type OrderCartRegs =
+  '[ '("itemCount",     ItemCount)   -- the tally; no Map of line items
+   , '("discountBp",    DiscountBp)
+   -- … the remaining ten slots are per-event scalar copies
+   ]
+```
+
+The tally is seeded from a literal on the first add (the `#itemCount` slot is still uninitialised),
+then evolved by arithmetic on each add/remove:
+
+```haskell
+B.from Empty do
+  B.onCmd inCtorAddItem $ \d -> B.do
+    B.slot @"itemCount" .= lit (1 :: ItemCount)        -- seed, not a read
+    B.emit wireItemAdded ItemAddedTermFields
+      { sku = d.sku, quantity = d.quantity, price = d.price, at = d.at }
+    B.goto OpenWithItems
+
+B.from OpenWithItems do
+  B.onCmd inCtorAddItem $ \d -> B.do
+    B.slot @"itemCount" .= TApp1 (+ 1) #itemCount
+    B.emit wireItemAdded ItemAddedTermFields
+      { sku = d.sku, quantity = d.quantity, price = d.price, at = d.at }
+    B.goto OpenWithItems
+
+  B.onCmd inCtorRemoveItem $ \d -> B.do
+    B.slot @"itemCount" .= TApp1 (subtract 1) #itemCount
+    B.emit wireItemRemoved ItemRemovedTermFields { sku = d.sku, at = d.at }
+    B.goto OpenWithItems
+```
+
+<Callout type="info">
+  `OrderCart` evolves the tally with `TApp1 (+ 1)` / `TApp1 (subtract 1)`. Because the arithmetic is
+  in an *update*, not a guard, single-valuedness is unaffected — it reasons about guards. You can also
+  write the structural operators `#itemCount .+ lit 1` / `#itemCount .- lit 1`, which keep the counter
+  itself solver-visible should a *guard* ever read it.
+</Callout>
+
+### The payoff: a set-wide condition becomes a scalar guard
+
+The idiom you most want — **"can't close while any element is still open"** — is a quantifier over the
+set (`PAll`). Collapse it to a tally and it becomes a plain `PEq` keiki verifies today:
+
+```haskell
+B.onCmd inCtorCancel $ \d -> B.do
+  B.requireGuard (#openCount .== lit (0 :: Word32))   -- PEq ✅, solver-visible
+  B.emit wireClosed ClosedTermFields { at = d.at }
+  B.goto Closed
+```
+
+Maintain `openCount` by incrementing on open and decrementing on resolve; replay re-derives it
+mechanically, and `checkHiddenInputs` still holds because the element data is on the wire. The
+equivalent on a collection register — `Map.null holders` or `all released holders` — would be an
+opaque `TApp` and the solver would learn nothing.
+
+**Use a tally when** your guards and outputs only need counts, sums, "any/all/none", or a small fixed
+set of summary flags — and you never need to address an individual element by key from inside this
+aggregate's logic. Keep the arithmetic integer; a fractional weight (`0.5 *`) stays opaque (no
+`Double`/`SReal`).
+
+## Pattern B — promote the element to its own aggregate
+
+If each element has its own **identity *and* lifecycle** — states it moves through, commands that
+target it, its own audit trail — then it isn't a field of the parent. It's an aggregate. Give it its
+own stream and `SymTransducer`, and it gets the *full* keiki guarantees for its own lifecycle instead
+of disappearing into an opaque `Map` value where none of them apply.
+
+The parent then stops holding the elements and becomes a **coordinator** that keeps only the Pattern A
+tally, with the two streams stitched by a Process (events from one context become commands to
+another), `compose`, `alternative`, or `feedback1`. The composite's vertex type stays the pair of the
+two aggregates' vertices; no synthetic state leaks, and the composite is still checkable.
+
+The honest cost is cross-stream coordination: the parent's tally becomes eventually consistent with
+the children, and a workflow spanning both is a Process you must design and replay. That cost is real
+— it is why this is a judgment call, not a law — but it is keiki's grain: compose verified small
+machines rather than hide a big one inside a register.
+
+## Quick reference
+
+| You have… | …and you need | Model it as | Verifiable? |
+|---|---|---|---|
+| "many of something" | counts / sums / any-all-none / flags | scalar **tally** in the aggregate | yes, in the `PEq`/`PCmp` fragment |
+| elements with identity + lifecycle | per-element states, commands, audit | each element its **own aggregate**, coordinated by a **Process** / `compose` | yes, per element |
+| both, plus a set-wide invariant | atomic "is the next one allowed?" | a **coordinator** (tally + reservation) over per-element aggregates | the boundary guard, as a `PEq`/`PCmp` |
+
+Even the hard case — per-element lifecycle *and* a set-wide invariant ("never more than `seatLimit`
+active") — resolves to a coordinator with a tally plus per-element aggregates, not to a collection
+register. The hard part isn't holding the set; it's deciding atomically against it. A reservation step
+guarded by `#activeSeats .< #seatLimit` (a structural `PCmp`) enforces the limit at one verifiable
+point; `Map.size holders < seatLimit` would make that one invariant opaque.
+
+## Related
+
+- [Drop down to the AST](/docs/keiki/how-to/drop-down-to-the-ast) — the `TApp1` tally as a hand-authored update.
+- [Why SMT](/docs/keiki/explanation/why-smt) — what the verifiable fragment buys you.
+- [A multi-command lifecycle](/docs/keiki/tutorials/a-multi-command-lifecycle) — `OrderCart` built end to end, tally and all.

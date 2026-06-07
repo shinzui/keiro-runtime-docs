@@ -1,0 +1,206 @@
+---
+title: "09 — Operators and namespacing"
+description: "Keiki.Operators as a qualified-import shim, the (.>)-vs-lens clash and the three recipes that resolve it, the bare-#name read story, and the structural-vs-opaque guard reminder."
+---
+
+The last chapter showed the verbs an aggregate author types. This chapter is about keeping those
+spellings *unambiguous* in a real project — where a shared prelude often re-exports `lens` /
+`generic-lens` and claims the same operator names keiki uses. We read `keiki/src/Keiki/Operators.hs`,
+the qualified-import recipes, the bare-`#name` read story, and the structural-vs-opaque guard
+reminder that ties back to the analyses.
+
+## `Keiki.Operators`: a re-export shim
+
+`Keiki.Operators` adds **nothing new**. Every export is defined in and re-exported from
+`Keiki.Core`; the module exists only so the operators can be imported *qualified*, dodging the clash
+with `lens` / `generic-lens` without a `hiding` clause:
+
+```haskell
+-- keiki/src/Keiki/Operators.hs
+{- | Re-exports of keiki's predicate and term operators, intended to be
+imported __qualified__ so they cannot clash with the operators that
+the @lens@ / @generic-lens@ libraries (or a service prelude that
+re-exports them) bring into scope unqualified.
+
+The sharpest clash is @(.>)@: in @lens@ it is optic composition, in
+keiki it is the greater-than comparison that builds an 'HsPred'. …
+-}
+module Keiki.Operators (
+    (.<), (.<=), (.>), (.>=), (.==), (./=),    -- comparison
+    (.&&), (.||), pnot,                         -- logical
+    (.+), (.-), (.*),                           -- structural arithmetic
+    tadd, tsub, tmul,                           -- function-style arithmetic aliases
+) where
+
+import Keiki.Core ( … )
+```
+
+One subtlety the source documents: the module restates **no fixity declarations**. On GHC 9.12 /
+GHC2024 a fixity signature needs an accompanying binding in the same module, and these names are
+merely re-exported. That is harmless — a re-exported operator carries the fixity from its defining
+module, so `x K..> y` still parses at the `infix 4` from `Keiki.Core`.
+
+## The `(.>)` clash and three recipes
+
+The sharpest collision is `(.>)`: `lens` defines it as optic composition; keiki defines it as the
+greater-than comparison that builds an `HsPred`. With both in scope the bare `(.>)` is ambiguous and
+the module will not compile. `keiki/docs/guide/generic-lens-and-label-reads.md` §6 lays out three
+ways to resolve it.
+
+<Tabs items={["A — hide & re-import", "B — qualified Keiki.Operators", "C — function-style verbs"]}>
+
+<Tab value="A — hide & re-import">
+
+Hide the clashing name out of the service prelude, then re-import keiki's operators explicitly:
+
+```haskell
+import MyApp.Prelude hiding ((.>))
+import Keiki.Core (lit, (.>), (.>=), (.+), (.-))
+```
+
+Fine for a module that uses a handful of keiki operators. Its cost is maintenance: you must extend
+the `hiding` list every time you reach for another clashing operator, and forgetting yields a
+confusing ambiguity error with no signposted fix.
+
+</Tab>
+
+<Tab value="B — qualified Keiki.Operators">
+
+Import `Keiki.Operators` qualified. The bare `(.>)` stays with `lens`; keiki's lives under the
+qualifier — **zero** changes to the unqualified import list, no `hiding` to babysit:
+
+```haskell
+import MyApp.Prelude               -- lens (.>) etc. in scope, untouched
+import Keiki.Core (lit)
+import qualified Keiki.Operators as K
+
+guard = lit threshold K..< someTerm K..&& lit 0 K..<= otherTerm
+```
+
+Be honest about the cost: `K..>` is visually noisy ("K dot dot greater"). But it is the most robust
+choice when a module uses many keiki operators. This is the module the shim exists for.
+
+</Tab>
+
+<Tab value="C — function-style verbs">
+
+When the predicate is conjoined into an edge's guard inside a `B.do` block, you do not need the
+operator at all — the builder exposes clash-free verbs (chapter 08):
+
+```haskell
+import qualified Keiki.Builder as B
+
+edge = B.do
+  B.requireGt someTerm (lit 0)     -- a > 0
+  B.requireGe other    (lit 1)     -- other >= 1
+```
+
+The rule, plainly: **prefer `B.requireGt` / `B.requireGe` / `B.requireLt` / `B.requireLe` /
+`B.requireEq` when authoring a guard inside a builder block** — they read well, never clash, and need
+no import gymnastics. Reach for `B.requireGuard (x .> y)` (with recipe A or B) only when you must
+build a *compound* `HsPred` value first.
+
+</Tab>
+
+</Tabs>
+
+The same shape bites two other names. The builder's `.=` collides with `Control.Lens`'s state-setting
+`.=` — use the `=:` synonym (chapter 08) or scope the lens import. And bare-`#name` register reads
+collide with `generic-lens`'s `IsLabel` instance — the next section.
+
+## The bare-`#name` read story
+
+keiki ships two `IsLabel` instances in `Keiki.Core`: one makes `#name` an `Index`, the other makes it
+a register-read `Term` (`TReg (indexOf @s @rs @r)`). GHC picks between them by expected result type,
+and the `Term` instance is what lets a bare `#name` work as a register read with no `proj`
+annotation — *as long as it is the only `IsLabel (Term …)` instance in scope*.
+
+A project whose shared prelude re-exports `generic-lens` (`import Data.Generics.Labels ()`) breaks
+that: generic-lens's own very general `IsLabel` instance is now also in scope, the bare `#name` read
+becomes ambiguous or resolves to the optic, and the author is pushed into the verbose
+`proj (indexOf @"name" @Regs @Ty)` spelling. `keiki/docs/guide/generic-lens-and-label-reads.md` gives
+the full mechanism and two complementary remedies:
+
+<Steps>
+
+<Step>
+**New projects: scope the import.** Do not re-export `Data.Generics.Labels` from a prelude that your
+transducer modules import; import generic-lens labels only in the modules that genuinely use field
+optics (read models, view projections, handlers). Then inside a transducer module bare `#name`
+register reads resolve through keiki's `IsLabel (Term …)` instance and just work.
+</Step>
+
+<Step>
+**Existing projects: use the type-application helpers — no refactor.** `reg @"name"` reads a register
+as a `Term` through a *type application*, not an overloaded label, so generic-lens's `IsLabel` cannot
+shadow it; it resolves regardless of what is in scope. It is the read-side mirror of `slot @"name"`.
+And `=:` is the exact synonym for `.=` on the write side. A project already committed to a global
+generic-lens re-export keeps working unchanged.
+</Step>
+
+</Steps>
+
+The two approaches are complementary, not either/or: import-scoping is the cheap default for new
+code, and `reg` / `=:` are the supported escape for code that cannot scope its imports.
+
+## Structural vs. opaque guards
+
+One last reminder that connects the operator surface back to the analyses. keiki's comparison and
+arithmetic operators (`.<`, `.>`, `.+`, …) build **structural** AST nodes — `PCmp`, `TArith` — that
+the SBV-backed symbolic analyses can read for real. A guard lifted through an opaque closure
+(`TApp1` / `TApp2`) is *not* visible to the solver: the translator turns it into an unconstrained
+free variable, so the determinism and dead-edge analyses silently under-verify the edge.
+
+`Keiki.Core` ships an opt-in audit that flags exactly this. `validateTransducer` runs
+`opaqueGuardWarnings` only when `warnOpaqueGuards` is set:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+data ValidationOptions = ValidationOptions
+    { failOnEpsilonReadsInput :: Bool
+    , checkDeterminism :: Bool
+    , checkReachability :: Bool
+    , warnOpaqueGuards :: Bool
+    {- ^ run the opaque-guard audit (opt-in; default off). Flags edges whose
+    guard branches on an opaque 'TApp' term the symbolic analyses cannot
+    see through. … -}
+    }
+```
+
+It is **off by default** (`defaultValidationOptions` sets `warnOpaqueGuards = False`) so the default
+validation keeps its meaning for existing consumers. When enabled, it emits one `OpaqueGuard` warning
+per offending edge, located by its typed `EdgeRef`:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+opaqueGuardWarnings t =
+    [ OpaqueGuard
+        { tvwEdge = EdgeRef{edgeSource = s, edgeIndex = n}
+        , tvwDetail =
+            "guard contains an opaque TApp term the symbolic analyses cannot "
+                ++ "see through; its single-valuedness was not verified"
+        }
+    | s <- [minBound .. maxBound]
+    , (n, e) <- zip [(0 :: Int) ..] (edgesOut t s)
+    , predHasOpaqueTerm (guard e)
+    ]
+```
+
+The practical takeaway for the operator surface: **prefer the structural operators and verbs.** A
+threshold written `reg @"score" .>= lit 650` (a `PCmp`) is solver-visible; the same threshold lifted
+through a closure is not. Keeping guards structural is what makes the build-time validation umbrella
+worth running.
+
+## Where to go next
+
+That closes the bottom-up tour of keiki's pure core and authoring builder. From here:
+
+- Return to the [walkthrough hub](/docs/keiki/walkthrough) for the other capability tours — the
+  derivations, the composition algebra, the symbolic analyses, and the renderers.
+- Browse the [reference section](/docs/keiki/reference) for the exhaustive per-module API surface,
+  including the [`Keiki.Operators`](/docs/keiki/reference/operators) shim and the
+  [`Keiki.Builder`](/docs/keiki/reference/builder) verbs read in this tour. The full diagnostics
+  taxonomy that chapter 06 introduced — the per-failure `StepFailure` and `validateTransducer`
+  warning catalogue — lives in the reference's diagnostics landing.
+
+Previous: [08 — The builder edge body](/docs/keiki/walkthrough/core-and-builder/08-builder-edge-body).

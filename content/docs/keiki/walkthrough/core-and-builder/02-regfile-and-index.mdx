@@ -1,0 +1,210 @@
+---
+title: "02 — RegFile and Index"
+description: "The register file itself: the Slot kind, the RegFile GADT, the Index pointer and (!) lookup, HasIndex label resolution, and why the slot field is lazy with a WHNF-on-write path."
+---
+
+This chapter reads the register-file types at the top of `src/Keiki/Core.hs`: the `Slot` kind, the
+`RegFile` GADT, the `Index` pointer, the `(!)` lookup, and the `HasIndex` label resolution. These are the
+runtime values that chapter 01's type-level machinery indexes. The test anchor is
+`test/Keiki/CoreSpec.hs`. Read [01 — Internal slots](/docs/keiki/walkthrough/core-and-builder/01-internal-slots) first.
+
+## `Slot`: a label paired with a type
+
+A slot is just a name and the type of the value stored there. The whole register file is indexed by a
+list of these:
+
+```haskell
+-- src/Keiki/Core.hs
+-- | A register slot is a label paired with the type of its value.
+type Slot = (Symbol, Type)
+```
+
+This is the `[Slot]` synonym that chapter 01's `Names` family had to spell out by hand to avoid an import
+cycle.
+
+## `RegFile`: the typed heterogeneous register tuple
+
+`RegFile rs` is a heterogeneous list indexed by `rs :: [Slot]`. `RNil` is the empty file; `RCons` prepends
+one slot, carrying a `Proxy s` for the name (with `KnownSymbol s` so the name is recoverable), the value,
+and the rest:
+
+```haskell
+-- src/Keiki/Core.hs
+data RegFile (rs :: [Slot]) where
+    RNil :: RegFile '[]
+    RCons ::
+        (KnownSymbol s) =>
+        Proxy s -> r -> RegFile rs -> RegFile ('(s, r) ': rs)
+```
+
+The doc comment on this type is where two important runtime decisions are recorded — laziness and the
+`uninit` sentinel:
+
+```haskell
+-- src/Keiki/Core.hs
+-- The slot-value field is intentionally lazy: 'Keiki.Generics.emptyRegFile'
+-- seeds each slot with a deferred @error "uninit: \<slot\>"@ thunk so
+-- that reading an unwritten slot fails loudly with a targeted message
+-- instead of returning a silent bottom. Strictness for *written*
+-- slots is enforced on the write path ('setSlotN') instead — see
+-- EP-23's Surprises entry for the long-running-service rationale.
+```
+
+<Callout type="info">
+The `r` field of `RCons` is **lazy on purpose**. An empty register file is seeded with
+`error "uninit: <slot>"` thunks, so reading a slot that has never been written throws a precise,
+named error rather than returning a confusing bottom. We will see the matching strictness on the *write*
+path below.
+</Callout>
+
+## `Index` and `(!)`: the typed pointer and lookup
+
+`Index rs r` is the value-level pointer into a `RegFile rs`. It is the existential cousin of chapter 01's
+`IndexN` — it does **not** carry the slot symbol, because most read sites do not need the name:
+
+```haskell
+-- src/Keiki/Core.hs
+-- | A type-safe pointer into a 'RegFile'. 'ZIdx' picks the head;
+-- 'SIdx' skips one slot.
+data Index (rs :: [Slot]) (r :: Type) where
+    ZIdx :: (KnownSymbol s) => Index ('(s, r) ': rs) r
+    SIdx :: Index rs r -> Index ('(s', r') ': rs) r
+```
+
+Lookup is `(!)`. Note the order of matching — on the `Index` first — and the comment explaining why:
+
+```haskell
+-- src/Keiki/Core.hs
+-- | Runtime register lookup. Matching on 'Index' first lets GHC's GADT
+-- pattern checker see that 'RNil' is unreachable — 'ZIdx' and 'SIdx'
+-- both refine @rs@ to @'(_,_) ': _@.
+(!) :: RegFile rs -> Index rs r -> r
+regs ! ZIdx = case regs of RCons _ x _ -> x
+regs ! SIdx i = case regs of RCons _ _ rest -> rest ! i
+
+infixl 9 !
+```
+
+`(!)` is `infixl 9` — tighter than function application's effective fixity for operators, so
+`regs ! ix` binds as tightly as possible in expressions. Matching `ZIdx`/`SIdx` first refines `rs` to a
+non-empty list, so GHC knows `RNil` cannot occur and the `case` is total without an `RNil` arm.
+
+## `HasIndex`: resolving `#name` to an `Index`
+
+This is the `Index`-flavoured sibling of chapter 01's `HasIndexN`. Same shape — a class with functional
+dependency `s rs -> r`, an `OVERLAPPING` head-match instance returning `ZIdx`, and an `OVERLAPPABLE`
+recursive instance returning `SIdx`:
+
+```haskell
+-- src/Keiki/Core.hs
+class
+    HasIndex (s :: Symbol) (rs :: [Slot]) (r :: Type)
+        | s rs -> r
+    where
+    indexOf :: Index rs r
+
+instance
+    {-# OVERLAPPING #-}
+    (KnownSymbol s) =>
+    HasIndex s ('(s, r) ': rs) r
+    where
+    indexOf = ZIdx
+
+instance
+    {-# OVERLAPPABLE #-}
+    forall s s' r r' rs.
+    (HasIndex s rs r) =>
+    HasIndex s ('(s', r') ': rs) r
+    where
+    indexOf = SIdx (indexOf @s @rs @r)
+```
+
+There are then **two** `IsLabel` instances, and the reason they coexist is dispatch by expected type. The
+first resolves a label to an `Index`:
+
+```haskell
+-- src/Keiki/Core.hs
+instance
+    forall s rs r.
+    (HasIndex s rs r) =>
+    IsLabel s (Index rs r)
+    where
+    fromLabel = indexOf @s @rs @r
+```
+
+The second resolves the *same* label directly to a `Term` that reads the register, so call sites that
+expect a `Term` (a guard operand, an output field) can write bare `#name` without an `Index` annotation:
+
+```haskell
+-- src/Keiki/Core.hs
+-- The two 'IsLabel' instances ('Index' and 'Term') coexist because GHC
+-- dispatches by the expected result type: a context expecting an
+-- 'Index' (e.g. 'inpFoo'\'s argument) selects the 'Index' instance; a
+-- context expecting a 'Term' (e.g. 'requireEq'\'s arguments) selects
+-- this one.
+instance
+    forall s rs ci ifs r.
+    (HasIndex s rs r) =>
+    IsLabel s (Term rs ci ifs r)
+    where
+    fromLabel = TReg (indexOf @s @rs @r)
+```
+
+We meet `TReg` and the rest of the `Term` AST in chapter 03.
+
+## The WHNF-on-write path
+
+The lazy slot field is balanced by strictness when a slot is *written*. That happens in `setSlotN`, which
+takes a chapter-01 `IndexN` (so it knows the slot name) and forces the new value to WHNF before threading
+it back into the rebuilt `RCons`:
+
+```haskell
+-- src/Keiki/Core.hs
+-- The bang-pattern on @v@ forces the new slot value to WHNF before
+-- threading it into the rebuilt 'RCons'. Without this, every
+-- 'runUpdate' / 'step' cycle in a long-running embedder accumulates
+-- a tower of thunks at the written slot ...
+setSlotN :: IndexN s rs r -> r -> RegFile rs -> RegFile rs
+setSlotN IZ !v regs = case regs of RCons p _ rest -> RCons p v rest
+setSlotN (IS i) !v regs = case regs of
+    RCons p x rest ->
+        let !rest' = setSlotN i v rest
+         in RCons p x rest'
+```
+
+<Callout type="warn">
+The two `!` bangs are not cosmetic. A long-running service steps the same aggregate thousands of times;
+without forcing the written value (and the rebuilt tail) to WHNF on each write, thunks pile up at the
+slot and the heap grows step over step. The `NoThunks (RegFile rs)` instance in `Keiki.NoThunks` exists
+specifically to catch a regression here (EP-23). Untouched slots keep whatever WHNF status they had —
+so an unwritten slot keeps its `uninit:` sentinel intact.
+</Callout>
+
+We return to `setSlotN` in chapter 04, where `runUpdate` calls it.
+
+## Test anchor
+
+`test/Keiki/CoreSpec.hs` builds register-free files (`RNil`) for its term and predicate tests, and
+hand-rolls `RCons`/`RNil` register files inside its `InCtor` definitions — for example `inCtorTinyFoo`'s
+`icMatch` assembles a two-slot file:
+
+```haskell
+-- test/Keiki/CoreSpec.hs
+inCtorTinyFoo = InCtor
+  { icName  = "TinyFoo"
+  , icMatch = \case
+      TinyFoo a b -> Just (RCons (Proxy @"a") a
+                          $ RCons (Proxy @"b") b
+                          $ RNil)
+      _ -> Nothing
+  , icBuild = \(RCons _ a (RCons _ b RNil)) -> TinyFoo a b
+  }
+```
+
+That `RCons (Proxy @"a") a $ RCons (Proxy @"b") b $ RNil` is exactly the GADT from this chapter, built by
+hand. The `#a` / `#b` labels used to *read* those slots (in the same spec) are the `IsLabel`/`HasIndex`
+resolution from above.
+
+Next: [03 — The term language](/docs/keiki/walkthrough/core-and-builder/03-term-language).
+
+Previous: [01 — Internal slots](/docs/keiki/walkthrough/core-and-builder/01-internal-slots).

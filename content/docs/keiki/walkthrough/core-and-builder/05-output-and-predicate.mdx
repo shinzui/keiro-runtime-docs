@@ -1,0 +1,346 @@
+---
+title: "05 — Output and predicate"
+description: "The two remaining AST languages: structural output (WireCtor / OutFields / OPack / pack) and predicates (HsPred / Cmp), the BoolAlg / Sat algebra, the operator table, and evalOut / evalPred."
+---
+
+This chapter reads the last two AST languages in `src/Keiki/Core.hs`: the structural **output** language
+(`WireCtor`, `OutFields`, `OPack`, `pack`) and the **predicate** language (`HsPred`, `Cmp`), plus the
+`BoolAlg` / `Sat` algebra they instantiate, the readable operator table, and the `evalOut` / `evalPred`
+interpreters. The test anchor is `test/Keiki/CoreSpec.hs`. Read
+[04 — The update language](/docs/keiki/walkthrough/core-and-builder/04-update-language) first.
+
+## The output language
+
+### `WireCtor`: a tag for one output constructor
+
+A `WireCtor co fields` names one constructor of the user's output sum `co` and supplies the round-trip
+between it and a `fields` tuple — so the inversion direction can pattern-match an observed `co` and the
+evaluation direction can rebuild one:
+
+```haskell
+-- src/Keiki/Core.hs
+data WireCtor co fields = WireCtor
+    { wcName :: String
+    , wcMatch :: co -> Maybe fields
+    , wcBuild :: fields -> co
+    }
+```
+
+### `OutFields`: an HList of terms, one per field
+
+`OutFields rs ci ifs fs` is a heterogeneous list of `Term`s, one per field of the wire constructor, built
+nested-pair style so the inverter can walk it structurally. Crucially, every term in the list shares one
+`ifs` — chapter 03's input-field schema:
+
+```haskell
+-- src/Keiki/Core.hs
+data OutFields rs ci ifs fs where
+    OFNil :: OutFields rs ci ifs ()
+    OFCons ::
+        Term rs ci ifs f ->
+        OutFields rs ci ifs fs ->
+        OutFields rs ci ifs (f, fs)
+```
+
+That shared `ifs` is the soundness lever from chapter 03: because the whole list is indexed by one input
+field schema, a top-level `TInpCtorField` inside it is statically an `Index` into the `OPack`'s
+constructor schema, so the inverter recovers it with no coercion.
+
+### `(*:)` and `oNil`: the readable HList syntax
+
+`OFCons`/`OFNil` have synonyms that let output literals read top-to-bottom in field order:
+
+```haskell
+-- src/Keiki/Core.hs
+(*:) :: Term rs ci ifs f -> OutFields rs ci ifs fs -> OutFields rs ci ifs (f, fs)
+(*:) = OFCons
+
+infixr 5 *:
+
+-- | The empty 'OutFields' HList. Synonym for 'OFNil'.
+oNil :: OutFields rs ci ifs ()
+oNil = OFNil
+```
+
+`(*:)` is `infixr 5`, so `t1 *: t2 *: oNil` associates rightward into `OFCons t1 (OFCons t2 OFNil)` — the
+doc comment confirms the two spellings produce an identical AST:
+
+```haskell
+-- src/Keiki/Core.hs
+-- > d.recipient *: d.subject *: d.at *: oNil
+--
+-- Identical AST: @t1 *: t2 *: oNil@ produces the same 'OutFields'
+-- value as @OFCons t1 (OFCons t2 OFNil)@.
+```
+
+### `OPack` and `pack`: tying input and output together
+
+`OPack` is the single `OutTerm` constructor. It pairs an input `InCtor` (the constructor the edge
+consumes) with an output `WireCtor` (the constructor it produces) and an `OutFields` of terms — one per
+wire field:
+
+```haskell
+-- src/Keiki/Core.hs
+data OutTerm (rs :: [Slot]) (ci :: Type) (co :: Type) where
+    OPack ::
+        InCtor ci ifs ->
+        WireCtor co fields ->
+        OutFields rs ci ifs fields ->
+        OutTerm rs ci co
+```
+
+`pack` is the smart constructor — a plain alias, but the name authors type:
+
+```haskell
+-- src/Keiki/Core.hs
+pack ::
+    InCtor ci ifs ->
+    WireCtor co fields ->
+    OutFields rs ci ifs fields ->
+    OutTerm rs ci co
+pack = OPack
+```
+
+<Callout type="info">
+The single `ifs` shared by the `InCtor` and the `OutFields` is what makes output **invertible** with no
+`unsafeCoerce`. `solveOutput` (read in chapter 06's neighbourhood) walks the `OutFields` against the
+named `InCtor`, gathers `(Index, value)` pairs from the invertible fields, assembles a `RegFile`, and
+calls `icBuild` — recovering the command from the event. The author supplies no inverse function; the
+structure is the inverse.
+</Callout>
+
+### `evalOut`: the forward direction
+
+Evaluation just runs the wire build over the evaluated fields; the `InCtor` is consulted only by the
+inverse direction:
+
+```haskell
+-- src/Keiki/Core.hs
+evalOut :: OutTerm rs ci co -> RegFile rs -> ci -> co
+evalOut (OPack _ic ctor fields) regs ci =
+    wcBuild ctor (evalOutFields fields regs ci)
+
+evalOutFields :: OutFields rs ci ifs fs -> RegFile rs -> ci -> fs
+evalOutFields OFNil _ _ = ()
+evalOutFields (OFCons t rest) regs ci =
+    (evalTerm t regs ci, evalOutFields rest regs ci)
+```
+
+`evalOutFields` walks the HList, `evalTerm`-ing each field (chapter 03) into the nested-pair tuple
+`wcBuild` then folds into a `co`.
+
+## The predicate language
+
+### `HsPred`: the guard AST
+
+`HsPred rs ci` is the predicate carrier. It is a first-class AST — not a Haskell `Bool` function —
+because it must be evaluable *and* translatable to SMT through the SBV-backed `BoolAlg` instance in
+`Keiki.Symbolic`:
+
+```haskell
+-- src/Keiki/Core.hs
+data HsPred (rs :: [Slot]) (ci :: Type) where
+    PTop :: HsPred rs ci
+    PBot :: HsPred rs ci
+    PAnd :: HsPred rs ci -> HsPred rs ci -> HsPred rs ci
+    POr :: HsPred rs ci -> HsPred rs ci -> HsPred rs ci
+    PNot :: HsPred rs ci -> HsPred rs ci
+    PEq ::
+        (Eq r, Typeable r) =>
+        Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+    PInCtor :: InCtor ci ifs -> HsPred rs ci
+    PCmp ::
+        (Ord r, Typeable r) =>
+        Cmp -> Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+```
+
+`PTop`/`PBot` are the constants; `PAnd`/`POr`/`PNot` are the Boolean combinators; `PEq` compares two
+terms for equality; `PInCtor` is `True` iff the input is the named constructor; `PCmp` is an ordering
+comparison. Note that `PEq`/`PCmp` take operands with *independent* `ifs1`/`ifs2` — a guard can compare a
+register against an input field, two different input fields, etc.
+
+`PCmp` carries a `Cmp` tag — the same one-tag-many-directions pattern as `NumOp` (chapter 03):
+
+```haskell
+-- src/Keiki/Core.hs
+-- | A four-way ordering relation carried by 'PCmp'. @Lt@\/@Le@\/@Gt@\/
+-- @Ge@ are @<@\/@<=@\/@>@\/@>=@ respectively. ...
+data Cmp = CmpLt | CmpLe | CmpGt | CmpGe
+    deriving stock (Eq, Show)
+```
+
+<Callout type="info">
+`PCmp` and `PEq` are **structural** comparisons the SBV translator can read; `PEq` notably has no
+"equal" case in `Cmp` because equality is its own constructor. A threshold written through `TApp2`
+(chapter 03) is opaque to the solver, but the same threshold written with `PCmp` (via the operators
+below) emits a real symbolic comparison whenever the operand type is symbolically orderable.
+</Callout>
+
+## The effective Boolean algebra
+
+`HsPred` is one carrier among several (the SBV-backed `SymPred` is another). The shared interface is
+`BoolAlg` — an effective Boolean algebra over `a`-typed witnesses:
+
+```haskell
+-- src/Keiki/Core.hs
+class BoolAlg phi a | phi -> a where
+    top :: phi
+    bot :: phi
+    conj :: phi -> phi -> phi
+    disj :: phi -> phi -> phi
+    neg :: phi -> phi
+    models :: phi -> a -> Bool
+    isBot :: phi -> Bool
+```
+
+Witness **extraction** is a separate, stronger capability, split into its own class so witness-free
+analyses carry no extraction constraints:
+
+```haskell
+-- src/Keiki/Core.hs
+class (BoolAlg phi a) => Sat phi a where
+    sat :: phi -> Maybe a
+```
+
+The `HsPred` instances wire the AST into the algebra. `models` is just `evalPred`; `isBot` recognises the
+syntactic `PBot`:
+
+```haskell
+-- src/Keiki/Core.hs
+instance BoolAlg (HsPred rs ci) (RegFile rs, ci) where
+    top = PTop
+    bot = PBot
+    conj p q = PAnd p q
+    disj p q = POr p q
+    neg p = PNot p
+    models p (regs, ci) = evalPred p regs ci
+    isBot PBot = True
+    isBot _ = False
+
+instance Sat (HsPred rs ci) (RegFile rs, ci) where
+    sat _ = Nothing
+```
+
+`sat` is always `Nothing` for the v1 syntactic carrier — it has no solver. Precise witnesses come from
+the SBV-backed `Sat (SymPred …)` instance in `Keiki.Symbolic`.
+
+## The readable operator table
+
+`Keiki.Core` exports infix operators that mirror their Prelude counterparts, so guards read naturally.
+The relational set, all `infix 4`, are aliases for `PCmp`/`PEq` at a fixed relation:
+
+```haskell
+-- src/Keiki/Core.hs
+(.<)
+    , (.<=)
+    , (.>)
+    , (.>=) ::
+        (Ord r, Typeable r) => Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+(.<) = PCmp CmpLt
+(.<=) = PCmp CmpLe
+(.>) = PCmp CmpGt
+(.>=) = PCmp CmpGe
+
+infix 4 .<, .<=, .>, .>=
+```
+
+The logical set combine predicates, `infixr 3` / `infixr 2` so `.&&` binds tighter than `.||`:
+
+```haskell
+-- src/Keiki/Core.hs
+(.&&), (.||) :: HsPred rs ci -> HsPred rs ci -> HsPred rs ci
+(.&&) = PAnd
+(.||) = POr
+
+infixr 3 .&&
+infixr 2 .||
+```
+
+And the arithmetic set (mirroring chapter 03's `tadd`/`tsub`/`tmul`) sit above the relational operators
+at `infixl 6` / `infixl 7`:
+
+```haskell
+-- src/Keiki/Core.hs
+(.+)
+    , (.-)
+    , (.*) ::
+        (Num r, Typeable r) => Term rs ci ifs r -> Term rs ci ifs r -> Term rs ci ifs r
+(.+) = tadd
+(.-) = tsub
+(.*) = tmul
+
+infixl 6 .+, .-
+infixl 7 .*
+```
+
+The fixities are chosen so `lit a .* lit b .>= lit cap .&& p` parses the way arithmetic, then comparison,
+then conjunction would in ordinary Haskell.
+
+<Callout type="warn">
+Keep spaces around these operators (`lit a .* lit b`). A dot touching an identifier (`x.y`) is
+`OverloadedRecordDot` field access, not a keiki operator. And if you import `Data.SBV` alongside
+`Keiki.Core`, import it qualified — SBV exports the same operator names. Chapter 09 covers this import
+hygiene in full.
+</Callout>
+
+## `evalPred`: the interpreter
+
+`evalPred` walks an `HsPred` to a `Bool`. The Boolean arms are structural; `PEq` defers to `evalTerm`
+(chapter 03) on both sides; `PInCtor` runs `icMatch`; `PCmp` dispatches on the `Cmp` tag:
+
+```haskell
+-- src/Keiki/Core.hs
+evalPred :: HsPred rs ci -> RegFile rs -> ci -> Bool
+evalPred PTop _ _ = True
+evalPred PBot _ _ = False
+evalPred (PAnd p q) r c = evalPred p r c && evalPred q r c
+evalPred (POr p q) r c = evalPred p r c || evalPred q r c
+evalPred (PNot p) r c = not (evalPred p r c)
+evalPred (PEq a b) r c = evalTerm a r c == evalTerm b r c
+evalPred (PInCtor ic) _ c = case icMatch ic c of
+    Just _ -> True
+    Nothing -> False
+evalPred (PCmp op a b) r c = applyCmp op (evalTerm a r c) (evalTerm b r c)
+  where
+    applyCmp :: (Ord x) => Cmp -> x -> x -> Bool
+    applyCmp CmpLt x y = x < y
+    applyCmp CmpLe x y = x <= y
+    applyCmp CmpGt x y = x > y
+    applyCmp CmpGe x y = x >= y
+```
+
+`evalPred` is what the `BoolAlg` instance's `models` calls — so when the step semantics (chapter 06) ask
+"is this edge's guard satisfied?", this is the function that answers for the v1 carrier.
+
+## Test anchor
+
+`test/Keiki/CoreSpec.hs` checks the predicate constants and equality:
+
+```haskell
+-- test/Keiki/CoreSpec.hs
+it "PTop is True; PBot is False" $ do
+  evalPred (PTop  :: HsPred '[] ()) RNil () `shouldBe` True
+  evalPred (PBot  :: HsPred '[] ()) RNil () `shouldBe` False
+it "PEq compares equal terms" $
+  evalPred (TLit (1 :: Int) .== TLit 1 :: HsPred '[] ()) RNil () `shouldBe` True
+```
+
+and the output round-trip — `evalOut` forward and `solveOutput` back — over a complete `OPack`:
+
+```haskell
+-- test/Keiki/CoreSpec.hs
+it "evalOut produces TinyFooOut on a matching ci" $
+  evalOut outComplete RNil (TinyFoo 7 11) `shouldBe` TinyFooOut 7 11
+it "solveOutput recovers ci structurally (no legacy inverse)" $
+  solveOutput outComplete RNil (TinyFooOut 7 11) `shouldBe` Just (TinyFoo 7 11)
+```
+
+That `solveOutput` round-trip is the payoff of the shared `ifs` index, and the spec also pins the
+diagnostic behaviour — incomplete coverage and a same-schema-but-wrong-name projection both return
+`Nothing` rather than producing an unsound coercion. The synthetic transducer's edge guard
+(`matchInCtor inCtorTrue`) and output (`pack inCtorTrue wcStringTrue OFNil`) drive `evalPred`/`evalOut`
+on every `delta`/`omega` call in chapter 06.
+
+Next: [06 — Edges and step semantics](/docs/keiki/walkthrough/core-and-builder/06-edges-and-step-semantics).
+
+Previous: [04 — The update language](/docs/keiki/walkthrough/core-and-builder/04-update-language).

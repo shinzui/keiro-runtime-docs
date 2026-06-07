@@ -1,0 +1,410 @@
+---
+title: "06 — Edges and step semantics"
+description: "Edge, SymTransducer and the Guarded alias, the delta / omega / step / stepEither evaluators, and the InFlight-aware replay fold that reconstitute folds over an event log."
+---
+
+The previous chapters read the four ingredient languages — terms, updates, outputs, predicates.
+This chapter assembles them into a transition (`Edge`), packs the transitions into a control graph
+(`SymTransducer`), and reads the evaluators that run it forward (`delta` / `omega` / `step` /
+`stepEither`) and backward (`applyEvent` / `applyEventStreaming` / `reconstitute`). Everything here
+is in `keiki/src/Keiki/Core.hs`. Read
+[05 — Output and predicate](/docs/keiki/walkthrough/core-and-builder/05-output-and-predicate) first
+if you have not — `OutTerm` and `HsPred` are the `Edge` fields this chapter consumes.
+
+## `Edge`: one transition
+
+An edge bundles a guard, an update, a list of outputs, and a target vertex:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+data Edge phi rs ci co s where
+    Edge ::
+        { guard :: phi
+        , update :: Update rs w ci
+        , output :: [OutTerm rs ci co]
+        , target :: s
+        } ->
+        Edge phi rs ci co s
+```
+
+<TypeTable
+  type={{
+    guard: { type: "phi", description: "The edge's guard, in whatever Boolean-algebra carrier phi the transducer uses (HsPred for the v1 surface)." },
+    update: { type: "Update rs w ci", description: "The copyless register update this edge applies. Its write-set index w is existentially hidden — see below." },
+    output: { type: "[OutTerm rs ci co]", description: "The events emitted: [] for an ε-edge, [o] for a letter edge, [o1, o2, …] for a multi-event edge." },
+    target: { type: "s", description: "The vertex this edge transitions to." },
+  }}
+/>
+
+Two design choices are worth pausing on.
+
+**`output` is a list, not a `Maybe`.** The source comment spells out the three cases:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+{- | A single transition. The 'output' is a list of 'OutTerm's:
+@[]@ is the ε-edge (no observable emission), @[o]@ is the letter
+edge (one event, identical to today's @'Just' o@), @[o1, o2, ...]@
+is the multi-event edge — one transition emits N events in
+declaration order. See @docs/research/gsm-widening-design.md@.
+-}
+```
+
+So an empty list is the **ε-edge** — a silent transition that changes state and registers but emits
+nothing. A singleton is the classic **letter edge**. A list of two-or-more is a **multi-event edge**:
+one logical transition that emits several events, evaluated in declaration order against the same
+pre-transition snapshot. (The User Registration entrance is exactly this — one `StartRegistration`
+command emits both `RegistrationStarted` and `ConfirmationEmailSent`; we read that builder body in
+[08 — The builder edge body](/docs/keiki/walkthrough/core-and-builder/08-builder-edge-body).)
+
+**The update's write-set index `w` is existential.** Notice `update :: Update rs w ci` mentions `w`
+but the `Edge` head does not. That is deliberate:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+{- | …
+The @(w :: [Symbol])@ index on 'update' (the slot-name set the
+update writes) is *existentially* quantified at the 'Edge' record
+— different edges out of the same vertex write different slot
+sets, but the homogeneous list @[Edge phi rs ci co s]@ in
+'edgesOut' demands a single @Edge@ type. The existential preserves
+the static disjointness check at the *introduction* point of any
+'Update' value (via 'combine') without polluting the @Edge@'s
+public type with a per-edge @w@ parameter.
+-}
+```
+
+The "write each slot at most once" check (chapter 04) happens when you `combine` updates. Once an
+update is sealed into an `Edge`, the `w` is hidden so a vertex can hold a heterogeneous bag of edges
+in one homogeneous list. The cost: you can no longer apply `update e` directly (GHC rejects with
+"escaped type variables"). Two helpers re-open the existential by pattern-matching internally:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+applyEdgeUpdate ::
+    Edge phi rs ci co s -> RegFile rs -> ci -> RegFile rs
+applyEdgeUpdate Edge{update = u} regs ci = runUpdate u regs ci
+
+edgeReadsInput :: Edge phi rs ci co s -> Bool
+edgeReadsInput Edge{update = u} = updateReadsInput u
+```
+
+## `SymTransducer`: the control graph
+
+A transducer is "a finite control graph plus a register file evolved by edges' update terms":
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+data SymTransducer phi rs s ci co = SymTransducer
+    { edgesOut :: s -> [Edge phi rs ci co s]
+    , initial :: s
+    , initialRegs :: RegFile rs
+    , isFinal :: s -> Bool
+    }
+```
+
+`edgesOut` is a **function**, not a stored map: given a vertex, return its outgoing edges in
+declaration order. `initial` / `initialRegs` seed replay; `isFinal` marks accepting vertices. This is
+the one type every downstream module consumes — the deciders, the acceptors, `Keiki.Composition`, the
+symbolic analyses, and the renderers all take a `SymTransducer`.
+
+Two readable aliases collapse the repetitive `HsPred` signature:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+type Pred rs ci = HsPred rs ci
+
+type Guarded rs s ci co = SymTransducer (HsPred rs ci) rs s ci co
+```
+
+`Guarded rs s ci co` is the type you will see on almost every concrete aggregate — for example
+`userReg :: Guarded UserRegRegs Vertex UserCmd UserEvent`.
+
+## Running forward: `delta`, `omega`, `step`
+
+The forward evaluators all share one rule — **a transition fires iff exactly one outgoing edge has a
+satisfied guard**. `delta` returns the next `(state, registers)`:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+delta ::
+    (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co ->
+    s ->
+    RegFile rs ->
+    ci ->
+    Maybe (s, RegFile rs)
+delta t s regs ci =
+    case [ (target e, applyEdgeUpdate e regs ci)
+         | e <- edgesOut t s
+         , models (guard e) (regs, ci)
+         ] of
+        [single] -> Just single
+        _ -> Nothing
+```
+
+The list comprehension collects every edge whose guard `models` the `(regs, ci)` pair. The case
+match is the whole semantics: **`[single]` returns `Just`; everything else — zero matches *and* two
+or more matches — returns `Nothing`.** That a `>1`-match also collapses to `Nothing` is the runtime
+face of the single-valuedness invariant; the symbolic determinism checker proves statically that it
+cannot happen.
+
+<Callout type="warn">
+`delta` cannot tell you *why* it returned `Nothing`. "No outgoing edges", "no edge matched", and
+"two edges matched" all collapse to the same `Nothing`. When you need the distinction, reach for
+`stepEither` (below).
+</Callout>
+
+`omega` is the output mirror — the events emitted by the unique active edge:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+omega ::
+    (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co ->
+    s ->
+    RegFile rs ->
+    ci ->
+    [co]
+omega t s regs ci =
+    case [ [evalOut o regs ci | o <- output e]
+         | e <- edgesOut t s
+         , models (guard e) (regs, ci)
+         ] of
+        [evaluatedOuts] -> evaluatedOuts
+        _ -> []
+```
+
+Note the ambiguity the source comment calls out: `omega` returns `[]` for *both* "no active edge"
+and "active ε-edge", because both produce an empty event list. If you must distinguish them, use
+`step` or `delta`. `step` combines the two into one full step:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+step ::
+    (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co ->
+    (s, RegFile rs) ->
+    ci ->
+    Maybe (s, RegFile rs, [co])
+step t (s, regs) ci = case delta t s regs ci of
+    Nothing -> Nothing
+    Just (s', regs') -> Just (s', regs', omega t s regs ci)
+```
+
+<Callout type="info">
+There is **no `StepResult` type**. A successful step is the bare triple `(s, RegFile rs, [co])`:
+the next vertex, the next register file, and the (possibly empty) list of emitted events. `step` is
+the recommended forward entry point on the transducer surface.
+</Callout>
+
+`CoreSpec` anchors the contract directly:
+
+```haskell
+-- keiki/test/Keiki/CoreSpec.hs
+it "produces (s', _, Just co) on a matching output edge" $ do
+  case step synthetic (False, RNil) True of
+    Just (s', _, [co]) -> (s', co) `shouldBe` (True, "true")
+    other                 -> expectationFailure (show3 other)
+it "returns Nothing in the sink vertex" $
+  case step synthetic (True, RNil) True of
+    Nothing -> pure ()
+    other   -> expectationFailure (show3 other)
+```
+
+## `stepEither`: a precise failure
+
+`stepEither` is the same forward step, but it explains its failures instead of collapsing them to
+`Nothing`. On success it returns *exactly* the triple `step` returns; on failure it returns a
+`StepFailure`:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+data StepFailure s
+    = NoOutgoingEdges s
+    | NoMatchingEdge s [RejectedEdgeSummary s]
+    | AmbiguousEdges s [MatchedEdgeSummary s]
+    deriving stock (Eq, Show)
+```
+
+The three constructors are exactly the three ways `delta`'s `[single]` match can fail:
+
+- **`NoOutgoingEdges s`** — the source vertex is a dead end.
+- **`NoMatchingEdge s [RejectedEdgeSummary s]`** — there were outgoing edges but none matched the
+  command; it carries one summary per rejected edge, in declaration order.
+- **`AmbiguousEdges s [MatchedEdgeSummary s]`** — two or more guards matched, a runtime witness of
+  the single-valuedness violation that the symbolic determinism check proves cannot occur.
+
+The two summary records locate each edge by an `EdgeRef` (a `(source vertex, zero-based index)`
+pair) and, deliberately, carry **no register values** — diagnostics summarize, they do not dump
+state:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+data EdgeRef s = EdgeRef
+    { edgeSource :: s
+    , edgeIndex :: Int
+    }
+    deriving stock (Eq, Show)
+```
+
+The body makes the success/failure split crisp: a single match returns `Right (target e, regs',
+outs)` — the same triple `step` produces — while the empty and many cases return the precise `Left`:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+stepEither t (s, regs) ci =
+    case zip [0 ..] (edgesOut t s) of
+        [] -> Left (NoOutgoingEdges s)
+        indexed ->
+            let matched =
+                    [ (i, e)
+                    | (i, e) <- indexed
+                    , models (guard e) (regs, ci)
+                    ]
+             in case matched of
+                    [] -> Left $ NoMatchingEdge s [{- one RejectedEdgeSummary per edge -}]
+                    [(_, e)] ->
+                        let !regs' = applyEdgeUpdate e regs ci
+                            outs = [evalOut o regs ci | o <- output e]
+                         in Right (target e, regs', outs)
+                    _ -> Left $ AmbiguousEdges s [{- one MatchedEdgeSummary per match -}]
+```
+
+`stepEither` is purely additive: `step` is left unchanged, and the `Right` branch is byte-for-byte
+the triple `step` returns. The diagnostics capability documents the full per-failure taxonomy in
+depth in the reference section's diagnostics landing — this chapter introduces the types; that page
+is where the complete catalogue lives.
+
+## Running backward: the replay fold
+
+The forward step takes a *command* (`ci`) and produces *events* (`[co]`). Replay does the inverse:
+given a log of events, recover the `(state, registers)` that produced them. The mechanism is to walk
+each vertex's outgoing edges, invert each edge's `output` via `solveOutput` (chapter 05), check the
+guard on the recovered input, and apply the update.
+
+The letter-flavoured `applyEvent` is the single-event step:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+applyEvent ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    SymTransducer phi rs s ci co ->
+    s ->
+    RegFile rs ->
+    co ->
+    Maybe (s, RegFile rs)
+applyEvent t s regs co =
+    case [ (target e, applyEdgeUpdate e regs ci)
+         | e <- edgesOut t s
+         , o : _ <- [output e]
+         , Just ci <- [solveOutput o regs co]
+         , models (guard e) (regs, ci)
+         ] of
+        [single] -> Just single
+        _ -> Nothing
+```
+
+`applyEvent` only inverts against the **head** of each edge's output list, so it is correct only for
+letter-only logs. The source warns that for true multi-event replay — where the intermediate events
+of a chain must be matched against the *tail* of a prior edge's output — you need the streaming
+variant.
+
+### `InFlight`: settled or mid-chain
+
+Multi-event edges mean replay can land **between** the events of one transition. `InFlight` is the
+streaming-replay state that captures this:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+data InFlight s co
+    = Settled !s
+    | InFlight !s ![co]
+    deriving (Eq, Show)
+```
+
+`Settled s` is "at a stable vertex — the next event must be the first emission of *some* outgoing
+edge of `s`". `InFlight s [e2, …, eN]` is "mid-chain at the target vertex `s` (the register update
+already applied); the queue holds the remaining *evaluated* expected events, and the next observed
+event must equal the head, popping it; when the queue empties, transition back to `Settled s`."
+
+`applyEventStreaming` is the `InFlight`-aware step. From a `Settled` state it commits to the unique
+edge whose output head inverts to a valid input, applies the update, evaluates the *tail* against the
+pre-transition snapshot, and lands either back in `Settled` (a letter edge) or in `InFlight` (a
+multi-event edge). From an `InFlight` state it just equality-checks the queue head — **no register
+update**, because the registers were updated at the `Settled → InFlight` transition:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+applyEventStreaming _ (InFlight s queue) regs co = case queue of
+    [] -> Nothing
+    [q1]
+        | q1 == co -> Just (Settled s, regs)
+        | otherwise -> Nothing
+    (q1 : rest)
+        | q1 == co -> Just (InFlight s rest, regs)
+        | otherwise -> Nothing
+```
+
+This is where the `Eq co` constraint on the replay functions comes from: the in-flight queue is
+matched by event equality. Most aggregate event types derive `Eq`.
+
+### `reconstitute` and `applyEvents`
+
+`reconstitute` is the top-level fold: replay a whole log from the transducer's initial state.
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+reconstitute ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    SymTransducer phi rs s ci co ->
+    [co] ->
+    Maybe (s, RegFile rs)
+reconstitute t = applyEvents t (initial t, initialRegs t)
+```
+
+It delegates to `applyEvents`, which is the same fold from a *caller-supplied* start state — useful
+when a runtime preserves command boundaries and wants to replay one command's events atomically:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+applyEvents t (s0, regs0) cos_ = go (Settled s0) regs0 cos_
+  where
+    go (Settled s) regs [] = Just (s, regs)
+    go (InFlight _ _) _ [] = Nothing -- chunk ended mid-flight
+    go inFlight regs (co : rest) = do
+        (inFlight', regs') <- applyEventStreaming t inFlight regs co
+        go inFlight' regs' rest
+```
+
+Read the fold's two base cases together: a chunk that ends in `Settled` unwraps to `Just (s, regs)`;
+a chunk that ends `InFlight` returns `Nothing`, because there is no valid `(s, regs)` to surface from
+a truncated chain. For a letter-only transducer the wrapper is always `Settled` and the result is
+identical to the pre-multi-event letter fold.
+
+`CoreSpec` anchors the empty-log boundary:
+
+```haskell
+-- keiki/test/Keiki/CoreSpec.hs
+it "returns the initial state for the empty log" $
+  case reconstitute synthetic ([] :: [String]) of
+    Just (s, _) -> s `shouldBe` False
+    Nothing     -> expectationFailure "expected Just (initial, _)"
+```
+
+The User Registration spec exercises the multi-event path: its `applyEvents` test replays the
+two-event entrance chunk through the `InFlight` wrapper and asserts the landing vertex matches both
+authoring forms (we read that builder in chapter 08).
+
+<Callout type="info">
+`reconstitute` is the recommended replay entry point on the transducer surface. There is a
+single-event `evolve`-style façade reachable through the decider derivation, but you should reach for
+`reconstitute` / `applyEvents` directly when working against a `SymTransducer`.
+</Callout>
+
+With the forward and backward evaluators in hand, the rest of the tour is about *authoring* these
+edges and transducers ergonomically — the builder.
+
+Previous: [05 — Output and predicate](/docs/keiki/walkthrough/core-and-builder/05-output-and-predicate).
+
+Next: [07 — The builder, three layers](/docs/keiki/walkthrough/core-and-builder/07-builder-three-layers).

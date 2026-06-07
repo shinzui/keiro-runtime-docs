@@ -1,0 +1,237 @@
+---
+title: "03 — The term language"
+description: "Term: the pure expression AST over registers and the input symbol — its five constructors, the ifs input-field schema, InCtor, the smart constructors, and evalTerm."
+---
+
+This chapter reads the `Term` language in `src/Keiki/Core.hs`: the `NumOp` tag, the `Term` constructors,
+the `ifs` input-field schema and the `InCtor` that pins it, the user-facing smart constructors, and the
+`evalTerm` interpreter. The test anchor is `test/Keiki/CoreSpec.hs`. Read
+[02 — RegFile and Index](/docs/keiki/walkthrough/core-and-builder/02-regfile-and-index) first.
+
+## `NumOp`: one tag for three arithmetic directions
+
+Arithmetic is carried by a single `Term` constructor (`TArith`, below) parameterised by a `NumOp` tag,
+rather than three constructors. The doc comment explains the trade:
+
+```haskell
+-- src/Keiki/Core.hs
+-- | A numeric operation carried by 'TArith'. @OpAdd@\/@OpSub@\/@OpMul@
+-- are @+@\/@-@\/@*@ respectively. Kept as a single tag (rather than
+-- three 'Term' constructors) so each total 'Term' walker switches on
+-- one value; the three directions are recovered by the smart
+-- constructors 'tadd'\/'tsub'\/'tmul'.
+data NumOp = OpAdd | OpSub | OpMul
+    deriving stock (Eq, Show)
+```
+
+One tag means `evalTerm` (and the SBV translator, and every other `Term` walker) has a single `TArith`
+arm instead of three.
+
+## `Term`: the four-parameter expression AST
+
+`Term rs ci ifs r` is a pure expression yielding an `r`, over the register file `rs`, the input symbol
+`ci`, and an *input-field schema* `ifs`:
+
+```haskell
+-- src/Keiki/Core.hs
+data Term (rs :: [Slot]) (ci :: Type) (ifs :: [Slot]) (r :: Type) where
+    TLit :: r -> Term rs ci ifs r
+    TReg :: Index rs r -> Term rs ci ifs r
+    TInpCtorField :: InCtor ci ifs -> Index ifs r -> Term rs ci ifs r
+    TApp1 ::
+        (a -> r) ->
+        Term rs ci ifs a ->
+        Term rs ci ifs r
+    TApp2 ::
+        (a -> b -> r) ->
+        Term rs ci ifs a ->
+        Term rs ci ifs b ->
+        Term rs ci ifs r
+    TArith ::
+        (Num r, Typeable r) =>
+        NumOp ->
+        Term rs ci ifs r ->
+        Term rs ci ifs r ->
+        Term rs ci ifs r
+```
+
+The constructors, top to bottom:
+
+<TypeTable
+  type={{
+    TLit: { type: "r -> Term rs ci ifs r", description: "A constant. Leaves ifs free." },
+    TReg: { type: "Index rs r -> Term rs ci ifs r", description: "Read a register slot via an Index (chapter 02). Leaves ifs free." },
+    TInpCtorField: { type: "InCtor ci ifs -> Index ifs r -> Term rs ci ifs r", description: "Read field ix of the input constructor described by ic. Pins ifs to the constructor's field schema." },
+    TApp1: { type: "(a -> r) -> Term rs ci ifs a -> Term rs ci ifs r", description: "Apply a unary Haskell function — an opaque escape hatch the solver cannot see into." },
+    TApp2: { type: "(a -> b -> r) -> Term … a -> Term … b -> Term … r", description: "Apply a binary Haskell function — likewise opaque." },
+    TArith: { type: "NumOp -> Term rs ci ifs r -> Term rs ci ifs r -> Term rs ci ifs r", description: "Structural arithmetic (Num r, Typeable r). The SBV translator reads it for real." },
+  }}
+/>
+
+## The `ifs` input-field schema
+
+The fourth parameter, `ifs :: [Slot]`, is the subtle one. It is the input-field schema a term may project
+from, and threading it through the AST is what makes structural output inversion sound. The doc comment:
+
+```haskell
+-- src/Keiki/Core.hs
+-- The @ifs :: [Slot]@ parameter is the /input field schema/ this term
+-- may project from: it is pinned by 'TInpCtorField' (whose 'Index' is
+-- into @ifs@) and left free by terms that do not read an input field
+-- ('TLit', 'TReg'). Threading @ifs@ through the AST is what lets an
+-- 'OutFields' (and hence an 'OPack') guarantee /by construction/ that
+-- every top-level input projection reads the same constructor schema as
+-- the 'OPack''s 'InCtor' — so 'solveOutput' recovers a command field
+-- with no @unsafeCoerce@. ...
+```
+
+`TLit` and `TReg` are polymorphic in `ifs` (they read no input field). `TInpCtorField` *pins* it to the
+schema of the constructor it reads. So an `OutFields` whose terms share one `ifs` (chapter 05) is
+statically guaranteed to project from a single input constructor — that is what lets `solveOutput`
+recover the command with no coercion.
+
+<Callout type="info">
+`TApp1` / `TApp2` are the **opaque** escape hatches: they hold an arbitrary Haskell function, so the
+symbolic translator cannot look inside them. `TArith` is the **structural** alternative — because the
+operation is a `NumOp` tag rather than a closure, the SBV translator reads a `TArith` for real (on a
+`discoverSymNum` hit) and a guard over a computed value stays visible to the solver. Prefer `TArith`
+(via `tadd`/`tsub`/`tmul`) over `TApp2 (+)` whenever the operand type is numeric.
+</Callout>
+
+## `InCtor`: a per-constructor input projection
+
+`TInpCtorField` carries an `InCtor ci ifs`. An `InCtor` names one constructor of the input type `ci` and
+pins the round-trip between that constructor's payload and a typed `RegFile ifs`:
+
+```haskell
+-- src/Keiki/Core.hs
+data InCtor ci (ifs :: [Slot]) where
+    InCtor ::
+        (AssembleRegFile ifs, KnownSlotNames ifs) =>
+        { icName :: String
+        , icMatch :: ci -> Maybe (RegFile ifs)
+        , icBuild :: RegFile ifs -> ci
+        } ->
+        InCtor ci ifs
+```
+
+The contract, from the doc comment:
+
+```haskell
+-- src/Keiki/Core.hs
+-- 'icMatch' must return 'Just' iff @ci@ is the named constructor.
+-- 'icBuild' is its left inverse: @icMatch (icBuild rf) == Just rf@ for
+-- every well-formed @rf@.
+```
+
+`icMatch` peels the constructor's payload into a register file; `icBuild` is its left inverse. The
+`AssembleRegFile` and `KnownSlotNames` constraints (also in `Keiki.Core`) let any holder of an `InCtor`
+rebuild a `RegFile` from `(Index, value)` pairs and recover the slot names at run time — both instances
+are automatic for any concrete slot list, so authors write no extra code.
+
+## The smart constructors: the user-facing surface
+
+Rather than expose the bare constructors, `Keiki.Core` exports lowercase smart constructors. They are
+trivial aliases, but they are the names an author types:
+
+```haskell
+-- src/Keiki/Core.hs
+-- | Read a register slot into a 'Term'.
+proj :: Index rs r -> Term rs ci ifs r
+proj = TReg
+
+-- | Structural input projection ...
+inpCtor :: InCtor ci ifs -> Index ifs r -> Term rs ci ifs r
+inpCtor = TInpCtorField
+
+-- | A constant 'Term'.
+lit :: r -> Term rs ci ifs r
+lit = TLit
+```
+
+The arithmetic trio is one declaration sharing a signature, each fixing a `NumOp`:
+
+```haskell
+-- src/Keiki/Core.hs
+tadd
+    , tsub
+    , tmul ::
+        (Num r, Typeable r) =>
+        Term rs ci ifs r -> Term rs ci ifs r -> Term rs ci ifs r
+tadd = TArith OpAdd
+tsub = TArith OpSub
+tmul = TArith OpMul
+```
+
+`lit`/`proj`/`inpCtor` build the leaf terms; `tadd`/`tsub`/`tmul` build structural arithmetic. (Chapter
+05 covers the infix `.+`/`.-`/`.*` aliases for the same three.)
+
+## `evalTerm`: the interpreter
+
+`evalTerm` walks a `Term` against a register file and an input symbol. One arm per constructor — and the
+single `TArith` arm pays off the "one tag" choice from the top of the chapter:
+
+```haskell
+-- src/Keiki/Core.hs
+evalTerm :: Term rs ci ifs r -> RegFile rs -> ci -> r
+evalTerm (TLit r) _ _ = r
+evalTerm (TReg ix) regs _ = regs ! ix
+evalTerm (TInpCtorField ic ix) _ ci = case icMatch ic ci of
+    Just rf -> rf ! ix
+    Nothing -> error ("evalTerm: TInpCtorField guard violation: " ++ icName ic)
+evalTerm (TApp1 f t) regs ci = f (evalTerm t regs ci)
+evalTerm (TApp2 f a b) regs ci = f (evalTerm a regs ci) (evalTerm b regs ci)
+evalTerm (TArith op a b) regs ci =
+    applyNumOp op (evalTerm a regs ci) (evalTerm b regs ci)
+```
+
+`TReg` is the `(!)` lookup from chapter 02. `TInpCtorField` runs `icMatch` and, on a hit, reads the field
+out of the recovered file — on a *miss* it throws a precise error naming the constructor (a guard
+violation: evaluating a field projection against the wrong input constructor). `TArith` defers to
+`applyNumOp`, which maps the tag back to a Prelude operation:
+
+```haskell
+-- src/Keiki/Core.hs
+applyNumOp :: (Num r) => NumOp -> r -> r -> r
+applyNumOp OpAdd = (+)
+applyNumOp OpSub = (-)
+applyNumOp OpMul = (*)
+```
+
+## Test anchor
+
+`test/Keiki/CoreSpec.hs` exercises each arm. The basic literal and application cases:
+
+```haskell
+-- test/Keiki/CoreSpec.hs
+it "evaluates TLit" $
+  evalTerm (TLit (42 :: Int)) RNil () `shouldBe` 42
+it "evaluates TApp1" $
+  evalTerm (TApp1 (+1) (TLit (5 :: Int)) :: Term '[] () '[] Int) RNil () `shouldBe` 6
+```
+
+And the structural input projection, including the guard-violation error that `evalTerm` throws when the
+input is the wrong constructor:
+
+```haskell
+-- test/Keiki/CoreSpec.hs
+it "evaluates field #a on the matching constructor" $
+  evalTerm
+    (TInpCtorField inCtorTinyFoo (#a :: Index '[ '("a", Int), '("b", Int) ] Int)
+       :: Term '[] TinyCmd '[ '("a", Int), '("b", Int) ] Int)
+    RNil (TinyFoo 7 9) `shouldBe` 7
+it "errors with the icName when the input is the wrong constructor" $
+  evaluate
+    (evalTerm
+       (TInpCtorField inCtorTinyFoo (#a :: Index '[ '("a", Int), '("b", Int) ] Int)
+          :: Term '[] TinyCmd '[ '("a", Int), '("b", Int) ] Int)
+       RNil (TinyBar 0))
+    `shouldThrow` errorCall "evalTerm: TInpCtorField guard violation: TinyFoo"
+```
+
+Here `#a` is the `IsLabel s (Index rs r)` resolution from chapter 02, and `inCtorTinyFoo` is the
+hand-written `InCtor` we read there.
+
+Next: [04 — The update language](/docs/keiki/walkthrough/core-and-builder/04-update-language).
+
+Previous: [02 — RegFile and Index](/docs/keiki/walkthrough/core-and-builder/02-regfile-and-index).

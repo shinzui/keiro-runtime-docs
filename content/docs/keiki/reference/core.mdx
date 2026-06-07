@@ -1,0 +1,733 @@
+---
+title: "Keiki.Core"
+description: "The pure core of keiki (継起): the symbolic-register transducer, its term/update/predicate/output ASTs, the concrete evaluators, and the pure-layer run entry points."
+---
+
+Everything on this page lives in `Keiki.Core`, the pure heart of keiki (継起). It declares the
+symbolic-register transducer, the four little languages that author its edges (terms, updates,
+predicates, output assembly), the effective-Boolean-algebra plumbing that abstracts the guard
+carrier, and the concrete evaluators and run entry points that drive a machine forward or replay it
+backward — all with no solver involved.
+
+For the conceptual model behind these shapes, read the
+[explanation section](/docs/keiki/explanation): *The SymTransducer* covers the control-graph /
+register split and *Registers vs. state* covers why the register file is separate from the vertex
+type. This page is the verbatim API surface; the prose there is the "why".
+
+<Callout type="info">
+There is **no** `StepResult` type. A successful step is the bare triple `(s, RegFile rs, [co])`:
+the next vertex, the updated register file, and the list of emitted output letters (empty for an
+ε-edge). `step` wraps it in `Maybe`; `stepEither` wraps it in `Either StepFailure`.
+</Callout>
+
+## Slots and the register file
+
+A `Slot` is a label paired with the type of the value stored at that label.
+
+```haskell
+type Slot = (Symbol, Type)
+```
+
+`RegFile` is a typed heterogeneous tuple indexed by a list of slots. It is a GADT with two
+constructors: `RNil` for the empty file and `RCons` to prepend a labelled value.
+
+```haskell
+data RegFile (rs :: [Slot]) where
+    RNil :: RegFile '[]
+    RCons ::
+        (KnownSymbol s) =>
+        Proxy s -> r -> RegFile rs -> RegFile ('(s, r) ': rs)
+```
+
+<Callout type="info">
+The slot-value field is intentionally **lazy**. `Keiki.Generics.emptyRegFile` seeds each slot with a
+deferred `error "uninit: <slot>"` thunk so that reading an unwritten slot fails loudly with a
+targeted message instead of returning a silent bottom. Strictness for *written* slots is enforced on
+the write path (`setSlotN`) instead.
+</Callout>
+
+`Index` is a type-safe pointer into a `RegFile`: `ZIdx` picks the head slot, `SIdx` skips one slot.
+
+```haskell
+data Index (rs :: [Slot]) (r :: Type) where
+    ZIdx :: (KnownSymbol s) => Index ('(s, r) ': rs) r
+    SIdx :: Index rs r -> Index ('(s', r') ': rs) r
+```
+
+`(!)` is the runtime lookup. It has fixity `infixl 9`.
+
+```haskell
+(!) :: RegFile rs -> Index rs r -> r
+
+infixl 9 !
+```
+
+### Resolving labels to indices
+
+`HasIndex` resolves a label `s` against a slot list `rs` to the `Index` of the value at that slot.
+The functional dependency `s rs -> r` ensures a label uniquely determines the slot's type, so an
+`OverloadedLabels` `#name` literal type-checks to the right `Index`.
+
+```haskell
+class
+    HasIndex (s :: Symbol) (rs :: [Slot]) (r :: Type)
+        | s rs -> r
+    where
+    indexOf :: Index rs r
+```
+
+There are two `IsLabel` instances that build on `HasIndex`: one producing an `Index rs r` (so `#name`
+is a register pointer where an `Index` is expected) and one producing a `Term rs ci ifs r` (so
+`#name` is a register-reading term where a `Term` is expected). GHC picks between them by the expected
+result type.
+
+## The term language
+
+A `Term` is a pure expression over the register file and the input symbol, yielding a value of type
+`r`.
+
+```haskell
+data Term (rs :: [Slot]) (ci :: Type) (ifs :: [Slot]) (r :: Type) where
+    TLit :: r -> Term rs ci ifs r
+    TReg :: Index rs r -> Term rs ci ifs r
+    TInpCtorField :: InCtor ci ifs -> Index ifs r -> Term rs ci ifs r
+    TApp1 ::
+        (a -> r) ->
+        Term rs ci ifs a ->
+        Term rs ci ifs r
+    TApp2 ::
+        (a -> b -> r) ->
+        Term rs ci ifs a ->
+        Term rs ci ifs b ->
+        Term rs ci ifs r
+    TArith ::
+        (Num r, Typeable r) =>
+        NumOp ->
+        Term rs ci ifs r ->
+        Term rs ci ifs r ->
+        Term rs ci ifs r
+```
+
+<Callout type="info">
+**The `ifs` parameter** (`:: [Slot]`) is the *input-field schema* the term may project from. It is
+pinned by `TInpCtorField` (whose `Index` is into `ifs`) and left free by terms that read no input
+field (`TLit`, `TReg`). Threading `ifs` through the AST is what lets an `OutFields` — and hence an
+`OPack` — guarantee *by construction* that every top-level input projection reads the same
+constructor schema as the `OPack`'s `InCtor`, so `solveOutput` can recover a command field with no
+`unsafeCoerce`. Terms that never appear in an invertible output position (`Update` right-hand sides,
+`HsPred` operands) existentially hide `ifs`, so it never leaks into the `Edge` / `SymTransducer`
+surface.
+</Callout>
+
+`NumOp` is the single arithmetic tag carried by `TArith`: `OpAdd`/`OpSub`/`OpMul` are `+`/`-`/`*`.
+
+```haskell
+data NumOp = OpAdd | OpSub | OpMul
+    deriving stock (Eq, Show)
+```
+
+Unlike the opaque `TApp1`/`TApp2` escape hatches, `TArith` is read *for real* by the SBV translator,
+so a guard over a computed value (a weighted sum, a derived cap) stays visible to the solver.
+
+### Smart constructors
+
+Author terms with these instead of the raw constructors.
+
+```haskell
+lit :: r -> Term rs ci ifs r
+proj :: Index rs r -> Term rs ci ifs r
+inpCtor :: InCtor ci ifs -> Index ifs r -> Term rs ci ifs r
+```
+
+`lit` is a constant; `proj` reads a register; `inpCtor` reads field `ix` of the input constructor
+described by `ic` (its result `Term`'s `ifs` is the constructor's field schema, so an `OutFields`
+built from these is statically tied to the `OPack`'s `InCtor`).
+
+The arithmetic smart constructors build a `TArith` over `+`/`-`/`*`. The operand type must be `Num`
+and `Typeable`.
+
+```haskell
+tadd
+    , tsub
+    , tmul ::
+        (Num r, Typeable r) =>
+        Term rs ci ifs r -> Term rs ci ifs r -> Term rs ci ifs r
+```
+
+## Input constructors
+
+An `InCtor` names one constructor of the input symbol type `ci` and pins the round-trip between that
+constructor's payload and a typed register file `RegFile ifs`. The slot list `ifs` is the field
+schema for the constructor; together with `Index` it lets call sites read fields via
+`OverloadedLabels` (for example `inpStart #email`).
+
+```haskell
+data InCtor ci (ifs :: [Slot]) where
+    InCtor ::
+        (AssembleRegFile ifs, KnownSlotNames ifs) =>
+        { icName :: String
+        , icMatch :: ci -> Maybe (RegFile ifs)
+        , icBuild :: RegFile ifs -> ci
+        } ->
+        InCtor ci ifs
+```
+
+<TypeTable
+  type={{
+    icName: { type: "String", description: "The named constructor's name (e.g. \"StartRegistration\")" },
+    icMatch: { type: "ci -> Maybe (RegFile ifs)", description: "Returns Just iff ci is the named constructor, decoding its payload into a typed register file" },
+    icBuild: { type: "RegFile ifs -> ci", description: "Left inverse of icMatch: icMatch (icBuild rf) == Just rf for every well-formed rf" },
+  }}
+/>
+
+The `AssembleRegFile` and `KnownSlotNames` constraints on the constructor mean any code holding an
+`InCtor` can mechanically rebuild a `RegFile` from a bag of `(Index, value)` pairs and recover the
+slot names of `ifs` at run time. Both instances are automatic for any concrete slot list, so users
+write no extra code.
+
+## The update language
+
+`Update` is the copyless update language. The `w :: [Symbol]` index records the set of slot names the
+update writes; the smart constructor `combine` demands `Disjoint w1 w2` to combine two updates, so
+"each register is written at most once per edge update" becomes a type-level invariant rather than a
+runtime check.
+
+```haskell
+data Update (rs :: [Slot]) (w :: [Symbol]) (ci :: Type) where
+    UKeep :: Update rs '[] ci
+    USet ::
+        (KnownSymbol s) =>
+        IndexN s rs r -> Term rs ci ifs r -> Update rs '[s] ci
+    UCombine ::
+        Update rs w1 ci ->
+        Update rs w2 ci ->
+        Update rs (Concat w1 w2) ci
+```
+
+`UKeep` writes nothing; `USet` writes one slot from a term's value; `UCombine` is the raw, *unchecked*
+join (it is left unconstrained so internal pattern-matches in `Keiki.Composition` that reconstruct
+`UCombine` values stay cheap).
+
+Always introduce a join through `combine`, whose `Disjoint w1 w2` constraint statically rejects an
+aggregate that writes the same slot twice (e.g. `USet #email t1 \`combine\` USet #email t2`) at
+compile time with a `TypeError` naming the offending slot.
+
+```haskell
+combine ::
+    (Disjoint w1 w2) =>
+    Update rs w1 ci ->
+    Update rs w2 ci ->
+    Update rs (Concat w1 w2) ci
+```
+
+## Output assembly
+
+A `WireCtor` is a wire-type tag for one constructor of the user's output sum `co`. Its functions let
+`solveOutput` pattern-match an observed `co` and `evalOut` rebuild a `co` from its fields.
+
+```haskell
+data WireCtor co fields = WireCtor
+    { wcName :: String
+    , wcMatch :: co -> Maybe fields
+    , wcBuild :: fields -> co
+    }
+```
+
+<TypeTable
+  type={{
+    wcName: { type: "String", description: "The wire constructor's name" },
+    wcMatch: { type: "co -> Maybe fields", description: "Returns Just (the field tuple) iff co is this wire constructor" },
+    wcBuild: { type: "fields -> co", description: "Rebuilds the output value from its field tuple" },
+  }}
+/>
+
+`OutFields` is an HList of `Term`s, one per field of the wire constructor; the field-tuple type is
+built nested-pair style so `solveOutput` can walk it structurally. Its `ifs` parameter is the shared
+input field schema of every `Term` in the list.
+
+```haskell
+data OutFields rs ci ifs fs where
+    OFNil :: OutFields rs ci ifs ()
+    OFCons ::
+        Term rs ci ifs f ->
+        OutFields rs ci ifs fs ->
+        OutFields rs ci ifs (f, fs)
+```
+
+Build `OutFields` literals with `(*:)` (the right-associative synonym for `OFCons`, fixity
+`infixr 5`) and `oNil` (the synonym for `OFNil`). They read top-to-bottom in the wire constructor's
+field order:
+
+```haskell
+(*:) :: Term rs ci ifs f -> OutFields rs ci ifs fs -> OutFields rs ci ifs (f, fs)
+oNil :: OutFields rs ci ifs ()
+
+infixr 5 *:
+```
+
+```haskell
+-- d.recipient *: d.subject *: d.at *: oNil
+-- is identical to
+-- OFCons t1 (OFCons t2 (OFCons t3 OFNil))
+```
+
+`OutTerm` is a pure expression yielding an output value `co`. Its only constructor, `OPack`, is the
+structural pack: tagged by an input constructor (which the edge consumes) and an output wire
+constructor (which the edge produces), with one `Term` per field of the wire constructor.
+
+```haskell
+data OutTerm (rs :: [Slot]) (ci :: Type) (co :: Type) where
+    OPack ::
+        InCtor ci ifs ->
+        WireCtor co fields ->
+        OutFields rs ci ifs fields ->
+        OutTerm rs ci co
+```
+
+`solveOutput` walks the structural `OutFields`, gathers `(Index, value)` pairs against the named
+`InCtor`, and reconstructs the input by calling `icBuild` on the assembled register file — no inverse
+function supplied by the user, no coercion. Author `OutTerm`s with the `pack` smart constructor:
+
+```haskell
+pack ::
+    InCtor ci ifs ->
+    WireCtor co fields ->
+    OutFields rs ci ifs fields ->
+    OutTerm rs ci co
+```
+
+## The predicate language
+
+`HsPred` is the v1 first-class predicate AST. It carries enough structure to evaluate guards
+concretely and to translate to SMT through the SBV-backed `BoolAlg` instance in `Keiki.Symbolic`.
+
+```haskell
+data HsPred (rs :: [Slot]) (ci :: Type) where
+    PTop :: HsPred rs ci
+    PBot :: HsPred rs ci
+    PAnd :: HsPred rs ci -> HsPred rs ci -> HsPred rs ci
+    POr :: HsPred rs ci -> HsPred rs ci -> HsPred rs ci
+    PNot :: HsPred rs ci -> HsPred rs ci
+    PEq ::
+        (Eq r, Typeable r) =>
+        Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+    PInCtor :: InCtor ci ifs -> HsPred rs ci
+    PCmp ::
+        (Ord r, Typeable r) =>
+        Cmp -> Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+```
+
+`PInCtor` is the structural input-constructor guard (`True` iff the input symbol is the named
+constructor). `PCmp` carries an ordering relation; unlike a threshold smuggled through `TApp`, it is
+structural and the SBV translator emits a real symbolic comparison. Equality is left to `PEq` — `Cmp`
+has no "equal" case.
+
+`Cmp` is the single four-way ordering tag carried by `PCmp`: `CmpLt`/`CmpLe`/`CmpGt`/`CmpGe` are
+`<`/`<=`/`>`/`>=`.
+
+```haskell
+data Cmp = CmpLt | CmpLe | CmpGt | CmpGe
+    deriving stock (Eq, Show)
+```
+
+`Pred rs ci` is a readable synonym for `HsPred rs ci`.
+
+### The guard-authoring operators
+
+These are re-exported from `Keiki.Core` (and also live in `Keiki.Operators`). Each relational
+operator is an alias for `PCmp`/`PEq` at a fixed relation; the logical and arithmetic operators
+mirror their Prelude counterparts. Keep spaces around them (`lit a .* lit b`) — a dot touching an
+identifier (`x.y`) is `OverloadedRecordDot` field access. If you import `Data.SBV` alongside this
+module, import it qualified; SBV exports the same names.
+
+```haskell
+(.==) :: (Eq r, Typeable r) => Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+(./=) :: (Eq r, Typeable r) => Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+(.<)
+    , (.<=)
+    , (.>)
+    , (.>=) ::
+        (Ord r, Typeable r) => Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+(.&&), (.||) :: HsPred rs ci -> HsPred rs ci -> HsPred rs ci
+pnot :: HsPred rs ci -> HsPred rs ci
+(.+)
+    , (.-)
+    , (.*) ::
+        (Num r, Typeable r) => Term rs ci ifs r -> Term rs ci ifs r -> Term rs ci ifs r
+```
+
+The fixities (verified against the source) are:
+
+<TypeTable
+  type={{
+    ".==, ./=": { type: "infix 4", description: "Equality / inequality (PEq / PNot . PEq); do not chain" },
+    ".<, .<=, .>, .>=": { type: "infix 4", description: "Ordering guards (PCmp at a fixed Cmp); do not chain" },
+    ".&&": { type: "infixr 3", description: "Conjunction (PAnd)" },
+    ".||": { type: "infixr 2", description: "Disjunction (POr)" },
+    ".+, .-": { type: "infixl 6", description: "Term addition / subtraction (tadd / tsub)" },
+    ".*": { type: "infixl 7", description: "Term multiplication (tmul)" },
+  }}
+/>
+
+So `a .>= b` is `PCmp CmpGe a b`, `a ./= b` is `pnot (a .== b)`, and `p .&& q .|| r` parses as
+`(p .&& q) .|| r`. The relational operators sit below the arithmetic operators and above the logical
+ones. `pnot` is the direct AST alias for `PNot`.
+
+`matchInCtor` is the named alias for the `PInCtor` guard: `evalPred (matchInCtor ic) regs ci`
+equals `isJust (icMatch ic ci)`.
+
+```haskell
+matchInCtor :: InCtor ci ifs -> HsPred rs ci
+```
+
+## The effective Boolean algebra
+
+`BoolAlg` is the effective Boolean algebra over `a`-typed witnesses, used as the guard carrier of
+edges. It abstracts the guard language so the same transducer machinery works over the concrete
+`HsPred` carrier *and* the SBV-backed `SymPred` carrier.
+
+```haskell
+class BoolAlg phi a | phi -> a where
+    top :: phi
+    bot :: phi
+    conj :: phi -> phi -> phi
+    disj :: phi -> phi -> phi
+    neg :: phi -> phi
+    models :: phi -> a -> Bool
+    isBot :: phi -> Bool
+```
+
+The v1 carrier's instance evaluates guards **concretely** — its `models` is `evalPred`, with **no
+solver** involved:
+
+```haskell
+instance BoolAlg (HsPred rs ci) (RegFile rs, ci) where
+    top = PTop
+    bot = PBot
+    conj p q = PAnd p q
+    disj p q = POr p q
+    neg p = PNot p
+    models p (regs, ci) = evalPred p regs ci
+    isBot PBot = True
+    isBot _ = False
+```
+
+`Sat` is a stronger capability split out of `BoolAlg`: a `BoolAlg` whose witnesses can be *extracted*
+from a satisfiable predicate. `sat phi` returns `Just` a value satisfying `phi`, or `Nothing` when it
+is unsatisfiable.
+
+```haskell
+class (BoolAlg phi a) => Sat phi a where
+    sat :: phi -> Maybe a
+```
+
+The v1 syntactic carrier has no solver, hence no extractable witness — its `sat` is always `Nothing`.
+The precise witnesses come from the SBV-backed `Sat (SymPred …)` instance in `Keiki.Symbolic`.
+
+```haskell
+instance Sat (HsPred rs ci) (RegFile rs, ci) where
+    sat _ = Nothing
+```
+
+## Edges and the transducer
+
+An `Edge` is a single transition. `output` is a *list* of `OutTerm`s: `[]` is the ε-edge (no
+observable emission), `[o]` is the letter edge (one event), `[o1, o2, ...]` is the multi-event edge
+(one transition emits N events in declaration order).
+
+```haskell
+data Edge phi rs ci co s where
+    Edge ::
+        { guard :: phi
+        , update :: Update rs w ci
+        , output :: [OutTerm rs ci co]
+        , target :: s
+        } ->
+        Edge phi rs ci co s
+```
+
+<TypeTable
+  type={{
+    guard: { type: "phi", description: "The edge's guard in the chosen Boolean-algebra carrier" },
+    update: { type: "Update rs w ci", description: "Register update; the write-set index w is existentially quantified at the record" },
+    output: { type: "[OutTerm rs ci co]", description: "Emitted letters: [] (ε), [o] (letter), or [o1, o2, ...] (multi-event)" },
+    target: { type: "s", description: "The destination vertex" },
+  }}
+/>
+
+The `w` index on `update` is existentially quantified at the `Edge` record so that the homogeneous
+list `[Edge phi rs ci co s]` in `edgesOut` type-checks while the static disjointness check is still
+enforced at every `Update`'s introduction point (via `combine`).
+
+`SymTransducer` is the single source of truth: a finite control graph plus a register file evolved by
+edges' update terms.
+
+```haskell
+data SymTransducer phi rs s ci co = SymTransducer
+    { edgesOut :: s -> [Edge phi rs ci co s]
+    , initial :: s
+    , initialRegs :: RegFile rs
+    , isFinal :: s -> Bool
+    }
+```
+
+<TypeTable
+  type={{
+    edgesOut: { type: "s -> [Edge phi rs ci co s]", description: "Outgoing edges of a vertex, in declaration order" },
+    initial: { type: "s", description: "The initial vertex" },
+    initialRegs: { type: "RegFile rs", description: "The initial register file" },
+    isFinal: { type: "s -> Bool", description: "Whether a vertex is accepting/final" },
+  }}
+/>
+
+`Guarded rs s ci co` collapses the `SymTransducer (HsPred rs ci) rs s ci co` signature — which
+otherwise repeats `rs` and `ci` — into the four type arguments that actually vary:
+
+```haskell
+type Guarded rs s ci co = SymTransducer (HsPred rs ci) rs s ci co
+```
+
+Two existential-hiding companions let you use an `Edge`'s update despite its hidden `w` index:
+
+```haskell
+applyEdgeUpdate :: Edge phi rs ci co s -> RegFile rs -> ci -> RegFile rs
+edgeReadsInput :: Edge phi rs ci co s -> Bool
+```
+
+## The concrete evaluators
+
+These run the ASTs above against an actual register file and input symbol. **No solver** — they
+compute Haskell values directly.
+
+```haskell
+evalTerm :: Term rs ci ifs r -> RegFile rs -> ci -> r
+evalOut :: OutTerm rs ci co -> RegFile rs -> ci -> co
+evalPred :: HsPred rs ci -> RegFile rs -> ci -> Bool
+runUpdate :: Update rs w ci -> RegFile rs -> ci -> RegFile rs
+```
+
+`evalTerm` evaluates a term; `evalOut` rebuilds an output value (the `InCtor` on `OPack` is consulted
+only by the inverse direction, `solveOutput`); `evalPred` evaluates a guard to a `Bool`; `runUpdate`
+applies an update, forcing each written slot to WHNF so a long-running embedder accumulates no thunk
+tower.
+
+`delta` is the unique-matching-edge transition. It returns `Just (s', regs')` iff **exactly one**
+outgoing edge has a satisfied guard, and `Nothing` when zero or more than one match.
+
+```haskell
+delta ::
+    (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co ->
+    s ->
+    RegFile rs ->
+    ci ->
+    Maybe (s, RegFile rs)
+```
+
+`omega` returns the list of events emitted by the unique active edge: `[]` for an ε-edge, `[o]` for a
+letter edge, `[o1, o2, ...]` for a multi-event edge. It also returns `[]` if no edge (or more than
+one edge) is active — so the caller cannot distinguish "no active edge" from "active ε-edge" from
+this function alone; use `step` or `delta` when that distinction matters.
+
+```haskell
+omega ::
+    (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co ->
+    s ->
+    RegFile rs ->
+    ci ->
+    [co]
+```
+
+## Pure-layer run entry points
+
+`step` is one full step, combining `delta` and `omega`. It returns `Nothing` if no edge from the
+current vertex has a satisfied guard; on success it returns the bare triple — next vertex, updated
+registers, and emitted letters (the inner `[co]` is `[]` for an ε-edge).
+
+```haskell
+step ::
+    (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co ->
+    (s, RegFile rs) ->
+    ci ->
+    Maybe (s, RegFile rs, [co])
+```
+
+`stepEither` is like `step` but returns a precise `StepFailure` on the `Left` instead of collapsing
+every failure into `Nothing`. On the `Right` it returns **exactly** the triple `step` returns.
+
+```haskell
+stepEither ::
+    (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co ->
+    (s, RegFile rs) ->
+    ci ->
+    Either (StepFailure s) (s, RegFile rs, [co])
+```
+
+### Replay
+
+These invert outputs back into state by walking outgoing edges, inverting each edge's `output` via
+`solveOutput`, verifying the guard on the recovered input, and applying the edge's update.
+
+`applyEvent` applies one observed output to the state. It handles ε-edges (skipped) and letter edges
+(inverted against the head of the output list); for true streaming replay across multi-event edges,
+use `applyEventStreaming`.
+
+```haskell
+applyEvent ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    SymTransducer phi rs s ci co ->
+    s ->
+    RegFile rs ->
+    co ->
+    Maybe (s, RegFile rs)
+```
+
+`InFlight` is the streaming-replay state wrapper. `Settled s` is the state at a stable vertex (the
+next event must be the first emission of some outgoing edge of `s`); `InFlight s [e2, ..., eN]` is
+the mid-chain state whose queue holds the remaining *evaluated* expected events in order — the next
+observed event must equal the head, popping it, until the queue empties and the wrapper transitions
+back to `Settled`.
+
+```haskell
+data InFlight s co = Settled !s | InFlight !s ![co]
+    deriving (Eq, Show)
+```
+
+`applyEventStreaming` applies one observed output to a streaming-replay state. From `Settled` it
+commits to the unique edge whose output head inverts to a valid guard-satisfying input, runs the
+update, and queues the evaluated tail (returning `Settled` for a letter edge, `InFlight` for a
+multi-event edge). From `InFlight` it equality-checks the queue head against the observed event and
+advances the queue with no register update; an out-of-order event yields `Nothing`.
+
+```haskell
+applyEventStreaming ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    SymTransducer phi rs s ci co ->
+    InFlight s co ->
+    RegFile rs ->
+    co ->
+    Maybe (InFlight s co, RegFile rs)
+```
+
+`reconstitute` rebuilds `(state, registers)` from a log of outputs by replaying each event through
+the `InFlight`-aware `applyEventStreaming` from the transducer's initial state. A log that ends
+mid-chain through a multi-event edge returns `Nothing`.
+
+```haskell
+reconstitute ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    SymTransducer phi rs s ci co ->
+    [co] ->
+    Maybe (s, RegFile rs)
+```
+
+`applyEvents` is the same replay from a caller-supplied start state rather than the initial state, so
+a runtime adapter can chunk-replay the events of one logical command from any current state. A chunk
+that ends mid-flight returns `Nothing`.
+
+```haskell
+applyEvents ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    SymTransducer phi rs s ci co ->
+    (s, RegFile rs) ->
+    [co] ->
+    Maybe (s, RegFile rs)
+```
+
+## Step diagnostics
+
+`stepEither` reports failure through `StepFailure`. There are three cases:
+
+```haskell
+data StepFailure s
+    = NoOutgoingEdges s
+    | NoMatchingEdge s [RejectedEdgeSummary s]
+    | AmbiguousEdges s [MatchedEdgeSummary s]
+    deriving stock (Eq, Show)
+```
+
+- `NoOutgoingEdges` — the source vertex has no outgoing edges at all.
+- `NoMatchingEdge` — there are outgoing edges, but none matched the command; carries one
+  `RejectedEdgeSummary` per edge, in declaration order.
+- `AmbiguousEdges` — two or more guards matched the same command (a runtime witness of a
+  single-valuedness violation); carries one `MatchedEdgeSummary` per matched edge.
+
+`EdgeRef` is the canonical edge locator: the vertex an edge leaves from and its zero-based position
+in `edgesOut t source`.
+
+```haskell
+data EdgeRef s = EdgeRef
+    { edgeSource :: s
+    , edgeIndex :: Int
+    }
+    deriving stock (Eq, Show)
+```
+
+The summaries deliberately carry **no** register values — diagnostics summarize, they do not dump
+state.
+
+```haskell
+data RejectedEdgeSummary s = RejectedEdgeSummary
+    { rejectedEdge :: EdgeRef s
+    , rejectedTarget :: s
+    , rejectedGuard :: Bool
+    }
+    deriving stock (Eq, Show)
+
+data MatchedEdgeSummary s = MatchedEdgeSummary
+    { matchedEdge :: EdgeRef s
+    , matchedTarget :: s
+    }
+    deriving stock (Eq, Show)
+```
+
+<Callout type="info">
+`stepEither` and `StepFailure` are introduced here for completeness, but the per-failure
+interpretation — how to read each case and what to do about it — is documented by the diagnostics
+capability. See the diagnostics how-to under `/docs/keiki/how-to` (or the explanation page at
+`/docs/keiki/explanation/...`); the [reference section landing](/docs/keiki/reference) lists the
+related pages.
+</Callout>
+
+## A minimal example
+
+The smallest machine that exercises `delta`, `omega`, `evalOut`, and a real edge: two vertices over a
+`Bool` input and `String` output, with no registers.
+
+```haskell
+inCtorTrue :: InCtor Bool '[]
+inCtorTrue = InCtor
+  { icName  = "True"
+  , icMatch = \case True -> Just RNil; False -> Nothing
+  , icBuild = \RNil -> True
+  }
+
+wcStringTrue :: WireCtor String ()
+wcStringTrue = WireCtor
+  { wcName  = "True"
+  , wcMatch = \s -> if s == "true" then Just () else Nothing
+  , wcBuild = \() -> "true"
+  }
+
+synthetic :: SymTransducer (HsPred '[] Bool) '[] Bool Bool String
+synthetic = SymTransducer
+  { edgesOut = \case
+      False -> [ Edge { guard  = matchInCtor inCtorTrue
+                      , update = UKeep
+                      , output = [ pack inCtorTrue wcStringTrue oNil ]
+                      , target = True
+                      }
+               ]
+      True  -> []
+  , initial     = False
+  , initialRegs = RNil
+  , isFinal     = id
+  }
+
+-- step synthetic (False, RNil) True == Just (True, RNil, ["true"])
+-- omega synthetic False RNil True  == ["true"]
+-- delta synthetic True  RNil True  == Nothing   -- sink vertex
+```

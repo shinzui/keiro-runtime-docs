@@ -1,0 +1,339 @@
+---
+title: "08 — The builder edge body"
+description: "The verbs you type inside a B.do edge body — slot writes, emit, the require* guards, goto, and d.field projection — read against the real UserRegistration aggregate."
+---
+
+Chapter 07 read the builder's three-layer structure. This chapter reads the verbs you type *inside*
+an `EdgeBuilder` body — slot writes, outputs, guards, projection, and termination — and grounds every
+one of them in the real `keiki/jitsurei/src/Jitsurei/UserRegistration.hs` aggregate. That module is
+the worked example for the whole DSL; its builder-vs-AST agreement is proved by
+`keiki/jitsurei/test/Jitsurei/UserRegistrationBuilderSpec.hs`.
+
+## The whole aggregate, top to bottom
+
+Here is `userReg` in full. Read it once for shape; we dissect it below.
+
+```haskell
+-- keiki/jitsurei/src/Jitsurei/UserRegistration.hs
+userReg :: Guarded UserRegRegs Vertex UserCmd UserEvent
+userReg = B.buildTransducer PotentialCustomer emptyRegs
+            (\case Deleted -> True; _ -> False) do
+
+  B.from PotentialCustomer do
+    B.onCmd inCtorStart $ \d -> B.do
+      B.slot @"email"        .= d.email
+      B.slot @"confirmCode"  .= d.confirmCode
+      B.slot @"registeredAt" .= d.at
+      B.emit wireRegistrationStarted RegistrationStartedTermFields
+        { email       = d.email
+        , confirmCode = d.confirmCode
+        , at          = d.at
+        }
+      B.emit wireConfirmationEmailSent
+        ConfirmationEmailSentTermFields { email = d.email }
+      B.goto RequiresConfirmation
+
+  B.from RequiresConfirmation do
+    B.onCmd inCtorConfirm $ \d -> B.do
+      B.requireEq d.confirmCode #confirmCode
+      B.slot @"confirmedAt" .= d.at
+      B.emit wireAccountConfirmed AccountConfirmedTermFields
+        { email       = #email
+        , confirmCode = d.confirmCode
+        , at          = d.at
+        }
+      B.goto Confirmed
+
+    B.onCmd inCtorResend $ \d -> B.do
+      B.slot @"confirmCode"  .= d.code
+      B.slot @"registeredAt" .= d.at
+      B.emit wireConfirmationResent ConfirmationResentTermFields
+        { email       = #email
+        , confirmCode = d.code
+        , at          = d.at
+        }
+      B.goto RequiresConfirmation
+
+    B.onCmd inCtorGdpr $ \d -> B.do
+      B.slot @"deletedAt" .= d.at
+      B.noEmit
+      B.goto Deleted
+
+  B.from Confirmed do
+    B.onCmd inCtorGdpr $ \d -> B.do
+      B.slot @"deletedAt" .= d.at
+      B.emit wireAccountDeleted AccountDeletedTermFields
+        { email = #email
+        , at    = d.at
+        }
+      B.goto Deleted
+
+  -- Deleted is terminal; defaults to [] without an explicit `from`.
+```
+
+Notice the `do`/`B.do` interleave from chapter 07: the outer `buildTransducer`, `from`, and the
+`onCmd` *grouping* use plain `do` (the two outer plain-monad layers), while each edge *body* uses
+`B.do` (the indexed `EdgeBuilder`). And `Deleted` never gets a `from` block, so it defaults to no
+outgoing edges — a terminal vertex.
+
+## Slot writes: `slot @"name" .=`
+
+A register write is `slot @"name" .= term`. `slot` lifts the type-applied slot name to its
+slot-name-tagged index; `.=` pairs it with a `Term`:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+slot
+  :: forall (name :: Symbol) rs r.
+     ( KnownSymbol name, HasIndexN name rs r )
+  => IndexN name rs r
+slot = indexN @name @rs @r
+```
+
+<Callout type="warn">
+Slot **writes** use `slot @"name"` — *not* `#name`. The source explains why: `#name` tries to
+resolve `IsLabel "name" (IndexN s rs r)` against an instance head where the pattern-side `s` appears
+twice, and GHC will not commit `s ~ "name"` when `name` is a quantified variable in the operator's
+signature. `slot` pins the symbol with a TypeApplication so inference proceeds. `#name` is a
+**reads-only** spelling — you see it on the right-hand side of `.=` and as a guard operand, never on
+the left.
+</Callout>
+
+In the `inCtorStart` body, three slots are written before any event is emitted:
+
+```haskell
+-- keiki/jitsurei/src/Jitsurei/UserRegistration.hs
+      B.slot @"email"        .= d.email
+      B.slot @"confirmCode"  .= d.confirmCode
+      B.slot @"registeredAt" .= d.at
+```
+
+Each `.=` extends the type-level write-set (chapter 07); writing `@"email"` twice in this body would
+fail to compile. The right-hand sides are `Term`s — here `d.email` etc., the payload projections we
+read in a moment. `BuilderSpec` case 1 anchors the round-trip ("single `(.=)` writes the slot the
+evaluator reads").
+
+There are two synonyms for the write side. `=:` is an *exact* synonym for `.=`, existing only to
+dodge the name clash with `Control.Lens`'s `.=`; a module that imports `Control.Lens` can use `=:`
+and keep both imports unqualified:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+(=:)
+  :: forall name r rs ci ifs co v w.
+     ( KnownSymbol name, Disjoint '[name] w )
+  => IndexN name rs r
+  -> Term rs ci ifs r
+  -> EdgeBuilder rs ci co v w (Concat '[name] w) ()
+(=:) = (.=)
+infixr 6 =:
+```
+
+`BuilderSpec` confirms it produces the identical write ("EP-49: `(=:)` is a synonym for `(.=)`").
+And `reg @"name"` is the read-side mirror of `slot @"name"` — a register-read `Term` built through a
+type application rather than an overloaded label, so it survives even when a `generic-lens` prelude
+shadows the bare-`#name` read path (chapter 09 returns to this).
+
+## Payload projection: `d.field`
+
+Inside an `onCmd ic` body, the lambda binds `d` to a `PayloadProj` handle, and `d.field` is
+`OverloadedRecordDot` reading a field of the matched command's payload. The mechanism is a `HasField`
+instance:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+data PayloadProj rs ci ifs = PayloadProj (InCtor ci ifs)
+
+instance ( HasIndexN name ifs r )
+      => HasField name (PayloadProj rs ci ifs) (Term rs ci ifs r) where
+  getField (PayloadProj ic) =
+    inpCtor ic (indexNToIndex (indexN @name @ifs @r))
+```
+
+So `d.email` desugars to `inpCtor ic (indexN @"email" …)` — a `TInpCtorField` term (chapter 03) that
+structurally projects the `email` field of the `StartRegistration` payload. `PayloadProj` has no
+record selectors of its own, so `d.field` can never collide with a real field name. The `InCtor` is
+the one `onCmd inCtorStart` pinned, so `d` only exposes that constructor's fields.
+
+This is why slot writes read `slot @"email" .= d.email`: the left is a *write* (the index), the right
+is a *read* of the command payload (a term). Distinct sides, distinct spellings.
+
+## Emitting events: `emit`, `emitWith`, `noEmit`
+
+`emit` appends one output to the edge. It takes the wire constructor and an output description that
+resolves to an `OutFields` HList through the `ToOutFields` class:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+emit
+  :: forall co fs rs ci ifs v w rec.
+     ToOutFields rec rs ci ifs fs
+  => WireCtor co fs
+  -> rec
+  -> EdgeBuilder rs ci co v w w ()
+emit wc rec = EdgeBuilder $ \pe -> case peInCtor pe of
+  Just (PeInCtor ic) ->
+    ((), pe { peOutput = peOutput pe
+                ++ [pack (reIndexPinnedInCtor @ci @_ @ifs ic) wc (toOutFields rec)] })
+  Nothing ->
+    error "Keiki.Builder.emit: no enclosing onCmd pinned an InCtor. …"
+```
+
+Two things to read here. First, `emit` recovers the input `InCtor` from the enclosing `onCmd` (the
+`peInCtor` stash from chapter 07), so you do not repeat it; calling `emit` inside `onEpsilon` — where
+no `InCtor` is pinned — raises a finalize-time error directing you to `emitWith`. Second, `emit`
+**snoc-appends** to `peOutput`: a single `emit` makes a letter edge (`output = [o]`), and *two or
+more* `emit`s in one body make a multi-event edge (`output = [o1, o2, …]` — chapter 06).
+
+The `RegistrationStarted` entrance is exactly that two-emit case:
+
+```haskell
+-- keiki/jitsurei/src/Jitsurei/UserRegistration.hs
+      B.emit wireRegistrationStarted RegistrationStartedTermFields
+        { email       = d.email
+        , confirmCode = d.confirmCode
+        , at          = d.at
+        }
+      B.emit wireConfirmationEmailSent
+        ConfirmationEmailSentTermFields { email = d.email }
+```
+
+The source comment on this edge is worth quoting — it explains why both events read `d.email`
+(an input projection) rather than the register:
+
+```haskell
+-- keiki/jitsurei/src/Jitsurei/UserRegistration.hs
+    -- EP-19 collapsed entrance: StartRegistration emits two events
+    -- in one transition. … both events evaluate against the same
+    -- pre-transition (regs, ci) snapshot, so 'd.email' (input projection)
+    -- is the right read for both — the register write applies once at the
+    -- edge level.
+```
+
+The two field-record types (`RegistrationStartedTermFields`,
+`ConfirmationEmailSentTermFields`) are generated by `deriveWireCtors` alongside the `wire…` values;
+their fields are `Term`-typed mirrors of the event payload, so the record reads top-to-bottom keyed
+by name. `ToOutFields` also has a passthrough instance so the lower-level operator form
+`emit wc (t1 *: t2 *: oNil)` works through the same overload:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+instance ToOutFields (OutFields rs ci ifs fs) rs ci ifs fs where
+  toOutFields = id
+```
+
+`emitWith` is the explicit-`InCtor` variant — the escape hatch for `onEpsilon` bodies (no pinned
+`InCtor`) or for overriding the one `onCmd` bound. `noEmit` marks the edge ε-output (no event); it is
+a documentation no-op, since a body with no `emit` is already an ε-edge by default. The GDPR-before-
+confirmation edge uses it to be explicit:
+
+```haskell
+-- keiki/jitsurei/src/Jitsurei/UserRegistration.hs
+    B.onCmd inCtorGdpr $ \d -> B.do
+      B.slot @"deletedAt" .= d.at
+      B.noEmit
+      B.goto Deleted
+```
+
+`BuilderSpec` anchors all three behaviours: case 4 ("emit then `solveOutput` round-trips
+delta/applyEvent"), case 5 ("noEmit yields `output = []`"), case 13 ("record-form emit on a 2-field
+event applies fields in order"), and case 14 ("emitWith with the record form produces the same
+omega").
+
+## Guards: the `require*` verbs
+
+A guard verb conjoins a predicate onto the edge's existing guard. The general one is `requireGuard`;
+`requireEq` and the four `requireCmp` directions are conveniences over it:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+requireGuard :: HsPred rs ci -> EdgeBuilder rs ci co v w w ()
+requireGuard p = EdgeBuilder $ \pe ->
+  ((), pe { peGuard = PAnd (peGuard pe) p })
+
+requireEq
+  :: (Eq r, Typeable r)
+  => Term rs ci ifs1 r
+  -> Term rs ci ifs2 r
+  -> EdgeBuilder rs ci co v w w ()
+requireEq a b = requireGuard (PEq a b)
+```
+
+Crucially, every guard verb leaves the write-set index unchanged (`… v w w ()`): guards don't write
+slots, so they don't extend `w`. The `inCtorConfirm` edge uses `requireEq` to demand the supplied
+code match the stored one:
+
+```haskell
+-- keiki/jitsurei/src/Jitsurei/UserRegistration.hs
+    B.onCmd inCtorConfirm $ \d -> B.do
+      B.requireEq d.confirmCode #confirmCode
+      B.slot @"confirmedAt" .= d.at
+      …
+```
+
+Read the two operands: `d.confirmCode` is the command-payload projection, and `#confirmCode` is a
+**register read** (the reads-only label spelling) of the stored `confirmCode` slot. The conjoined
+guard is `PAnd (matchInCtor inCtorConfirm) (PEq (d.confirmCode) (#confirmCode))` — and because the
+`onCmd` match-guard comes first, it short-circuits the register read for non-`ConfirmAccount` inputs.
+`BuilderSpec` case 9 anchors the shape ("`requireEq` extends the guard with PAnd-PEq").
+
+The four ordering verbs `requireLt` / `requireLe` / `requireGt` / `requireGe` wrap `requireCmp` at a
+fixed `Cmp`. They are the recommended way to write a comparison guard inside a builder block,
+precisely because they are function-style and so never clash with `lens`'s operators — chapter 09
+makes that case.
+
+## Termination: `goto`
+
+`goto` sets the edge's target vertex by snoc-ing onto `peTargets`:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+goto :: v -> EdgeBuilder rs ci co v w w ()
+goto v = EdgeBuilder $ \pe ->
+  ((), pe { peTargets = v : peTargets pe })
+```
+
+It too leaves `w` unchanged. As chapter 07 read, `finalizeEdge` then demands `peTargets` have
+**exactly one** entry — a missing or duplicated `goto` raises a finalize-time runtime error naming
+the source vertex and edge index. Every edge body in `userReg` ends with exactly one `goto`; the
+`inCtorResend` body even loops back to its own source vertex (`B.goto RequiresConfirmation`).
+
+## Why it agrees with the hand-written AST
+
+`UserRegistration.hs` carries a second definition, `userRegAST`, hand-authored directly against the
+`Keiki.Core` AST — the same machine written with raw `Edge` records, `USet … \`combine\` …` chains,
+and `OFCons … OFNil` output literals. The builder is sugar that produces the identical value, and
+`UserRegistrationBuilderSpec` proves it on the synthesis-§4 canonical log:
+
+```haskell
+-- keiki/jitsurei/test/Jitsurei/UserRegistrationBuilderSpec.hs
+it "reconstitute returns the same (state, snapshot) for both forms" $ do
+  let astResult     = reconstitute userRegAST canonicalLog
+      builtResult   = reconstitute userReg    canonicalLog
+  case (astResult, builtResult) of
+    (Just (sA, regsA), Just (sB, regsB)) -> do
+      sA `shouldBe` sB
+      snapshot regsA `shouldBe` snapshot regsB
+    …
+```
+
+The spec also asserts per-vertex edge counts and finality agree, and walks `delta`/`omega` per step.
+The two-event entrance specifically goes through `applyEvents` (the `InFlight`-aware chunked replay
+from chapter 06), since the letter-only `applyEvent` fold cannot walk a multi-event edge:
+
+```haskell
+-- keiki/jitsurei/test/Jitsurei/UserRegistrationBuilderSpec.hs
+it "applyEvents on the 2-event entrance chunk — both forms agree on landing vertex" $ do
+  let chunk = take 2 canonicalLog
+      astR  = applyEvents userRegAST (PotentialCustomer, emptyRegs) chunk
+      bldR  = applyEvents userReg    (PotentialCustomer, emptyRegs) chunk
+  fmap fst astR `shouldBe` fmap fst bldR
+```
+
+That agreement is the whole point: the builder is a front-end, not a second semantics. With the verbs
+in hand, the last chapter covers import hygiene — the operator-namespacing recipes that keep these
+spellings unambiguous in a real project.
+
+Previous: [07 — The builder, three layers](/docs/keiki/walkthrough/core-and-builder/07-builder-three-layers).
+
+Next: [09 — Operators and namespacing](/docs/keiki/walkthrough/core-and-builder/09-operators-and-namespacing).

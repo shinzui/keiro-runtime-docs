@@ -1,0 +1,407 @@
+---
+title: "Builder"
+description: "The Keiki.Builder DSL: a three-layer monad for authoring SymTransducers, with type-checked slot writes, emit, guards, and goto."
+---
+
+The DSL on this page lives in `Keiki.Builder`. It is a purely additive surface over the
+[transducer core](/docs/keiki/reference/core): every edge it produces is an ordinary
+`Keiki.Core.Edge`, and `buildTransducer` returns a `SymTransducer` that `compose`, the deciders, the
+symbolic analyses, and the example specs consume unchanged.
+
+The builder collapses the four nested pieces of boilerplate a hand-written edge needs — the `Edge`
+record literal, an `IndexN "name" Regs T` annotation per register write, an infix `` `combine` `` chain,
+and an `OFCons … OFNil` output chain — into one `do`-block per edge.
+
+## Three monad layers
+
+The builder is three carriers stacked top-to-bottom. Only the innermost is indexed.
+
+<TypeTable
+  type={{
+    VertexBuilder: { type: "plain Monad", description: "Top level: accumulates [(v, [Edge ...])]; `from` writes one entry. Use Prelude.do." },
+    EdgeListBuilder: { type: "plain Monad", description: "Per source vertex: the edges out of one vertex; `onCmd`/`onEpsilon` prepend one each. Use Prelude.do." },
+    EdgeBuilder: { type: "indexed monad", description: "Per outgoing edge body: `(w :: [Symbol])` tracks slots written so a duplicate write fails to compile. Use B.do." },
+  }}
+/>
+
+<Callout type="info">
+Only the innermost `EdgeBuilder` layer is driven by `B.do` (QualifiedDo). The outer two
+(`VertexBuilder`, `EdgeListBuilder`) are plain `Monad`s and use the regular `Prelude.do`. The
+`QualifiedDo` machinery only re-binds `(>>=)`/`(>>)`/`pure`/`return` for the edge-body layer.
+</Callout>
+
+### `VertexBuilder`
+
+```haskell
+newtype VertexBuilder rs ci co v a
+```
+
+The top-level carrier; the body of `buildTransducer`. State is a list `[(v, [Edge ...])]`, one entry
+per [`from`](#from) call. A vertex not mentioned in any `from` block defaults to `[]` (terminal); to
+assert a vertex is terminal explicitly, write `from V (Prelude.pure ())`.
+
+### `EdgeListBuilder`
+
+```haskell
+newtype EdgeListBuilder rs ci co v a
+```
+
+The per-source-vertex carrier. State is the list of edges out of that vertex; each
+[`onCmd`](#oncmd) / [`onEpsilon`](#onepsilon) call prepends one edge (the list is reversed in `from`
+so declaration order is preserved).
+
+### `EdgeBuilder` (indexed)
+
+```haskell
+newtype EdgeBuilder rs ci co v (w :: [Symbol]) (w' :: [Symbol]) a
+  = EdgeBuilder
+      { runEdgeBuilder :: PartialEdge rs ci co v w
+                       -> (a, PartialEdge rs ci co v w') }
+```
+
+The per-edge body carrier. The two phantom slot-set indices `w` (before this step) and `w'` (after
+this step) make every [`.=`](#slot-writes) visible to the type system: a **duplicate write to the
+same slot fails to type-check at the offending line**, via the
+[`Disjoint`](/docs/keiki/reference/slots#disjoint) constraint that `combine` carries.
+
+`Functor`/`Applicative`/`Monad` instances are *not* provided (they would be the indexed `IxFunctor`/
+`IxApplicative`/`IxMonad` variants). Instead the module exports its own bind/return for `QualifiedDo`:
+
+```haskell
+(>>=)
+  :: EdgeBuilder rs ci co v w1 w2 a
+  -> (a -> EdgeBuilder rs ci co v w2 w3 b)
+  -> EdgeBuilder rs ci co v w1 w3 b
+infixl 1 >>=
+
+(>>)
+  :: EdgeBuilder rs ci co v w1 w2 a
+  -> EdgeBuilder rs ci co v w2 w3 b
+  -> EdgeBuilder rs ci co v w1 w3 b
+infixl 1 >>
+
+pure   :: a -> EdgeBuilder rs ci co v w w a
+return :: a -> EdgeBuilder rs ci co v w w a
+```
+
+## `buildTransducer`
+
+The top-level entry point. Runs the `VertexBuilder` block to a `[(vertex, edges)]` table, then
+assembles a `SymTransducer` from the initial vertex, initial register file, finality predicate, and a
+closure over the lookup table.
+
+```haskell
+buildTransducer
+  :: forall rs ci co v.
+     (Bounded v, Enum v, Eq v, Show v)
+  => v
+  -> RegFile rs
+  -> (v -> Bool)
+  -> VertexBuilder rs ci co v ()
+  -> SymTransducer (HsPred rs ci) rs v ci co
+```
+
+<Callout type="info">
+The `Bounded v` / `Enum v` constraints are not used by `buildTransducer` itself today; they are
+reserved for a future `withCompletenessCheck` combinator that would assert every vertex appears in
+some `from` block. Duplicate-vertex entries (two `from` blocks naming the same vertex) are merged:
+`edgesOut` returns the concatenation of every matching entry's edges in declaration order.
+</Callout>
+
+## `from`
+
+Group edges by source vertex. The second argument is an `EdgeListBuilder` block of `onCmd`/`onEpsilon`
+calls; each adds one outgoing edge to the named vertex.
+
+```haskell
+from
+  :: (Eq v, Show v)
+  => v
+  -> EdgeListBuilder rs ci co v ()
+  -> VertexBuilder rs ci co v ()
+```
+
+## `onCmd`
+
+Add one command-keyed edge. Wires the `InCtor`'s match-guard, hands the body a
+[`PayloadProj`](#payloadproj) `d` (so `OverloadedRecordDot` resolves `d.field`), runs the body, and
+finalizes the edge.
+
+```haskell
+onCmd
+  :: forall ci ifs rs co v w.
+     Show v
+  => InCtor ci ifs
+  -> (PayloadProj rs ci ifs -> EdgeBuilder rs ci co v '[] w ())
+  -> EdgeListBuilder rs ci co v ()
+```
+
+`d.field` reads a matched-input field: the `HasField` instance translates `d.field` to
+`inpCtor ic (indexN @field @ifs @r)`. The `InCtor` bound here is also pinned into the partial edge so
+the 2-argument [`emit`](#emit) can recover it.
+
+## `onEpsilon`
+
+Add one ε-edge: it fires *without* a command. No input projection (no `d` handle), and the guard
+starts at `PTop`, so any conjuncts the body adds via [`requireGuard`](#guard-verbs)/`requireEq`
+constitute the full guard. Because no `InCtor` is pinned, an `emit` inside `onEpsilon` must use
+[`emitWith`](#emitwith) to supply the `InCtor` explicitly.
+
+```haskell
+onEpsilon
+  :: forall rs ci co v w.
+     Show v
+  => EdgeBuilder rs ci co v '[] w ()
+  -> EdgeListBuilder rs ci co v ()
+```
+
+## Slot writes
+
+A slot write extends the type-level set `w`; a duplicate write is a compile error.
+
+### `slot @"name"` — pin the slot for a write
+
+```haskell
+slot
+  :: forall (name :: Symbol) rs r.
+     ( KnownSymbol name, HasIndexN name rs r )
+  => IndexN name rs r
+```
+
+`slot` lifts a slot name (supplied via `TypeApplications`) to its slot-name-tagged register index.
+
+<Callout type="warn">
+At a **write** site you must use `slot @"name"`, not `#name`. The `#name` overloaded-label syntax
+tries to resolve `IsLabel "name" (IndexN s rs r)` against the instance head `IsLabel s (IndexN s rs r)`,
+and GHC will not commit to `s ~ "name"` when `name` is a quantified type variable appearing at two
+positions in the constraint head. `slot` pins the symbol via a type application so inference proceeds.
+`#name` is for **reads** only (see [`reg`](#reg-name-read-a-slot)).
+</Callout>
+
+### `.=` and `=:` — assign a `Term`
+
+```haskell
+(.=)
+  :: forall name r rs ci ifs co v w.
+     ( KnownSymbol name, Disjoint '[name] w )
+  => IndexN name rs r
+  -> Term rs ci ifs r
+  -> EdgeBuilder rs ci co v w (Concat '[name] w) ()
+infixr 6 .=
+
+(=:)
+  :: forall name r rs ci ifs co v w.
+     ( KnownSymbol name, Disjoint '[name] w )
+  => IndexN name rs r
+  -> Term rs ci ifs r
+  -> EdgeBuilder rs ci co v w (Concat '[name] w) ()
+infixr 6 =:
+```
+
+The RHS is a `Term`, not a bare value — build it with `lit`/`proj`/`inpCtor`, a bare `#field` read, or
+`d.field` via `PayloadProj`. The `Disjoint '[name] w` constraint is the static duplicate-write check:
+the [`Disjoint`](/docs/keiki/reference/slots#disjoint) `TypeError` names the offending slot.
+
+`(=:)` is an exact synonym for `(.=)`, producing the identical `Update`. It exists only to dodge the
+name clash with `Control.Lens.(.=)`: a module that authors edges *and* imports `Control.Lens` can use
+`=:` and keep both imports unqualified, rather than writing `import Control.Lens hiding ((.=))`.
+(A colon-prefixed `:=` is not possible — GHC reserves leading-colon operators for data constructors.)
+
+<Callout type="info">
+`import Keiki.Builder ((.=))` is required: the operator must be in scope unqualified, because
+`B.(.=)` is unreadable.
+</Callout>
+
+### `reg @"name"` — read a slot
+
+```haskell
+reg
+  :: forall (name :: Symbol) rs ci ifs r.
+     ( KnownSymbol name, HasIndexN name rs r )
+  => Term rs ci ifs r
+```
+
+The read-side mirror of `slot`: pins the slot name via a type application so a hand-written guard or
+`OutFields` element needs no `proj (#name :: Index Regs Ty)` annotation. Where GHC can already infer
+`rs` and `r` (the RHS of `.=`, an argument of `TApp1`), a bare `#name` label is the lighter form.
+`reg` is also the form to reach for when a consumer's prelude re-exports `generic-lens` (whose
+`IsLabel` instance shadows keiki's bare-`#name` read path); see
+[operators](/docs/keiki/reference/operators).
+
+## Outputs
+
+### `emit`
+
+Emit one event. Takes the wire-side `WireCtor` and an output description that resolves to `OutFields`
+via [`ToOutFields`](#tooutfields) — either a per-event `<Ctor>TermFields rs ci` record (generated by
+`Keiki.Generics.TH.deriveWireCtors`) or a bare `OutFields` HList. The `InCtor` is recovered from the
+enclosing `onCmd`.
+
+```haskell
+emit
+  :: forall co fs rs ci ifs v w rec.
+     ToOutFields rec rs ci ifs fs
+  => WireCtor co fs
+  -> rec
+  -> EdgeBuilder rs ci co v w w ()
+```
+
+<Callout type="info">
+Each `emit` snoc-appends one `OutTerm` to the edge's output list. A single `emit` yields a letter edge
+(`output = [o]`); two or more `emit`s in one body yield a multi-event edge (`output = [o1, o2, …]`,
+EP-19). All `OutTerm`s evaluate against the same pre-transition `(regs, ci)` snapshot; register
+updates from `.=` apply once at the edge level, not per emitted event.
+</Callout>
+
+### `emitWith`
+
+Emit an event with an **explicit** `InCtor`. The escape hatch for `onEpsilon` bodies (which pin no
+`InCtor`) and for overriding the one bound by the enclosing `onCmd`.
+
+```haskell
+emitWith
+  :: forall co fs rs ci v w ifs rec.
+     ToOutFields rec rs ci ifs fs
+  => InCtor ci ifs
+  -> WireCtor co fs
+  -> rec
+  -> EdgeBuilder rs ci co v w w ()
+```
+
+### `noEmit`
+
+Mark the edge as ε-output (no event).
+
+```haskell
+noEmit :: EdgeBuilder rs ci co v w w ()
+```
+
+Idempotent: an edge with no `emit`/`noEmit` is an ε-edge by default. `noEmit` exists only to make the
+intent explicit; mixing it with `emit` in one body is allowed but the `noEmit` is then a no-op (the
+`emit`s still produce a non-empty output list).
+
+### Output-fields sugar — `ToOutFields`, `(*:)`, `oNil`
+
+```haskell
+class ToOutFields rec rs ci ifs fs | rec -> rs ci ifs fs where
+  toOutFields :: rec -> OutFields rs ci ifs fs
+
+infixr 5 *:
+```
+
+Two inhabitants matter. The TH-emitted `<Ctor>TermFields rs ci` record (one per event ctor in
+`deriveWireCtors`'s spec) has `Term`-typed mirrors of the payload's fields, read top-to-bottom by name.
+The passthrough instance makes a bare `OutFields` HList — built with `(*:)`/`oNil` — its own conversion,
+so the same `emit` overload accepts the positional escape hatch:
+
+```haskell
+B.emit wireEmailSent (d.recipient *: d.subject *: d.at *: B.oNil)
+```
+
+Both shapes produce the same `OPack` AST node.
+
+## Guard verbs
+
+Each verb conjoins onto the edge's existing guard.
+
+```haskell
+requireGuard :: HsPred rs ci -> EdgeBuilder rs ci co v w w ()
+
+requireEq
+  :: (Eq r, Typeable r)
+  => Term rs ci ifs1 r -> Term rs ci ifs2 r -> EdgeBuilder rs ci co v w w ()
+
+requireCmp
+  :: (Ord r, Typeable r)
+  => Cmp -> Term rs ci ifs1 r -> Term rs ci ifs2 r -> EdgeBuilder rs ci co v w w ()
+
+requireLt, requireLe, requireGt, requireGe
+  :: (Ord r, Typeable r)
+  => Term rs ci ifs1 r -> Term rs ci ifs2 r -> EdgeBuilder rs ci co v w w ()
+```
+
+`requireGuard` conjoins an arbitrary `HsPred` (use it for negations, disjunctions, or helper-built
+guards). `requireEq` conjoins `PEq`. `requireCmp op` conjoins `PCmp op`; the four
+direction-specific conveniences wrap it with a fixed `Cmp` (`requireLt = requireCmp CmpLt`, and so on).
+A `PCmp` guard is **structural** and visible to the SBV-backed analyses, unlike a threshold lifted
+through opaque `TApp1`/`TApp2`. The dot-prefixed operator forms of these comparisons are documented
+in [operators](/docs/keiki/reference/operators).
+
+## Termination — `goto`
+
+```haskell
+goto :: v -> EdgeBuilder rs ci co v w w ()
+```
+
+Set the edge's target vertex. Required **exactly once** per edge body.
+
+<Callout type="warn">
+A missing `goto`, or more than one `goto` in the same body, is caught at *finalize* time (when
+`buildTransducer` evaluates the `VertexBuilder` block) as a runtime `error` naming the source vertex
+and edge index — not at compile time. Duplicate slot writes, by contrast, are compile errors.
+</Callout>
+
+## `PayloadProj`
+
+```haskell
+data PayloadProj rs ci ifs
+```
+
+The opaque `d` handle `onCmd` passes to its body. It has no record selectors of its own, so `d.field`
+never collides with a built-in selector; its `HasField` instance turns `d.field` into a
+`TInpCtorField` term projecting the named field of the input symbol's payload.
+
+## Required pragmas and imports
+
+A module authoring aggregates with the builder needs:
+
+```haskell
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE QualifiedDo #-}
+{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE TemplateHaskell #-}
+
+import qualified Keiki.Builder as B
+import Keiki.Builder ((.=))
+```
+
+`QualifiedDo` makes `B.do` resolve to this module's indexed bind; `BlockArguments` lets a `B.do` block
+sit as a function argument without parentheses; the unqualified `(.=)` import is mandatory.
+
+## Worked example — the EmailDelivery aggregate
+
+Authored verbatim in `jitsurei/src/Jitsurei/EmailDelivery.hs`:
+
+```haskell
+emailDelivery
+  :: Guarded EmailRegs EmailVertex EmailCmd EmailEvent
+emailDelivery = B.buildTransducer EmailPending emptyEmailRegs
+                  (\case EmailSentVertex -> True; _ -> False) do
+
+    B.from EmailPending do
+      B.onCmd inCtorSendEmail $ \d -> B.do
+        B.slot @"emailRecipient" .= d.recipient
+        B.slot @"emailSubject"   .= d.subject
+        B.slot @"emailSentAt"    .= d.at
+        B.emit wireEmailSent EmailSentTermFields
+          { recipient = d.recipient
+          , subject   = d.subject
+          , at        = d.at
+          }
+        B.goto EmailSentVertex
+```
+
+The outer `buildTransducer` block and the `from` block are `Prelude.do` (plain monads); only the
+innermost `onCmd` body is `B.do`. The `EmailSentTermFields` record is generated by `deriveWireCtors`
+alongside the `wireEmailSent` value. `EmailSentVertex` is terminal, so it needs no `from` block.
+
+## See also
+
+- [Operators](/docs/keiki/reference/operators) — the dot-prefixed guard/arithmetic operators (`.>=`, `.&&`, `.*`, …) and their fixities.
+- [Slots](/docs/keiki/reference/slots) — `IndexN`, `Disjoint`, and the machinery behind `slot @"name"` and the duplicate-write rejection.
+- `Keiki.Core` — the `Edge`/`Term`/`Update`/`SymTransducer` AST the builder produces.

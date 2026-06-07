@@ -1,0 +1,142 @@
+---
+title: "Operators"
+description: "Keiki.Operators: the dot-prefixed predicate and term operators, their fixities, and the qualified-import recipe that avoids the lens/generic-lens clash."
+---
+
+`Keiki.Operators` is a small re-export shim. It adds nothing new: every export is *defined in* and
+re-exported from `Keiki.Core`. Its sole purpose is to be imported **qualified**, so the dot-prefixed
+operators cannot clash with the operators `lens` / `generic-lens` (or a service prelude that re-exports
+them) bring into scope unqualified.
+
+```haskell
+import qualified Keiki.Operators as K
+```
+
+With that import you write `x K..> y` for the keiki greater-than comparison and leave the bare `(.>)`
+to `lens` — no `hiding` clause required.
+
+## The operator table
+
+Each operator is an alias for a `Keiki.Core` constructor at a fixed relation/operation. The fixities
+are carried from `Keiki.Core` (a re-exported operator keeps its defining module's fixity, so a
+qualified user gets the right precedence automatically).
+
+### Comparison — build an `HsPred`
+
+`infix 4` (relational operators do not chain; they sit below the arithmetic operators and above the
+logical ones).
+
+<TypeTable
+  type={{
+    ".==": { type: "infix 4", description: "PEq a b — equality" },
+    "./=": { type: "infix 4", description: "PNot (PEq a b) — inequality" },
+    ".<":  { type: "infix 4", description: "PCmp CmpLt a b — a < b" },
+    ".<=": { type: "infix 4", description: "PCmp CmpLe a b — a <= b" },
+    ".>":  { type: "infix 4", description: "PCmp CmpGt a b — a > b" },
+    ".>=": { type: "infix 4", description: "PCmp CmpGe a b — a >= b" },
+  }}
+/>
+
+```haskell
+(.==), (./=) :: (Eq r, Typeable r)  => Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+(.<), (.<=), (.>), (.>=)
+             :: (Ord r, Typeable r) => Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+
+infix 4 .==
+infix 4 ./=
+infix 4 .<, .<=, .>, .>=
+```
+
+### Logical — combine `HsPred`s
+
+```haskell
+(.&&), (.||) :: HsPred rs ci -> HsPred rs ci -> HsPred rs ci
+pnot         :: HsPred rs ci -> HsPred rs ci
+
+infixr 3 .&&
+infixr 2 .||
+```
+
+`(.&&)` is `PAnd`, `(.||)` is `POr`, `pnot` is `PNot`. The fixities mirror `Prelude.(&&)`/`(||)`, so
+`p .&& q .|| r` parses as `(p .&& q) .|| r`. `pnot` is a prefix function (no fixity).
+
+### Structural arithmetic — build a `TArith` over `Term`s
+
+```haskell
+(.+), (.-) :: (Num r, Typeable r) => Term rs ci ifs r -> Term rs ci ifs r -> Term rs ci ifs r
+(.*)       :: (Num r, Typeable r) => Term rs ci ifs r -> Term rs ci ifs r -> Term rs ci ifs r
+
+infixl 6 .+, .-
+infixl 7 .*
+```
+
+`(.+)`/`(.-)`/`(.*)` are aliases for `tadd`/`tsub`/`tmul` (`TArith OpAdd`/`OpSub`/`OpMul`), mirroring
+`Prelude.(+)`/`(-)`/`(*)` in fixity. The module also re-exports the function-style aliases `tadd`,
+`tsub`, `tmul`, which are already clash-free.
+
+## The qualified-import recipe
+
+A project whose prelude re-exports `lens`/`generic-lens` already binds several of these spellings
+unqualified. The sharpest clash is `(.>)`: in `lens` it is optic composition, in keiki it is the
+greater-than comparison. Importing `Keiki.Operators` qualified resolves every clash at once:
+
+```haskell
+import qualified Keiki.Operators as K
+
+-- the keiki comparison, distinct from lens's optic (.>):
+approvalCap = reg @"appRequestedAmount" K..<= reg @"appCreditScore" K..* lit 1000
+```
+
+There are **three** ways to author a comparison guard, in order of weight:
+
+<Steps>
+<Step>
+Bare dot-operators (`reg @"x" .>= lit 650`) when the prelude does **not** re-export the clashing names.
+This is the lightest form and the one the worked examples use.
+</Step>
+<Step>
+Qualified dot-operators (`reg @"x" K..>= lit 650`) when the prelude **does** re-export `lens`/
+`generic-lens`. Only this resolves the `(.>)` optic clash without a `hiding` clause.
+</Step>
+<Step>
+The builder guard verb (`B.requireGt (reg @"x") (lit 650)`) inside a `B.do` edge body — no operator
+import needed at all. See [builder](/docs/keiki/reference/builder#guard-verbs).
+</Step>
+</Steps>
+
+## Structural vs opaque guards
+
+`TArith` (built by `.+`/`.-`/`.*`) and `PCmp` (built by the comparison operators) are **structural**:
+the SBV translator in `Keiki.Symbolic` reads them for real, so the analyses (single-valuedness, `sat`)
+can reason about the guard. By contrast `TApp1`/`TApp2` — arbitrary Haskell functions lifted into a
+term — are **opaque**: the solver cannot see inside them, so an edge guarded through `TApp` is
+*under-verified*. The audit for this is the `warnOpaqueGuards` option on the validation pass, which
+flags every edge whose guard contains an opaque `TApp` term.
+
+This is why an operator-built guard is preferable to a function-lifted one whenever the comparison can
+be expressed structurally.
+
+## A structural guard in practice
+
+`jitsurei/src/Jitsurei/LoanApplication.hs` builds `approvalGuard` entirely from dot-prefixed operators,
+so the whole guard — comparisons *and* the derived cap — is visible to the solver:
+
+```haskell
+approvalGuard :: Pred LoanAppRegs LoanCmd
+approvalGuard =
+       reg @"appCreditScore"        .>= lit approvalThresholdScore
+  .&&  reg @"appEmploymentVerified" .== lit True
+  .&&  reg @"appRequestedAmount"    .<= reg @"appCreditScore" .* lit 1000
+```
+
+The cap's right-hand side is the structural `reg @"appCreditScore" .* lit 1000` (a `TArith`
+multiplication the translator reads as a real `*`), not an opaque `TApp1 maxApprovalForScore`. Because
+each operator aliases the very same constructor (`.>=` → `PCmp CmpGe`, `.&&` → `PAnd`, `.*` → `tmul`),
+the resulting `HsPred` AST — and therefore `evalPred` and the SBV translation — is byte-for-byte the
+same as the hand-written constructor form.
+
+## See also
+
+- [Builder](/docs/keiki/reference/builder) — the edge-authoring DSL and its `requireGt`-style guard verbs.
+- [Slots](/docs/keiki/reference/slots) — the `reg @"name"` / `slot @"name"` index machinery.
+- `Keiki.Core` — where every operator on this page is defined.

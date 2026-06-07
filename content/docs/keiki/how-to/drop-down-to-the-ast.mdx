@@ -1,0 +1,186 @@
+---
+title: "Drop down to the AST"
+description: "Hand-author a bare Edge / SymTransducer against Keiki.Core when the builder can't carry you, and know exactly what you keep and lose."
+---
+
+When the `Keiki.Builder` DSL can't express what you need, drop down to the underlying `Keiki.Core` AST
+and hand-author `Edge` records. This guide shows the shape, anchored on the `*AST` forms the example
+aggregates ship, and is honest about the three ergonomics you give up.
+
+<Callout type="info">
+  Assumes you've authored aggregates with the builder. Reach for the builder first; most aggregates
+  never need this. The two example aggregates ship both forms — `userReg` / `userRegAST` and
+  `emailDelivery` / `emailDeliveryAST` — so you can read the AST against a familiar builder version
+  line by line.
+</Callout>
+
+## Goal
+
+Construct a `SymTransducer` value directly from `Edge` records, for guards or edge construction the
+builder can't carry — without losing the runtime guarantees.
+
+## When to drop down
+
+Three cases where the builder genuinely can't carry you:
+
+1. **Bespoke guard logic** the builder's `requireEq` / `requireGuard` can't accumulate cleanly — a
+   custom `HsPred` built by helpers, or a shared sub-predicate you want to bind once and reuse.
+2. **Helper-driven edge construction** — edges built by parameterised helpers (`mkApprovalEdge`,
+   `mkTimeoutEdge`) that produce `Edge` values directly.
+3. **Side-by-side AST + builder** for migration or parity tests — exactly what the example aggregates
+   do, keeping the AST form as the reference for the builder's `*BuilderSpec` equivalence test.
+
+## The shape
+
+A `SymTransducer` is a record; `edgesOut` is a vertex-keyed lookup function (the `\case` shape is
+conventional), and vertices not listed default to `[]` (terminal). This is `emailDeliveryAST` —
+the simplest one-edge form:
+
+```haskell
+emailDeliveryAST :: Guarded EmailRegs EmailVertex EmailCmd EmailEvent
+emailDeliveryAST = SymTransducer
+  { edgesOut    = emailDeliveryASTEdges
+  , initial     = EmailPending
+  , initialRegs = emptyEmailRegs
+  , isFinal     = \case EmailSentVertex -> True; _ -> False
+  }
+
+emailDeliveryASTEdges
+  :: EmailVertex
+  -> [Edge (Pred EmailRegs EmailCmd) EmailRegs EmailCmd EmailEvent EmailVertex]
+emailDeliveryASTEdges = \case
+  EmailPending ->
+    [ Edge
+        { guard  = isSendEmail
+        , update =
+            USet (#emailRecipient :: IndexN "emailRecipient" EmailRegs Email)
+                 (inpSendEmail #recipient)
+              `combine`
+            USet (#emailSubject :: IndexN "emailSubject" EmailRegs Subject)
+                 (inpSendEmail #subject)
+              `combine`
+            USet (#emailSentAt :: IndexN "emailSentAt" EmailRegs UTCTime)
+                 (inpSendEmail #at)
+        , output =
+            [ pack
+                inCtorSendEmail
+                wireEmailSent
+                (OFCons (inpSendEmail #recipient)
+                  (OFCons (inpSendEmail #subject)
+                    (OFCons (inpSendEmail #at) OFNil)))
+            ]
+        , target = EmailSentVertex
+        }
+    ]
+
+  EmailSentVertex -> []
+```
+
+`Guarded Regs Vertex Cmd Event` is the synonym for
+`SymTransducer (HsPred Regs Cmd) Regs Vertex Cmd Event`; either spelling works.
+
+## The four `Edge` fields
+
+### `guard`
+
+Prefer the EP-45 operators, which read as the relation they name: `a .== b`, `a ./= b`,
+`a .< b`/`.<=`/`.>`/`.>=`, `p .&& q`, `p .|| q`, `pnot p`, plus `PTop`/`PBot`. The `isFoo` shorthands
+(generated alongside the `inCtor`s; `isConfirm` is `matchInCtor inCtorConfirm` under the hood) combine
+with relational predicates by `.&&`. From `userRegAST`:
+
+```haskell
+guard = isConfirm
+    .&& (inpConfirm #confirmCode
+          .== proj (#confirmCode :: Index UserRegRegs ConfirmationCode))
+```
+
+The explicit `:: Index Regs T` annotation on `proj` is required — the AST-level `proj` takes the
+existentially-typed `Index`, so the slot's value type can't be inferred from `#name` alone.
+
+### `update`
+
+`UKeep` is identity, `USet ix term` writes one slot, `combine u1 u2` sequences. Each `USet` needs its
+`:: IndexN "name" Regs T` annotation — `combine`'s `Disjoint` constraint reads the slot name off that
+phantom index. **Without the annotation the duplicate-write check silently no-ops.**
+
+### `output`
+
+`output` is a list. `[]` is an ε-edge; `[o]` a letter edge; `[o1, o2, …]` a multi-event edge. Each
+entry is `pack ic wc fields`, where the field chain is `OFCons … OFNil` (or its `*:` / `oNil` sugar).
+The field order matches the event payload's record-field order. From `userRegAST`'s multi-event
+entrance edge:
+
+```haskell
+output =
+  [ pack inCtorStart wireRegistrationStarted
+      (OFCons (inpStart #email)
+        (OFCons (inpStart #confirmCode)
+          (OFCons (inpStart #at) OFNil)))
+  , pack inCtorStart wireConfirmationEmailSent
+      (OFCons (inpStart #email) OFNil)
+  ]
+```
+
+The `*:` / `oNil` form is identical sugar:
+
+```haskell
+inpStart #email *: inpStart #confirmCode *: inpStart #at *: oNil
+```
+
+The TH-derived `<Ctor>TermFields` record is **not** available here — it's part of the builder's
+`ToOutFields` machinery. The AST form also uses `inpFoo #field` rather than `d.field`, because
+`d.field` needs the `PayloadProj` handle the builder threads.
+
+### `target`
+
+The next vertex, set directly. There is no `goto`-style validation — the type checker enforces it.
+
+## ε-edges in AST form
+
+The only difference from a letter edge is `output = []`. From `userRegAST`'s GDPR edge:
+
+```haskell
+Edge
+  { guard  = isGdpr
+  , update = USet (#deletedAt :: IndexN "deletedAt" UserRegRegs UTCTime)
+                  (inpGdpr #at)
+  , output = []                  -- ε-edge: no event
+  , target = Deleted
+  }
+```
+
+## What you keep, what you lose
+
+<Cards>
+<Card title="Kept">
+
+- **`solveOutput`** — mechanical inversion still works; the hand-authored `pack` carries enough to derive `applyEvent`.
+- **`checkHiddenInputs`** — reads the `Edge` records directly, builder or not.
+- **`isSingleValuedSym`** — single-valuedness is `BoolAlg`-polymorphic over the predicate carrier.
+- **All evaluators** — `delta`, `omega`, `step`, `applyEvent`, `reconstitute` are agnostic to the authoring path.
+- **The `Decider` / `Acceptor` façades and `compose`** — they consume `SymTransducer` directly.
+
+</Card>
+<Card title="Lost">
+
+- **Static distinct-target check on register writes** — omit the `:: IndexN …` annotation and the duplicate-write check silently passes.
+- **Finalize-time `goto` validation** — `target` is a required field; nothing to validate.
+- **Field-keyed `emit` record** — `<Ctor>TermFields` is builder-only.
+- **`d.fieldName` projection** — `OverloadedRecordDot` needs the builder's `PayloadProj`; use `inpFoo #field`.
+
+</Card>
+</Cards>
+
+## Verify it worked
+
+The builder and AST forms produce the **same** transducer. The example aggregates' `*BuilderSpec`
+tests assert exactly this: `Jitsurei.OrderCartBuilderSpec` checks that `orderCart` (builder) and
+`orderCartAST` (AST) return identical `reconstitute` results, agree per-step on `applyEvent`, and
+match on `isFinal` and edge counts across every vertex. Equivalent specs exist for `userReg` and
+`emailDelivery`. If your AST form drifts from a builder reference, those specs fail.
+
+## Related
+
+- [Write a multi-event command](/docs/keiki/how-to/write-a-multi-event-command) — the builder view of the multi-`pack` edge above.
+- [Ergonomic emit](/docs/keiki/how-to/ergonomic-emit) — why `TermFields` is builder-only.
+- [Core reference](/docs/keiki/reference/core) — every smart constructor used here.

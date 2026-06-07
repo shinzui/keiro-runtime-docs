@@ -1,0 +1,160 @@
+---
+title: "04 — The update language"
+description: "Update: the copyless register-update language — UKeep / USet / UCombine, the combine smart constructor and its Disjoint static check, and the runUpdate interpreter."
+---
+
+This chapter reads the `Update` language in `src/Keiki/Core.hs`: the three constructors, the `combine`
+smart constructor that carries chapter 01's `Disjoint` check, and the `runUpdate` interpreter that drives
+chapter 02's `setSlotN`. The test anchor is `test/Keiki/CoreSpec.hs`. Read
+[03 — The term language](/docs/keiki/walkthrough/core-and-builder/03-term-language) first.
+
+## `Update`: copyless writes indexed by the slots they touch
+
+An `Update rs w ci` describes how an edge mutates the register file `rs` given the input `ci`. Its second
+parameter, `w :: [Symbol]`, is the **set of slot names this update writes** — chapter 01's `[Symbol]`
+machinery exists precisely to track it:
+
+```haskell
+-- src/Keiki/Core.hs
+data Update (rs :: [Slot]) (w :: [Symbol]) (ci :: Type) where
+    UKeep :: Update rs '[] ci
+    USet ::
+        (KnownSymbol s) =>
+        IndexN s rs r -> Term rs ci ifs r -> Update rs '[s] ci
+    UCombine ::
+        Update rs w1 ci ->
+        Update rs w2 ci ->
+        Update rs (Concat w1 w2) ci
+```
+
+<TypeTable
+  type={{
+    UKeep: { type: "Update rs '[] ci", description: "Write nothing. Its written-slot set is the empty list '[]." },
+    USet: { type: "IndexN s rs r -> Term rs ci ifs r -> Update rs '[s] ci", description: "Write slot s with the value of a Term. Its written-slot set is the singleton '[s] — recovered from the IndexN's phantom name." },
+    UCombine: { type: "Update rs w1 ci -> Update rs w2 ci -> Update rs (Concat w1 w2) ci", description: "Run both updates; the combined written-slot set is Concat w1 w2." },
+  }}
+/>
+
+Two design points are worth naming. First, `USet` takes a chapter-01 `IndexN s rs r` (not the
+existential `Index`), because it needs to recover the written slot's name `s` to index the `Update` by
+`'[s]`. Second, the right-hand `Term`'s `ifs` is existentially hidden — updates are never inverted, so the
+input-field schema never needs to escape into the `Update` kind:
+
+```haskell
+-- src/Keiki/Core.hs
+    -- The right-hand-side 'Term''s input field schema @ifs@ is
+    -- existentially hidden: updates are never inverted, so @ifs@ need not
+    -- escape into the 'Update' kind (keeping 'Edge' / 'SymTransducer'
+    -- unchanged).
+```
+
+## Why `UCombine` is unconstrained — and `combine` is not
+
+`UCombine` itself carries **no** `Disjoint` constraint. The invariant is enforced at the single
+introduction point — the `combine` smart constructor — and the doc comment explains why the raw
+constructor stays cheap:
+
+```haskell
+-- src/Keiki/Core.hs
+-- The 'UCombine' raw constructor is *not* constrained by 'Disjoint':
+-- the invariant is enforced at the smart-constructor introduction
+-- point ('combine'). This keeps internal pattern-matches in
+-- "Keiki.Composition" (which reconstruct 'UCombine' values during
+-- weakening / substitution) cheap. EP-18 M8 retired the v1
+-- 'unsafeCombine' escape hatch; aggregate authors use 'combine'
+-- exclusively.
+```
+
+`Keiki.Composition` rebuilds `UCombine` values during weakening and substitution; forcing it to re-prove
+disjointness at every internal reconstruction would be needless. Authors never build `UCombine` directly —
+they use `combine`, which does carry the check.
+
+## `combine`: the static duplicate-write check
+
+`combine` is `UCombine` with the `Disjoint w1 w2` constraint bolted onto its signature. That one
+constraint is the entire static guarantee:
+
+```haskell
+-- src/Keiki/Core.hs
+-- | Smart constructor for 'UCombine'. The @'Disjoint' w1 w2@
+-- constraint statically enforces that the two halves write to
+-- disjoint slot-name sets; an aggregate that writes the same slot
+-- twice (e.g. @'USet' #email t1 \`combine\` 'USet' #email t2@) is
+-- rejected at compile time with a 'GHC.TypeError.TypeError' naming
+-- the offending slot.
+combine ::
+    (Disjoint w1 w2) =>
+    Update rs w1 ci ->
+    Update rs w2 ci ->
+    Update rs (Concat w1 w2) ci
+combine = UCombine
+```
+
+<Callout type="warn">
+`USet #email t1 \`combine\` USet #email t2` does not type-check. Each `USet #email …` has written-slot
+set `'["email"]`; `Disjoint '["email"] '["email"]` reduces (chapter 01) to the `'EQ` branch of
+`NotMemberCmp`, which is a `TypeError` naming `"email"`. The old runtime integer-position overlap test is
+gone — the error now happens at compile time, at the exact `combine` call.
+</Callout>
+
+This is the payoff of chapter 01. The `[Symbol]` index, `Concat`, and `Disjoint` all exist to let this
+one-line smart constructor reject a double-write before the program runs.
+
+<Callout type="info">
+`Keiki.Core` is compiled with `{-# OPTIONS_GHC -Wno-redundant-constraints #-}` precisely because of
+`combine`: GHC sees the `Disjoint w1 w2` constraint as unused (the body is just `UCombine`) and would
+otherwise warn. The constraint is the whole point — it is the static check, even though the body never
+mentions it.
+</Callout>
+
+## `runUpdate`: the interpreter
+
+`runUpdate` applies an `Update` to a register file. `UKeep` is the identity; `USet` evaluates its term
+(chapter 03's `evalTerm`) and writes via chapter 02's `setSlotN`; `UCombine` runs left then right:
+
+```haskell
+-- src/Keiki/Core.hs
+runUpdate :: Update rs w ci -> RegFile rs -> ci -> RegFile rs
+runUpdate UKeep regs _ = regs
+runUpdate (USet ix t) regs ci = setSlotN ix (evalTerm t regs ci) regs
+runUpdate (UCombine a b) regs ci = runUpdate b (runUpdate a regs ci) ci
+```
+
+The doc comment connects the application order back to the static check:
+
+```haskell
+-- src/Keiki/Core.hs
+-- | Apply an 'Update' to the register file. 'UCombine' applies left
+-- then right; the smart 'combine''s 'Disjoint' constraint guarantees
+-- the two halves write to disjoint slots, so the application order
+-- does not affect the result.
+```
+
+Because `combine` guaranteed the halves are disjoint, "left then right" is safe: neither half can
+overwrite a slot the other wrote, so `runUpdate (UCombine a b)` is order-independent. The `USet` arm's
+write goes through `setSlotN`, so the WHNF-on-write discipline from chapter 02 applies to every update.
+
+## Test anchor
+
+`test/Keiki/CoreSpec.hs`'s synthetic transducer uses `UKeep` for its single edge (a transition that
+emits but writes no registers):
+
+```haskell
+-- test/Keiki/CoreSpec.hs
+False -> [ Edge { guard  = matchInCtor inCtorTrue
+                , update = UKeep
+                , output = [ pack inCtorTrue wcStringTrue OFNil ]
+                , target = True
+                }
+          ]
+```
+
+The `delta`/`step` tests over that transducer (chapter 06) exercise `runUpdate UKeep` on every step. The
+register-writing `USet`/`combine` paths and the compile-time rejection of a double-write are exercised by
+the jitsurei aggregates and their builder↔AST equivalence specs (chapter 00) — e.g.
+`jitsurei/test/Jitsurei/UserRegistrationBuilderSpec.hs`, which writes multiple slots per edge and
+confirms identical `delta` behaviour for the hand and builder forms.
+
+Next: [05 — Output and predicate](/docs/keiki/walkthrough/core-and-builder/05-output-and-predicate).
+
+Previous: [03 — The term language](/docs/keiki/walkthrough/core-and-builder/03-term-language).

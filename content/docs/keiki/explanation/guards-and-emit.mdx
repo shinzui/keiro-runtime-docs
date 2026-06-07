@@ -1,0 +1,180 @@
+---
+title: "Understanding guards and emit"
+description: "How a keiki edge decides whether to fire and what it produces — the HsPred guard fragment, the structural-versus-opaque term split, and why output terms must be invertible."
+---
+
+An edge in a keiki (継起) transducer does two things when it fires: its **guard** decides
+*whether* the command is accepted, and its **output** decides *what events* it emits. Both
+are built from small expression languages, and both have a subtle distinction running through
+them — between terms the build-time solver can *see into* and terms it cannot. Getting that
+distinction right is the difference between a guard that is genuinely verified and one that is
+silently trusted. This page explains the guard fragment, the structural/opaque split, and the
+invertibility contract on outputs.
+
+## The guard language: HsPred
+
+An edge's `guard` is a value of the carrier `phi`. For hand-authoring that carrier is
+`HsPred rs ci` (aliased `Pred rs ci`), a first-class predicate AST:
+
+```haskell
+data HsPred (rs :: [Slot]) (ci :: Type) where
+    PTop    :: HsPred rs ci
+    PBot    :: HsPred rs ci
+    PAnd    :: HsPred rs ci -> HsPred rs ci -> HsPred rs ci
+    POr     :: HsPred rs ci -> HsPred rs ci -> HsPred rs ci
+    PNot    :: HsPred rs ci -> HsPred rs ci
+    PEq     :: (Eq r, Typeable r)  => Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+    PInCtor :: InCtor ci ifs -> HsPred rs ci
+    PCmp    :: (Ord r, Typeable r) => Cmp -> Term rs ci ifs1 r -> Term rs ci ifs2 r -> HsPred rs ci
+```
+
+- `PTop` / `PBot` — the always-true and always-false constants.
+- `PAnd` / `POr` / `PNot` — the Boolean connectives (with readable operators `.&&`, `.||`,
+  `pnot`).
+- `PEq` — equality of two terms of the same type (operator `.==`).
+- `PInCtor` — true iff the input command is the constructor named by the carried `InCtor`.
+  This is what `B.onCmd` reduces to; it lets the solver reason about constructor mutual
+  exclusion.
+- `PCmp Cmp` — an ordering comparison, where `Cmp = CmpLt | CmpLe | CmpGt | CmpGe`
+  (operators `.<`, `.<=`, `.>`, `.>=`). There is no "equal" case — equality is `PEq`.
+
+The operands of `PEq` and `PCmp` are `Term`s — expressions over the register file and the
+input command, built from `lit`, `proj`/`#slot` (register reads), `inpCtor`/`d.field` (input
+projections), and arithmetic.
+
+## Structural vs. opaque terms
+
+Here is the distinction that runs through everything. The same guard can be evaluated two
+ways: *concretely* at `step` time (always exact), and *symbolically* at build time when the
+SBV-backed carrier translates it to SMT for the single-valuedness and dead-edge analyses. The
+symbolic translation can only see into terms it understands structurally.
+
+**Structural terms are solver-visible.** Arithmetic `TArith NumOp` — where
+`NumOp = OpAdd | OpSub | OpMul`, built with `tadd`/`tsub`/`tmul` or `.+`/`.-`/`.*` — and the
+comparison `PCmp` are read *for real* by the SBV translator. A guard over a computed value (a
+weighted sum, a derived cap) stays visible to the solver.
+
+**Opaque terms are escape hatches.** `TApp1` and `TApp2` wrap arbitrary Haskell functions:
+
+```haskell
+TApp1 :: (a -> r)      -> Term rs ci ifs a -> Term rs ci ifs r
+TApp2 :: (a -> b -> r) -> Term rs ci ifs a -> Term rs ci ifs b -> Term rs ci ifs r
+```
+
+The solver cannot look inside a closure. When the symbolic translator meets a `TApp`, it
+emits a *fresh, unconstrained* SBV variable in its place. That means a guard built from a
+`TApp` is **silently under-verified**: the single-valuedness and dead-edge proofs run, pass,
+and tell you nothing about the opaque part — they could not see it.
+
+<Callout type="warn">
+  A guard whose decision hinges on a `TApp1`/`TApp2` term is not really being verified. The
+  build-time analyses translate the opaque term to a free variable, so they cannot prove the
+  guard does not overlap with a sibling edge's guard. Prefer structural terms (`PCmp`,
+  `TArith`) so the solver can actually reason about the branch.
+</Callout>
+
+### The audit that flags it
+
+You do not have to spot opaque guards by eye. The opt-in audit `warnOpaqueGuards` (a field of
+`ValidationOptions`, off by default) runs `opaqueGuardWarnings`, which walks every edge's
+guard and emits an `OpaqueGuard` warning — located by typed `EdgeRef` — for any guard
+containing an opaque `TApp` term:
+
+```haskell
+opaqueGuardWarnings ::
+    (Bounded s, Enum s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [TransducerValidationWarning s]
+```
+
+Turn it on in `ValidationOptions` (set `warnOpaqueGuards = True`) and wire
+`validateTransducer` into a test to get the list. It is advisory, not a soundness error — but
+it is the only way the under-verification surfaces.
+
+## Emit: outputs and invertibility
+
+An edge's `output` is a list of `OutTerm`s, each built with `pack` (the smart constructor for
+`OPack`):
+
+```haskell
+OPack ::
+    InCtor ci ifs ->            -- the input constructor this edge consumes
+    WireCtor co fields ->       -- the output constructor it produces
+    OutFields rs ci ifs fields ->  -- one Term per field of that output constructor
+    OutTerm rs ci co
+```
+
+`OPack` ties three things together: the input constructor (`InCtor`), the wire constructor of
+the emitted event (`WireCtor`), and an `OutFields` HList of one `Term` per field of the event.
+Build the field list right-associatively with `*:` and `oNil`:
+
+```haskell
+pack inCtorSendEmail wireEmailSent
+  (inpSendEmail #recipient *: inpSendEmail #subject *: inpSendEmail #at *: oNil)
+```
+
+### Why outputs must be invertible
+
+Outputs carry a contract that guards do not: they must be **invertible**. keiki replays an
+aggregate from its event log without any hand-written inverse — `solveOutput` recovers the
+command that *must* have produced an observed event, then re-runs the edge forward:
+
+```haskell
+solveOutput :: (Eq co) => OutTerm rs ci co -> RegFile rs -> co -> Maybe ci
+```
+
+It works structurally. `wcMatch` pulls the field tuple out of the observed event;
+`gatherInpEntries` walks the `OutFields` in lockstep, collecting `(Index, value)` pairs from
+each *invertible* field; `assemble` rebuilds a `RegFile` covering the input constructor's
+slots; and `icBuild` turns that into the recovered command. This is the read path behind
+`reconstitute` (see
+[Deriving event sourcing](/docs/keiki/explanation/deriving-event-sourcing)).
+
+The reason it can work at all is the `ifs` parameter — the *input-field schema*. Every `Term`
+carries an `ifs :: [Slot]` that is pinned by `TInpCtorField` (the structural input
+projection) to the constructor's field schema. Because `OutFields` is indexed by the same
+`ifs` as the `OPack`'s `InCtor`, a top-level input projection inside an output is *statically*
+an `Index` into that constructor's schema. That is what lets `solveOutput` recover a command
+field with no `unsafeCoerce` and reject a field that names a different constructor at compile
+time.
+
+### Which fields invert
+
+| Output field shape | Surface form | Round-trips? |
+|---|---|---|
+| `TLit r` | `lit r` | yes — a literal carries no command data |
+| `TReg ix` | `#slot` / `proj ix` | yes — recovered from the pre-update register file, kept as-is |
+| `TInpCtorField`, matching ctor | `d.field` | yes — the field *is* a copy of a command field |
+| `TInpCtorField`, non-matching ctor | — | no — malformed edge; `solveOutput` returns `Nothing` |
+| `TArith` / `TApp1` / `TApp2` (*derived*) | `.+`/`.-`/`.*`, escape hatch | yes — *recomputed and verified* forward on replay, **if** every command field it reads is also read by an invertible field |
+| any derived field that *hides* a command input | — | no — the command cannot be recovered |
+
+The key idea: the command is *always* recovered from the invertible fields alone; derived
+fields are recomputed forward and checked against the observed value (so a tampered derived
+field is rejected), never used as a source of command bits. A command field read *only* inside
+a derived field is a **hidden input** — `solveOutput` then returns `Nothing`, and the
+build-time check `checkHiddenInputs` flags it before any event is replayed. The full contract,
+with worked recipes, lives in keiki's in-repo note
+`docs/guide/output-invertibility.md`.
+
+<Callout type="info">
+  The invertibility restriction is *output-only*. A guard or a register update re-runs forward
+  with `evalTerm`, which handles every `Term` shape — `TApp`, `TArith`, all of them. So
+  arithmetic and functions live happily in guards and updates; only an event's payload field
+  is restricted.
+</Callout>
+
+## Trade-offs
+
+The two distinctions on this page pull in the same direction. *Structural* terms keep guards
+verifiable and outputs invertible; *opaque* `TApp` escape hatches buy expressiveness at the
+cost of under-verified guards and (when they hide an input) un-replayable events. Reach for
+the structural forms first — `PCmp` for bounds, `TArith` for computed operands, a register
+read for an audit field — and keep the escape hatches for the genuine corners, with
+`warnOpaqueGuards` and `checkHiddenInputs` watching the seams.
+
+<Cards>
+  <Card title="The SymTransducer" href="/docs/keiki/explanation/the-symtransducer" />
+  <Card title="Why SMT?" href="/docs/keiki/explanation/why-smt" />
+  <Card title="Deriving event sourcing" href="/docs/keiki/explanation/deriving-event-sourcing" />
+</Cards>

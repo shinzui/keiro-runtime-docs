@@ -1,0 +1,285 @@
+---
+title: "07 — The builder, three layers"
+description: "How Keiki.Builder stacks two plain Monads and one indexed monad to author a SymTransducer, and how the indexed layer's write-set index turns a duplicate slot write into a compile error."
+---
+
+Chapter 06 read the `Edge` and `SymTransducer` types and the evaluators that run them. Authoring those
+values by hand is verbose — every edge wants an `Edge` record literal, an `IndexN` annotation on each
+register write, a `combine` chain, and an `OFCons … OFNil` output chain. `keiki/src/Keiki/Builder.hs`
+collapses all of that into a fluent EDSL that produces the **same** AST a hand author would. This
+chapter reads the builder's *structure* — its three nested carriers and the indexed monad at the
+bottom; chapter 08 reads the verbs you type inside an edge body.
+
+## Three carriers, one indexed
+
+The builder is a tower of three monads, mirroring the three nesting levels of a transducer
+definition. The module header states it plainly:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+-- == Three-layer monad shape
+--
+-- Three carriers, only the innermost is indexed:
+--
+--   1. 'VertexBuilder' (plain 'Monad') — the top-level. State is
+--      a list @[(v, [Edge ...])]@; 'from' writes one entry.
+--   2. 'EdgeListBuilder' (plain 'Monad') — the per-source-vertex
+--      layer. State is the list of edges out of that vertex;
+--      'onCmd' \/ 'onEpsilon' each prepend one.
+--   3. 'EdgeBuilder' (indexed) — the per-edge body. Type-level
+--      @(w :: [Symbol])@ tracks the slots written so far; '(.=)'
+--      extends @w@ and inherits a 'Disjoint'-driven static check.
+```
+
+```mermaid
+flowchart TB
+  VB["VertexBuilder — plain Monad<br/>state: [(vertex, [Edge])]<br/>verb: from"]
+  ELB["EdgeListBuilder — plain Monad<br/>state: [Edge] out of one vertex<br/>verbs: onCmd / onEpsilon"]
+  EB["EdgeBuilder — indexed monad<br/>type-level w :: [Symbol] (slots written)<br/>verbs: .= / emit / require* / goto"]
+  VB --> ELB --> EB
+```
+
+The crucial detail: **only the innermost layer is indexed.** The `QualifiedDo` machinery rebinds
+`(>>=)` / `(>>)` only for `EdgeBuilder`; the outer two layers use ordinary `Prelude.do`. That is why
+an aggregate module mixes `do` (outer) with `B.do` (edge body) — we will see exactly that in the
+worked example.
+
+## Layer 1: `VertexBuilder` and `buildTransducer`
+
+The top layer is a plain state monad over a list of `(vertex, edges)` entries:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+newtype VertexBuilder rs ci co v a = VertexBuilder
+  { runVertexBuilder :: [(v, [Edge (HsPred rs ci) rs ci co v])]
+                     -> (a, [(v, [Edge (HsPred rs ci) rs ci co v])]) }
+```
+
+It has the textbook `Functor` / `Applicative` / `Monad` instances — nothing exotic, just threaded
+state. The verb that writes one entry is `from`:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+from
+  :: (Eq v, Show v)
+  => v
+  -> EdgeListBuilder rs ci co v ()
+  -> VertexBuilder rs ci co v ()
+from v eb = VertexBuilder $ \vs ->
+  let (_, accFinal) = runEdgeListBuilder eb v []
+      entry         = (v, Prelude.reverse accFinal)
+  in ((), entry : vs)
+```
+
+`from v` runs the inner `EdgeListBuilder` against an empty accumulator, then reverses it so
+declaration order is preserved (the inner layer *prepends*). A vertex never mentioned in any `from`
+block defaults to no outgoing edges — i.e. terminal. To assert terminality explicitly, the source
+recommends `from V (Prelude.pure ())`.
+
+`buildTransducer` is the entry point that turns the whole do-block into a `SymTransducer`:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+buildTransducer
+  :: forall rs ci co v.
+     (Bounded v, Enum v, Eq v, Show v)
+  => v
+  -> RegFile rs
+  -> (v -> Bool)
+  -> VertexBuilder rs ci co v ()
+  -> SymTransducer (HsPred rs ci) rs v ci co
+buildTransducer initS initR isF vb = SymTransducer
+  { edgesOut    = \v -> Prelude.concatMap snd (Prelude.filter ((== v) . fst) vmap)
+  , initial     = initS
+  , initialRegs = initR
+  , isFinal     = isF
+  }
+  where
+    (_, vmap) = runVertexBuilder vb []
+```
+
+Three scalar arguments (initial vertex, initial register file, finality predicate) plus the
+`VertexBuilder` do-block. `edgesOut` is a closure over the built lookup table: it filters the entries
+for the asked vertex and concatenates their edge lists, so duplicate-vertex entries (two `from`
+blocks on the same vertex) merge cleanly in declaration order. The `Bounded`/`Enum` constraints are
+reserved for a future completeness-check combinator; `buildTransducer` itself does not use them.
+
+## Layer 2: `EdgeListBuilder`, `onCmd` and `onEpsilon`
+
+The middle layer accumulates the edges out of one source vertex:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+newtype EdgeListBuilder rs ci co v a = EdgeListBuilder
+  { runEdgeListBuilder :: v
+                       -> [Edge (HsPred rs ci) rs ci co v]
+                       -> (a, [Edge (HsPred rs ci) rs ci co v]) }
+```
+
+Again a plain `Monad`. Its two verbs each add one edge. `onCmd` registers a command-triggered edge:
+it pins the input constructor's match-guard, hands the body a `PayloadProj` handle (so
+`OverloadedRecordDot` resolves `d.field` — chapter 08), runs the body, and finalizes:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+onCmd ic body = EdgeListBuilder $ \src acc ->
+  let initial = PartialEdge
+        { peGuard   = matchInCtor ic
+        , peUpdate  = UKeep
+        , peOutput  = []
+        , peTargets = []
+        , peInCtor  = Just (PeInCtor ic)
+        }
+      (_, finalPE) = runEdgeBuilder (body (PayloadProj ic)) initial
+      edgeIx       = length acc
+      edge         = finalizeEdge edgeIx src finalPE
+  in ((), edge : acc)
+```
+
+Read the seeded `PartialEdge`: the guard starts at `matchInCtor ic` (so the edge only fires for that
+command constructor), the update at `UKeep` (writes nothing yet), output empty, no target, and the
+`InCtor` stashed in `peInCtor` so a bare `emit` can recover it. `onEpsilon` is the same shape with no
+input projection and a `PTop` starting guard (so whatever the body conjoins *is* the full guard) and
+`peInCtor = Nothing`.
+
+`finalizeEdge` closes a `PartialEdge` into an `Edge`, and this is where the **missing-/duplicate-goto**
+diagnostics live:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+finalizeEdge n src pe = case peTargets pe of
+  [t]      -> Edge { guard  = peGuard pe
+                   , update = peUpdate pe
+                   , output = peOutput pe
+                   , target = t
+                   }
+  []       -> error $ "Keiki.Builder: edge #" <> show n <> " from "
+                   <> show src <> ": goto missing. …"
+  (_:_:_)  -> error $ "Keiki.Builder: edge #" <> show n <> " from "
+                   <> show src <> ": goto called more than once. …"
+```
+
+`peTargets` is the reverse-order list of every `goto` in the body; finalization requires **exactly
+one**. Missing or duplicated `goto` raises a finalize-time runtime error naming the source vertex and
+edge index — so it fires when `buildTransducer` evaluates the do-block, not at type-check time.
+`BuilderSpec` pins both:
+
+```haskell
+-- keiki/test/Keiki/BuilderSpec.hs
+it "case 7: missing goto fires the expected runtime error" $ do
+  …
+it "case 8: multiple goto fires the expected runtime error" $ do
+  …
+```
+
+## Layer 3: `EdgeBuilder`, the indexed monad
+
+The innermost layer is where the type system earns its keep. `EdgeBuilder` is **not** a plain monad —
+it is an indexed monad with two phantom slot-set indices, one for the slots written *before* this
+step and one for *after*:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+newtype EdgeBuilder rs ci co v (w :: [Symbol]) (w' :: [Symbol]) a
+  = EdgeBuilder
+      { runEdgeBuilder :: PartialEdge rs ci co v w
+                       -> (a, PartialEdge rs ci co v w') }
+```
+
+The source explains why the instances are not the ordinary ones:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+-- Functor / Applicative / Monad instances are not provided because
+-- they would be 'IxFunctor' / 'IxApplicative' / 'IxMonad' (the
+-- type-level slot-set changes between operand and result), which
+-- requires a separate type-class hierarchy. Instead, this module
+-- exports its own @(>>=)@ / @(>>)@ / 'pure' / 'return' for use
+-- with @QualifiedDo@.
+```
+
+The indexed bind is the heart of it — the first action's *output* index `w2` becomes the second
+action's *input* index, and the second's output `w3` becomes the whole bind's output:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+(>>=)
+  :: EdgeBuilder rs ci co v w1 w2 a
+  -> (a -> EdgeBuilder rs ci co v w2 w3 b)
+  -> EdgeBuilder rs ci co v w1 w3 b
+EdgeBuilder f >>= k = EdgeBuilder $ \pe ->
+  let (a, pe1)        = f pe
+      EdgeBuilder g   = k a
+  in g pe1
+infixl 1 >>=
+```
+
+`pure` leaves the index untouched (`EdgeBuilder rs ci co v w w a`). Because `@QualifiedDo@` desugars
+`B.do { … }` to `B.>>=` / `B.>>` / `B.pure`, every statement in an edge body threads the type-level
+slot set through this bind — which is exactly what makes the next property hold.
+
+## How a duplicate slot write becomes a compile error
+
+This is the payoff of the indexed monad. A slot write extends the write-set index by the slot it
+writes, and demands that slot be **disjoint** from everything written so far:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+(.=)
+  :: forall name r rs ci ifs co v w.
+     ( KnownSymbol name, Disjoint '[name] w )
+  => IndexN name rs r
+  -> Term rs ci ifs r
+  -> EdgeBuilder rs ci co v w (Concat '[name] w) ()
+ix .= t = EdgeBuilder $ \pe ->
+  ((), pe { peUpdate = USet ix t `combine` peUpdate pe })
+infixr 6 .=
+```
+
+Trace the index. The action's input index is `w` (the slots written so far); its output index is
+`Concat '[name] w` (now including `name`). Through the indexed bind, that output `w` flows into the
+*next* `(.=)`'s input `w` — so each successive write sees the accumulated set. The `Disjoint '[name]
+w` constraint then fires per statement: write `#email` twice in one body and GHC rejects the
+*second* `(.=)` at its own line, with the `Disjoint` `TypeError` from `Keiki.Internal.Slots` naming
+the duplicated slot. The same check is the one `combine` carries in `Keiki.Core` (chapter 04) — the
+builder just inherits it through the index. The module header summarizes it:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+-- * Duplicate '(.=)' to the same slot: caught at compile time via
+--   the 'Keiki.Internal.Slots.Disjoint' 'GHC.TypeError.TypeError',
+--   which names the duplicated slot.
+```
+
+<Callout type="info">
+This is a genuine *compile-time* guarantee, not a runtime check. Two writes to distinct slots
+type-check (`BuilderSpec` case 2: "sequential `(.=)` to distinct slots writes both"); two writes to
+the *same* slot do not compile. Contrast with the missing-`goto` diagnostic above, which is a
+finalize-*time* runtime error — the difference is that goto-count is a value-level property of the
+body, while the write-set is tracked in the type.
+</Callout>
+
+## The three pragmas an author needs
+
+Because the bottom layer is `QualifiedDo` and the verbs are operators, an aggregate module declares:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs (worked-example header)
+--   * @{-\# LANGUAGE QualifiedDo \#-}@ — so @B.do@ resolves to this
+--     module's indexed bind.
+--   * @{-\# LANGUAGE BlockArguments \#-}@ — so a @B.do@ block can
+--     appear as a function argument without parentheses.
+--   * @import qualified Keiki.Builder as B@ /and/
+--     @import Keiki.Builder ((.=))@ — the operator must be in scope
+--     unqualified; @B.(.=)@ is unreadable.
+```
+
+You can confirm all three in the real worked example's pragma block and import list, which we open in
+the next chapter. The general structural facts — three layers, one indexed — are anchored across
+`keiki/test/Keiki/BuilderSpec.hs` (`describe "EP-15 M6: Keiki.Builder unit cases"`), whose cases walk
+each verb in isolation: single and sequential `(.=)`, `emit`/`solveOutput` round-trip, `noEmit`,
+`goto`, the goto diagnostics, `requireEq`, `onEpsilon`, and two `onCmd` blocks under one `from`.
+
+Previous: [06 — Edges and step semantics](/docs/keiki/walkthrough/core-and-builder/06-edges-and-step-semantics).
+
+Next: [08 — The builder edge body](/docs/keiki/walkthrough/core-and-builder/08-builder-edge-body).
