@@ -1,0 +1,234 @@
+---
+title: "05 — Zero-enumeration and the fused splice"
+description: "The *All variants that enumerate every constructor, the *With validation that resolveCtorSpecs performs, and the fused deriveAggregate that ships an aggregate's command- and event-side plumbing in one splice."
+---
+
+The previous chapter, [04 — TH ctor/wire splices](/docs/keiki/walkthrough/derivations/04-th-ctor-wire-splices),
+read the *enumerated* form of the splices — the variant that takes a hand-typed
+`[(constructorName, shortName)]` spec list. This chapter reads the three ways to *avoid* writing that
+list: the `*All` variants that enumerate every constructor automatically, the `*With` variants that
+take an override/exclude record (and the `resolveCtorSpecs` machine that validates it), and the fused
+`deriveAggregate` that fires both sides at once. Everything here lives in `keiki/src/Keiki/Generics/TH.hs`.
+
+## `deriveAggregateCtorsAll` / `deriveWireCtorsAll`: enumerate every constructor
+
+The enumerated `deriveAggregateCtors` makes you list each constructor and its short name. When the
+short name *equals* the constructor name everywhere — the common case — that list is pure ceremony.
+The `*All` variants reify the sum type and synthesise the spec list for you:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs
+deriveAggregateCtorsAll ::
+    -- | command sum type, e.g. @''OrderCmd@
+    Name ->
+    -- | register-file slot list, e.g. @''OrderCartRegs@
+    Name ->
+    Q [Dec]
+deriveAggregateCtorsAll cmdName regsName = do
+    ctors <- reifyCtors cmdName "deriveAggregateCtorsAll"
+    let ctorMap = [(nameBase n, c) | c <- ctors, n <- conNames c]
+        specs = [(nameBase n, nameBase n) | c <- ctors, n <- conNames c]
+    genAggregateCtors cmdName regsName ctorMap specs
+```
+
+The one line that matters is the `specs` binding: it pairs every reified constructor base-name with
+*itself* as the short name, so `StartRegistration` becomes `inCtorStartRegistration` /
+`inpStartRegistration` / `isStartRegistration`. The result then routes through the *same*
+`genAggregateCtors` that the enumerated form calls — the haddock is explicit that this is "Equivalent
+to calling `deriveAggregateCtors` with a spec list of `[(nameBase c, nameBase c) | c <- constructors]`."
+
+`deriveWireCtorsAll` is the event-side twin, built the same way:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs
+deriveWireCtorsAll ::
+    -- | event sum type, e.g. @''OrderEvent@
+    Name ->
+    Q [Dec]
+deriveWireCtorsAll evtName = do
+    ctors <- reifyCtors evtName "deriveWireCtorsAll"
+    let ctorMap = [(nameBase n, c) | c <- ctors, n <- conNames c]
+        specs = [(nameBase n, nameBase n) | c <- ctors, n <- conNames c]
+    genWireCtors evtName ctorMap specs
+```
+
+<Callout type="info">
+Reach back for the *enumerated* `deriveAggregateCtors` / `deriveWireCtors` only when you need an
+*abbreviated* short name that differs from the constructor name — the way `Jitsurei.UserRegistration`
+maps `StartRegistration` to the short name `Start`. The module haddock states this trade-off directly:
+the `*All` variants cover "the common 'short name == constructor name' case" so it "needs no hand-typed
+spec list."
+</Callout>
+
+## `deriveAggregateCtorsWith` / `resolveCtorSpecs`: overrides and exclusions, validated
+
+Between "list everything by hand" and "enumerate everything blindly" sits the `*With` form. It takes a
+`DeriveCtorOptions` record carrying a per-constructor override map and an exclude set:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs
+data DeriveCtorOptions = DeriveCtorOptions
+    { suffixOverrides :: Map String String
+    , excludeCtors :: Set String
+    }
+
+defaultDeriveCtorOptions :: DeriveCtorOptions
+defaultDeriveCtorOptions =
+    DeriveCtorOptions
+        { suffixOverrides = Map.empty
+        , excludeCtors = Set.empty
+        }
+```
+
+<TypeTable
+  type={{
+    suffixOverrides: { type: "Map String String", description: "Constructor name to short-name suffix. Constructors absent from the map default to their own name." },
+    excludeCtors: { type: "Set String", description: "Constructor names to skip entirely; no helpers are generated for them." },
+  }}
+/>
+
+With `defaultDeriveCtorOptions` the behaviour is "identical to `deriveAggregateCtorsAll`" — empty
+override map, empty exclude set. The interesting part is the validation, which both the command-side
+and event-side `*With` variants share through one sum-type-agnostic helper, `resolveCtorSpecs`. It
+runs three checks in order.
+
+<Steps>
+
+<Step>
+**Every override/exclude key must name a real constructor.** The union of the override map's keys and
+the exclude set is differenced against the set of known constructors; any leftover is a typo and aborts
+the splice.
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs — resolveCtorSpecs (a)
+let known = Set.fromList allCtors
+    overKeys = Map.keysSet overrides
+    badKeys =
+        Set.toList
+            ( (overKeys `Set.union` excludes)
+                `Set.difference` known
+            )
+case badKeys of
+    [] -> pure ()
+    _ ->
+        fail $
+            caller
+                <> ": option(s) name "
+                <> showList' badKeys
+                <> " which are not constructors of this type; "
+                <> "valid constructors: "
+                <> showList' allCtors
+```
+</Step>
+
+<Step>
+**Build the resolved spec.** Excluded constructors drop out; each survivor takes its overridden short
+name, or its own name if no override is present:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs — resolveCtorSpecs (b)
+let kept = [c | c <- allCtors, not (c `Set.member` excludes)]
+    specs = [(c, Map.findWithDefault c c overrides) | c <- kept]
+```
+</Step>
+
+<Step>
+**Reject duplicate resolved short names.** Two constructors collapsing onto the same short name would
+generate two `inCtor<Short>` bindings with the same name — a clash at codegen. The check sorts, groups,
+and reports any group of length two or more:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs — resolveCtorSpecs (c)
+let shorts = map snd specs
+    dups = [s | (s : _ : _) <- group (sort shorts)]
+case dups of
+    [] -> pure ()
+    _ ->
+        fail $
+            caller
+                <> ": short name(s) "
+                <> showList' dups
+                <> " are produced by more than one constructor; "
+                <> "rename via suffixOverrides or exclude one"
+```
+</Step>
+
+</Steps>
+
+The `caller` argument is the splice name woven into each message, so a duplicate from the event side
+reads `deriveWireCtorsWith: short name(s) …` and a bad key from the command side reads
+`deriveAggregateCtorsWith: option(s) name …`. Because both `*With` variants funnel through the same
+helper, the haddock can promise that for any constructor present in `suffixOverrides`, "the generated
+declarations are byte-for-byte identical to what `deriveAggregateCtors` produces for the same
+`(constructor, short)` pair."
+
+<Callout type="warn">
+The two abort cases are compile-time `fail`s in `Q`, not runtime errors — a mistyped exclude key or a
+short-name collision stops the build with a precise message *before* any code is generated. You cannot
+ship an aggregate whose derived helpers silently shadow one another.
+</Callout>
+
+## The fused `deriveAggregate`
+
+The fused form is the smallest surface of all: hand it the command sum type, its register-file slot
+list, and the event sum type, and it fires `deriveAggregateCtorsAll` and `deriveWireCtorsAll` back to
+back, concatenating their declarations:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs
+deriveAggregate ::
+    -- | command sum type, e.g. @''OrderCmd@
+    Name ->
+    -- | register-file slot list, e.g. @''OrderCartRegs@
+    Name ->
+    -- | event sum type, e.g. @''OrderEvent@
+    Name ->
+    Q [Dec]
+deriveAggregate cmdName regsName evtName = do
+    cmdDecs <- deriveAggregateCtorsAll cmdName regsName
+    evtDecs <- deriveWireCtorsAll evtName
+    pure (cmdDecs ++ evtDecs)
+```
+
+There is no new logic here — `deriveAggregate` is exactly the two `*All` variants stitched together.
+That is the whole point: "an aggregate's entire command- and event-side plumbing is a single splice."
+
+### Anchor: the fused splice in `Jitsurei.OrderCart`
+
+`Jitsurei.OrderCart` is the worked example that uses the fused form. Its short names equal its
+constructor names everywhere, so one splice replaces both an enumerated command list and an enumerated
+wire list:
+
+```haskell
+-- keiki/jitsurei/src/Jitsurei/OrderCart.hs (~line 323)
+-- One fused splice derives every command-side @inCtor@/@inp@/@is@
+-- declaration and every event-side @wire@ declaration in one go,
+-- defaulting each short-name suffix to the constructor's own name
+-- (which equals the short name everywhere in this aggregate).
+$(deriveAggregate ''OrderCmd ''OrderCartRegs ''OrderEvent)
+```
+
+That single line emits the ten command-side `inCtorAddItem` / `inpAddItem` / `isAddItem` triples (which
+`OrderCart`'s `KnownInCtors` instance then enumerates), plus every event-side `wireItemAdded`,
+`wireItemRemoved`, … binding with its `<Ctor>TermFields` record. The source comment under the "Wire
+constructors for events" heading confirms there is no separate event-side splice — the fused call
+covers both sides.
+
+Contrast this with [`Jitsurei.UserRegistration`](/docs/keiki/walkthrough/derivations/04-th-ctor-wire-splices),
+which deliberately keeps the *enumerated* `deriveAggregateCtors` because it abbreviates
+`StartRegistration` to `Start`, `ConfirmAccount` to `Confirm`, and so on. When the short names are not
+the constructor names, the fused form is the wrong tool.
+
+<Cards>
+  <Card title="Pick the right splice" href="/docs/keiki/how-to/derive-aggregate-constructors">
+    The how-to weighs enumerated vs *All vs *With vs fused for a real aggregate.
+  </Card>
+  <Card title="Generics reference" href="/docs/keiki/reference/generics">
+    The full export surface of Keiki.Generics and Keiki.Generics.TH.
+  </Card>
+</Cards>
+
+---
+
+Previous: [04 — TH ctor/wire splices](/docs/keiki/walkthrough/derivations/04-th-ctor-wire-splices) ·
+Next: [06 — deriveView and B-presentation](/docs/keiki/walkthrough/derivations/06-deriveview-b-presentation)

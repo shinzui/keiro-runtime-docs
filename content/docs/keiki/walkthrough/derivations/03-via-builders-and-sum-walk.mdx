@@ -1,0 +1,234 @@
+---
+title: "03 — Via-builders and the sum walk"
+description: "mkInCtorVia and mkWireCtorVia, and the GHasCtor / NameInRep machinery that resolves a constructor by name inside a sum type's Generic Rep."
+---
+
+Chapter 02 walked a single *payload record*. But a command is a constructor of a *sum* —
+`StartRegistration StartRegistrationData` is one arm of `UserCmd`. Before keiki can walk the payload it
+has to find the right arm. This chapter reads that sum walk and the two builders that stitch the sum walk
+and the record walk together into a finished `InCtor` / `WireCtor`. The code is all in
+`src/Keiki/Generics.hs`. Read [02 — The generic record walk](/docs/keiki/walkthrough/derivations/02-generic-record-walk)
+first; the Via builders call straight into `GRecord` / `GTuple`.
+
+## The Via builders: name-only construction
+
+The plain `mkInCtor` (from chapter 02's neighbourhood) takes an explicit matcher and wrapper. The *Via*
+builder needs only a constructor name as a type-level `Symbol`; it derives the matcher and wrapper from
+the sum's `Generic` representation:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- | Build an 'InCtor' from a constructor name alone. The sum-side
+-- match\/wrap pair and the record-side RegFile inversion are both
+-- derived from the 'Generic' representations of @ci@ and the inferred
+-- payload @d@. With no-payload constructors (e.g. 'Continue') the
+-- inferred slot list is @\'[]@.
+mkInCtorVia
+  :: forall (name :: Symbol) ci d ifs.
+     ( KnownSymbol name
+     , Generic ci
+     , GHasCtor name (Rep ci) d
+     , Generic d
+     , GRecord (Rep d) ifs
+     , AssembleRegFile ifs
+     , KnownSlotNames ifs
+     )
+  => InCtor ci ifs
+mkInCtorVia = InCtor
+  { icName  = symbolVal (Proxy @name)
+  , icMatch = \ci -> case gMatchCtor @name (from ci) of
+      Just d  -> Just (gToRegFile (from d))
+      Nothing -> Nothing
+  , icBuild = \rf -> to (gBuildCtor @name (to (gFromRegFile rf) :: d))
+  }
+```
+
+Read the constraint stack top to bottom — it is the whole derivation in miniature:
+
+<Steps>
+<Step>
+`GHasCtor name (Rep ci) d` resolves the payload type `d` from the constructor `name` inside the command
+sum `ci`'s representation. This is the *sum walk*, covered below. Its functional dependency pins `d`
+uniquely.
+</Step>
+<Step>
+`Generic d` + `GRecord (Rep d) ifs` is chapter 02's *record walk* on the resolved payload, producing the
+slot list `ifs`.
+</Step>
+<Step>
+`AssembleRegFile ifs` + `KnownSlotNames ifs` are the runtime obligations on the slot list `RegFile`
+machinery needs.
+</Step>
+</Steps>
+
+The body shows the two walks composed. `icMatch` runs `gMatchCtor @name (from ci)` to pull the payload
+`d` out of the matching arm (or `Nothing`), then `gToRegFile (from d)` to walk that payload to a
+`RegFile`. `icBuild` runs the inverse: `gFromRegFile rf` rebuilds the payload record, `to` lifts it back
+to `d`, `gBuildCtor @name` wraps it in the right sum arm, and the outer `to` lifts that to `ci`.
+
+`mkWireCtorVia` is the exact event-side twin, swapping `GRecord` for `GTuple` and `RegFile` for the
+nested-pair tuple:
+
+```haskell
+-- src/Keiki/Generics.hs
+mkWireCtorVia
+  :: forall (name :: Symbol) co d fs.
+     ( KnownSymbol name
+     , Generic co
+     , GHasCtor name (Rep co) d
+     , Generic d
+     , GTuple (Rep d) fs
+     )
+  => WireCtor co fs
+mkWireCtorVia = WireCtor
+  { wcName  = symbolVal (Proxy @name)
+  , wcMatch = \co -> case gMatchCtor @name (from co) of
+      Just d  -> Just (gToTuple (from d))
+      Nothing -> Nothing
+  , wcBuild = \fs -> to (gBuildCtor @name (to (gFromTuple fs) :: d))
+  }
+```
+
+These two functions are what the chapter 04 splices ultimately call — `deriveAggregateCtors` emits
+`mkInCtorVia @"StartRegistration"`, `deriveWireCtors` emits `mkWireCtorVia @"RegistrationStarted"`. The
+splice's only job is to pick the names and write the signatures; *these* builders do the work.
+
+## `NameInRep`: which side of a sum holds the constructor
+
+The sum walk is a search: given a constructor `name` and a sum's `Rep` (a tree of `:+:`), find the arm
+with that name. The dispatch is driven by a type family that answers "does `name` appear under this
+`Rep`?":
+
+```haskell
+-- src/Keiki/Generics.hs
+-- | Does the constructor named @n@ appear anywhere in the 'Generic'
+-- representation @rep@? Used to dispatch sum-side resolution to the
+-- correct branch.
+type family NameInRep (n :: Symbol) (rep :: Type -> Type) :: Bool where
+  NameInRep n (M1 D _ inner)              = NameInRep n inner
+  NameInRep n (l :+: r)                   = NameInRep n l || NameInRep n r
+  NameInRep n (M1 C ('MetaCons n _ _) _)  = 'True
+  NameInRep _ _                           = 'False
+```
+
+The third equation is the match — a constructor wrapper whose `'MetaCons` name *unifies* with the sought
+`n` reduces to `'True`. Everything else under a `:+:` recurses; anything that does not match is `'False`.
+
+## `GHasCtor`: resolve and walk the matching arm
+
+`GHasCtor` is the class that actually extracts (and rebuilds) the payload. Its functional dependency
+`name rep -> d` is what lets `mkInCtorVia` leave `d` to inference:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- | Walk a 'Generic' representation looking for a constructor named
+-- @name@; resolve its payload type @d@.
+class GHasCtor (name :: Symbol) (rep :: Type -> Type) (d :: Type)
+              | name rep -> d where
+  gMatchCtor :: rep a -> Maybe d
+  gBuildCtor :: d -> rep a
+```
+
+Two leaf instances handle the two supported payload shapes — a single record-value field, and no payload
+at all:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- Match a constructor whose payload is a single record value.
+instance GHasCtor n (M1 C ('MetaCons n fix lazy) (M1 S meta (K1 r d))) d where
+  gMatchCtor (M1 (M1 (K1 d))) = Just d
+  gBuildCtor d                = M1 (M1 (K1 d))
+
+-- Match a no-payload constructor; payload is the unit type '()'.
+instance GHasCtor n (M1 C ('MetaCons n fix lazy) U1) () where
+  gMatchCtor (M1 U1) = Just ()
+  gBuildCtor ()      = M1 U1
+```
+
+The dispatch instance is where `NameInRep` earns its keep. For a `l :+: r`, it computes `hasL =
+NameInRep n l` and hands off to a helper class indexed by that `Bool`:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- Sum dispatch: pick the side that contains the named constructor.
+instance ( hasL ~ NameInRep n l
+         , GHasCtorIf hasL n l r d
+         ) => GHasCtor n (l :+: r) d where
+  gMatchCtor x = gMatchCtorIf @hasL @n @l @r x
+  gBuildCtor d = gBuildCtorIf @hasL @n @l @r d
+```
+
+`GHasCtorIf` is the two-way switch: when `hasL` is `'True`, recurse left and treat the right side as a
+miss; when `'False`, recurse right:
+
+```haskell
+-- src/Keiki/Generics.hs
+instance GHasCtor n l d => GHasCtorIf 'True n l r d where
+  gMatchCtorIf (L1 x) = gMatchCtor @n x
+  gMatchCtorIf (R1 _) = Nothing
+  gBuildCtorIf d      = L1 (gBuildCtor @n d)
+
+instance GHasCtor n r d => GHasCtorIf 'False n l r d where
+  gMatchCtorIf (L1 _) = Nothing
+  gMatchCtorIf (R1 x) = gMatchCtor @n x
+  gBuildCtorIf d      = R1 (gBuildCtor @n d)
+```
+
+<Callout type="info">
+This two-class split — a dispatch class that computes a `Bool` and a helper class indexed by it — is the
+standard idiom for branching an instance on a type-level condition. Trying to put the branch directly in
+`GHasCtor (l :+: r)` would need overlapping instances on the *contents* of `l` and `r`; routing through
+`NameInRep` makes the choice a single deterministic `'True`/`'False` instead.
+</Callout>
+
+```mermaid
+flowchart TD
+  Start["GHasCtor \"StartRegistration\" (Rep UserCmd) d"]
+  Start --> D["M1 D: pass through"]
+  D --> Sum1{":+: — NameInRep on left?"}
+  Sum1 -- "True: StartRegistration is left" --> L["recurse L1"]
+  Sum1 -- "False" --> R["recurse R1"]
+  L --> Leaf["M1 C ('MetaCons \"StartRegistration\" ...)<br/>(M1 S _ (K1 _ StartRegistrationData))"]
+  Leaf --> Pay["d ~ StartRegistrationData"]
+```
+
+## Where this is exercised
+
+`test/Keiki/Generics/THSpec.hs` drives the sum walk through the splices. The `ToyCmd` fixture mixes a
+record-payload arm and a singleton arm:
+
+```haskell
+-- test/Keiki/Generics/THSpec.hs
+data ToyCmd
+    = DoIt ToyData
+    | NoArgs
+    deriving (Eq, Show, Generic)
+```
+
+The `inCtorDoIt` assertions hit the record-payload `GHasCtor` instance, and `inCtorNoArgs` hits the
+no-payload one. The rejection test proves the sum dispatch returns to the correct arm — `icMatch
+inCtorDoIt NoArgs` finds the wrong constructor and yields `Nothing`:
+
+```haskell
+-- test/Keiki/Generics/THSpec.hs
+it "rejects a non-DoIt value" $
+    isNothing (icMatch inCtorDoIt NoArgs) `shouldBe` True
+```
+
+and the round-trip test exercises `gBuildCtor` rebuilding the arm from a populated `RegFile`:
+
+```haskell
+-- test/Keiki/Generics/THSpec.hs
+it "rebuilds DoIt from a populated RegFile" $
+    let payload = ToyData 17 23
+        rf = case icMatch inCtorDoIt (DoIt payload) of
+            Just r -> r
+            Nothing -> error "set-up icMatch failed"
+     in icBuild inCtorDoIt rf `shouldBe` DoIt payload
+```
+
+With the record walk (02) and the sum walk (03) both in hand, the next chapter reads the Template Haskell
+that picks the constructor names, writes the signatures, and emits `mkInCtorVia` / `mkWireCtorVia` calls
+for every arm of a sum.
+
+Next: [04 — The ctor and wire splices](/docs/keiki/walkthrough/derivations/04-th-ctor-wire-splices).

@@ -1,0 +1,149 @@
+---
+title: "B-presentation views"
+description: "Vertex-indexed projections that expose only the slots live at each control vertex — derived from the complete register file with deriveView."
+---
+
+A keiki (継起) aggregate has two layers of memory.
+
+- The **register file** is the *C-foundation*: complete memory, every slot, all the time. At any
+  given control vertex some of those slots are uninitialised — the order's `cancelledAt` means
+  nothing until the order is cancelled — but the slot is still *there* in the type.
+- A **B-presentation view** is a vertex-indexed projection over that foundation. It exposes **only**
+  the slots that are live at one vertex, and nothing else. At `Confirmed`, the view shows the email
+  and the confirmation time; it does not show — cannot show — the deletion time.
+
+The view is opt-in and strictly downstream of the transducer: nothing in the transducer itself
+references a view. It is a reader's convenience and a type-level safety net, derived from the same
+slot list the machine runs on.
+
+## What `deriveView` emits
+
+From the vertex enum, the register-file slot list, and a per-vertex spec of live slot names,
+`deriveView` emits three things. The splice signature:
+
+```haskell
+deriveView ::
+    Name ->              -- vertex enum, e.g. ''Vertex
+    Name ->              -- register-file slot list, e.g. ''UserRegRegs
+    String ->            -- name of the singletons GADT, e.g. "SUserVertex"
+    String ->            -- name of the View GADT, e.g. "UserView"
+    String ->            -- name of the projection function, e.g. "userView"
+    [(String, [String])] -> -- per-vertex: (vertex ctor name, live slot names)
+    Q [Dec]
+```
+
+The user-registration aggregate (`jitsurei/src/Jitsurei/UserRegistration.hs`) invokes it like this:
+
+```haskell
+$(deriveView ''Vertex ''UserRegRegs
+    "SUserVertex" "UserView" "userView"
+    [ ("PotentialCustomer",    [])
+    , ("RequiresConfirmation", ["email", "confirmCode"])
+    , ("Confirmed",            ["email", "confirmedAt"])
+    , ("Deleted",              ["email", "deletedAt"])
+    ])
+```
+
+<Steps>
+
+<Step>
+### A singletons GADT indexed by the promoted vertex
+
+One constructor per vertex, each carrying the promoted vertex type as its index — `SPotentialCustomer
+:: SUserVertex 'PotentialCustomer`, `SConfirmed :: SUserVertex 'Confirmed`, and so on. This is the
+term-level witness that selects *which* vertex you are projecting at.
+</Step>
+
+<Step>
+### A per-vertex View GADT
+
+One constructor per vertex, carrying only that vertex's live slots as record fields, and indexed by
+the same promoted vertex. `Confirmed`'s live slots are `email` and `confirmedAt`, so:
+
+```haskell
+ConfirmedV :: { cEmail :: Email, cConfirmedAt :: UTCTime } -> UserView 'Confirmed
+```
+
+A vertex with no live slots gets a nullary constructor — `PotentialCustomerV`.
+</Step>
+
+<Step>
+### The projection function
+
+```haskell
+userView :: SUserVertex v -> RegFile rs -> UserView v
+```
+
+It takes the singleton witness and the full register file, reads the live slots via `Core.(!)` with
+`OverloadedLabels` — `regs ! #email` — and packs them into the matching `View` constructor.
+</Step>
+
+</Steps>
+
+## The field-naming rule
+
+Each view field is named `<prefix><CapitalisedSlot>`, where the prefix is derived mechanically from
+the vertex name: take the upper-case letters of the vertex name and lower-case them. In Haskell
+terms, `filter isUpper >>> map toLower`.
+
+<TypeTable
+  type={{
+    RequiresConfirmation: { type: "rc", description: "R + C lower-cased; fields rcEmail, rcConfirmCode" },
+    Confirmed: { type: "c", description: "C lower-cased; fields cEmail, cConfirmedAt" },
+    Deleted: { type: "d", description: "D lower-cased; fields dEmail, dDeletedAt" },
+  }}
+/>
+
+So the `RequiresConfirmation` view is `RequiresConfirmationV { rcEmail, rcConfirmCode }` and the
+`Deleted` view is `DeletedV { dEmail, dDeletedAt }`. The prefix disambiguates field selectors across
+the View GADT's constructors, which all live in one type.
+
+## Two properties worth their weight
+
+### It ignores stale slots — safely
+
+The projection reads only the slots named in that vertex's spec. It never forces a slot outside the
+spec. This matters because the empty register file pre-binds every slot to a deferred `error
+"uninit: <slot>"` thunk — reads of an uninitialised slot crash with a targeted message rather than a
+silent bottom. Because the projection never touches the slots it was not asked for, projecting from a
+register file whose *other* slots are bottom is perfectly safe.
+
+`UserRegistrationViewSpec` (`jitsurei/test/Jitsurei/UserRegistrationViewSpec.hs`) pins this directly.
+It builds a register file where three slots are explicit `error` thunks and only `email` and
+`confirmedAt` are real, then projects at `Confirmed`:
+
+```haskell
+let partial =
+        RCons (Proxy @"email")        "alice@x"
+      $ RCons (Proxy @"confirmCode")  (error "unread: confirmCode")
+      $ RCons (Proxy @"registeredAt") (error "unread: registeredAt")
+      $ RCons (Proxy @"confirmedAt")  (t 100)
+      $ RCons (Proxy @"deletedAt")    (error "unread: deletedAt")
+      $ RNil
+userView SConfirmed partial
+  `shouldBe` ConfirmedV "alice@x" (t 100)
+```
+
+The projection succeeds. It never forced `confirmCode`, `registeredAt`, or `deletedAt`, so their
+bottoms never fire.
+
+### Reading a wrong-vertex field is a compile-time error
+
+Because the `View` GADT is indexed by the promoted vertex, the field selectors are scoped to their
+constructor's index. `cConfirmedAt` only exists on `UserView 'Confirmed`. Ask `userView
+SPotentialCustomer regs` for `cConfirmedAt` and the program does not compile — the index does not
+match. The stale-slot question that would be a runtime bug in a flat record is, here, a type error
+you cannot ship.
+
+<Callout type="info">
+This is the payoff of separating the C-foundation from the B-presentation. The transducer runs on
+the complete register file, so a single edge can write any slot it needs. Readers see the
+vertex-narrowed view, so they can only ask for what is meaningfully there. One memory model, two
+presentations.
+</Callout>
+
+<Cards>
+  <Card title="Registers vs state" href="/docs/keiki/explanation/registers-vs-state" />
+  <Card title="What gets derived" href="/docs/keiki/explanation/what-gets-derived" />
+  <Card title="Core: RegFile and (!)" href="/docs/keiki/reference/core" />
+</Cards>

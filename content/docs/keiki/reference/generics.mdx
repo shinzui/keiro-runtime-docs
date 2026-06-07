@@ -1,0 +1,386 @@
+---
+title: "Generics"
+description: "The Keiki.Generics bridge: GHC-generics builders that turn a plain Haskell data declaration into typed InCtor/WireCtor values, slot-list families, and the sum-walking machinery behind them."
+---
+
+The functions and families on this page live in `Keiki.Generics`. They are the GHC-generics bridge:
+they turn a plain Haskell data declaration — a command sum, an event sum, or a register-payload
+record — into the typed constructors, field tuples, and slot lists the
+[transducer core](/docs/keiki/reference/core) consumes, without ever hand-rolling an `RCons` tower.
+
+A command constructor in the core is an [`InCtor`](/docs/keiki/reference/core) carrying a `[Slot]`
+list; an event constructor is a `WireCtor` carrying a nested-pair field tuple. Both encode the
+constructor's payload shape at the type level. `Keiki.Generics` derives that shape from the payload
+record's `Generic` instance, so the payload `data` declaration is the single source of truth.
+
+<Callout type="info">
+This module is marked **experimental** in its source (the EP-2 follow-up DX spike). The signatures
+on this page are transcribed verbatim from `Keiki.Generics` at keiki 0.1.0.0; treat the
+[Template Haskell layer](/docs/keiki/reference/generics-th) as the higher-level surface that wraps
+these builders into one splice per aggregate.
+</Callout>
+
+<Callout type="warn">
+**Accuracy note.** The shipped module exports more than the original EP-2 design note lists.
+In particular `mkInCtor0`, `mkWireCtor0`, and `RegFieldsOf` are all real exports of
+`Keiki.Generics` at keiki 0.1.0.0 and are documented here. This page describes the *shipped* export
+list, not the design note. The exercising tests live at `test/Keiki/Generics/THSpec.hs`.
+</Callout>
+
+## Input / command builders
+
+These build an `InCtor` — a command constructor whose payload is inverted to a `RegFile` slot list.
+There are three, trading off how much you spell out by hand.
+
+### `mkInCtor`
+
+Build an `InCtor` from an explicit name, a sum-side matcher, and a pack function. The `RegFile`
+inversion is derived from the payload record's `Generic` instance; the payload `data` must derive
+`Generic`.
+
+```haskell
+mkInCtor
+  :: forall ci d ifs.
+     ( Generic d
+     , GRecord (Rep d) ifs
+     , AssembleRegFile ifs
+     , KnownSlotNames ifs
+     )
+  => String
+  -> (ci -> Maybe d)
+  -> (d -> ci)
+  -> InCtor ci ifs
+```
+
+```haskell
+inCtorStart :: InCtor UserCmd
+                      '[ '("email",       Email)
+                       , '("confirmCode", ConfirmationCode)
+                       , '("at",          UTCTime)
+                       ]
+inCtorStart = mkInCtor "StartRegistration"
+                       (\case StartRegistration d -> Just d; _ -> Nothing)
+                       StartRegistration
+```
+
+The slot list `ifs` is inferred from `StartRegistrationData`'s `Generic` field metadata; you write
+neither the `RegFile` tower nor the slot literals.
+
+### `mkInCtor0`
+
+Build an `InCtor` for a no-payload (singleton) command constructor. There is no payload record, so
+the slot list is `'[]`; the match compares against the named singleton via `Eq`, and the build
+ignores the empty `RegFile`.
+
+```haskell
+mkInCtor0 :: forall ci. Eq ci => String -> ci -> InCtor ci '[]
+```
+
+```haskell
+inCtorContinue :: InCtor UserCmd '[]
+inCtorContinue = mkInCtor0 "Continue" Continue
+```
+
+The `Eq ci` constraint is the only extra requirement over `mkInCtor`; command sums in this codebase
+already derive `Eq`, so it is not a new burden.
+
+### `mkInCtorVia`
+
+Build an `InCtor` from the constructor *name alone*, supplied as a single type application. Both the
+sum-side match/wrap pair and the record-side `RegFile` inversion are derived: the payload type `d` is
+resolved by walking `ci`'s `Generic` representation for the named constructor (see
+[`GHasCtor`](#ghasctor-nameinrep-ghasctorif) below).
+
+```haskell
+mkInCtorVia
+  :: forall (name :: Symbol) ci d ifs.
+     ( KnownSymbol name
+     , Generic ci
+     , GHasCtor name (Rep ci) d
+     , Generic d
+     , GRecord (Rep d) ifs
+     , AssembleRegFile ifs
+     , KnownSlotNames ifs
+     )
+  => InCtor ci ifs
+```
+
+```haskell
+inCtorStart    :: InCtor UserCmd (RegFieldsOf StartRegistrationData)
+inCtorStart     = mkInCtorVia @"StartRegistration"
+
+inCtorContinue :: InCtor UserCmd '[]
+inCtorContinue  = mkInCtorVia @"Continue"
+```
+
+For a no-payload constructor (e.g. `Continue`) the inferred slot list is `'[]`. This is the builder
+the [Template Haskell layer](/docs/keiki/reference/generics-th) emits for every record-payload
+command constructor.
+
+## Wire / event builders
+
+These build a `WireCtor` — an event constructor whose payload is inverted to the nested-pair field
+tuple that `WireCtor` and `OutFields` carry. A record with fields `f1, f2, f3` corresponds to the
+tuple `(f1, (f2, (f3, ())))`.
+
+### `mkWireCtor`
+
+Build a `WireCtor` from an explicit name, a sum-side matcher, and a pack function. The nested-pair
+conversion is derived from the payload record's `Generic` instance.
+
+```haskell
+mkWireCtor
+  :: forall co d fs.
+     ( Generic d
+     , GTuple (Rep d) fs
+     )
+  => String
+  -> (co -> Maybe d)
+  -> (d -> co)
+  -> WireCtor co fs
+```
+
+```haskell
+wireRegistrationStarted
+  :: WireCtor UserEvent (FieldsOf RegistrationStartedData)
+wireRegistrationStarted = mkWireCtor "RegistrationStarted"
+  (\case RegistrationStarted d -> Just d; _ -> Nothing)
+  RegistrationStarted
+```
+
+### `mkWireCtor0`
+
+Build a `WireCtor` for a no-payload (singleton) event constructor — the event-side twin of
+`mkInCtor0`. Its field tuple is `()` (a payload-free event carries nothing), matching `OFNil`.
+
+```haskell
+mkWireCtor0 :: forall co. Eq co => String -> co -> WireCtor co ()
+```
+
+```haskell
+wireOpened :: WireCtor DoorEvent ()
+wireOpened = mkWireCtor0 "Opened" Opened
+```
+
+The `Eq co` constraint mirrors `mkInCtor0`'s `Eq ci`.
+
+### `mkWireCtorVia`
+
+Build a `WireCtor` from the constructor name alone. Mirrors `mkInCtorVia` on the wire side: the
+nested-pair field tuple comes from the inferred payload's `Generic` field metadata.
+
+```haskell
+mkWireCtorVia
+  :: forall (name :: Symbol) co d fs.
+     ( KnownSymbol name
+     , Generic co
+     , GHasCtor name (Rep co) d
+     , Generic d
+     , GTuple (Rep d) fs
+     )
+  => WireCtor co fs
+```
+
+```haskell
+wireRegistrationStarted
+  :: WireCtor UserEvent (FieldsOf RegistrationStartedData)
+wireRegistrationStarted = mkWireCtorVia @"RegistrationStarted"
+```
+
+## Field families
+
+Two type families turn a payload record type into the shape its constructor carries, so a signature
+can name the record once instead of spelling the tuple or slot literals.
+
+### `FieldsOf` / `FieldsOfRep`
+
+`FieldsOf` resolves a record type to its nested-pair field tuple — the shape a `WireCtor` carries.
+
+```haskell
+type FieldsOf d = FieldsOfRep (Rep d)
+```
+
+With this alias, `WireCtor UserEvent (FieldsOf RegistrationStartedData)` replaces the hand-written
+`WireCtor UserEvent (Email, (ConfirmationCode, (UTCTime, ())))`.
+
+`FieldsOfRep` is the underlying family over a `Generic` `Rep`:
+
+```haskell
+type family FieldsOfRep (rep :: Type -> Type) :: Type where
+  FieldsOfRep (M1 D _ inner)         = FieldsOfRep inner
+  FieldsOfRep (M1 C _ inner)         = FieldsOfRep inner
+  FieldsOfRep (M1 S _ (K1 _ t))      = (t, ())
+  FieldsOfRep U1                     = ()
+  FieldsOfRep (l :*: r)              = ConcatT (FieldsOfRep l) (FieldsOfRep r)
+```
+
+### `RegFieldsOf` / `RegFieldsOfRep`
+
+`RegFieldsOf` resolves a record type to its `RegFile` slot list — the `[Slot]` an `InCtor` carries.
+It mirrors `FieldsOf` but emits `[Slot]` instead of a nested-pair tuple, preserving the selector name
+on every field.
+
+```haskell
+type RegFieldsOf d = RegFieldsOfRep (Rep d)
+```
+
+With this alias, the signature reads naturally:
+
+```haskell
+inCtorStart :: InCtor UserCmd (RegFieldsOf StartRegistrationData)
+```
+
+which replaces the hand-written `InCtor UserCmd '[ '("email", Email), '("confirmCode",
+ConfirmationCode), '("at", UTCTime) ]`. The underlying family preserves the selector name on each
+slot:
+
+```haskell
+type family RegFieldsOfRep (rep :: Type -> Type) :: [Slot] where
+  RegFieldsOfRep (M1 D _ inner) = RegFieldsOfRep inner
+  RegFieldsOfRep (M1 C _ inner) = RegFieldsOfRep inner
+  RegFieldsOfRep (M1 S ('MetaSel ('Just n) _ _ _) (K1 _ t))
+                                = '[ '(n, t) ]
+  RegFieldsOfRep U1             = '[]
+  RegFieldsOfRep (l :*: r)      = Append (RegFieldsOfRep l)
+                                         (RegFieldsOfRep r)
+```
+
+## The machinery
+
+The builders above are thin wrappers over a small set of classes and type families that walk a
+`Generic` `Rep` in two directions. You rarely name these directly, but they appear in builder
+signatures as constraints, and understanding them explains the inference.
+
+### `GRecord` — Rep ↔ typed RegFile
+
+Walks a `Generic` record representation to and from a `RegFile`. The slot list `ifs` is derived from
+the record's field metadata: every named selector `M1 S ('MetaSel ('Just name) ...) (K1 _ t)`
+contributes one slot `'(name, t)`; products concatenate via [`Append`](#append-appendregfile-splitregfile),
+and the `gFromRegFile` direction splits via [`SplitRegFile`](#append-appendregfile-splitregfile). The
+functional dependency `rep -> ifs` pins the slot list uniquely from the representation.
+
+```haskell
+class GRecord (rep :: Type -> Type) (ifs :: [Slot]) | rep -> ifs where
+  gToRegFile   :: rep a -> RegFile ifs
+  gFromRegFile :: RegFile ifs -> rep a
+```
+
+### `GTuple` — Rep ↔ nested-pair tuple
+
+The event-side analogue of `GRecord`: it walks a `Generic` record representation to and from the
+nested-pair tuple shape `WireCtor` / `OutFields` carry. A record with fields `f1, f2, f3` maps to
+`(f1, (f2, (f3, ())))`. Products concatenate via [`ConcatT`](#concatt-splitt) and split via
+[`SplitT`](#concatt-splitt). The functional dependency `rep -> fs` pins the tuple.
+
+```haskell
+class GTuple (rep :: Type -> Type) (fs :: Type) | rep -> fs where
+  gToTuple   :: rep a -> fs
+  gFromTuple :: fs -> rep a
+```
+
+### `GHasCtor` / `NameInRep` / `GHasCtorIf`
+
+Together these resolve a *named* constructor's payload by walking a sum `:+:` representation — the
+machinery behind `mkInCtorVia` and `mkWireCtorVia`.
+
+`GHasCtor` walks a `Generic` representation looking for a constructor named `name` and resolves its
+payload type `d`. Two payload shapes are supported: a single-field constructor wrapping a record value
+of type `d`, and a no-payload constructor where `d ~ ()`. The functional dependency `name rep -> d`
+pins the payload uniquely.
+
+```haskell
+class GHasCtor (name :: Symbol) (rep :: Type -> Type) (d :: Type)
+              | name rep -> d where
+  gMatchCtor :: rep a -> Maybe d
+  gBuildCtor :: d -> rep a
+```
+
+`NameInRep` is the type-level predicate that decides which side of a `:+:` to descend: does the
+constructor named `n` appear anywhere in representation `rep`?
+
+```haskell
+type family NameInRep (n :: Symbol) (rep :: Type -> Type) :: Bool where
+  NameInRep n (M1 D _ inner)              = NameInRep n inner
+  NameInRep n (l :+: r)                   = NameInRep n l || NameInRep n r
+  NameInRep n (M1 C ('MetaCons n _ _) _)  = 'True
+  NameInRep _ _                           = 'False
+```
+
+`GHasCtorIf` is the dispatch helper: given the `NameInRep` answer `b`, it reduces a `GHasCtor` on
+`l :+: r` to a `GHasCtor` on whichever side actually contains the named constructor.
+
+```haskell
+class GHasCtorIf
+        (b :: Bool)
+        (n :: Symbol)
+        (l :: Type -> Type)
+        (r :: Type -> Type)
+        (d :: Type)
+      | b n l r -> d where
+  gMatchCtorIf :: (l :+: r) a -> Maybe d
+  gBuildCtorIf :: d -> (l :+: r) a
+```
+
+### `EmptyRegFile`
+
+Derives an initial `RegFile` for any slot list, where every slot is pre-bound to a deferred error
+tagged with the slot's name. A read of an uninitialized slot then crashes with a targeted
+`error "uninit: <name>"` message instead of a silent bottom.
+
+```haskell
+class EmptyRegFile (rs :: [Slot]) where
+  emptyRegFile :: RegFile rs
+```
+
+### `Append` / `appendRegFile` / `SplitRegFile`
+
+The slot-list plumbing `GRecord` uses to handle product types.
+
+`Append` is the type-level append for two slot lists; `appendRegFile` is its value-level counterpart
+over register files:
+
+```haskell
+type family Append (xs :: [Slot]) (ys :: [Slot]) :: [Slot] where
+  Append '[]       ys = ys
+  Append (x ': xs) ys = x ': Append xs ys
+
+appendRegFile :: RegFile ls -> RegFile rs -> RegFile (Append ls rs)
+```
+
+`SplitRegFile` is the inverse — it splits a register file at the boundary between two slot lists, so
+`gFromRegFile` can recurse into each half of a product:
+
+```haskell
+class SplitRegFile (ls :: [Slot]) (rs :: [Slot]) where
+  splitRegFile :: RegFile (Append ls rs) -> (RegFile ls, RegFile rs)
+```
+
+### `ConcatT` / `SplitT`
+
+The tuple plumbing `GTuple` uses, dual to `Append` / `SplitRegFile` on the wire side.
+
+`ConcatT` concatenates two nested-pair tuples at the type level; for example
+`ConcatT (f1, (f2, ())) (f3, ())` reduces to `(f1, (f2, (f3, ())))`:
+
+```haskell
+type family ConcatT (a :: Type) (b :: Type) :: Type where
+  ConcatT ()       b = b
+  ConcatT (x, xs)  b = (x, ConcatT xs b)
+```
+
+`SplitT` carries both directions — `splitT` splits a concatenated tuple back into its halves, and
+`appendT` is the value-level append:
+
+```haskell
+class SplitT (a :: Type) (b :: Type) where
+  splitT  :: ConcatT a b -> (a, b)
+  appendT :: a -> b -> ConcatT a b
+```
+
+## See also
+
+- [Generics (Template Haskell)](/docs/keiki/reference/generics-th) — the compile-time splices that
+  emit `inCtor`/`inp`/`is`/`wire` helpers for a whole aggregate from these builders.
+- [Core](/docs/keiki/reference/core) — `InCtor`, `WireCtor`, `RegFile`, `Slot`, and `OutFields`.
+- [The SymTransducer](/docs/keiki/explanation/the-symtransducer) — how these constructors plug into
+  the machine.

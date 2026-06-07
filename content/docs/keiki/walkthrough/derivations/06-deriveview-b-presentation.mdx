@@ -1,0 +1,291 @@
+---
+title: "06 — deriveView and B-presentation"
+description: "The multi-phase deriveView splice: reifying the vertex enum and slot list, the five validations, and the codegen of a singletons GADT, a per-vertex View GADT, and the projection function."
+---
+
+The constructor and wire splices from the last two chapters plumb the *command* and *event* alphabets.
+`deriveView` plumbs a third thing: a **per-vertex projection** of the shared register file. For each
+control vertex it generates a `View` constructor that exposes only the slots that vertex actually uses
+— the "live" slots — so the type system can stop a reader from asking the `PotentialCustomer` view for
+a `confirmedAt` field that does not exist there. This is the *B-presentation*. We read the whole splice
+in `keiki/src/Keiki/Generics/TH.hs`.
+
+## The splice signature
+
+`deriveView` takes the vertex enum, the slot list, three *string* names for the declarations it will
+mint, and a per-vertex spec mapping each vertex to its live slots:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs
+deriveView ::
+    -- | vertex enum, e.g. @''Vertex@
+    Name ->
+    -- | register-file slot list, e.g. @''UserRegRegs@
+    Name ->
+    -- | name of the singletons GADT to generate, e.g. @"SUserVertex"@
+    String ->
+    -- | name of the View GADT, e.g. @"UserView"@
+    String ->
+    -- | name of the projection function, e.g. @"userView"@
+    String ->
+    -- | per-vertex spec: (vertex constructor name, slots live in that vertex)
+    [(String, [String])] ->
+    Q [Dec]
+```
+
+The body runs in four phases. The first two *reify*, the third *validates*, the fourth *generates*.
+
+## Phase 1–2: reify the vertex enum and the slot list
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs — deriveView, phases 1–2
+-- Phase 1: reify the vertex enum.
+ctors <- reifyCtors vertexName "deriveView"
+let vertexCtorNames = concatMap conNames ctors
+    vertexCtorByBase =
+        [(nameBase n, n) | n <- vertexCtorNames]
+-- Phase 2: reify the slot list.
+slotPairs <- reifySlotList regsName
+let slotNamesInRegs = map fst slotPairs
+```
+
+The vertex enum is an ordinary `data` declaration, so `reifyCtors` recovers its constructors. The slot
+list is a *type synonym* whose right-hand side is a promoted `[Slot]` list, so it needs its own walker,
+`reifySlotList`. That walker descends the promoted list structurally, matching `PromotedConsT` /
+`PromotedNilT` at the list level and a `PromotedTupleT 2` over a `StrTyLit` name plus a slot type at
+each cell:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs — reifySlotList (the per-cell match)
+walkPair (AppT (AppT (PromotedTupleT 2) (LitT (StrTyLit name))) ty) =
+    pure (name, ty)
+```
+
+The pair it returns, `(slotName, slotType)`, is what later codegen reaches into to recover the *type*
+of each live slot for the View GADT's record fields.
+
+## Phase 3: the five validations
+
+Before generating anything, `deriveView` runs three validation functions that together perform five
+distinct checks. They all `fail` in `Q`, so a bad spec stops the build with a precise message.
+
+<Steps>
+
+<Step>
+**Spec coverage — no duplicates.** `validateSpecCoverage` first rejects a vertex named more than once
+in the spec.
+</Step>
+
+<Step>
+**Spec coverage — no missing vertices.** The spec must list *every* vertex constructor; a missing one
+aborts ("spec is missing constructors of …").
+</Step>
+
+<Step>
+**Spec coverage — no extra vertices.** Symmetrically, a spec name that is not a constructor of the
+vertex enum aborts ("spec names constructors not in …").
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs — validateSpecCoverage (the three offender lists)
+let vertexNames = map nameBase vertexCtorNames
+    specNames = map fst spec
+    duplicates = [n | (n : _ : _) <- group (sort specNames)]
+    missing = vertexNames \\ specNames
+    extras = specNames \\ vertexNames
+```
+</Step>
+
+<Step>
+**Slot validity.** `validateSpecSlots` checks, per spec entry, that no slot is listed twice and that
+every named slot actually exists in the register-file slot list — otherwise "names slot(s) … which are
+not slots of … ; known slots: …".
+</Step>
+
+<Step>
+**Prefix uniqueness.** `validatePrefixUniqueness` ensures the per-vertex field-name prefixes are
+pairwise distinct, so the generated View GADT has no field-name collisions across constructors. We meet
+that prefix function next.
+</Step>
+
+</Steps>
+
+### The field-naming rule
+
+Two vertices that produced the same field prefix would clash, so the prefix function is load-bearing.
+It keeps only the upper-case letters of the vertex name and lower-cases them:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs
+vertexFieldPrefix :: String -> String
+vertexFieldPrefix = map toLower . filter isUpper
+```
+
+So `PotentialCustomer` becomes the prefix `pc`, `RequiresConfirmation` becomes `rc`, `Confirmed`
+becomes `c`, and `Deleted` becomes `d`. A field name is then the prefix followed by the slot name with
+its first letter upper-cased:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs
+vertexFieldName :: String -> String -> String
+vertexFieldName prefix slotName = case slotName of
+    [] -> prefix
+    (c : cs) -> prefix <> (toUpper c : cs)
+```
+
+That is why the `Confirmed` vertex's `email` slot surfaces as `cEmail` and its `confirmedAt` slot as
+`cConfirmedAt`. If two distinct vertices reduce to the same prefix, check 5 catches it at compile time
+("produce the same field-name prefix … ; rename one").
+
+## Phase 4: codegen
+
+The final phase emits eight declarations, in three groups.
+
+<Tabs items={["(a) singletons GADT", "(b) View GADT", "(c) projection"]}>
+
+<Tab value="(a) singletons GADT">
+A singletons GADT carries one nullary constructor per vertex, each indexed by the *promoted* vertex
+type. For `UserRegistration` this yields `SUserVertex` with `SPotentialCustomer :: SUserVertex
+'PotentialCustomer`, and so on, plus standalone `Show`/`Eq`:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs — (a) Singletons GADT
+let sCtors =
+        [ GadtC
+            [mkName ("S" <> vName)]
+            []
+            (AppT (ConT sVertexN) (PromotedT (vertexCtor vName)))
+        | (vName, _) <- spec
+        ]
+```
+
+The singleton is how a caller *names* a vertex at the value level while pinning it at the type level —
+`SConfirmed` selects the `Confirmed`-indexed view and nothing else.
+</Tab>
+
+<Tab value="(b) View GADT">
+The View GADT has one constructor per vertex too, but each carries the live slots as record fields. A
+vertex with no live slots gets a plain nullary `GadtC`; a vertex with slots gets a `RecGadtC` whose
+fields are `(vertexFieldName prefix s, lazyBang, slotType s)`:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs — (b) View GADT, per-ctor
+mkViewCtor (vName, slots) =
+    let viewCtorN = mkName (vName <> "V")
+        resultT = AppT (ConT viewN) (PromotedT (vertexCtor vName))
+        prefix = vertexFieldPrefix vName
+     in case slots of
+            [] -> GadtC [viewCtorN] [] resultT
+            _ ->
+                RecGadtC
+                    [viewCtorN]
+                    [ ( mkName (vertexFieldName prefix s)
+                      , lazyBang
+                      , slotType s
+                      )
+                    | s <- slots
+                    ]
+                    resultT
+```
+
+The constructor name is the vertex name with a `V` suffix — `PotentialCustomerV`, `ConfirmedV` — and it
+is indexed by the same promoted vertex, so the index ties a `UserView 'Confirmed` to exactly the
+`ConfirmedV` constructor's fields.
+</Tab>
+
+<Tab value="(c) projection">
+The projection function reads the named slots out of the register file. Its type is
+`SVertex v -> RegFile rs -> View v`, and each clause matches on the singleton, then for a vertex with
+live slots reads each slot via `(!)` on an `OverloadedLabels` name and folds them onto the View
+constructor:
+
+```haskell
+-- keiki/src/Keiki/Generics/TH.hs — (c) projection clause body
+let reads_ =
+        [ AppE
+            ( AppE
+                (VarE '(!))
+                (VarE regsVar)
+            )
+            (LabelE s)
+        | s <- slots
+        ]
+ in (VarP regsVar, foldl AppE (ConE viewCtorN) reads_)
+```
+
+A slot-free vertex matches `WildP` on the register file and returns the nullary constructor directly —
+it never touches the register file.
+</Tab>
+
+</Tabs>
+
+The eight declarations returned, in order, are: the singletons `DataD`, its `Show` and `Eq`; the View
+`DataD`, its `Show` and `Eq`; and the projection's `SigD` and `FunD`.
+
+## Anchor: the projection in action
+
+The splice invocation in `Jitsurei.UserRegistration` names its three declarations and maps each vertex
+to its live slots:
+
+```haskell
+-- keiki/jitsurei/src/Jitsurei/UserRegistration.hs
+$(deriveView ''Vertex ''UserRegRegs
+    "SUserVertex" "UserView" "userView"
+    [ ("PotentialCustomer",    [])
+    , ("RequiresConfirmation", ["email", "confirmCode"])
+    , ("Confirmed",            ["email", "confirmedAt"])
+    , ("Deleted",              ["email", "deletedAt"])
+    ])
+```
+
+`UserRegistrationViewSpec` then confirms the generated projection behaves exactly as the naming and
+liveness rules predict. The empty vertex projects to a nullary constructor:
+
+```haskell
+-- keiki/jitsurei/test/Jitsurei/UserRegistrationViewSpec.hs
+it "projects PotentialCustomer to the empty PotentialCustomerV" $
+  userView SPotentialCustomer regs `shouldBe` PotentialCustomerV
+```
+
+A vertex with live slots projects to a record whose selectors follow the `<prefix><CapitalisedSlot>`
+rule (`cEmail`, `cConfirmedAt`):
+
+```haskell
+-- keiki/jitsurei/test/Jitsurei/UserRegistrationViewSpec.hs
+it "projects Confirmed to ConfirmedV with email + confirmedAt" $
+  userView SConfirmed regs
+    `shouldBe` ConfirmedV
+                 { cEmail       = "alice@x"
+                 , cConfirmedAt = t 100
+                 }
+```
+
+And the liveness guarantee is more than documentation — the projection only reads the slots named in
+the spec. The test binds the *unread* slots to bottom and shows the projection still succeeds:
+
+```haskell
+-- keiki/jitsurei/test/Jitsurei/UserRegistrationViewSpec.hs
+it "ignores slots not named in the spec" $ do
+  -- Confirmed's spec is ["email", "confirmedAt"]; the projection
+  -- should not read registeredAt or deletedAt, so binding those
+  -- two slots to bottom must not crash the projection.
+  let partial =
+          RCons (Proxy @"email")        "alice@x"
+        $ RCons (Proxy @"confirmCode")  (error "unread: confirmCode")
+        $ RCons (Proxy @"registeredAt") (error "unread: registeredAt")
+        $ RCons (Proxy @"confirmedAt")  (t 100)
+        $ RCons (Proxy @"deletedAt")    (error "unread: deletedAt")
+        $ RNil
+  userView SConfirmed partial
+    `shouldBe` ConfirmedV "alice@x" (t 100)
+```
+
+<Callout type="info">
+The B-view is **opt-in and downstream** of the transducer: nothing in `userReg` references `userView`.
+It is a presentation layer you reach for when a reader (a UI, a generated document) wants a
+vertex-shaped projection of the register file, not a part of the step semantics.
+</Callout>
+
+---
+
+Previous: [05 — Zero-enumeration and the fused splice](/docs/keiki/walkthrough/derivations/05-zero-enumeration-and-fused) ·
+Next: [07 — The Decider façade](/docs/keiki/walkthrough/derivations/07-decider-facade)

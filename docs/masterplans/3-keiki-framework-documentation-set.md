@@ -170,7 +170,7 @@ phase — the explicit lesson recorded in MasterPlan #2's Surprises & Discoverie
 |---|-------|------|-----------|-----------|-------|--------|
 | 20 | Keiki foundation: theory, getting started, and the worked-example spine | docs/plans/20-keiki-foundation-theory-getting-started-and-the-worked-example-spine.md | — | — | 1 | Complete |
 | 21 | Keiki transducer core and authoring aggregates | docs/plans/21-keiki-transducer-core-and-authoring-aggregates.md | EP-20 | — | 2 | Complete |
-| 22 | Keiki derivations: decider, acceptors, projections, and generics | docs/plans/22-keiki-derivations-decider-acceptors-projections-and-generics.md | EP-20 | EP-21 | 2 | Not Started |
+| 22 | Keiki derivations: decider, acceptors, projections, and generics | docs/plans/22-keiki-derivations-decider-acceptors-projections-and-generics.md | EP-20 | EP-21 | 2 | Complete |
 | 23 | Keiki composition: process managers, sagas, and choreography | docs/plans/23-keiki-composition-process-managers-sagas-and-choreography.md | EP-20 | EP-21, EP-22 | 2 | Not Started |
 | 24 | Keiki symbolic analysis, build-time validation, and diagnostics | docs/plans/24-keiki-symbolic-analysis-build-time-validation-and-diagnostics.md | EP-20 | EP-21 | 2 | Not Started |
 | 25 | Keiki rendering, diagrams, and JSON codecs | docs/plans/25-keiki-rendering-diagrams-and-json-codecs.md | EP-20 | EP-21, EP-22 | 2 | Not Started |
@@ -380,8 +380,8 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 - [x] EP-20: jitsurei spine module map + `docs/keiki-source-sync.md` + walkthrough hub + conventions fixed.
 - [x] EP-21: Core + builder explanation + reference (Core, Builder, Operators) authored.
 - [x] EP-21: Core + builder how-tos + `walkthrough/core-and-builder/` tour authored.
-- [ ] EP-22: Derivations explanation + reference (Decider, Acceptor, Generics, Generics.TH, Shape) authored.
-- [ ] EP-22: Derivations how-tos + `walkthrough/derivations/` tour authored.
+- [x] EP-22: Derivations explanation + reference (Decider, Acceptor, Generics, Generics.TH, Shape) authored.
+- [x] EP-22: Derivations how-tos + `walkthrough/derivations/` tour authored.
 - [ ] EP-23: Composition explanation + reference (Composition, Profunctor) authored.
 - [ ] EP-23: Composition how-tos + `walkthrough/composition/` tour authored (process-manager emphasis).
 - [ ] EP-24: Symbolic/validation explanation + reference (Symbolic, validate, step-failure) authored.

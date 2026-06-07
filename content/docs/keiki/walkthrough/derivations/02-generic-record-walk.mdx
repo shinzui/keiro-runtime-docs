@@ -1,0 +1,238 @@
+---
+title: "02 — The generic record walk"
+description: "GRecord and GTuple, and the RegFieldsOf / FieldsOf type families that walk a payload record's Generic Rep into a slot list or a nested-pair tuple."
+---
+
+This chapter reads the bottom of the derivation stack: the generic walk over a *payload record*. Every
+command ctor and every event wire derivation eventually has to turn a record like
+`StartRegistrationData { email, confirmCode, at }` into one of two shapes — a `[Slot]` list for the
+command side, or a nested-pair tuple for the event side. The code that does it lives in
+`src/Keiki/Generics.hs`. Read [01 — The input declaration](/docs/keiki/walkthrough/derivations/01-symtransducer-and-regfile)
+first; this chapter consumes the payload records introduced there.
+
+## The two target shapes
+
+A record's fields are the same information either way, but the two consumers want different
+representations:
+
+<TypeTable
+  type={{
+    "RegFieldsOf d": {
+      description: "Command side. A promoted [Slot] list — each field becomes a '(name, type) pair, preserving the selector name. Feeds InCtor's RegFile.",
+      type: "[Slot]",
+    },
+    "FieldsOf d": {
+      description: "Event side. A right-nested pair tuple (t1, (t2, (t3, ()))) — names dropped, types only. Feeds WireCtor's OutFields.",
+      type: "Type",
+    },
+  }}
+/>
+
+The command side keeps field names because a `RegFile` is name-indexed; the event side drops them
+because `OutFields` is positional. Two type families, one per shape, both driven by the same `Rep` walk.
+
+## `GRecord`: record Rep ↔ RegFile
+
+`GRecord` is the value-level walk between a record's `Generic` representation and a `RegFile`. Its class
+header pins the slot list as a functional dependency of the representation:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- | Walk a 'GHC.Generics' record representation to/from a 'RegFile'.
+-- Slot lists are derived from the record's field metadata: every
+-- selector @M1 S ('MetaSel ('Just name) ...)@ contributes a slot
+-- @'(name, fieldType)@; products concatenate.
+class GRecord (rep :: Type -> Type) (ifs :: [Slot]) | rep -> ifs where
+  gToRegFile   :: rep a -> RegFile ifs
+  gFromRegFile :: RegFile ifs -> rep a
+```
+
+The instances are a textbook generic walk — one per `Rep` shape. The metadata wrappers pass straight
+through:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- M1 D wrapper (data type metadata): pass through.
+instance GRecord inner ifs => GRecord (M1 D meta inner) ifs where
+  gToRegFile (M1 r) = gToRegFile r
+  gFromRegFile rf   = M1 (gFromRegFile rf)
+
+-- M1 C wrapper (constructor metadata): pass through.
+instance GRecord inner ifs => GRecord (M1 C meta inner) ifs where
+  gToRegFile (M1 r) = gToRegFile r
+  gFromRegFile rf   = M1 (gFromRegFile rf)
+```
+
+The interesting instance is the **named selector**: a single field with a `'MetaSel ('Just name)`
+contributes exactly one slot, and the selector's `Symbol` becomes the slot name:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- Named selector with a leaf field: one slot.
+instance KnownSymbol name
+      => GRecord (M1 S ('MetaSel ('Just name) su ss ds) (K1 r t))
+                 '[ '(name, t) ] where
+  gToRegFile (M1 (K1 v))     = RCons (Proxy @name) v RNil
+  gFromRegFile (RCons _ v _) = M1 (K1 v)
+```
+
+The `KnownSymbol name` constraint is what lets `gToRegFile` materialise the `Proxy @name` carried in the
+`RCons`. A no-arg constructor maps to the empty slot list, and a **product** concatenates the two sides'
+slot lists:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- No-arg constructor: empty slot list.
+instance GRecord U1 '[] where
+  gToRegFile U1     = RNil
+  gFromRegFile RNil = U1
+
+-- Product: concatenate slot lists.
+instance ( GRecord l ls
+         , GRecord r rs
+         , Append ls rs ~ ifs
+         , SplitRegFile ls rs
+         ) => GRecord (l :*: r) ifs where
+  gToRegFile (a :*: b) = appendRegFile (gToRegFile a) (gToRegFile b)
+  gFromRegFile rf      = case splitRegFile @ls @rs rf of
+    (lrf, rrf) -> gFromRegFile lrf :*: gFromRegFile rrf
+```
+
+The product instance needs to go *both* directions. Forward (`gToRegFile`) is easy — append the two
+sub-`RegFile`s with `appendRegFile`. Backward (`gFromRegFile`) is the subtle half: given one combined
+`RegFile (Append ls rs)`, it has to split it back at the `ls`/`rs` boundary so each sub-walk gets exactly
+its own slots. That is what the `SplitRegFile` class does:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- | Split a register file at the boundary between two slot lists.
+class SplitRegFile (ls :: [Slot]) (rs :: [Slot]) where
+  splitRegFile :: RegFile (Append ls rs) -> (RegFile ls, RegFile rs)
+
+instance SplitRegFile '[] rs where
+  splitRegFile rf = (RNil, rf)
+
+instance SplitRegFile ls rs => SplitRegFile ('(s, t) ': ls) rs where
+  splitRegFile (RCons p v rest) =
+    case splitRegFile @ls @rs rest of
+      (lrf, rrf) -> (RCons p v lrf, rrf)
+```
+
+It peels one cons off the left for each slot in `ls`, then hands the remainder to the right. `Append`
+itself is the obvious type-level append over `[Slot]`, with `appendRegFile` as its value-level mirror.
+
+## `GTuple`: record Rep ↔ nested-pair tuple
+
+`GTuple` is the same walk for the event side, but the target is a nested-pair tuple instead of a
+`RegFile`, so field names are dropped:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- | Walk a 'GHC.Generics' record representation to/from the nested-
+-- pair tuple shape that 'WireCtor' / 'OutFields' carry. A record with
+-- fields @f1, f2, f3@ corresponds to the tuple @(f1, (f2, (f3, ())))@.
+class GTuple (rep :: Type -> Type) (fs :: Type) | rep -> fs where
+  gToTuple   :: rep a -> fs
+  gFromTuple :: fs -> rep a
+```
+
+The selector instance is where the divergence shows: it ignores the `'MetaSel` name entirely and emits a
+`(t, ())` cell:
+
+```haskell
+-- src/Keiki/Generics.hs
+instance GTuple (M1 S meta (K1 r t)) (t, ()) where
+  gToTuple (M1 (K1 v)) = (v, ())
+  gFromTuple (v, ())   = M1 (K1 v)
+```
+
+Products concatenate via `ConcatT` / `SplitT` — the type-and-value-level twins of `Append` /
+`SplitRegFile`, specialised to nested-pair tuples. `appendT` is folded into the same `SplitT` class
+because the tuple append needs the recursion structure the split already provides.
+
+## The type families: `RegFieldsOf` and `FieldsOf`
+
+The classes above are the *value*-level walks. The splices in chapters 03–04 need the corresponding
+*types* to write `InCtor` and `WireCtor` signatures, so each walk has a type-family alias that computes
+the target shape without a value in hand.
+
+`RegFieldsOf` resolves a record to its slot list:
+
+```haskell
+-- src/Keiki/Generics.hs
+-- | Resolve a record type to its 'RegFile' slot list. With this
+-- alias, @InCtor UserCmd (RegFieldsOf StartRegistrationData)@
+-- replaces the hand-written @InCtor UserCmd '[ '("email", Email),
+-- '("confirmCode", ConfirmationCode), '("at", UTCTime) ]@.
+type RegFieldsOf d = RegFieldsOfRep (Rep d)
+
+type family RegFieldsOfRep (rep :: Type -> Type) :: [Slot] where
+  RegFieldsOfRep (M1 D _ inner) = RegFieldsOfRep inner
+  RegFieldsOfRep (M1 C _ inner) = RegFieldsOfRep inner
+  RegFieldsOfRep (M1 S ('MetaSel ('Just n) _ _ _) (K1 _ t))
+                                = '[ '(n, t) ]
+  RegFieldsOfRep U1             = '[]
+  RegFieldsOfRep (l :*: r)      = Append (RegFieldsOfRep l)
+                                         (RegFieldsOfRep r)
+```
+
+`FieldsOf` resolves a record to its nested-pair tuple:
+
+```haskell
+-- src/Keiki/Generics.hs
+type FieldsOf d = FieldsOfRep (Rep d)
+
+type family FieldsOfRep (rep :: Type -> Type) :: Type where
+  FieldsOfRep (M1 D _ inner)         = FieldsOfRep inner
+  FieldsOfRep (M1 C _ inner)         = FieldsOfRep inner
+  FieldsOfRep (M1 S _ (K1 _ t))      = (t, ())
+  FieldsOfRep U1                     = ()
+  FieldsOfRep (l :*: r)              = ConcatT (FieldsOfRep l) (FieldsOfRep r)
+```
+
+The two families are structurally identical to the corresponding class instances — `RegFieldsOfRep`
+mirrors `GRecord`, `FieldsOfRep` mirrors `GTuple` — which is the point: the type-family alias and the
+class instance compute *the same shape*, so the signature the splice writes and the value the walk
+produces always agree.
+
+```mermaid
+flowchart LR
+  Rec["StartRegistrationData<br/>{ email, confirmCode, at }"]
+  Rec --> Reg["RegFieldsOf<br/>'[ '(\"email\", Email),<br/>'(\"confirmCode\", ConfirmationCode),<br/>'(\"at\", UTCTime) ]"]
+  Rec --> Tup["FieldsOf<br/>(Email, (ConfirmationCode, (UTCTime, ())))"]
+  Reg --> IC["InCtor's RegFile"]
+  Tup --> WC["WireCtor's OutFields"]
+```
+
+## Where this is exercised
+
+`test/Keiki/Generics/THSpec.hs` exercises the whole walk end to end through the splices. The `ToyData`
+fixture is a two-field record:
+
+```haskell
+-- test/Keiki/Generics/THSpec.hs
+data ToyData = ToyData {x :: Int, y :: Int}
+    deriving (Eq, Show, Generic)
+```
+
+and the spec asserts that matching a `DoIt` value produces a `RegFile` whose slots round-trip — which is
+exactly `GRecord`'s `gToRegFile` followed by an `Index` read:
+
+```haskell
+-- test/Keiki/Generics/THSpec.hs
+it "matches a DoIt value and yields a populated RegFile" $
+    let payload = ToyData 17 23
+        regfile = case icMatch inCtorDoIt (DoIt payload) of
+            Just rf -> rf
+            Nothing -> error "icMatch returned Nothing on DoIt"
+     in (regfile ! #x, regfile ! #y) `shouldBe` (17, 23)
+```
+
+The `(7, ())` literals in the `deriveWireCtorsAll` assertions (e.g.
+`wcBuild wireWidgetMade (7, ()) `shouldBe` WidgetMade (GadgetData 7)`) are the `GTuple` nested-pair shape
+showing through on the event side: a one-field payload's `FieldsOf` is `(Int, ())`.
+
+With both walks in hand, the next chapter reads the layer that resolves *which* constructor of a sum to
+walk in the first place.
+
+Next: [03 — Via-builders and the sum walk](/docs/keiki/walkthrough/derivations/03-via-builders-and-sum-walk).

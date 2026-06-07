@@ -1,0 +1,152 @@
+---
+title: "Read a per-vertex view"
+description: "Author a deriveView spec, project a per-vertex record from a RegFile, and understand the five compile-time rules deriveView enforces."
+---
+
+You want to read an aggregate's state at a given control vertex, but you only want the slots that are
+*live* at that vertex — and you want the type system to stop you from asking the wrong vertex for a
+slot it never sets. `deriveView` generates exactly this: a vertex singletons GADT, a per-vertex
+`View` GADT, and a projection function from a `RegFile` to the right per-vertex record. This guide
+shows how to write the spec, consume the result, and what `deriveView` checks for you.
+
+<Callout type="info">
+  Assumes you have an aggregate with a `Vertex` enum and a register-file slot list. If not, start
+  with [Your first aggregate](/docs/keiki/tutorials/your-first-aggregate). For the design rationale,
+  see the B-presentation views explanation (`explanation/b-presentation-views`, under
+  [Explanation](/docs/keiki/explanation/the-symtransducer)).
+</Callout>
+
+## Goal
+
+Project `userView SConfirmed regs` and get back a `ConfirmedV` record exposing only the slots
+`Confirmed` actually uses, with a compile-time error if you read a field that belongs to a different
+vertex.
+
+## Steps
+
+<Steps>
+
+<Step>
+
+**Write the `deriveView` spec.** The splice takes the vertex enum, the register-file slot list, three
+string names — the singletons GADT, the `View` GADT, and the projection function — and a per-vertex
+spec listing the slots live at each vertex. This is `Jitsurei.UserRegistration`:
+
+```haskell
+$(deriveView ''Vertex ''UserRegRegs
+    "SUserVertex" "UserView" "userView"
+    [ ("PotentialCustomer",    [])
+    , ("RequiresConfirmation", ["email", "confirmCode"])
+    , ("Confirmed",            ["email", "confirmedAt"])
+    , ("Deleted",              ["email", "deletedAt"])
+    ])
+```
+
+This emits the `SUserVertex` singletons GADT (one constructor `S<Vertex>` per vertex), the `UserView`
+GADT (one constructor `<Vertex>V` per vertex carrying the live slots as record fields), and
+`userView :: SUserVertex v -> RegFile UserRegRegs -> UserView v`.
+
+</Step>
+
+<Step>
+
+**Consume it by pattern on the View constructor.** Pass the singleton for the vertex you want plus
+the `RegFile`; pattern-match the resulting `<Vertex>V` record. The field selectors expose only that
+vertex's live slots:
+
+```haskell
+case userView SConfirmed regs of
+  ConfirmedV { cEmail, cConfirmedAt } -> {- … -}
+```
+
+A vertex whose spec list is empty (`PotentialCustomer`) projects to a nullary constructor with no
+fields.
+
+</Step>
+
+</Steps>
+
+## The field-name prefix rule
+
+Each `<Vertex>V` constructor's record fields are prefixed so fields from different vertices never
+collide. The prefix is the vertex name's upper-case letters lower-cased — `filter isUpper >>> map
+toLower` — and the slot name is appended with its first letter upper-cased:
+
+<TypeTable
+  type={{
+    "Confirmed → c":            { type: "cEmail, cConfirmedAt",   description: "one upper-case letter" },
+    "RequiresConfirmation → rc": { type: "rcEmail, rcConfirmCode", description: "two upper-case letters" },
+    "Deleted → d":              { type: "dEmail, dDeletedAt",     description: "one upper-case letter" },
+    "CollectingDocuments → cd":  { type: "cdAppApplicantId, …",    description: "from LoanApplication" },
+  }}
+/>
+
+So `Confirmed`'s `email` slot becomes the field `cEmail`, and `RequiresConfirmation`'s `email`
+becomes `rcEmail` — distinct selectors, no `DuplicateRecordFields` headache across vertices.
+
+## The five compile-time checks
+
+`deriveView` validates the spec against the reified `Vertex` enum and slot list before it generates
+anything. Five things abort the splice, each with a message naming the offender:
+
+1. **Duplicate vertex in the spec** — the same vertex constructor listed more than once.
+2. **Missing vertices** — the spec omits a constructor of the vertex enum. Every vertex must appear
+   exactly once.
+3. **Extra vertices** — the spec names something that is not a constructor of the vertex enum.
+4. **Unknown or duplicated slot** — a spec entry names a slot absent from the register-file slot
+   list, or lists the same slot twice within one vertex.
+5. **Field-prefix collision** — two vertices whose names reduce to the same upper-case-letters prefix
+   (e.g. two vertices both reducing to `rc`), which would clash in the generated `View` GADT. Rename
+   one vertex.
+
+<Callout type="warn">
+  Reading a **wrong-vertex** field is a compile-time *type* error, not a runtime one: the `View` GADT
+  is indexed by the promoted vertex, so `cConfirmedAt` simply does not exist on a `RequiresConfirmationV`
+  value. The projection only reads the slots the vertex's spec lists.
+</Callout>
+
+## Uninitialised slots are safe to project
+
+`emptyRegFile` binds every slot to a deferred `"uninit: <slot>"` error thunk. A per-vertex projection
+reads **only** the slots in that vertex's spec, and the unread slots' thunks are never forced — so
+projecting a vertex whose live slots are populated will not crash even when other slots are bottom.
+`Jitsurei.LoanApplicationViewSpec` asserts exactly this: it builds a `RegFile` where the slots outside
+`Approved`'s spec are `error "unread: …"` thunks, and the projection still succeeds:
+
+```haskell
+let partial =
+        RCons (Proxy @"appApplicantId")     "alice"
+      $ RCons (Proxy @"appRequestedAmount") 250_000
+      $ RCons (Proxy @"appPurpose")         (error "unread: appPurpose")
+      -- … other slots also bound to error thunks …
+      $ RNil
+loanAppView SApproved partial
+  `shouldBe` ApprovedV "alice" 250_000 720 (t 100)
+```
+
+## Verify it worked
+
+Build a fully-populated `RegFile` and project each vertex; the record should carry exactly that
+vertex's live slots:
+
+```haskell
+loanAppView SCollectingDocuments regs
+  `shouldBe` CollectingDocumentsV
+               { cdAppApplicantId     = "alice"
+               , cdAppRequestedAmount = 250_000
+               , cdAppPurpose         = "home"
+               , cdAppIncomeDocCount  = 2
+               , cdAppIdDocCount      = 1
+               }
+```
+
+`jitsurei/test/Jitsurei/LoanApplicationViewSpec.hs` projects all six vertices of `LoanApplication`
+this way and checks the uninitialised-slot safety property above.
+
+## Related
+
+- [Derive aggregate constructors](/docs/keiki/how-to/derive-aggregate-constructors) — the command/event
+  splices that share the `Keiki.Generics.TH` machinery.
+- [`Keiki.Core`](/docs/keiki/reference/core) — `RegFile`, slot lists, and the `!` slot read the
+  projection uses.
+- The splice-level reference is `reference/generics-th` (under [Reference](/docs/keiki/reference)).

@@ -1,0 +1,272 @@
+---
+title: "Generics (Template Haskell)"
+description: "The Keiki.Generics.TH splices: compile-time code generation that retires per-constructor authoring boilerplate, emitting InCtor/inp/is helpers, WireCtor helpers, and per-vertex views."
+---
+
+The splices on this page live in `Keiki.Generics.TH`. Template Haskell (TH) runs at *compile time*
+and emits Haskell source, so a single splice in your module expands into the many top-level
+declarations a hand-written aggregate would otherwise spell out by hand. Each splice is wrapped in
+`$( ... )` at use site and runs during compilation.
+
+Every splice is a thin code-generator over the [`Keiki.Generics`](/docs/keiki/reference/generics)
+builders: it reifies a sum type's constructors with `reify`, dispatches on each constructor's payload
+shape, and emits the matching `mkInCtorVia` / `mkInCtor0` / `mkWireCtorVia` / `mkWireCtor0` call plus
+its signature. The exercising tests live at `test/Keiki/Generics/THSpec.hs`.
+
+<Callout type="info">
+Both the command and event splices read the constructor list of the named sum type via `reify` and
+dispatch on the constructor's payload shape: a zero-arg constructor is a **singleton**; a one-arg
+constructor takes a **record-payload** type. Record-syntax constructors and multi-arg constructors
+are rejected with a precise compile-time error.
+</Callout>
+
+## Command-side splices
+
+These generate, per command constructor, the declarations the keiki DSL needs: an `InCtor` value, an
+`inp` field projection, and an `is` guard predicate.
+
+### `deriveAggregateCtors`
+
+The explicit form: you supply `(constructorName, shortName)` pairs. The short name is appended to the
+`inCtor` / `inp` / `is` prefix.
+
+```haskell
+deriveAggregateCtors :: Name -> Name -> [(String, String)] -> Q [Dec]
+```
+
+The first `Name` is the command sum type, the second is the register-file slot-list type synonym, and
+the list is the per-constructor spec.
+
+```haskell
+$( deriveAggregateCtors ''ToyCmd ''ToyRegs [ ("DoIt", "DoIt"), ("NoArgs", "NoArgs") ] )
+```
+
+**What it emits, per command constructor:**
+
+<Steps>
+<Step>
+For a **record-payload** constructor, three declarations:
+
+- `inCtor<Short> :: InCtor <Cmd> (RegFieldsOf <Pay>)` — defined via
+  [`mkInCtorVia`](/docs/keiki/reference/generics)`@"<Ctor>"`.
+- `inp<Short>` — a `Term` projection wrapping `TInpCtorField inCtor<Short>`, reading one input
+  field.
+- `is<Short> :: HsPred <Regs> <Cmd>` — the guard predicate, defined via `matchInCtor inCtor<Short>`.
+</Step>
+<Step>
+For a **singleton** (no-field) constructor, only two declarations:
+
+- `inCtor<Short>` — defined via [`mkInCtor0`](/docs/keiki/reference/generics).
+- `is<Short>` — via `matchInCtor`.
+
+The `inp<Short>` projection is omitted because `Index '[]` is uninhabited — a payload-free command
+has no field to read.
+</Step>
+</Steps>
+
+### `deriveAggregateCtorsAll`
+
+The zero-spec variant: it enumerates *every* constructor of the command sum type and defaults each
+short name to the constructor's own name. Reach for the explicit `deriveAggregateCtors` only when you
+need an abbreviated short name that differs from the constructor name.
+
+```haskell
+deriveAggregateCtorsAll :: Name -> Name -> Q [Dec]
+```
+
+It generates `inCtor<Ctor>`, `inp<Ctor>`, and `is<Ctor>` for each constructor (singletons omit
+`inp<Ctor>`), equivalent to calling `deriveAggregateCtors` with
+`[(nameBase c, nameBase c) | c <- constructors]`.
+
+### `deriveAggregateCtorsWith`
+
+Like `deriveAggregateCtorsAll`, but honours per-constructor short-name overrides and an exclude set
+carried in a [`DeriveCtorOptions`](#derivectoroptions) record.
+
+```haskell
+deriveAggregateCtorsWith :: Name -> Name -> DeriveCtorOptions -> Q [Dec]
+```
+
+A constructor in `suffixOverrides` uses its mapped short name; otherwise it defaults to its own name;
+a constructor in `excludeCtors` is skipped entirely (no helpers are generated for it).
+
+```haskell
+$( deriveAggregateCtorsWith ''OverCmd ''OverRegs defaultDeriveCtorOptions
+     { suffixOverrides = Map.fromList [("LongCommandName", "Brief")]
+     , excludeCtors    = Set.fromList ["Skipped"] } )
+```
+
+<Callout type="warn">
+The `*With` variants **validate** their inputs at compile time. Every key in `suffixOverrides` /
+`excludeCtors` (and their event-side twins) must name a real constructor of the sum type — an unknown
+key aborts the splice. The variants also **reject duplicate resolved short names**: if two
+constructors would resolve to the same short name, the clash aborts the splice with a precise message
+telling you to rename via the override map or exclude one.
+</Callout>
+
+## Event-side splices
+
+These are the dual of the command-side splices, emitting one `WireCtor` value per event constructor
+and, for record-payload events, a field-keyed `<Short>TermFields` helper record.
+
+### `deriveWireCtors`
+
+The explicit form, taking `(constructorName, shortName)` pairs.
+
+```haskell
+deriveWireCtors :: Name -> [(String, String)] -> Q [Dec]
+```
+
+The `Name` is the event sum type.
+
+**What it emits, per event constructor:**
+
+<Steps>
+<Step>
+For a **record-payload** event constructor:
+
+- `wire<Short> :: WireCtor <Evt> (FieldsOf <Pay>)` — defined via
+  [`mkWireCtorVia`](/docs/keiki/reference/generics)`@"<Ctor>"`.
+- A field-keyed `<Short>TermFields` helper record, one `Term` field per payload field, plus its
+  `ToOutFields` instance. This record is what `B.emit` keys by field name.
+</Step>
+<Step>
+For a **singleton** event constructor:
+
+- Just `wire<Short>` — defined via [`mkWireCtor0`](/docs/keiki/reference/generics), because its field
+  tuple is `()`. No `<Short>TermFields` record is emitted (there are no fields to key).
+</Step>
+</Steps>
+
+### `deriveWireCtorsAll`
+
+The zero-spec variant: enumerate every event constructor, defaulting each short name to the
+constructor's own name.
+
+```haskell
+deriveWireCtorsAll :: Name -> Q [Dec]
+```
+
+It generates `wire<Ctor>` (and, for record-payload events, the `<Ctor>TermFields` record plus its
+`ToOutFields` instance) for each constructor.
+
+### `deriveWireCtorsWith`
+
+The overrides-and-excludes variant, carrying a [`DeriveWireOptions`](#derivewireoptions) record. Same
+validation semantics as `deriveAggregateCtorsWith`: unknown override/exclude keys and duplicate
+resolved short names both abort the splice at compile time.
+
+```haskell
+deriveWireCtorsWith :: Name -> DeriveWireOptions -> Q [Dec]
+```
+
+## Fused splice
+
+### `deriveAggregate`
+
+The all-in-one form: it fuses `deriveAggregateCtorsAll` and `deriveWireCtorsAll` into a single splice
+covering an aggregate's command *and* event constructors. Given the command sum type, its
+register-file slot-list type, and the event sum type, it emits every declaration both `*All` variants
+would, defaulting each short name to the constructor's own name.
+
+```haskell
+deriveAggregate :: Name -> Name -> Name -> Q [Dec]
+```
+
+```haskell
+$(deriveAggregate ''FusedCmd ''FusedRegs ''FusedEvent)
+```
+
+This one splice produces both the command-side helpers (`inCtorFoo` / `inpFoo` / `isTick`) and the
+event-side helpers (`wireFizzed` / `FizzedTermFields`) for the whole aggregate.
+
+## View splice
+
+### `deriveView`
+
+Generates the per-aggregate B-presentation view: a singletons GADT (one constructor per vertex,
+indexed by the promoted vertex type), a per-vertex `View` GADT (one constructor per vertex carrying
+its live slots as record fields), and a projection function `viewFor :: SVertex v -> RegFile rs ->
+View v`.
+
+```haskell
+deriveView :: Name -> Name -> String -> String -> String -> [(String, [String])] -> Q [Dec]
+```
+
+The arguments are: the vertex enum `Name`; the register-file slot-list `Name`; the names (as
+`String`s) of the singletons GADT, the `View` GADT, and the projection function to generate; and a
+per-vertex spec pairing each vertex constructor name with the slot names live in that vertex.
+
+```haskell
+$( deriveView ''Vertex ''UserRegRegs
+    "SUserVertex" "UserView" "userView"
+    [ ("PotentialCustomer",    [])
+    , ("Registering",          [])
+    , ("RequiresConfirmation", ["email", "confirmCode"])
+    , ("Confirmed",            ["email", "confirmedAt"])
+    , ("Deleted",              ["email", "deletedAt"])
+    ] )
+```
+
+`deriveView` runs five compile-time validations before emitting anything: the spec must list every
+vertex constructor exactly once (catching missing, extra, and duplicate entries); within each entry
+no slot may appear twice; every named slot must exist in the register-file slot list; and the
+per-vertex field-name prefixes must be pairwise distinct so the generated `View` GADT has no
+field-name collisions. Any failure aborts the splice with a precise message.
+
+## Options records
+
+Both `*With` variants take an options record with two fields: a short-name override map and an
+exclude set. Each ships a `default…` value that names no overrides and no exclusions, making the
+`*With` variant behave identically to the corresponding `*All` variant.
+
+### `DeriveCtorOptions`
+
+Carried by `deriveAggregateCtorsWith` (command side).
+
+<TypeTable
+  type={{
+    suffixOverrides: { type: "Map String String", description: "Maps a constructor name to the short-name suffix for its generated inCtor/inp/is helpers; constructors absent from the map default to their own name" },
+    excludeCtors: { type: "Set String", description: "Constructors to skip entirely; no helpers are generated for them" },
+  }}
+/>
+
+```haskell
+data DeriveCtorOptions = DeriveCtorOptions
+  { suffixOverrides :: Map String String
+  , excludeCtors    :: Set String
+  }
+
+-- No overrides, no exclusions; behaves like deriveAggregateCtorsAll.
+defaultDeriveCtorOptions :: DeriveCtorOptions
+```
+
+### `DeriveWireOptions`
+
+Carried by `deriveWireCtorsWith` (event side). Same semantics as `DeriveCtorOptions`, with the
+overrides field also controlling the `<Short>TermFields` record name.
+
+<TypeTable
+  type={{
+    suffixOverridesW: { type: "Map String String", description: "Maps an event constructor name to its short-name suffix, used for wire<Short> and the <Short>TermFields record; absent constructors default to their own name" },
+    excludeCtorsW: { type: "Set String", description: "Event constructors to skip entirely" },
+  }}
+/>
+
+```haskell
+data DeriveWireOptions = DeriveWireOptions
+  { suffixOverridesW :: Map String String
+  , excludeCtorsW    :: Set String
+  }
+
+-- No overrides, no exclusions; behaves like deriveWireCtorsAll.
+defaultDeriveWireOptions :: DeriveWireOptions
+```
+
+## See also
+
+- [Generics](/docs/keiki/reference/generics) — the GHC-generics builders (`mkInCtorVia`,
+  `mkWireCtorVia`, `RegFieldsOf`, `FieldsOf`) these splices emit calls to.
+- [Core](/docs/keiki/reference/core) — `InCtor`, `WireCtor`, `HsPred`, `Term`, and `OutFields`.
+- [The SymTransducer](/docs/keiki/explanation/the-symtransducer) — how the generated constructors and
+  guards plug into the machine.

@@ -1,0 +1,196 @@
+---
+title: "08 — The acceptor projections"
+description: "inputAcceptor and outputAcceptor as the π₁/π₂ projections of a transducer onto one alphabet, runAcceptor/accepts, and the reconstitute round-trip the output acceptor agrees with."
+---
+
+A finite-state *transducer* relates two alphabets — commands in, events out. Drop one alphabet and what
+remains is an *acceptor* over the other. `Keiki.Acceptor` names both drops as a first-class data type so
+downstream code (a UI, a validator, generated documentation) can pattern-match on a known shape instead
+of plumbing the step functions by hand. We read `keiki/src/Keiki/Acceptor.hs`.
+
+## The two projections
+
+The foundations chapter spells out the central insight: any FST has two acceptor projections.
+
+- The **input projection π₁** drops the events. The remaining transition function is an acceptor over
+  *commands*; its language is the set of command sequences the aggregate accepts.
+- The **output projection π₂** drops the commands by inverting ω. The remaining transition function is
+  `evolve` — the *event*-language acceptor; its language is the set of event sequences the aggregate
+  could have produced, i.e. the replayable logs.
+
+In `Keiki.Core` these projections are *implicit*: π₁ is `delta`, π₂ is `applyEvent`. This module makes
+them concrete `Acceptor` values.
+
+## The `Acceptor` type
+
+```haskell
+-- keiki/src/Keiki/Acceptor.hs
+data Acceptor a s = Acceptor
+  { aStep    :: s -> a -> Maybe s
+  , aInitial :: s
+  , aIsFinal :: s -> Bool
+  }
+```
+
+<TypeTable
+  type={{
+    aStep: { type: "s -> a -> Maybe s", description: "Single-step transition. Just on a successful step; Nothing to reject — the absence of a transition is rejection." },
+    aInitial: { type: "s", description: "The start state." },
+    aIsFinal: { type: "s -> Bool", description: "Final-state predicate. A run accepts iff it terminates in a state for which this holds." },
+  }}
+/>
+
+The three fields reduce membership to its essence. `aStep` returning `Nothing` *is* rejection — there
+is no separate reject signal.
+
+<Callout type="info">
+`Acceptor` carries closures, so it has **no `Show` or `Eq` instance**. Assert on the result of
+`runAcceptor` or `accepts` instead of trying to compare acceptor values.
+</Callout>
+
+## `inputAcceptor` (π₁) and `outputAcceptor` (π₂)
+
+Both projections are thin wrappers that pin `aStep` to one of the core step functions and share the
+same `(s, RegFile rs)` carrier. The input acceptor's step is `delta`:
+
+```haskell
+-- keiki/src/Keiki/Acceptor.hs
+inputAcceptor
+  :: BoolAlg phi (RegFile rs, ci)
+  => SymTransducer phi rs s ci co
+  -> Acceptor ci (s, RegFile rs)
+inputAcceptor t = Acceptor
+  { aStep    = \(s, regs) ci -> delta t s regs ci
+  , aInitial = (initial t, initialRegs t)
+  , aIsFinal = \(s, _regs) -> isFinal t s
+  }
+```
+
+The output acceptor's step is `applyEvent`:
+
+```haskell
+-- keiki/src/Keiki/Acceptor.hs
+outputAcceptor
+  :: (BoolAlg phi (RegFile rs, ci), Eq co)
+  => SymTransducer phi rs s ci co
+  -> Acceptor co (s, RegFile rs)
+outputAcceptor t = Acceptor
+  { aStep    = \(s, regs) co -> applyEvent t s regs co
+  , aInitial = (initial t, initialRegs t)
+  , aIsFinal = \(s, _regs) -> isFinal t s
+  }
+```
+
+The carrier is `(s, RegFile rs)` in both because edge guards depend on the register file as well as the
+control vertex — and `applyEvent` threads that register file through replay. `aIsFinal` ignores the
+register file and consults `isFinal t` on the control vertex alone. The richer return type of `delta` /
+`applyEvent` (which thread an updated `RegFile`) is preserved by hiding the register file *inside* the
+acceptor's `s`.
+
+<Callout type="info">
+The output acceptor *is* the `evolve` acceptor the foundations chapter derives — π₂ named as a value.
+Its `Eq co` constraint mirrors `applyEvent`'s, because inverting ω needs to compare emitted events.
+</Callout>
+
+## Running an acceptor: `runAcceptor` and `accepts`
+
+`runAcceptor` is the fold — it threads `aStep` across a sequence, short-circuiting to `Nothing` on the
+first step that rejects:
+
+```haskell
+-- keiki/src/Keiki/Acceptor.hs
+runAcceptor :: Acceptor a s -> [a] -> Maybe s
+runAcceptor a = go (aInitial a)
+  where
+    go s []       = Just s
+    go s (x : xs) = aStep a s x >>= \s' -> go s' xs
+```
+
+`accepts` is the membership decision on top: it runs the acceptor and checks the terminal state is
+final:
+
+```haskell
+-- keiki/src/Keiki/Acceptor.hs
+accepts :: Acceptor a s -> [a] -> Bool
+accepts a xs = case runAcceptor a xs of
+  Just s  -> aIsFinal a s
+  Nothing -> False
+```
+
+So the two quick-reference questions are:
+
+```haskell
+-- keiki/src/Keiki/Acceptor.hs (haddock)
+-- accepts (inputAcceptor t)  cmds   :: Bool   -- "is this command sequence in the input language?"
+-- accepts (outputAcceptor t) events :: Bool   -- "is this event sequence in the output language?"
+```
+
+`AcceptorSpec` confirms both directions, including rejection. The input acceptor accepts a canonical
+command sequence and rejects an out-of-order command:
+
+```haskell
+-- keiki/test/Keiki/AcceptorSpec.hs
+it "accepts the canonical command sequence" $
+  accepts (inputAcceptor userReg) canonicalUserCmds
+    `shouldBe` True
+
+it "rejects ConfirmAccount from PotentialCustomer" $
+  accepts (inputAcceptor userReg)
+          [ConfirmAccount (ConfirmAccountData "Z9F4" (t 0))]
+    `shouldBe` False
+```
+
+## The reconstitute round-trip
+
+The output acceptor and `Keiki.Core.reconstitute` are two views of the same replay. `accepts
+(outputAcceptor t) events` is `True` iff successively applying `applyEvent` to each event reaches a
+final control vertex — equivalently, iff `reconstitute t events` returns `Just` a final `(s, regs)`.
+`AcceptorSpec` asserts the two agree under `fst` on the canonical log:
+
+```haskell
+-- keiki/test/Keiki/AcceptorSpec.hs
+it "agrees with reconstitute on the canonical log" $
+  fmap fst (runAcceptor (outputAcceptor emailDelivery) canonicalEmailLog)
+    `shouldBe`
+      fmap fst (reconstitute emailDelivery canonicalEmailLog)
+```
+
+A log no edge could have produced is rejected, because `applyEvent` returns `Nothing` on the first
+unreplayable event:
+
+```haskell
+-- keiki/test/Keiki/AcceptorSpec.hs
+it "rejects an event that no edge from PotentialCustomer produces" $ do
+  -- userReg's only outgoing edge from PotentialCustomer produces
+  -- 'RegistrationStarted'; 'AccountConfirmed' has no matching
+  -- inverse, so applyEvent returns Nothing on the first step.
+  let badLog =
+        [AccountConfirmed
+          (AccountConfirmedData "alice@x" "Z9F4" (t 0))]
+  accepts (outputAcceptor userReg) badLog `shouldBe` False
+```
+
+And `aIsFinal` lines up with `isFinal` under `fst`, ignoring the register file:
+
+```haskell
+-- keiki/test/Keiki/AcceptorSpec.hs
+it "matches isFinal on userReg under fst" $ do
+  let a = inputAcceptor userReg
+  aIsFinal a (Deleted,           initialRegs userReg) `shouldBe` True
+  aIsFinal a (Confirmed,         initialRegs userReg) `shouldBe` False
+  aIsFinal a (PotentialCustomer, initialRegs userReg) `shouldBe` False
+```
+
+<Callout type="info">
+The acceptor projections relate to the [Decider façade](/docs/keiki/walkthrough/derivations/07-decider-facade)
+by sharing the `(s, RegFile rs)` carrier and the same "register file travels inside `s`" decision — but
+the acceptors keep `aStep`'s `Maybe` explicit rather than absorbing failure the way the façade's
+defensive `evolve` does.
+</Callout>
+
+The full export surface is catalogued in the [Acceptor reference](/docs/keiki/reference/acceptor).
+
+---
+
+Previous: [07 — The Decider façade](/docs/keiki/walkthrough/derivations/07-decider-facade) ·
+Next: [09 — The shape hash](/docs/keiki/walkthrough/derivations/09-shape-hash)

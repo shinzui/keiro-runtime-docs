@@ -1,0 +1,184 @@
+---
+title: "09 — The shape hash"
+description: "The canonical pre-hash string for a slot list, the single SHA-256 over it, the GHC-upgrade-stable renderStableTypeRep, and why the hash keys snapshot eligibility."
+---
+
+A snapshot persister needs a compact discriminator for a register file's type-level slot list: a token
+that changes when the *structure* of the slot list changes and stays put when nothing structural does.
+`Keiki.Shape` provides it — `regFileShapeHash` is a SHA-256 of a canonical, deterministic rendering of
+every slot's name and type. We read `keiki/src/Keiki/Shape.hs`. This is the keiki-side half of the
+snapshot story; the JSON codec that serialises eligible snapshots lives in the sibling package and is
+covered later (see below).
+
+## The canonical pre-hash string
+
+The hash is built in two stages. First a *canonical string* is assembled slot by slot; then that one
+string is hashed once. The class that assembles the string is `KnownRegFileShape`, and its inductive
+structure is **string concatenation, not nested hashing**:
+
+```haskell
+-- keiki/src/Keiki/Shape.hs
+instance KnownRegFileShape '[] where
+  regFileShapeCanonical _ = T.pack "regfile:0"
+
+instance
+  ( KnownSymbol s
+  , CanonicalTypeName t
+  , KnownRegFileShape rs
+  )
+  => KnownRegFileShape ('(s, t) ': rs)
+  where
+  regFileShapeCanonical _ =
+    T.concat
+      [ T.pack (symbolVal (Proxy @s))
+      , T.pack ":"
+      , canonicalTypeName (Proxy @t)
+      , T.pack ";"
+      , regFileShapeCanonical (Proxy @rs)
+      ]
+```
+
+Each slot contributes `<slotSymbol> ":" <renderStableTypeRep tr> ";"` in slot-list order, and the empty
+list is anchored at the literal `"regfile:0"`. So a one-slot list renders as a string whose tail is the
+anchor:
+
+```haskell
+-- keiki/test/Keiki/ShapeSpec.hs
+it "concatenates one slot in the documented R3 form" $
+  regFileShapeCanonical (Proxy @('[ '("retryCount", Int) ] :: [(Symbol, Type)]))
+    `shouldBe` T.pack "retryCount:GHC.Types.Int;regfile:0"
+```
+
+<Callout type="info">
+The anchor matters. Because the empty list is the literal `"regfile:0"` rather than the empty string, a
+slot list of length *n* still produces a non-trivial canonical form, and the recursion is plain text
+concatenation built end-to-end. A length-*n* list therefore performs **exactly one** SHA-256, not *n*
+chained ones.
+</Callout>
+
+## The single SHA-256
+
+`regFileShapeHash` is the SHA-256 of that canonical string, in lower-case hex:
+
+```haskell
+-- keiki/src/Keiki/Shape.hs
+regFileShapeHash :: forall rs. KnownRegFileShape rs => Proxy rs -> Text
+regFileShapeHash p = sha256Hex (regFileShapeCanonical p)
+```
+
+`sha256Hex` is the small helper that UTF-8-encodes the text, hashes it, and renders the digest bytes as
+hex:
+
+```haskell
+-- keiki/src/Keiki/Shape.hs
+sha256Hex :: Text -> Text
+sha256Hex =
+  T.pack . concatMap byteToHex . BS.unpack . SHA256.hash . TE.encodeUtf8
+```
+
+`ShapeSpec` pins golden hashes for these, and proves the hash *is* `sha256Hex` of the canonical form
+rather than anything fancier:
+
+```haskell
+-- keiki/test/Keiki/ShapeSpec.hs
+it "matches its sha256Hex-of-canonical definition" $ do
+  let p = Proxy @('[ '("retryCount", Int), '("cooldownUntil", UTCTime) ] :: [(Symbol, Type)])
+  regFileShapeHash p `shouldBe` sha256Hex (regFileShapeCanonical p)
+```
+
+## `renderStableTypeRep`: GHC-upgrade-stable type rendering
+
+The slot *type* in the canonical string comes from `renderStableTypeRep`, and its construction is the
+crux of the cross-version stability guarantee. It renders a `SomeTypeRep` as an application-tree string,
+contributing `<tyConModule>.<tyConName>` per type constructor and recursing into applied arguments
+inside parentheses:
+
+```haskell
+-- keiki/src/Keiki/Shape.hs
+renderTypeRep :: forall k (a :: k). TypeRep a -> Text
+renderTypeRep tr =
+  let (tc, args) = splitApps tr
+      base =
+        T.pack (tyConModule tc)
+          <> T.pack "."
+          <> T.pack (tyConName tc)
+   in case args of
+        [] -> base
+        _ ->
+          base
+            <> T.pack "("
+            <> T.intercalate (T.pack ",") (map renderStableTypeRep args)
+            <> T.pack ")"
+```
+
+The discipline is what makes it stable: the implementation uses *only* `tyConModule`, `tyConName`, and
+`splitApps`. It never touches `tyConPackage` (which varies with cabal version pins), never `Show` on
+`TypeRep` (not contractually stable), and never the raw `Fingerprint`. So `Int` renders as
+`GHC.Types.Int` and `Maybe Int` as a parenthesised application:
+
+```haskell
+-- keiki/test/Keiki/ShapeSpec.hs
+it "renders Int as GHC.Types.Int (no module path drift on 9.12.*)" $
+  renderStableTypeRep (someTypeRep (Proxy @Int))
+    `shouldBe` T.pack "GHC.Types.Int"
+
+it "renders Maybe Int as a parenthesised application" $
+  renderStableTypeRep (someTypeRep (Proxy @(Maybe Int)))
+    `shouldBe` T.pack "GHC.Internal.Maybe.Maybe(GHC.Types.Int)"
+```
+
+For a slot type whose defining module is likely to be renamed, or one that straddles libraries with
+unstable layouts, `CanonicalTypeName` is the escape hatch — override it to pin the name explicitly
+instead of letting the `Typeable` default render the module path.
+
+## Why this keying scheme — sensitivity and insensitivity
+
+The hash is designed to be **sensitive to structural change** and **insensitive to incidental change**.
+A slot rename, addition, removal, reordering, or type change all alter the canonical string and so the
+hash; a GHC patch version, a shift in the cabal dependency tree, or a slot type's typeclass instances do
+*not*. The "slot order is identity" half is pinned directly — reversing two slots produces a different
+hash:
+
+```haskell
+-- keiki/test/Keiki/ShapeSpec.hs
+it "differs when slot order is reversed (P10: slot order is identity)" $
+  regFileShapeHash
+    (Proxy @('[ '("retryCount", Int), '("cooldownUntil", UTCTime) ] :: [(Symbol, Type)]))
+    `shouldBe`
+    T.pack "944d775449408b12b78b2a41770af207bae37d0a833c046310eb6ff3902ea44f"
+```
+
+This is exactly the property a snapshot persister wants. A stored snapshot is keyed by the shape hash of
+the slot list it was written against. When the running code's slot list still hashes to the same value,
+the snapshot is *eligible* to be loaded; when an author changes the register file's structure, the hash
+changes, the old snapshots stop matching, and the persister cleanly falls back to event replay rather
+than decoding a snapshot whose shape no longer fits. The hash *discriminates* eligible snapshots — it is
+the gate, not the serialiser.
+
+<Callout type="info">
+The shape hash and the JSON codec are the two halves of the snapshot story: the hash decides *whether* a
+snapshot is eligible; the codec serialises the eligible ones. The codec lives in the sibling package and
+is documented separately — see the RegFile JSON codec reference at the path
+`/docs/keiki/reference/regfile-json-codec` (that page is authored in a later chapter of this set and is
+not yet linkable).
+</Callout>
+
+## Where this fits
+
+That closes the derivations tour. We have walked from the symbolic transducer and register file, through
+the generic record walk and the TH constructor/wire splices, the zero-enumeration and fused forms, the
+B-presentation view, and the Decider and acceptor projections, to the shape hash that keys snapshot
+persistence.
+
+<Cards>
+  <Card title="Back to the walkthrough" href="/docs/keiki/walkthrough">
+    The index of every keiki source tour.
+  </Card>
+  <Card title="API reference" href="/docs/keiki/reference">
+    The catalogued export surface of each keiki module.
+  </Card>
+</Cards>
+
+---
+
+Previous: [08 — The acceptor projections](/docs/keiki/walkthrough/derivations/08-acceptor-projections)

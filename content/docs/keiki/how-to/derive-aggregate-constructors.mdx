@@ -1,0 +1,153 @@
+---
+title: "Derive aggregate constructors"
+description: "Choose among the four Template Haskell splice flavours that emit an aggregate's per-constructor inCtor/inp/is and wire helpers."
+---
+
+You have a command sum type, its register-file slot list, and an event sum type, and you need the
+per-constructor authoring helpers — `inCtor<Short>` / `inp<Short>` / `is<Short>` on the command side
+and `wire<Short>` (plus `<Short>TermFields`) on the event side. Hand-writing them is the boilerplate
+`Keiki.Generics.TH` retires. This guide shows which of the four splice flavours to reach for.
+
+<Callout type="info">
+  Assumes you can already author a single aggregate against the builder. If not, start with
+  [Your first aggregate](/docs/keiki/tutorials/your-first-aggregate). For what each generated helper
+  *is*, see [`Keiki.Core`](/docs/keiki/reference/core).
+</Callout>
+
+## Goal
+
+Emit the command- and event-side per-constructor helpers for an aggregate with one splice, picking
+the flavour that matches how closely your short names track your constructor names.
+
+## What each splice emits per constructor
+
+A command constructor's shape decides how many declarations you get:
+
+- **Record-payload** constructor (a one-argument `NormalC`, e.g. `DoIt ToyData`) emits **three**
+  decls: `inCtor<Short>` (the `InCtor`), `inp<Short>` (the field projection), and `is<Short>` (the
+  guard predicate).
+- **Singleton** constructor (a zero-argument `NormalC`, e.g. `NoArgs`) emits **one fewer** — just
+  `inCtor<Short>` and `is<Short>`. There is no `inp<Short>` because a no-payload command's slot list
+  is `'[]` and `Index '[]` is uninhabited, so a field projection would have no field to name.
+
+On the event side, `deriveWireCtors`/`deriveWireCtorsAll`/`deriveWireCtorsWith` emit `wire<Short>`
+for every constructor and additionally a field-keyed `<Short>TermFields` record (plus its
+`ToOutFields` instance) for record-payload events; a singleton event gets only `wire<Short>`.
+
+<Callout type="warn">
+  Record-syntax (`RecC`) constructors and multi-argument `NormalC` constructors are **rejected** with
+  a precise compile-time error. A command payload must be a single named data type
+  (`StartRegistration StartRegistrationData`), not inline record fields.
+</Callout>
+
+## Choose a flavour
+
+<Tabs items={["Explicit specs", "Enumerate all", "Overrides + excludes", "Fused"]}>
+<Tab value="Explicit specs">
+
+`deriveAggregateCtors` (and its dual `deriveWireCtors`) take an explicit list of
+`(constructorName, shortName)` pairs. The short name is appended to the `inCtor` / `inp` / `is`
+prefix. Reach for this when you want **abbreviated** short names that differ from the constructor
+name — `StartRegistration` becoming `inCtorStart`, and so on. This is the `THSpec` toy:
+
+```haskell
+$( deriveAggregateCtors ''ToyCmd ''ToyRegs [ ("DoIt", "DoIt"), ("NoArgs", "NoArgs") ] )
+```
+
+`Jitsurei.UserRegistration` uses the same splice with genuinely abbreviated short names
+(`("StartRegistration", "Start")`, `("ConfirmAccount", "Confirm")`, …), which is exactly when the
+explicit form earns its keep.
+
+</Tab>
+<Tab value="Enumerate all">
+
+`deriveAggregateCtorsAll` and `deriveWireCtorsAll` take **no** spec list: they `reify` the sum type
+and enumerate every constructor, defaulting each short-name suffix to the constructor's own name. The
+common "short name == constructor name" case then needs no hand-typed list at all:
+
+```haskell
+$(deriveAggregateCtorsAll ''AutoCmd ''AutoRegs)
+$(deriveWireCtorsAll ''AutoEvent)
+```
+
+Equivalent to calling the explicit form with `[(nameBase c, nameBase c) | c <- constructors]`. Keep
+the explicit `deriveAggregateCtors`/`deriveWireCtors` when you need an abbreviated short name.
+
+</Tab>
+<Tab value="Overrides + excludes">
+
+`deriveAggregateCtorsWith` and `deriveWireCtorsWith` enumerate like the `*All` forms but honour a
+`DeriveCtorOptions` (resp. `DeriveWireOptions`) carrying two maps: `suffixOverrides` renames a
+constructor's short name, and `excludeCtors` skips it entirely. Start from `defaultDeriveCtorOptions`
+(no overrides, no exclusions — identical to `*All`) and override the fields you need:
+
+```haskell
+$( deriveAggregateCtorsWith ''OverCmd ''OverRegs defaultDeriveCtorOptions
+     { suffixOverrides = Map.fromList [("LongCommandName", "Brief")]
+     , excludeCtors    = Set.fromList ["Skipped"] } )
+```
+
+A constructor in `suffixOverrides` uses the mapped short name (`inCtorBrief`); one absent from it
+defaults to its own name (`inCtorPlain`); one in `excludeCtors` produces no helpers at all (there is
+no `inCtorSkipped` in scope). For an overridden constructor, the generated decls are byte-for-byte
+what `deriveAggregateCtors` would emit for the same `(constructor, short)` pair.
+
+The event side mirrors this with `defaultDeriveWireOptions`, `suffixOverridesW`, and `excludeCtorsW`.
+
+</Tab>
+<Tab value="Fused">
+
+`deriveAggregate` bundles `deriveAggregateCtorsAll` and `deriveWireCtorsAll` so an aggregate's entire
+command- and event-side plumbing is one splice. Pass the command sum type, its register-file slot
+list, and the event sum type:
+
+```haskell
+$(deriveAggregate ''FusedCmd ''FusedRegs ''FusedEvent)
+```
+
+This emits every declaration both `*All` variants would, using each constructor's own name as its
+short-name suffix. It is the shortest path when your short names track your constructor names and you
+do not need per-constructor overrides or exclusions.
+
+</Tab>
+</Tabs>
+
+## Duplicate short names abort the splice
+
+The `*With` flavours resolve specs through one validator that rejects two failure modes at compile
+time. An override or exclude key that is **not** an actual constructor of the named type aborts with
+the list of valid constructors. And if two constructors resolve to the **same** short name — because
+an override collides with another constructor's default — the splice aborts rather than emit two
+clashing `inCtor<Short>` bindings:
+
+```text
+deriveAggregateCtorsWith: short name(s) { "Foo" } are produced by more
+than one constructor; rename via suffixOverrides or exclude one
+```
+
+Fix it by renaming one side through `suffixOverrides` or excluding one of the colliding constructors.
+
+## Verify it worked
+
+Each generated `InCtor` reports its source constructor name through `icName`, and the projection and
+guard behave as hand-written ones would:
+
+```haskell
+icName inCtorDoIt `shouldBe` "DoIt"
+evalTerm (inpDoIt #x) toyRegs (DoIt (ToyData 5 9)) `shouldBe` 5
+evalPred isDoIt toyRegs (DoIt (ToyData 0 0)) `shouldBe` True
+```
+
+`test/Keiki/Generics/THSpec.hs` exercises all four flavours — explicit specs, `*All`, `*With`
+(overrides + excludes), and the fused `deriveAggregate` — including that an excluded constructor
+leaves no `inCtor`/`wire` binding in scope.
+
+## Related
+
+- [Read a per-vertex view](/docs/keiki/how-to/read-a-per-vertex-view) — the other `Keiki.Generics.TH`
+  splice, `deriveView`.
+- [Ergonomic emit](/docs/keiki/how-to/ergonomic-emit) — using the generated `<Short>TermFields`
+  record at `B.emit` call sites.
+- [`Keiki.Core`](/docs/keiki/reference/core) — what `InCtor`, `WireCtor`, `Term`, and `HsPred` are.
+  The splice-level reference page is `reference/generics-th` (under
+  [Reference](/docs/keiki/reference)).

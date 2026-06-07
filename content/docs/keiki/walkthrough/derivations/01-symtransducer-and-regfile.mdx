@@ -1,0 +1,166 @@
+---
+title: "01 — The input declaration"
+description: "The single SymTransducer + RegFile declaration the whole derivation layer fans out from, read in the jitsurei UserRegistration aggregate."
+---
+
+This chapter pins down the one thing everything else in this tour *derives from*: the authored
+aggregate. Before we read a single line of generics or Template Haskell, we need to be precise about
+what the input to all that machinery actually is — because the rest of the layer is a fan-out over
+exactly these declarations. Read [00 — Start here](/docs/keiki/walkthrough/derivations/00-start-here)
+first for the fan-out picture.
+
+The worked aggregate is `Jitsurei.UserRegistration` in
+`jitsurei/src/Jitsurei/UserRegistration.hs`. We will not re-derive the transducer model here — for that,
+read [The SymTransducer](/docs/keiki/explanation/the-symtransducer). This chapter only identifies the
+*inputs* the derivation layer reads.
+
+## The four inputs
+
+A keiki aggregate's source declaration is four things that travel together: a **register schema** (the
+slot list), the **command and event sum types**, and the **transducer** itself. Every derived artifact
+is a projection of one or more of these.
+
+### 1. The register schema
+
+The slot list is a promoted `[Slot]` type synonym. From `jitsurei/src/Jitsurei/UserRegistration.hs`:
+
+```haskell
+-- jitsurei/src/Jitsurei/UserRegistration.hs
+type UserRegRegs =
+  '[ '("email",        Email)
+   , '("confirmCode",  ConfirmationCode)
+   , '("registeredAt", UTCTime)
+   , '("confirmedAt",  UTCTime)
+   , '("deletedAt",    UTCTime)
+   ]
+```
+
+Each entry is a `'(name, type)` pair. This is the schema the B-views project onto (chapter 06), the
+shape the `deriveView` splice reifies (it walks this very synonym with `reifySlotList`), and the
+register file every edge reads and writes.
+
+### 2. The command and event sums
+
+```haskell
+-- jitsurei/src/Jitsurei/UserRegistration.hs
+data UserCmd
+  = StartRegistration  StartRegistrationData
+  | ConfirmAccount     ConfirmAccountData
+  | ResendConfirmation ResendConfirmationData
+  | FulfillGDPRRequest FulfillGDPRRequestData
+  deriving (Eq, Show, Generic)
+
+data UserEvent
+  = RegistrationStarted   RegistrationStartedData
+  | ConfirmationEmailSent ConfirmationEmailSentData
+  | AccountConfirmed      AccountConfirmedData
+  | ConfirmationResent    ConfirmationResentData
+  | AccountDeleted        AccountDeletedData
+  deriving (Eq, Show, Generic)
+```
+
+<Callout type="info">
+The `deriving (... Generic)` clause is load-bearing. The whole derivation layer is built on
+`GHC.Generics`: the ctor and wire splices resolve a constructor's payload by walking the sum type's
+`Rep`, and the per-payload field walk works on each payload record's `Rep`. Drop `Generic` from any of
+these declarations and the splices fail to compile. Every payload record carries `Generic` for the same
+reason — see the payloads below.
+</Callout>
+
+Each command and event constructor carries a single **record payload** (or no payload, for a
+singleton). The payloads are ordinary records with named fields:
+
+```haskell
+-- jitsurei/src/Jitsurei/UserRegistration.hs
+data StartRegistrationData = StartRegistrationData
+  { email       :: Email
+  , confirmCode :: ConfirmationCode
+  , at          :: UTCTime
+  } deriving (Eq, Show, Generic)
+```
+
+Those field names — `email`, `confirmCode`, `at` — are exactly what chapter 02's `RegFieldsOf` walk
+turns into a `[Slot]` list, and what `FieldsOf` turns into a nested-pair tuple. The constructor names —
+`StartRegistration`, `ConfirmAccount`, ... — are what chapter 03's `GHasCtor` resolves by `Symbol`.
+
+### 3. The transducer
+
+The transducer is authored once, in the builder EDSL:
+
+```haskell
+-- jitsurei/src/Jitsurei/UserRegistration.hs
+userReg :: Guarded UserRegRegs Vertex UserCmd UserEvent
+userReg = B.buildTransducer PotentialCustomer emptyRegs
+            (\case Deleted -> True; _ -> False) do
+  B.from PotentialCustomer do
+    B.onCmd inCtorStart $ \d -> B.do
+      B.slot @"email"        .= d.email
+      B.slot @"confirmCode"  .= d.confirmCode
+      B.slot @"registeredAt" .= d.at
+      B.emit wireRegistrationStarted RegistrationStartedTermFields
+        { email       = d.email
+        , confirmCode = d.confirmCode
+        , at          = d.at
+        }
+      ...
+```
+
+Notice what `userReg` *references*: `inCtorStart`, `wireRegistrationStarted`, and
+`RegistrationStartedTermFields`. None of those is hand-written. They are emitted by the splices this
+tour reads — `inCtorStart` and `inpStart`/`isStart` by `deriveAggregateCtors`,
+`wireRegistrationStarted` and the `RegistrationStartedTermFields` record by `deriveWireCtors`. The
+transducer is *authored against* the derived vocabulary.
+
+### The `userRegAST` anchor
+
+The module also keeps a hand-written `Keiki.Core` AST form of the same transducer, `userRegAST`,
+retained for the builder↔AST equivalence test:
+
+```haskell
+-- jitsurei/src/Jitsurei/UserRegistration.hs
+userRegAST :: Guarded UserRegRegs Vertex UserCmd UserEvent
+userRegAST = SymTransducer
+  { edgesOut    = userRegASTEdges
+  , initial     = PotentialCustomer
+  , initialRegs = emptyRegs
+  , isFinal     = \case Deleted -> True; _ -> False
+  }
+```
+
+`userRegAST` is useful here precisely because it spells out, *by hand*, what the builder form produces —
+including the same derived `inCtorStart` / `wireRegistrationStarted` / `pack` plumbing. It is the
+clearest place to see that the derived ctors and wires are not magic: they are the same values a careful
+author would write out longhand.
+
+## Where the derivations attach
+
+The module derives its vocabulary right after the sums, with three splices:
+
+```haskell
+-- jitsurei/src/Jitsurei/UserRegistration.hs
+$(deriveAggregateCtors ''UserCmd ''UserRegRegs
+    [ ("StartRegistration",  "Start")
+    , ("ConfirmAccount",     "Confirm")
+    , ("ResendConfirmation", "Resend")
+    , ("FulfillGDPRRequest", "Gdpr")
+    ])
+
+$(deriveWireCtors ''UserEvent
+    [ ("RegistrationStarted",   "RegistrationStarted")
+    , ...
+    ])
+
+$(deriveView ''Vertex ''UserRegRegs
+    "SUserVertex" "UserView" "userView"
+    [ ("PotentialCustomer",    [])
+    , ("RequiresConfirmation", ["email", "confirmCode"])
+    , ...
+    ])
+```
+
+Three splices, three inputs each: a command sum + its register schema produce the command ctors; the
+event sum produces the wires; the vertex enum + the register schema produce the B-views. That is the
+whole input surface. The next chapter starts where these splices start — the generic walk over a
+payload record's `Rep`.
+
+Next: [02 — The generic record walk](/docs/keiki/walkthrough/derivations/02-generic-record-walk).

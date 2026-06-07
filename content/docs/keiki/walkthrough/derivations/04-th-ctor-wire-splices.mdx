@@ -1,0 +1,332 @@
+---
+title: "04 — The ctor and wire splices"
+description: "deriveAggregateCtors and deriveWireCtors codegen: the three-decl record rule, the singleton rule, the per-event TermFields record, and its ToOutFields instance."
+---
+
+Chapters 02 and 03 built the runtime engine — the record walk and the sum walk, exposed as
+`mkInCtorVia` / `mkWireCtorVia`. This chapter reads the Template Haskell that *invokes* that engine: the
+splices that, from a sum type and a register schema, emit one block of declarations per constructor. The
+code is in `src/Keiki/Generics/TH.hs`. Read [03 — Via-builders and the sum walk](/docs/keiki/walkthrough/derivations/03-via-builders-and-sum-walk)
+first; the splices below emit calls straight into those builders.
+
+## What a splice produces
+
+The module docstring states the contract precisely — what the worked invocation expands to:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+-- expands to the same 14 declarations a hand-written module ships
+-- (4 record ctors × 3 decls + 1 singleton × 2 decls).
+```
+
+So the unit of output is *per constructor*: a record-payload command yields **three** declarations, a
+singleton yields **two**. Read on for what those decls are.
+
+## Entry point and constructor classification
+
+`deriveAggregateCtors` reifies the command sum, builds a name→constructor map, and routes to the shared
+codegen:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+deriveAggregateCtors cmdName regsName specs = do
+    ctors <- reifyCtors cmdName "deriveAggregateCtors"
+    let ctorMap = [(nameBase n, c) | c <- ctors, n <- conNames c]
+    genAggregateCtors cmdName regsName ctorMap specs
+```
+
+Each spec entry is a `(constructorName, shortName)` pair; the short name is the suffix appended to the
+`inCtor` / `inp` / `is` prefixes. The classification that decides record-vs-singleton is a small
+three-state helper:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+-- | Three-state classification of a constructor's payload.
+--
+--   * @Just Nothing@  — singleton (zero-arg 'NormalC').
+--   * @Just (Just t)@ — single-arg 'NormalC' with payload type @t@.
+--   * @Nothing@       — record-syntax or multi-arg ctor (unsupported).
+conPayload :: Con -> Maybe (Maybe Type)
+conPayload (NormalC _ []) = Just Nothing
+conPayload (NormalC _ [(_, t)]) = Just (Just t)
+conPayload _ = Nothing
+```
+
+<Callout type="info">
+A keiki command/event constructor must wrap *exactly one* positional payload type (or none). A
+record-syntax constructor (`RecC`) or a multi-argument `NormalC` is rejected with a precise error — the
+payload type is the record, and it lives in its *own* declaration. This is why the jitsurei payloads are
+separate `…Data` records, not inline fields.
+</Callout>
+
+`genCtor` dispatches on that classification: `Just Nothing` to `singletonDecls`, `Just (Just payTy)` to
+`recordDecls`, and `Nothing` to a compile-time `fail`.
+
+## The three-decl record rule
+
+For a record-payload command, `recordDecls` emits **three** top-level declarations — an `InCtor` value,
+an `inp` field projection, and an `is` guard predicate:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+recordDecls cmdName regsName ctorStr shortStr payTy = do
+    let inCtorN = mkName ("inCtor" <> shortStr)
+        inpN = mkName ("inp" <> shortStr)
+        isN = mkName ("is" <> shortStr)
+        slotsT = [t|RegFieldsOf $(pure payTy)|]
+    ...
+```
+
+Note `slotsT = [t|RegFieldsOf $(pure payTy)|]` — the slot list in every signature is computed by
+chapter 02's `RegFieldsOf` family applied to the reified payload type. The three pieces:
+
+1. The **`inCtor`** binding — its type is `InCtor cmdType (RegFieldsOf payTy)`, and its body is the
+   name-only Via builder from chapter 03:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+    inCtorSig <-
+        sigD
+            inCtorN
+            [t|InCtor $(conT cmdName) $slotsT|]
+    inCtorDef <-
+        funD
+            inCtorN
+            [ clause
+                []
+                ( normalB
+                    ( appTypeE
+                        [|mkInCtorVia|]
+                        (litT (strTyLit ctorStr))
+                    )
+                )
+                []
+            ]
+```
+
+`appTypeE [|mkInCtorVia|] (litT (strTyLit ctorStr))` is the splice writing `mkInCtorVia @"<ctorStr>"` —
+the very type application chapter 03's builder is keyed on.
+
+2. The **`inp`** projection — turns an `Index` into a `Term` that structurally projects the named field,
+   built on the `TInpCtorField` constructor:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+    inpSig <-
+        sigD
+            inpN
+            [t|
+                Index $slotsT $(varT r) ->
+                Term $(conT regsName) $(conT cmdName) $slotsT $(varT r)
+                |]
+    inpDef <-
+        funD
+            inpN
+            [ clause [] (normalB [|TInpCtorField $(varE inCtorN)|]) [] ]
+```
+
+3. The **`is`** guard — a `HsPred` that reduces to a constructor-match atom, built with `matchInCtor`:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+    isSig <- sigD isN [t|HsPred $(conT regsName) $(conT cmdName)|]
+    isDef <- funD isN [ clause [] (normalB [|matchInCtor $(varE inCtorN)|]) [] ]
+    ...
+    pure [inCtorSig, inCtorDef, inpSig, inpDef, isSig, isDef]
+```
+
+The final `pure` returns all six `Dec`s (three signatures + three definitions) — the "three decls" of
+the rule.
+
+## The singleton (two-decl) rule
+
+A no-payload constructor gets `inCtor` and `is` only — there is no `inp`, because a `RegFile` over the
+empty slot list has nothing to project:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+singletonDecls cmdName regsName ctorStr shortStr ctorN = do
+    let inCtorN = mkName ("inCtor" <> shortStr)
+        isN = mkName ("is" <> shortStr)
+    inCtorSig <- sigD inCtorN [t|InCtor $(conT cmdName) '[]|]
+    inCtorDef <-
+        funD inCtorN
+            [ clause [] (normalB [| mkInCtor0 $(litE (stringL ctorStr)) $(conE ctorN) |]) [] ]
+    ...
+```
+
+The body is `mkInCtor0` rather than `mkInCtorVia`: a singleton has no `Generic` payload to walk, so the
+matcher compares against the named singleton via `Eq` and the slot list is `'[]`. The docstring spells
+out *why* there is no `inp`:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+-- Singleton constructors (zero-arg 'NormalC') emit only @inCtor@ and
+-- @is@; @inp@ is omitted because @'Index' '[]@ is uninhabited.
+```
+
+## The wire side: `deriveWireCtors`
+
+`deriveWireCtors` is the event-side dual. Its `genWire` mirrors `genCtor` but emits a `wire<Short>`
+binding (via `mkWireCtorVia @"<ctor>"`) and, crucially, an extra helper record for record-payload events:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+            Just (Just payTy) -> do
+                let wireN = mkName ("wire" <> shortStr)
+                wireSig <-
+                    sigD wireN
+                        [t| WireCtor $(conT evtName) (FieldsOf $(pure payTy)) |]
+                wireDef <-
+                    funD wireN
+                        [ clause [] (normalB
+                            (appTypeE [|mkWireCtorVia|] (litT (strTyLit ctorStr)))) [] ]
+                termRecDecs <- genTermFieldsRecord shortStr payTy
+                pure ([wireSig, wireDef] ++ termRecDecs)
+```
+
+The wire's type uses chapter 02's `FieldsOf` family (the nested-pair shape) rather than `RegFieldsOf`. A
+**singleton** event emits just `wire<Short>` via `mkWireCtor0` with field tuple `()`:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+            Just Nothing ->
+                -- Zero-arg (singleton) event: emit only the wire<Short> binding
+                -- via mkWireCtor0 (no payload, so no <Short>TermFields record).
+```
+
+## `genTermFieldsRecord`: the field-keyed emit record
+
+The extra decls a record-payload event gets are the `<Short>TermFields` record plus its `ToOutFields`
+instance — the field-keyed shape `B.emit` consumes. The docstring states the rule:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+-- For each event ctor with a record payload @<Pay>@ whose fields are
+-- @f1 :: T1@, @f2 :: T2@, ..., @fn :: Tn@, this emits two decls:
+--
+-- > data <Short>TermFields rs ci = <Short>TermFields
+-- >   { f1 :: Term rs ci T1
+-- >   , f2 :: Term rs ci T2
+-- >   , ... }
+--
+-- > instance ToOutFields (<Short>TermFields rs ci) rs ci
+-- >                      (FieldsOf <Pay>) where
+-- >   toOutFields <Short>TermFields { f1 = v1, f2 = v2, ... } =
+-- >     OFCons v1 (OFCons v2 ... OFNil)
+```
+
+This is the record `userReg` writes against — recall from chapter 01 that the transducer emits
+`RegistrationStartedTermFields { email = d.email, ... }`. The splice reifies the payload, demands a
+single record-syntax constructor, and lifts each field to a `Term`:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+genTermFieldsRecord shortStr payTy = do
+    payName <- typeConstructorName payTy
+    payInfo <- reify payName
+    fields <- case payInfo of
+        TyConI (DataD _ _ _ _ [RecC _ fs] _) -> pure fs
+        TyConI (NewtypeD _ _ _ _ (RecC _ fs) _) -> pure fs
+        _ -> fail $ ...
+    let recName = mkName (shortStr <> "TermFields")
+    ...
+```
+
+Each field is rebuilt as a `Term` indexed by `rs`, `ci`, and an input-field-schema parameter `ifs`:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+        -- EP-53: 'Term' is indexed by the input field schema @ifs@, so the
+        -- generated record carries an @ifs@ parameter shared by every
+        -- field 'Term'. 'pack' / 'emit' ties it to the 'OPack''s 'InCtor'.
+        mkField (selN, _, ty) =
+            ( mkName (nameBase selN)
+            , lazyBang
+            , ConT ''Term `AppT` VarT rsN `AppT` VarT ciN `AppT` VarT ifsN `AppT` ty
+            )
+```
+
+The `ToOutFields` instance body folds the record's fields into an `OFCons`/`OFNil` tower in declaration
+order:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+        buildBody [] = ConE 'OFNil
+        buildBody (v : vs) = ConE 'OFCons `AppE` VarE v `AppE` buildBody vs
+```
+
+<Callout type="warn">
+One subtlety worth internalising: the instance *head* uses `mkNestedPairTuple`, not `FieldsOf`. The
+`OutFields` type's `fs` parameter is the nested-pair tuple `FieldsOf <Pay>` reduces to, but a type-family
+application is illegal in an instance head, so the splice computes the tuple *explicitly* from the field
+types:
+
+```haskell
+-- src/Keiki/Generics/TH.hs
+mkNestedPairTuple :: [Type] -> Type
+mkNestedPairTuple [] = TupleT 0
+mkNestedPairTuple (t : ts) = AppT (AppT (TupleT 2) t) (mkNestedPairTuple ts)
+```
+
+`mkNestedPairTuple` produces the same `(t1, (t2, ..., (tn, ())))` shape `FieldsOf` would, computed by
+hand so GHC accepts the instance head.
+</Callout>
+
+```mermaid
+flowchart TD
+  Spec["('RegistrationStarted', 'RegistrationStarted')"]
+  Spec --> Reify["reify UserEvent → conPayload"]
+  Reify --> Rec["record payload?"]
+  Rec -- yes --> W["wireRegistrationStarted = mkWireCtorVia @\"RegistrationStarted\""]
+  Rec -- yes --> TF["data RegistrationStartedTermFields { email, confirmCode, at }"]
+  TF --> Inst["instance ToOutFields RegistrationStartedTermFields ... (FieldsOf ...)"]
+  Rec -- singleton --> W0["wireSwept = mkWireCtor0 \"Swept\" Swept"]
+```
+
+## Where this is exercised
+
+`test/Keiki/Generics/THSpec.hs` is the anchor. The `ToyCmd` splice covers both rules — a record-payload
+`DoIt` and a singleton `NoArgs`:
+
+```haskell
+-- test/Keiki/Generics/THSpec.hs
+$( deriveAggregateCtors
+    ''ToyCmd
+    ''ToyRegs
+    [ ("DoIt", "DoIt")
+    , ("NoArgs", "NoArgs")
+    ]
+ )
+```
+
+The spec proves all three record-side decls exist and behave: `icName inCtorDoIt` (the `inCtor`),
+`evalTerm (inpDoIt #x) …` (the `inp` projection), and `evalPred isDoIt …` (the `is` guard):
+
+```haskell
+-- test/Keiki/Generics/THSpec.hs
+it "evalTerm (inpDoIt #x) on a DoIt input reads the x field" $
+    evalTerm (inpDoIt #x) toyRegs (DoIt (ToyData 5 9)) `shouldBe` 5
+
+it "evalPred isDoIt agrees with constructor match" $ do
+    evalPred isDoIt toyRegs (DoIt (ToyData 0 0)) `shouldBe` True
+    evalPred isDoIt toyRegs NoArgs `shouldBe` False
+```
+
+The singleton path is checked through `inCtorNoArgs` / `isNoArgs` (no `inpNoArgs` is referenced, because
+none is emitted). On the wire side, `deriveWireCtorsAll` proves the `<Short>TermFields` round-trip via
+the nested-pair `wcBuild`:
+
+```haskell
+-- test/Keiki/Generics/THSpec.hs
+it "discovers the record-payload event and rebuilds it" $ do
+    wcName wireWidgetMade `shouldBe` "WidgetMade"
+    wcBuild wireWidgetMade (7, ()) `shouldBe` WidgetMade (GadgetData 7)
+```
+
+This chapter covered the *enumerated* splices — the ones that take an explicit `(ctor, short)` spec list.
+The next chapter reads their zero-spec siblings (`deriveAggregateCtorsAll`, `deriveWireCtorsAll`), the
+override/exclude `*With` variants, and the fused `deriveAggregate` that bundles both sides into one
+splice.
+
+Next: [05 — Zero-enumeration and fused](/docs/keiki/walkthrough/derivations/05-zero-enumeration-and-fused).
