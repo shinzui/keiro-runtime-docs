@@ -1,0 +1,56 @@
+---
+title: "Resolve the lens operator clash"
+description: "Keep keiki's predicate operators when a prelude re-exports lens or generic-lens, via builder verbs or a qualified import."
+---
+
+A cookbook recipe is a short, copy-paste solution to one problem. Here: keiki's `.>` collides
+with `lens`/`generic-lens` optic composition, and the module will not compile.
+
+## Problem
+
+keiki gives transducer authors infix operators — `.<` `.<=` `.>` `.>=` `.==` `./=` `.&&` `.||`
+`.+` `.-` `.*`. A service prelude that re-exports `lens`/`generic-lens` already binds some of
+these names; the sharpest clash is `(.>)` — optic composition in `lens`, greater-than in keiki —
+so the bare operator is ambiguous.
+
+## Solution
+
+Inside a builder block, prefer the clash-free guard verbs — they need no operator at all:
+
+```haskell
+import qualified Keiki.Builder as B
+
+edge = B.do
+  B.requireGt (B.reg @"availableIcuBeds") (lit 0)   -- a > 0
+  B.requireGe d.availableUnits            (lit 1)   -- >= 1
+  -- also: requireLt, requireLe, requireEq, requireCmp, requireGuard
+```
+
+Outside a builder block — when you must build a compound `HsPred` *value* — import keiki's
+operators qualified, leaving the prelude's `(.>)` untouched:
+
+```haskell
+import MyService.Prelude                 -- lens (.>) etc. untouched
+import Keiki.Core (lit)
+import qualified Keiki.Operators as K
+
+guard = lit threshold K..< someTerm K..&& lit 0 K..<= otherTerm
+```
+
+<Callout type="info">
+  "jitsurei" (実例) is the family's word for a runnable worked example. The guard-verb form is
+  exactly what `Jitsurei.CoreBankingSync` uses (`B.requireEq d.loanId #syncPendingLoanId`).
+</Callout>
+
+## How it works
+
+`Keiki.Builder`'s `requireGt`/`requireGe`/`requireLt`/`requireLe`/`requireEq`/`requireCmp`/`requireGuard`
+emit the same `PCmp`/`PEq` atoms the operators do — they are clash-free function names, so no
+`hiding` list to maintain. `Keiki.Operators` re-exports exactly the predicate/term operators
+(plus the `tadd`/`tsub`/`tmul` aliases) and nothing else, designed for qualified use; `K..>`
+reads noisily but needs zero changes to the unqualified import list.
+
+A third option — `import MyService.Prelude hiding ((.>))` then `import Keiki.Core ((.>))` — also
+works, but you must extend the `hiding` list each time you reach for another clashing operator.
+**Prefer the builder verbs inside a builder block, and the qualified import outside one.** See
+[Operators](/docs/keiki/reference/operators) for the full operator-to-verb mapping.

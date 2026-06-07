@@ -1,0 +1,50 @@
+---
+title: Add a silent epsilon-edge
+description: A transition that changes vertex and writes registers but emits no public event.
+---
+
+Some transitions are real state changes with nothing to announce. Take the edge, emit nothing.
+
+## Problem
+
+A command should advance the lifecycle and update registers, but it must produce no public event — an internal threshold tip, or a deletion that deliberately leaves no trace.
+
+## Solution
+
+Two cases from the jitsurei spine, both built with `B.noEmit`.
+
+`Jitsurei.LoanApplication` — the "ready for review" tip. When the evidence thresholds hold, a `Continue` command moves `CollectingDocuments` to `UnderReview` with no event:
+
+```haskell
+B.from CollectingDocuments do
+  -- ... the five evidence-collection edges ...
+
+  -- ε-edge: no public event ('noEmit'), gated on the threshold guard.
+  B.onCmd inCtorContinue $ \_d -> B.do
+    B.requireGuard readyForReviewGuard
+    B.noEmit
+    B.goto UnderReview
+```
+
+`Jitsurei.UserRegistration` — a GDPR deletion before confirmation, which writes the deletion timestamp but emits nothing:
+
+```haskell
+B.from RequiresConfirmation do
+  -- ... confirm and resend edges ...
+
+  -- GDPR before confirmation: silent ε-edge (no event).
+  B.onCmd inCtorGdpr $ \d -> B.do
+    B.slot @"deletedAt" .= d.at
+    B.noEmit
+    B.goto Deleted
+```
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## How it works
+
+`B.noEmit` marks the edge's output list as empty — the transition still fires `delta` (vertex change plus register writes), but `omega` yields no events. An ε-edge is otherwise an ordinary edge: it still has a guard and still writes slots.
+
+Both examples key the ε-edge on a real `inCtor` (`inCtorContinue`, `inCtorGdpr`) rather than a bare epsilon transition. That is deliberate: the constructor witness disambiguates the edge from the others leaving the same vertex, so the single-valuedness check can reason about it as a regular keyed edge. The LoanApplication tip pairs `noEmit` with `requireGuard readyForReviewGuard` so the edge only fires once the thresholds are met — see [A multi-field threshold guard](/docs/keiki/cookbook/a-multi-field-threshold-guard).
+
+See [the builder reference](/docs/keiki/reference/builder) for `noEmit` and `requireGuard`.

@@ -1,0 +1,66 @@
+---
+title: "Use derive-all over manual enumeration"
+description: "Derive every aggregate constructor with one fused splice instead of hand-listing input and wire constructors."
+---
+
+A cookbook recipe is a short, copy-paste solution to one problem. Here: stop hand-listing every
+input and wire constructor for an aggregate.
+
+## Problem
+
+Enumerating each command's `inCtor`/`inp`/`is` declaration and each event's `wire` declaration
+by hand is tedious and drifts: add a command constructor, forget its entry, and a guard or
+output silently goes missing. For a ten-constructor aggregate that is twenty hand-written
+pairings.
+
+## Solution
+
+When the short name equals the constructor name everywhere (the common case), use the single
+fused splice `deriveAggregate`. It derives every command-side and event-side constructor in one
+go, defaulting each short-name suffix to the constructor's own name.
+
+```haskell
+-- Jitsurei.OrderCart — one splice for all ten commands and ten events
+import Keiki.Generics.TH (deriveAggregate)
+
+$(deriveAggregate ''OrderCmd ''OrderCartRegs ''OrderEvent)
+-- emits inCtorAddItem / inpAddItem / isAddItem … and wireItemAdded … plus
+-- each <Ctor>TermFields record and its ToOutFields instance.
+```
+
+When the short names differ from the constructor names, use the *-All* variants that still avoid
+hand-listing each pairing, or the explicit list forms when you genuinely need a rename:
+
+```haskell
+import Keiki.Generics.TH
+  (deriveAggregateCtorsAll, deriveWireCtorsAll, deriveAggregateCtors)
+
+-- Default every short name to the constructor name, no list:
+$(deriveAggregateCtorsAll ''OrderCmd ''OrderCartRegs)
+$(deriveWireCtorsAll ''OrderEvent)
+
+-- Only reach for the list form when a rename is actually required:
+$(deriveAggregateCtors ''UserCmd ''UserRegRegs
+    [ ("StartRegistration", "Start"), ("ConfirmAccount", "Confirm")
+    , ("ResendConfirmation", "Resend"), ("FulfillGDPRRequest", "Gdpr") ])
+```
+
+<Callout type="info">
+  "jitsurei" (実例) is the family's word for a runnable worked example. `Jitsurei.OrderCart` uses
+  the fused `deriveAggregate` for all twenty of its constructors.
+</Callout>
+
+## How it works
+
+`deriveAggregate` fuses the command-side derivation (`deriveAggregateCtors`) and the event-side
+derivation (`deriveWireCtors`) into one splice, reading each constructor's payload through its
+`Generic` instance and defaulting every short name to the constructor name. The `*All` variants
+do the same defaulting for one side at a time. Reach for the explicit list form only when a
+short name must differ from the constructor name — `UserRegistration` renames
+`StartRegistration` to `Start` so the guard reads `inCtorStart`.
+
+Deriving over enumerating removes the drift class entirely: a new constructor is covered the
+moment it is added, with no pairing to forget. See
+[Derive aggregate constructors](/docs/keiki/how-to/derive-aggregate-constructors) for choosing
+between the forms and [Generics & TH](/docs/keiki/reference/generics-th) for what each splice
+emits.

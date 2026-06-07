@@ -1,0 +1,53 @@
+---
+title: "Project a per-vertex read view"
+description: "Use deriveView to generate a read model that exposes only the slots each control vertex actually uses."
+---
+
+A cookbook recipe is a short, copy-paste solution to one problem. Here: expose a read model
+whose fields vary by control vertex.
+
+## Problem
+
+A reader of a `Confirmed` user should not be able to ask for `cConfirmedAt` on a
+`PotentialCustomer`, where that slot is meaningless. You want a per-vertex read model where the
+type system blocks asking a vertex for a slot it does not have.
+
+## Solution
+
+`deriveView` generates a singleton, a view sum, and a projection function from the shared
+register file. List, per vertex, the "live" slots that vertex exposes.
+
+```haskell
+-- Jitsurei.UserRegistration
+$(deriveView ''Vertex ''UserRegRegs
+    "SUserVertex" "UserView" "userView"
+    [ ("PotentialCustomer",    [])
+    , ("RequiresConfirmation", ["email", "confirmCode"])
+    , ("Confirmed",            ["email", "confirmedAt"])
+    , ("Deleted",              ["email", "deletedAt"])
+    ])
+
+-- Pattern-matching on the projected view yields only the live slots:
+--   userView SConfirmed regs  ==>  ConfirmedV { cEmail = …, cConfirmedAt = … }
+-- Asking SPotentialCustomer for cConfirmedAt does not type-check.
+```
+
+<Callout type="info">
+  "jitsurei" (実例) is the family's word for a runnable worked example. Both
+  `Jitsurei.UserRegistration` and `Jitsurei.LoanApplication` derive their views exactly this
+  way.
+</Callout>
+
+## How it works
+
+The splice emits one `UserView` constructor per vertex carrying record selectors for that
+vertex's live slots only, plus a singleton (`SUserVertex`) that ties the term-level vertex to
+the type-level view, and `userView :: SUserVertex v -> RegFile UserRegRegs -> UserView`. The
+projection is opt-in and strictly downstream — nothing in the transducer references the view, so
+adding or changing a view never touches `delta`/`omega`.
+
+The variance is the point: `LoanApplication` exposes `appApplicantId` at `Intake`, then switches
+focus to decision inputs (`appCreditScore`, `appEmploymentVerified`) at `UnderReview`, then to a
+terminal summary at `Approved`. See the
+[per-vertex view how-to](/docs/keiki/how-to/read-a-per-vertex-view) for consuming a view and
+[B-presentation views](/docs/keiki/explanation/b-presentation-views) for the design rationale.

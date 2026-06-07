@@ -1,12 +1,83 @@
 ---
 title: Cookbook
-description: Short, self-contained, copy-paste recipes that each solve one common problem.
+description: Short, self-contained recipes plus a decision guide for choosing how to model a domain in keiki (継起).
 ---
 
-Short, self-contained, copy-paste recipes that each solve one common problem.
+Short, self-contained, copy-paste recipes that each solve one common problem — and a decision guide for the choices you make *before* you write a single edge.
 
-<Callout type="info">
-  Pages in this section are coming soon. When a new page is added it will appear here in the sidebar
-  — copy the matching template from `_templates/` to start a recipe. See
-  [Contributing](/docs/getting-started/contributing).
-</Callout>
+## Choosing how to model your domain
+
+The recipes below each fix one problem. This section is the level above them: the handful of modelling decisions that decide whether your transducer stays small, replayable, and verifiable — or drifts into shapes the solver cannot see.
+
+### keiki is for durable, pure state machines
+
+keiki (継起) describes an aggregate as a guarded transducer: a finite set of control vertices, a typed register file, and edges that read a command, write registers, and emit events. Everything inside that transducer is pure. **Decode and validate at the boundary, not in keiki.** Parse JSON, look up the current time, generate a fresh confirmation code, check authorization — all of that happens in the runtime adapter *before* the command reaches the transducer. By the time an edge runs, the command is a typed value and the only question left is the state-machine question: from *this* vertex, under *these* registers, does this command transition, and to what?
+
+### Collection register vs scalar tally
+
+When a vertex accumulates "things" — items in a cart, documents on file, open line-items — the instinct is to keep a `Map` or a list in a register. Resist it for anything a guard needs to reason about.
+
+- A guard over a `Map` (`Map.size m == 0`, `all isClosed m`) compiles to an opaque `TApp` — a Haskell function the symbolic solver cannot look inside. The edge still *runs*, but build-time analysis goes blind: single-valuedness and reachability checks silently skip it.
+- A **scalar tally** keeps the count, not the collection: a `Word32`/`Int` slot evolved by `TApp1 (+1)` / `TApp1 (subtract 1)`, with the guard written structurally as `openCount .== lit 0`. "Can't close while any line is open" becomes a `PCmp`/`PEq` the solver reads directly.
+
+Default to a tally. Reach for a full collection register only when downstream consumers genuinely need the elements and no guard depends on them. See [Model a collection as a scalar tally](/docs/keiki/cookbook/model-a-collection-as-a-scalar-tally).
+
+### State refinement vs new vertex
+
+Add a **new vertex** when the lifecycle genuinely changes shape — when a different set of commands becomes legal, or a different set of registers becomes live. `Reserved`, `Paid`, `Shipped` are distinct vertices because each accepts a different command alphabet.
+
+Do **not** add a vertex for a numeric threshold. "Has enough documents" or "credit score above the cap" is not a new lifecycle state; it is a predicate over registers. Model it as a tally (or scalar slot) plus a structural guard on the edge that leaves the vertex. See [Derive a lifecycle transition from a threshold](/docs/keiki/cookbook/derive-a-lifecycle-transition-from-a-threshold).
+
+### Single vs multi-event commands
+
+A **multi-event edge** is one transition that always produces the same static list of two or more events. `StartRegistration` always emits `[RegistrationStarted, ConfirmationEmailSent]` — every time, in that order. That is one edge with a length-2 output.
+
+If the *count or shape* of the output depends on the input value — approve emits one event, decline emits a different one — that is **branching**, not a multi-event edge. Model it as two disjoint-guarded edges out of the same vertex. See [Emit multiple events from one command](/docs/keiki/cookbook/emit-multiple-events-from-one-command) and [Branch a command into two outcomes](/docs/keiki/cookbook/branch-a-command-into-two-outcomes).
+
+### When to compose / reach for a Process
+
+Keep it one aggregate when there is one identity and one lifecycle. Split into two transducers — each with its own event stream — when a concept has **its own identity and its own lifecycle** (a loan application and the core-banking sync that mirrors it). Wire them together with a Process: `compose` plus `lmapMaybeCi` to route a parent event into a child command.
+
+`compose` is **lockstep** — both transducers step together within one transition. Model anything asynchronous (a webhook, a delayed external reply) through the adapter functions at the boundary, not by trying to make the composition wait. See [Build a cross-context process](/docs/keiki/how-to/build-a-cross-context-process) and [Compose aggregates into a workflow](/docs/keiki/cookbook/compose-aggregates-into-a-workflow).
+
+### When to add the symbolic gate
+
+The symbolic analyses can only see guards in the verifiable fragment: `PEq` (equality), `PCmp` (ordering), `PInCtor` (constructor match), and their structural `TArith` arguments. Anything routed through a `TApp` is opaque.
+
+- Keep guards structural so they land in that fragment.
+- Wire `validateTransducer defaultValidationOptions t == []` into CI so a regression in well-formedness fails the build. See [Validate a transducer at build time](/docs/keiki/cookbook/validate-a-transducer-at-build-time) and [Assert a transducer is well-formed in CI](/docs/keiki/how-to/assert-a-transducer-is-well-formed-in-ci).
+- Turn on `warnOpaqueGuards` when you want the validator to *also* flag any guard that routes through a `TApp` — the early warning that a guard has slipped out of the verifiable fragment. See [The SymTransducer](/docs/keiki/explanation/the-symtransducer).
+
+### New-transducer checklist
+
+Before you call a transducer done:
+
+- **Boundary clean.** No parsing, clock reads, or randomness inside any edge — commands arrive fully typed.
+- **Tallies, not collections,** for anything a guard inspects; guards written with `.==`/`.>=`/`.<=`/`.&&`, not over a `Map`.
+- **Vertices are lifecycle states,** thresholds are guards.
+- **Multi-event edges are static lists;** value-dependent shapes are disjoint-guarded branches.
+- **Branches are mutually exclusive** (`g` / `pnot g`) so no command matches two edges.
+- **Every slot a later read needs is initialised** before the read — seed counters and decision slots on the entrance edge.
+- **`validateTransducer defaultValidationOptions t == []`** is green in CI.
+- Recommended surface is the transducer: `step` / `stepEither` / `delta` / `omega` / `reconstitute`.
+
+## Recipes
+
+<Cards>
+  <Card title="Model a collection as a scalar tally" href="/docs/keiki/cookbook/model-a-collection-as-a-scalar-tally" description="Track a cart's contents as a Word32 count evolved by arithmetic, not a Map a guard can't see." />
+  <Card title="Emit multiple events from one command" href="/docs/keiki/cookbook/emit-multiple-events-from-one-command" description="Produce a static two-event list from one transition, and the single-snapshot rule for later emits." />
+  <Card title="Add a silent epsilon-edge" href="/docs/keiki/cookbook/add-a-silent-epsilon-edge" description="A transition that changes state and writes registers but emits no public event." />
+  <Card title="Guard on an equality for idempotency" href="/docs/keiki/cookbook/guard-on-an-equality-for-idempotency" description="Use requireEq to gate an edge on a supplied code matching stored state." />
+  <Card title="A multi-field threshold guard" href="/docs/keiki/cookbook/a-multi-field-threshold-guard" description="Build a solver-visible approval guard structurally from PCmp and TArith." />
+  <Card title="Branch a command into two outcomes" href="/docs/keiki/cookbook/branch-a-command-into-two-outcomes" description="Model approve/decline as two disjoint-guarded edges, not one multi-event edge." />
+  <Card title="Diagnose why a command was rejected" href="/docs/keiki/cookbook/diagnose-why-a-command-was-rejected" description="Swap step for stepEither and read the StepFailure explanation." />
+  <Card title="Validate a transducer at build time" href="/docs/keiki/cookbook/validate-a-transducer-at-build-time" description="Assert validateTransducer returns no findings as a CI gate." />
+  <Card title="Fix a hidden-input replay failure" href="/docs/keiki/cookbook/fix-a-hidden-input-replay-failure" description="When an event drops a field a guard reads, replay can't reconstruct the command." />
+  <Card title="Evolve a schema safely" href="/docs/keiki/cookbook/evolve-a-schema-safely" description="Add fields and events without breaking replay of an existing log." />
+  <Card title="Build a cross-context process" href="/docs/keiki/cookbook/build-a-cross-context-process" description="Route a parent event into a child command across two bounded contexts." />
+  <Card title="Compose aggregates into a workflow" href="/docs/keiki/cookbook/compose-aggregates-into-a-workflow" description="Drive two transducers in lockstep with compose and lmapMaybeCi." />
+  <Card title="Derive a lifecycle transition from a threshold" href="/docs/keiki/cookbook/derive-a-lifecycle-transition-from-a-threshold" description="Tip from one vertex to the next when a numeric threshold is met." />
+  <Card title="Project a per-vertex read view" href="/docs/keiki/cookbook/project-a-per-vertex-read-view" description="Expose only the slots a given vertex actually uses." />
+  <Card title="Resolve the lens operator clash" href="/docs/keiki/cookbook/resolve-the-lens-operator-clash" description="Disambiguate keiki's builder operators from a lens library's." />
+  <Card title="Use deriveAll over manual enumeration" href="/docs/keiki/cookbook/use-derive-all-over-manual-enumeration" description="Let Template Haskell derive the inCtor/wire scaffolding instead of hand-writing it." />
+</Cards>

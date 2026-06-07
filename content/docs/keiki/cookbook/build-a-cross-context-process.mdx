@@ -1,0 +1,64 @@
+---
+title: "Build a cross-context process"
+description: "Model an events-in/commands-out process between two bounded contexts as a transducer with an idempotent terminal vertex."
+---
+
+A cookbook recipe is a short, copy-paste solution to one problem. Here: react to events from
+one bounded context by issuing commands to another, idempotently.
+
+## Problem
+
+A loan is approved in one context; a legacy core-banking system in another context must be told,
+and its callback must drive a follow-up command back into the loan. Delivery is at-least-once,
+so a duplicate callback must not act twice.
+
+## Solution
+
+A *process* is a transducer whose input alphabet is **events** from upstream and whose output
+alphabet is **commands** (plus audit events) to downstream. Make the last vertex terminal so a
+replayed callback finds nowhere to go.
+
+```haskell
+-- Jitsurei.CoreBankingSync (abridged)
+coreBankingSync :: Guarded SyncRegs SyncVertex SyncInput SyncOutput
+coreBankingSync = B.buildTransducer SyncIdle emptySyncRegs
+                    (\case SyncSettled -> True; _ -> False) do
+
+  B.from SyncIdle do
+    B.onCmd inCtorLoanCreatedIn $ \d -> B.do
+      B.slot @"syncPendingLoanId"      .= d.loanId
+      B.slot @"syncPendingApplicantId" .= d.applicantId
+      B.slot @"syncPendingPrincipal"   .= d.principal
+      B.emit wireSyncToLegacyRequested SyncToLegacyRequestedTermFields
+        { loanId = d.loanId, applicantId = d.applicantId, principal = d.principal }
+      B.goto SyncRequested
+
+  B.from SyncRequested do
+    B.onCmd inCtorLegacyCallbackReceivedIn $ \d -> B.do
+      -- Idempotency anchor: the callback's loanId must match the pending one.
+      B.requireEq d.loanId #syncPendingLoanId
+      B.emit wireLegacyAssignmentCommanded LegacyAssignmentCommandedTermFields
+        { assignment = TApp2 buildAssign d.loanId d.legacyLoanId }
+      B.goto SyncSettled
+
+  -- SyncSettled is terminal; default to [].
+```
+
+<Callout type="info">
+  "jitsurei" (実例) is the family's word for a runnable worked example. `Jitsurei.CoreBankingSync`
+  is one — a process mirroring a production legacy-sync flow.
+</Callout>
+
+## How it works
+
+Inbound constructors are suffixed `In` (`LoanCreatedIn`, `LegacyCallbackReceivedIn`) so the
+process clearly consumes upstream events; the outputs are a `SyncToLegacyRequested` audit signal
+(the runtime adapter consumes it to call the legacy system — the pure layer never makes the call)
+and a `LegacyAssignmentCommanded` wrapper around the downstream `AssignLegacyLoanId` command.
+
+Replays are idempotent **by construction**. A duplicate callback for the same loan finds the
+process already in `SyncSettled`, which has no outgoing edges, so `delta` returns `Nothing`. A
+callback whose `loanId` does not match the pending one fails the `requireEq` guard and `delta`
+also returns `Nothing`. See the [cross-context process how-to](/docs/keiki/how-to/build-a-cross-context-process)
+for the runtime wiring and [Composition](/docs/keiki/reference/composition) for how this process
+plugs into the loan workflow.

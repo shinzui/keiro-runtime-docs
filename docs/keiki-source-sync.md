@@ -50,9 +50,17 @@ source change is most likely to invalidate them:
 - **The signature-transcribing reference pages** under `content/docs/keiki/reference/`.
 - The `explanation/data-carrying-alphabets.mdx` and `explanation/deriving-event-sourcing.mdx`
   theory essays (they name the concrete `Edge`/`SymTransducer`/`HsPred` surface and the key result).
-- The EmailDelivery snippet in `content/docs/keiki/tutorials/your-first-aggregate.mdx`.
+- The **worked-example tutorials** — `tutorials/your-first-aggregate.mdx` (EmailDelivery),
+  `tutorials/a-multi-command-lifecycle.mdx` (OrderCart), and
+  `tutorials/a-loan-application-process-manager.mdx` (the LoanApplication → Loan → CoreBankingSync →
+  LoanWorkflow capstone; quotes the `loanWorkflow` composition verbatim).
+- The **cookbook recipes** under `content/docs/keiki/cookbook/` — each quotes a `jitsurei` snippet
+  verbatim (e.g. `itemCount` tally, `approvalGuard`, `checkHiddenInputs`, the `loanWorkflow` chain).
+- The **FAQ** `content/docs/keiki/faq.mdx` (names the `stepEither`/`StepFailure`, `warnOpaqueGuards`,
+  and `lmapMaybeCi` surfaces).
 
-> EP-26 finalizes this list once every Phase-2 page exists.
+> Reviewed by EP-26 finalization (2026-06-06): this list now covers every Phase-2 page plus the
+> Phase-3 cookbook/tutorials/FAQ.
 
 ### Previous pointers (for traceability)
 

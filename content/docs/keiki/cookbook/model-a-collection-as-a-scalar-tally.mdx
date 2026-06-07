@@ -1,0 +1,58 @@
+---
+title: Model a collection as a scalar tally
+description: Track a cart's contents as a Word32 count evolved by arithmetic, so a guard stays solver-visible instead of hiding behind a Map.
+---
+
+A cart accumulates items, but a guard only needs to know *how many*. Keep the count, not the collection.
+
+## Problem
+
+You need to gate a transition on "how many things are in this collection" — but a register holding a `Map` or list forces every guard over it through an opaque `TApp` the symbolic analyses cannot see inside.
+
+## Solution
+
+From `Jitsurei.OrderCart`: `itemCount` is a single `Word32` slot, seeded from a literal on the first add and evolved by arithmetic on every add and remove.
+
+```haskell
+type ItemCount = Word32   -- ^ Number of items currently in the cart.
+
+type OrderCartRegs =
+  '[ '("itemCount", ItemCount)
+   -- ... discountBp, reservationId, paymentRef, ... the rest are
+   -- simple per-event copies of input fields.
+   ]
+
+orderCart :: Guarded OrderCartRegs OrderVertex OrderCmd OrderEvent
+orderCart = B.buildTransducer Empty emptyOrderRegs isFinal do
+
+  B.from Empty do
+    -- The first AddItem seeds itemCount from a literal rather than
+    -- reading the (uninitialised) #itemCount slot.
+    B.onCmd inCtorAddItem $ \d -> B.do
+      B.slot @"itemCount" .= lit (1 :: ItemCount)
+      B.emit wireItemAdded ItemAddedTermFields
+        { sku = d.sku, quantity = d.quantity, price = d.price, at = d.at }
+      B.goto OpenWithItems
+
+  B.from OpenWithItems do
+    B.onCmd inCtorAddItem $ \d -> B.do
+      B.slot @"itemCount" .= TApp1 (+ 1) #itemCount
+      B.emit wireItemAdded ItemAddedTermFields
+        { sku = d.sku, quantity = d.quantity, price = d.price, at = d.at }
+      B.goto OpenWithItems
+
+    B.onCmd inCtorRemoveItem $ \d -> B.do
+      B.slot @"itemCount" .= TApp1 (subtract 1) #itemCount
+      B.emit wireItemRemoved ItemRemovedTermFields { sku = d.sku, at = d.at }
+      B.goto OpenWithItems
+```
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## How it works
+
+The first `AddItem` runs out of `Empty`, where `#itemCount` is still the deferred `"uninit: itemCount"` error from `emptyRegFile`, so it assigns `lit (1 :: ItemCount)` rather than reading the slot. Every later add or remove reads the current value and rewrites it with `TApp1 (+ 1) #itemCount` / `TApp1 (subtract 1) #itemCount`.
+
+The opaque-guard trap is the reason this is a count, not a `Map`. A guard like `Map.size m == 0` compiles to a `TApp` — a host function the solver treats as a black box, so single-valuedness and reachability checks skip the edge. A scalar tally lets you write the guard structurally as `#itemCount .== lit 0` (a `PEq` over a `PCmp`-eligible slot), which stays in the verifiable fragment. Default to a tally; reach for a full collection only when a downstream consumer needs the elements *and* no guard inspects them.
+
+See [A multi-command lifecycle](/docs/keiki/tutorials/a-multi-command-lifecycle) for the full OrderCart walkthrough, and [What gets derived](/docs/keiki/explanation/what-gets-derived) for which terms the solver can read.

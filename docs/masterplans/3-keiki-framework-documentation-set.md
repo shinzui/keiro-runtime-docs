@@ -174,7 +174,7 @@ phase — the explicit lesson recorded in MasterPlan #2's Surprises & Discoverie
 | 23 | Keiki composition: process managers, sagas, and choreography | docs/plans/23-keiki-composition-process-managers-sagas-and-choreography.md | EP-20 | EP-21, EP-22 | 2 | Complete |
 | 24 | Keiki symbolic analysis, build-time validation, and diagnostics | docs/plans/24-keiki-symbolic-analysis-build-time-validation-and-diagnostics.md | EP-20 | EP-21 | 2 | Complete |
 | 25 | Keiki rendering, diagrams, and JSON codecs | docs/plans/25-keiki-rendering-diagrams-and-json-codecs.md | EP-20 | EP-21, EP-22 | 2 | Complete |
-| 26 | Keiki domain cookbook, worked-example tutorials, FAQ, and finalization | docs/plans/26-keiki-domain-cookbook-worked-example-tutorials-faq-and-finalization.md | EP-20 | EP-21, EP-22, EP-23, EP-24, EP-25 | 3 | Not Started |
+| 26 | Keiki domain cookbook, worked-example tutorials, FAQ, and finalization | docs/plans/26-keiki-domain-cookbook-worked-example-tutorials-faq-and-finalization.md | EP-20 | EP-21, EP-22, EP-23, EP-24, EP-25 | 3 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their `EP-` prefix (e.g., EP-20).
@@ -388,8 +388,8 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 - [x] EP-24: Symbolic/validation how-tos + `walkthrough/symbolic-and-validation/` tour authored.
 - [x] EP-25: Rendering + codecs explanation + reference (Render.*, keiki-codec-json) authored.
 - [x] EP-25: Rendering + codecs how-tos + `walkthrough/rendering-and-codecs/` tour authored.
-- [ ] EP-26: Domain cookbook recipes + worked-example tutorials + FAQ authored.
-- [ ] EP-26: Finalization — all meta.json ordered, section landings carry `<Cards>`, hub hrefs wired, build + link-check pass over the keiki tree.
+- [x] EP-26: Domain cookbook recipes + worked-example tutorials + FAQ authored.
+- [x] EP-26: Finalization — all meta.json ordered, section landings carry `<Cards>`, hub hrefs wired, build + link-check pass over the keiki tree.
 
 
 ## Surprises & Discoveries
@@ -491,4 +491,36 @@ seven capability research reports of 2026-06-07) and bear on multiple child plan
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+**Complete (2026-06-06).** All seven child plans (EP-20 … EP-26) are Complete. The keiki
+documentation set now fills `content/docs/keiki/` with **134 `.mdx` pages**: a real landing +
+getting-started tutorial, seven theory-foundation essays, the concrete `SymTransducer` model pages,
+five capability reference/explanation/how-to slices, five disjoint contribution-grade walkthrough
+tours (`core-and-builder`, `derivations`, `composition`, `symbolic-and-validation`,
+`rendering-and-codecs`), a 16-recipe domain cookbook with a decision guide, four worked-example
+tutorials, and a 9-question FAQ — all threaded through the one `jitsurei` spine and pinned to keiki
+source `344c4ca`. The whole tree builds clean (`pnpm build` exit 0, **zero** crawler warnings),
+typechecks, and link-checks (`pnpm lint:links` + `node scripts/check-doc-links.mjs`, 322 files, no
+broken internal links); no relative links and no "coming soon" placeholders remain.
+
+**What worked.** Decomposition by capability layer held: each Phase-2 plan read one cohesive module
+set and shipped its full Diátaxis coverage independently. Authoring each capability's walkthrough at
+contribution-grade depth on the first pass (the front-loaded MasterPlan #2 lesson) meant no deepening
+phase was needed. The integration-point ownership rules prevented contradictions — the `SymTransducer`
+model (EP-21), the Decider façade framing (EP-22), the shape-hash/codec split (EP-22 ↔ EP-25), and the
+`validateTransducer`-vs-`Keiki.Render.Validate` disambiguation (EP-24 ↔ EP-25) each had a single owner
+with cross-links. The href-less-walkthrough-hub discipline kept every intermediate build crawler-clean
+until EP-26 wired the five hub hrefs in finalization.
+
+**Surprises that bore on more than one plan** (details in each child plan's Surprises): (1) MDX/JSX
+hazards — backslash-escaped quotes inside a `<Card>` attribute, and authoring agents occasionally
+leaking literal harness control tags (`</content>`) into a file end — both failed the MDX build; a
+grep for stray tags + bare-fence/relative-link checks was added to the per-plan acceptance routine and
+caught them thereafter. (2) Forward links to a sibling plan's not-yet-authored pages tripped the
+prerender crawler; the standing fix (already in the plans) is to reference a not-yet-existing target in
+prose with an inline-code path rather than a live link, and let EP-26 upgrade them. Neither surprise
+changed the decomposition or the dependency graph.
+
+**Process note.** The five Phase-2 plans were genuinely independent on page content and walkthrough
+subdirs (the disjoint-subdir rule), but they all append to the same section `meta.json` files; those
+appends were serialized by the implementer to avoid races, and EP-26 owned the final ordering pass —
+exactly as Integration Points #1 and #2 prescribed.

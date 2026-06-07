@@ -1,0 +1,39 @@
+---
+title: Guard on an equality for idempotency
+description: Use requireEq to gate an edge on a supplied value matching stored state, the basis for correlation and idempotency checks.
+---
+
+An edge should only fire when a value the command carries matches a value the aggregate already holds.
+
+## Problem
+
+You need a transition to accept only the *right* code, reference, or correlation id — and you want that comparison to stay solver-visible, not hidden behind a host function.
+
+## Solution
+
+From `Jitsurei.UserRegistration`: confirming an account requires the supplied code to equal the stored one.
+
+```haskell
+B.from RequiresConfirmation do
+  -- Right code: confirm. The InCtor-match guard from `onCmd`
+  -- short-circuits the d.confirmCode read for non-ConfirmAccount inputs.
+  B.onCmd inCtorConfirm $ \d -> B.do
+    B.requireEq d.confirmCode #confirmCode
+    B.slot @"confirmedAt" .= d.at
+    B.emit wireAccountConfirmed AccountConfirmedTermFields
+      { email       = #email
+      , confirmCode = d.confirmCode
+      , at          = d.at
+      }
+    B.goto Confirmed
+```
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## How it works
+
+`B.requireEq d.confirmCode #confirmCode` adds a guard that the input projection `d.confirmCode` equals the stored slot `#confirmCode`. It lowers to a `PEq` atom — exactly the equality fragment the SBV-backed analyses recognise — so the comparison stays in the verifiable fragment rather than becoming an opaque `TApp`. The surrounding `onCmd inCtorConfirm` contributes the constructor-match conjunct, which short-circuits the field read for any command that is not a `ConfirmAccount`.
+
+This is the building block for correlation and idempotency: gate on a supplied id matching the one already recorded so a replayed or out-of-band command is rejected instead of double-acting. The same shape appears in the LoanApplication / CoreBankingSync correlation guards, where a sync command must carry the matching application id before it is accepted.
+
+Because the confirm event carries `confirmCode` forward, the value the guard read is recoverable on replay. The cautionary opposite — an event that drops a field the guard reads — is in [Fix a hidden-input replay failure](/docs/keiki/cookbook/fix-a-hidden-input-replay-failure). See [the core reference](/docs/keiki/reference/core) for `requireEq` and `PEq`.

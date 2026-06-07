@@ -1,0 +1,75 @@
+---
+title: "Derive a lifecycle transition from a threshold"
+description: "Turn a numeric threshold into a guarded edge so crossing it is the transition — and avoid the one-threshold-both-directions trap."
+---
+
+A cookbook recipe is a short, copy-paste solution to one problem. Here: a status vertex should
+flip when a register quantity crosses a threshold.
+
+## Problem
+
+An aggregate accumulates a value in a register; a lifecycle vertex should change when that value
+crosses a threshold. Wired carelessly, the crossing becomes a separate step something else has
+to remember to trigger — and the status drifts out of sync with the register that decides it.
+
+## Solution
+
+Make the threshold a guard on the edge that changes the register, so crossing it **is** the
+transition. The guard reads the threshold structurally (`reg`/`lit` with `.>=`, `.<=`, `.==`,
+`.&&`) so the SBV translator can see it.
+
+```haskell
+-- Jitsurei.LoanApplication — the approval guard is a multi-field threshold
+approvalGuard :: Pred LoanAppRegs LoanCmd
+approvalGuard =
+       reg @"appCreditScore"        .>= lit approvalThresholdScore
+  .&&  reg @"appEmploymentVerified" .== lit True
+  .&&  reg @"appRequestedAmount"    .<= reg @"appCreditScore" .* lit 1000
+
+-- The transition is the edge that requires it: cross the threshold -> Approved.
+B.from UnderReview do
+  B.onCmd inCtorContinue $ \d -> B.do
+    B.requireGuard approvalGuard
+    B.slot @"appDecidedAt" .= continueAt d
+    B.emit wireApplicationApproved ApplicationApprovedTermFields
+      { applicantId = #appApplicantId, requestedAmount = #appRequestedAmount
+      , creditScore = #appCreditScore, at = continueAt d }
+    B.goto Approved
+
+  -- The other direction is its OWN edge with the negated guard — not a re-use
+  -- of the same threshold "in reverse".
+  B.onCmd inCtorContinue $ \d -> B.do
+    B.requireGuard (pnot approvalGuard)
+    B.slot @"appDecidedAt"     .= continueAt d
+    B.slot @"appDeclineReason" .= lit "Below threshold"
+    B.emit wireApplicationDeclined ApplicationDeclinedTermFields
+      { applicantId = #appApplicantId, reason = #appDeclineReason, at = continueAt d }
+    B.goto Declined
+```
+
+<Callout type="info">
+  "jitsurei" (実例) is the family's word for a runnable worked example. `Jitsurei.LoanApplication`
+  is one — its approval guard is a real multi-field threshold the symbolic gate proves
+  single-valued.
+</Callout>
+
+## How it works
+
+`requireGuard` attaches the predicate to the edge; the edge fires only when the threshold holds.
+Because both directions are authored as **independent** edges keyed on the same input
+constructor (`Continue`), the single-valuedness gate must prove their guards never co-fire — and
+when you write them as a comparison and its negation over structural terms, z3 catches the exact
+boundary mistake (`>=` vs `>`) that property tests miss.
+
+<Callout type="warn">
+  **Bidirectional-threshold caution.** One threshold cannot drive both directions on its own. A
+  value sitting exactly at the boundary, or oscillating across it, will flap. If the status must
+  flip both ways (a stock level, a balance), give each direction its own guard — and add
+  hysteresis (two thresholds, an upper and a lower) so a tiny wobble does not toggle the
+  lifecycle. A genuinely one-way lifecycle (a loan, once approved, is never un-approved) is the
+  exception: a terminal vertex with no exit is correct, not a bug.
+</Callout>
+
+See [Operators](/docs/keiki/reference/operators) for the structural comparison verbs and
+[The composition algebra](/docs/keiki/explanation/the-composition-algebra) for re-checking a
+threshold inside one observed step when the directions live in different vertices.

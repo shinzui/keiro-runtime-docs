@@ -1,0 +1,51 @@
+---
+title: Branch a command into two outcomes
+description: Model approve/decline as two disjoint-guarded edges out of one vertex, not as one multi-event edge.
+---
+
+The same command leads to one of two outcomes depending on register state. That is two edges, not one.
+
+## Problem
+
+A command should approve *or* decline — emit one event and go one way, or emit a different event and go another — depending on whether a guard holds. How do you model the fork?
+
+## Solution
+
+From `Jitsurei.LoanApplication`: two edges leave `UnderReview` on the same `Continue` command, gated on `approvalGuard` and its negation.
+
+```haskell
+B.from UnderReview do
+  -- Approval branch.
+  B.onCmd inCtorContinue $ \d -> B.do
+    B.requireGuard approvalGuard
+    B.slot @"appDecidedAt" .= continueAt d
+    B.emit wireApplicationApproved ApplicationApprovedTermFields
+      { applicantId     = #appApplicantId
+      , requestedAmount = #appRequestedAmount
+      , creditScore     = #appCreditScore
+      , at              = continueAt d
+      }
+    B.goto Approved
+
+  -- Decline branch — the negation of 'approvalGuard'.
+  B.onCmd inCtorContinue $ \d -> B.do
+    B.requireGuard (pnot approvalGuard)
+    B.slot @"appDecidedAt"     .= continueAt d
+    B.slot @"appDeclineReason" .= lit "Below threshold"
+    B.emit wireApplicationDeclined ApplicationDeclinedTermFields
+      { applicantId = #appApplicantId
+      , reason      = #appDeclineReason
+      , at          = continueAt d
+      }
+    B.goto Declined
+```
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## How it works
+
+Two `onCmd inCtorContinue` blocks out of one vertex produce two edges. They are made mutually exclusive by construction: one carries `requireGuard approvalGuard`, the other `requireGuard (pnot approvalGuard)`. For any state exactly one guard holds, so exactly one edge fires — `delta` is deterministic and the single-valuedness check is satisfied.
+
+This is **not** a multi-event edge. A multi-event edge always emits the same static list (see [Emit multiple events from one command](/docs/keiki/cookbook/emit-multiple-events-from-one-command)). Here the *event itself* differs by outcome — `ApplicationApproved` versus `ApplicationDeclined` — which is branching, and branching is disjoint-guarded edges. The `pnot` of the approval guard keeps the disjointness mechanical: when you change `approvalGuard`, the decline branch tracks it automatically.
+
+Because `approvalGuard` is built structurally (see [A multi-field threshold guard](/docs/keiki/cookbook/a-multi-field-threshold-guard)), the solver can prove the two branches never overlap. See [the builder reference](/docs/keiki/reference/builder) for `requireGuard` and `pnot`.

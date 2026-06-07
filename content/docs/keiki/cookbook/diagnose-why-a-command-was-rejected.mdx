@@ -1,0 +1,40 @@
+---
+title: Diagnose why a command was rejected
+description: Swap step for stepEither and match on the StepFailure to learn exactly why a transition did not fire.
+---
+
+`step` returns `Nothing` when a command does not transition. `stepEither` tells you *why*.
+
+## Problem
+
+A command was rejected and you only got `Nothing` back. You need the reason — wrong vertex, no matching guard, or an ambiguity.
+
+## Solution
+
+Swap `step` for `stepEither` and match on the `Left`:
+
+```haskell
+case stepEither orderCart (vertex, regs) cmd of
+  Right (vertex', regs', evs) ->
+    -- the transition fired
+    ...
+  Left (NoOutgoingEdges s) ->
+    -- 's' is terminal / has no edges at all
+    ...
+  Left (NoMatchingEdge s rejected) ->
+    -- edges exist out of 's' but none matched 'cmd';
+    -- 'rejected' is one RejectedEdgeSummary per edge, in declaration order
+    ...
+  Left (AmbiguousEdges s matched) ->
+    -- two or more guards matched — a single-valuedness violation;
+    -- 'matched' is one MatchedEdgeSummary per matched edge
+    ...
+```
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## How it works
+
+`stepEither` has the same signature as `step` but returns `Either (StepFailure s) (s, RegFile rs, [co])`. The `Right` is exactly the triple `step` returns; the `Left` is one of three precise explanations. `NoOutgoingEdges` means the source vertex is terminal. `NoMatchingEdge` means edges exist but every guard rejected the command — the summaries name each edge by `EdgeRef` and target, carrying no register values. `AmbiguousEdges` is the runtime witness of the single-valuedness violation that [build-time validation](/docs/keiki/cookbook/validate-a-transducer-at-build-time) is meant to catch first.
+
+For the full walkthrough see [Diagnose a rejected command](/docs/keiki/how-to/diagnose-a-rejected-command), and [the step-failure reference](/docs/keiki/reference/step-failure) for every field of `StepFailure`.

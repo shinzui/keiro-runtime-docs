@@ -1,0 +1,46 @@
+---
+title: Emit multiple events from one command
+description: Produce a static two-event list from one transition, and the single-snapshot rule that governs what a later emit may read.
+---
+
+One command can record more than one fact. A multi-event edge emits a fixed list in one transition.
+
+## Problem
+
+A single command should produce two (or more) events that always go together — and you need to know what state each emit is allowed to read.
+
+## Solution
+
+From `Jitsurei.UserRegistration`: `StartRegistration` emits `[RegistrationStarted, ConfirmationEmailSent]` in one transition.
+
+```haskell
+userReg :: Guarded UserRegRegs Vertex UserCmd UserEvent
+userReg = B.buildTransducer PotentialCustomer emptyRegs
+            (\case Deleted -> True; _ -> False) do
+
+  B.from PotentialCustomer do
+    B.onCmd inCtorStart $ \d -> B.do
+      B.slot @"email"        .= d.email
+      B.slot @"confirmCode"  .= d.confirmCode
+      B.slot @"registeredAt" .= d.at
+      -- First event.
+      B.emit wireRegistrationStarted RegistrationStartedTermFields
+        { email       = d.email
+        , confirmCode = d.confirmCode
+        , at          = d.at
+        }
+      -- Second event, same edge, same snapshot.
+      B.emit wireConfirmationEmailSent
+        ConfirmationEmailSentTermFields { email = d.email }
+      B.goto RequiresConfirmation
+```
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## How it works
+
+Two `B.emit` calls in one `onCmd` body append to the *same* edge's output list, so this is a single transition producing a static length-2 list — not two edges and not a value-dependent count. The order is the emission order.
+
+The key rule is the **single snapshot**: both events evaluate against the same pre-transition `(regs, ci)` snapshot, and the register write applies once at the edge level. So even the second emit reads `d.email` (the input projection) rather than `#email` (the slot just written) — at emission time the write has not yet taken effect, and reading the input is the correct, replayable source. If the output's *shape or count* depended on the input value, that would be branching instead; model it as disjoint-guarded edges. See [Branch a command into two outcomes](/docs/keiki/cookbook/branch-a-command-into-two-outcomes).
+
+See [Your first aggregate](/docs/keiki/tutorials/your-first-aggregate) for the registration walkthrough and [the core reference](/docs/keiki/reference/core) for `emit` and the `Edge` output list.

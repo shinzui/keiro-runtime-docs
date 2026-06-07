@@ -1,0 +1,69 @@
+---
+title: "Evolve a schema safely"
+description: "Reconcile old wire events with a changed schema using an explicit upcaster at the event-store boundary, and let the shape hash invalidate stale snapshots."
+---
+
+A cookbook recipe is a short, copy-paste solution to one problem. Here: a deployed schema
+change must still read events written by the old code.
+
+## Problem
+
+The aggregate's event or register-file shape changed. Events already in the store were written
+against the old shape; snapshots were taken against the old register file. The new transducer
+must replay both without silently producing wrong state.
+
+## Solution
+
+keiki keeps the formalism (`SymTransducer`, `Edge`, `solveOutput`, the hidden-input check)
+version-agnostic. Evolution is an **application** concern handled by an explicit upcaster
+`wire -> [current]` at the event-store boundary, additive-by-convention. The library never sees
+a non-current event.
+
+```haskell
+-- The application owns this. It runs per stored event, before any event
+-- reaches solveOutput. Additive change (a new field with a sensible
+-- default) needs only this fill-in:
+upcastAccountConfirmed :: WireAccountConfirmed -> [AccountConfirmedData]
+upcastAccountConfirmed w =
+  [ AccountConfirmedData
+      { email       = w.email
+      , at          = w.at
+      , confirmCode = sentinelMissingCode   -- domain choice: marks a pre-field event
+      }
+  ]
+
+-- A constructor split is the one 1-to-many case: emit the events in the
+-- order whose effect on the register file matches the old single event.
+upcastConfirmationResent :: WireConfirmationResent -> [CurrentEvent]
+upcastConfirmationResent w =
+  [ ConfirmationCodeRotated                 -- writes #confirmCode first
+      (ConfirmationCodeRotatedData { email = w.email, confirmCode = w.confirmCode, at = w.at })
+  , ConfirmationResent                      -- then the re-send, no register change
+      (ConfirmationResentData { email = w.email, at = w.at })
+  ]
+```
+
+<Callout type="info">
+  "jitsurei" (実例) is the family's word for a runnable worked example. The upcaster bodies
+  above are application code — keiki ships the contract and the registration point, not the
+  body.
+</Callout>
+
+## How it works
+
+The upcaster contract is `WireEvent -> Either Error [CurrentEvent]`: the `[]` allows the
+1-to-many constructor split, and the list order is the replay order. Trivial additive changes
+need a near-`id` upcaster (default the new field); only rename, split, merge, type-narrowing,
+and field removal need real work — and they need it written once, at the boundary.
+
+Two safety nets stay with the library. First, the **hidden-input check** runs against the
+current schema only: if an evolution drops a field from an event but leaves an edge still
+reading it, the check fires by name — the same check the
+[hidden-input recipe](/docs/keiki/cookbook/fix-a-hidden-input-replay-failure) shows, now doing
+a second job. Second, every snapshot carries a hash of the register-file shape (slot labels,
+slot types, vertex set) from [`Keiki.Shape`](/docs/keiki/reference/shape); on read a mismatch
+discards the snapshot and forces a full replay through the upcaster, so a register-shape change
+can never load a stale snapshot into a differently-shaped register file. See
+[the JSON codec](/docs/keiki/reference/codec-json) for where the shape hash is written and
+compared. keiki cannot detect a same-shape, different-meaning change — that one the application
+must version deliberately.

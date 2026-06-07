@@ -1,0 +1,42 @@
+---
+title: Validate a transducer at build time
+description: Assert that validateTransducer returns no findings, as a CI gate that fails the build on a malformed transducer.
+---
+
+Turn well-formedness into a test that fails the build.
+
+## Problem
+
+You want a regression in a transducer's structure — an unreachable vertex, an ambiguous pair of edges — to fail CI, not surface as a runtime `AmbiguousEdges` later.
+
+## Solution
+
+Assert that `validateTransducer` returns an empty list of findings:
+
+```haskell
+import Keiki.Core (validateTransducer, defaultValidationOptions)
+
+spec_loanApplicationIsWellFormed :: IO ()
+spec_loanApplicationIsWellFormed =
+  validateTransducer defaultValidationOptions loanApplication
+    `shouldBe` []
+```
+
+To also flag any guard that routes through an opaque `TApp`, opt in to the advisory audit:
+
+```haskell
+validateTransducer
+  defaultValidationOptions { warnOpaqueGuards = True }
+  loanApplication
+  `shouldBe` []
+```
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## How it works
+
+`validateTransducer` runs the soundness checks — determinism (single-valuedness) and reachability among them — over the transducer's AST and returns one finding per problem; an empty list means the transducer is well-formed. Because the checks operate on the AST purely, the call is cheap enough to live in a unit test, so `validateTransducer defaultValidationOptions t == []` becomes a CI gate.
+
+`warnOpaqueGuards` is off in `defaultValidationOptions` because it is advisory, not a soundness error. Turn it on when you want an early warning that a guard has slipped out of the verifiable fragment behind a `TApp` — the cue to refactor it structurally (see [A multi-field threshold guard](/docs/keiki/cookbook/a-multi-field-threshold-guard)).
+
+For the CI wiring see [Assert a transducer is well-formed in CI](/docs/keiki/how-to/assert-a-transducer-is-well-formed-in-ci), and [the validate reference](/docs/keiki/reference/validate) for every finding kind and option.

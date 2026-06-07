@@ -1,0 +1,90 @@
+---
+title: "Fix a hidden-input replay failure"
+description: "Emit every replay-critical field so reconstitute can recover the command — and read the build-time check that names a missing one."
+---
+
+A cookbook recipe is a short, copy-paste solution to one problem. Here: a guard reads a
+command field that the emitted event never carries, so replay cannot recover it.
+
+## Problem
+
+An edge's guard (or update) reads an input field — `d.confirmCode` — but the event the edge
+emits drops that field. Forward, the aggregate runs fine. On replay, `reconstitute` has only
+the stored event to work from, cannot recover the value the guard checked, and returns
+`Nothing`. The transition silently fails to replay.
+
+## Solution
+
+Emit every field the edge's guard or update reads. The fix is one field on the event payload.
+
+This is the broken schema — `AccountConfirmedDataV0` carries `email` and `at` but **not**
+`confirmCode`, while the Confirm edge's guard compares the input `confirmCode` against the
+stored slot:
+
+```haskell
+-- Jitsurei.UserRegistrationV0 — the unfixed schema
+data AccountConfirmedDataV0 = AccountConfirmedDataV0
+  { email :: Email
+  , at    :: UTCTime
+  } deriving (Eq, Show, Generic)
+
+-- The Confirm edge guards on the input confirmCode, then emits an event
+-- whose OutFields walk only (#email, #at) — confirmCode is never written:
+Edge
+  { guard  = isConfirm
+      .&& (inpConfirm #confirmCode
+        .== proj (#confirmCode :: Index UserRegRegs ConfirmationCode))
+  , update = USet (#confirmedAt :: IndexN "confirmedAt" UserRegRegs UTCTime)
+                  (inpConfirm #at)
+  , output = [ pack
+      inCtorConfirm
+      wireAccountConfirmedV0
+      (OFCons (proj (#email :: Index UserRegRegs Email))
+        (OFCons (inpConfirm #at) OFNil)) ]   -- confirmCode missing
+  , target = Confirmed
+  }
+```
+
+The fix (in `Jitsurei.UserRegistration`) adds `confirmCode` to the event and emits it from the
+edge, so the value the guard read is carried on the wire:
+
+```haskell
+-- Jitsurei.UserRegistration — the fixed schema
+data AccountConfirmedData = AccountConfirmedData
+  { email       :: Email
+  , confirmCode :: ConfirmationCode   -- the replay-critical field
+  , at          :: UTCTime
+  } deriving (Eq, Show, Generic)
+
+-- The same edge, authored with Keiki.Builder, now emits confirmCode:
+B.onCmd inCtorConfirm $ \d -> B.do
+  B.requireEq d.confirmCode #confirmCode
+  B.slot @"confirmedAt" .= d.at
+  B.emit wireAccountConfirmed AccountConfirmedTermFields
+    { email       = #email
+    , confirmCode = d.confirmCode   -- the field the guard read, now on the event
+    , at          = d.at
+    }
+  B.goto Confirmed
+```
+
+<Callout type="info">
+  "jitsurei" (実例) is the family's word for a runnable worked example. Both schemas above are
+  real modules — `Jitsurei.UserRegistrationV0` (broken) and `Jitsurei.UserRegistration`
+  (fixed).
+</Callout>
+
+## How it works
+
+`reconstitute` rebuilds each command from the stored event alone, via the structural inverse
+that `solveOutput` walks over the edge's `OutFields`. When `confirmCode` is not in the event,
+`solveOutput` has no value for the input's `confirmCode` slot and returns `Nothing` — the
+guard `d.confirmCode == regs ! #confirmCode` can never be re-checked, so replay halts.
+
+The build-time **hidden-input check** catches this before it ships: it walks each emitted
+event's fields against the input constructor the edge names, and reports any slot left
+unrecovered — for the V0 schema, `InCtor "ConfirmAccount" leaves field {"confirmCode"}
+unrecovered`. This is keiki's no-silent-fallback sensitivity at work: the missing field is
+named, not papered over with a default. The rule is simple — **emit every field your guards and
+updates read.** See [Schema evolution](/docs/keiki/reference/shape) for how the same check
+also fires when an evolution removes a field an edge still needs.

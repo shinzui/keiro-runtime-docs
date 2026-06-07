@@ -1,0 +1,48 @@
+---
+title: A multi-field threshold guard
+description: Build a solver-visible approval guard structurally from PCmp and TArith instead of an opaque host function.
+---
+
+An approval decision turns on several register fields at once. Write it structurally so the solver can read every conjunct.
+
+## Problem
+
+A transition should fire only when a multi-field condition holds — a score above a threshold, a flag set, and an amount under a derived cap — and you want the whole condition visible to the symbolic analyses, not buried in a `TApp`.
+
+## Solution
+
+From `Jitsurei.LoanApplication`: `approvalGuard` is three conjuncts, each built from the structural comparison and arithmetic operators.
+
+```haskell
+approvalGuard :: Pred LoanAppRegs LoanCmd
+approvalGuard =
+       reg @"appCreditScore"        .>= lit approvalThresholdScore
+  .&&  reg @"appEmploymentVerified" .== lit True
+  .&&  reg @"appRequestedAmount"    .<= reg @"appCreditScore" .* lit 1000
+```
+
+Used to gate the approval edge out of `UnderReview`:
+
+```haskell
+B.from UnderReview do
+  B.onCmd inCtorContinue $ \d -> B.do
+    B.requireGuard approvalGuard
+    B.slot @"appDecidedAt" .= continueAt d
+    B.emit wireApplicationApproved ApplicationApprovedTermFields
+      { applicantId     = #appApplicantId
+      , requestedAmount = #appRequestedAmount
+      , creditScore     = #appCreditScore
+      , at              = continueAt d
+      }
+    B.goto Approved
+```
+
+<Callout type="info">"jitsurei" (実例) is the family's word for a runnable worked example.</Callout>
+
+## How it works
+
+The dot-prefixed operators are thin aliases for `Keiki.Core` constructors: `.>=` / `.<=` build `PCmp` atoms, `.==` builds `PEq`, `.&&` builds `PAnd`, and `.*` builds the `TArith` multiplication. So the guard's AST is the same `PCmp`/`PEq`/`PAnd` tree the SBV translator reads conjunct by conjunct.
+
+The third conjunct is the point. The cap could have been written `appRequestedAmount <= maxApprovalForScore appCreditScore`, but `maxApprovalForScore` is a Haskell function — wrapping it would produce an opaque `TApp` the solver cannot see through. Instead the cap is inlined structurally as `reg @"appCreditScore" .* lit 1000` (a real `TArith` multiplication), so single-valuedness can prove the approve and decline branches are mutually exclusive. The behaviour is unchanged — `evalTerm (score .* lit 1000) == maxApprovalForScore score` — the win is that the whole guard, comparisons and derived cap alike, stays in the verifiable fragment.
+
+Keep threshold guards in `PEq`/`PCmp`/`PInCtor` with `TArith` arguments. The moment a conjunct routes through a `TApp`, the analyses go blind on that edge. See [What gets derived](/docs/keiki/explanation/what-gets-derived) and [Branch a command into two outcomes](/docs/keiki/cookbook/branch-a-command-into-two-outcomes) for the matching decline branch.

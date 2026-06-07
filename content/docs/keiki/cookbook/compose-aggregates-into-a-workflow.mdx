@@ -1,0 +1,72 @@
+---
+title: "Compose aggregates into a workflow"
+description: "Wire three aggregates into one transducer with compose and lmapMaybeCi — and understand why the runtime hand-off stays async."
+---
+
+A cookbook recipe is a short, copy-paste solution to one problem. Here: chain a loan
+application, a legacy-sync process, and a loan aggregate into a single typed value.
+
+## Problem
+
+Three aggregates speak different alphabets — one emits `LoanEvent`, the next consumes
+`SyncInput` and emits `SyncOutput`, the last consumes `LoanCmd'`. You want one composed value
+that types-checks the whole chain end to end.
+
+## Solution
+
+`compose` sequences two transducers; `lmapMaybeCi` adapts the upstream's output alphabet to the
+downstream's input alphabet, dropping anything that does not map (`Nothing`).
+
+```haskell
+-- Jitsurei.LoanWorkflow
+loanWorkflow
+  :: Guarded
+       (Append LoanAppRegs (Append SyncRegs LoanRegs))
+       (Composite LoanAppVertex (Composite SyncVertex LoanVertex))
+       LoanCmd
+       LoanEvent'
+loanWorkflow =
+  loanApplication
+    `compose`
+  lmapMaybeCi loanEventToSyncInput
+    (coreBankingSync `compose` lmapMaybeCi syncOutputToLoanCmd loan)
+
+-- The adapters: only the meaningful events/outputs cross the boundary.
+loanEventToSyncInput :: LoanEvent -> Maybe SyncInput
+loanEventToSyncInput (ApplicationApproved a) =
+  Just (LoanCreatedIn (LoanCreatedInData
+    { loanId = "loan-" <> a.applicantId, applicantId = a.applicantId
+    , principal = a.requestedAmount }))
+loanEventToSyncInput _ = Nothing
+
+syncOutputToLoanCmd :: SyncOutput -> Maybe LoanCmd'
+syncOutputToLoanCmd (LegacyAssignmentCommanded d) = Just d.assignment
+syncOutputToLoanCmd (SyncToLegacyRequested  _)    = Nothing
+```
+
+<Callout type="info">
+  "jitsurei" (実例) is the family's word for a runnable worked example. `Jitsurei.LoanWorkflow`
+  is one — though see the lockstep caveat below for what it actually exercises.
+</Callout>
+
+## How it works
+
+`compose` produces a `Composite` of the two vertex sets and an `Append` of the two register
+files (the disjoint slot-name prefixes — `app`, `sync`, `loan` — satisfy the type-level
+disjointness). `lmapMaybeCi f` pre-maps the downstream's input through `f`, so the only
+`LoanEvent` that reaches `coreBankingSync` is `ApplicationApproved` (as `LoanCreatedIn`) and the
+only `SyncOutput` that reaches `loan` is the wrapped `AssignLegacyLoanId`.
+
+<Callout type="warn">
+  **Lockstep caveat.** `compose` is synchronous: a composite edge fires *both* legs in one step.
+  Cross-context creation flows are async — the runtime observes `ApplicationApproved`, then in a
+  separate transactional step issues the sync input, then later still the legacy callback
+  arrives. There is no single `LoanCmd` that fires the whole chain in one composite step, so the
+  composed value is largely a **type-level wiring diagram**. Model the actual hand-off through the
+  adapter functions (`loanEventToSyncInput`, `syncOutputToLoanCmd`), which the runtime calls
+  between transactional steps.
+</Callout>
+
+See [Composition](/docs/keiki/reference/composition) for `compose`/`lmapMaybeCi` mechanics and
+[The composition algebra](/docs/keiki/explanation/the-composition-algebra) for why lockstep is
+the right default and where async hand-off lives instead.

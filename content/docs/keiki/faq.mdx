@@ -1,18 +1,81 @@
 ---
 title: keiki FAQ
-description: Answers to frequently asked questions about keiki.
+description: Short answers to the questions people ask most about modelling, verifying, and evolving keiki transducers.
 ---
 
-Short answers to common questions about keiki.
-
-<Callout type="info">
-  Documentation for keiki is in progress. Questions and answers will land here as the keiki content
-  set is written.
-</Callout>
+Short answers to the questions people ask most about keiki. Each links to the page that goes deeper.
 
 <Accordions>
-  <Accordion title="Where do I start with keiki?">
-    Begin with the [Getting Started](/docs/getting-started) overview while the keiki tutorials are
-    being written.
+  <Accordion title="Can I store a Map or a list in a register?">
+    Yes — if it **arrives whole on the command**, a register can hold any value you like. What breaks
+    is *guarding on its contents*: the symbolic analyses see a collection lookup as an opaque `TApp`
+    term, so the solver cannot reason about it and any branch on it is unverified. The fix is to
+    **project to a scalar** the guard can read — a count, a sum, a boolean flag — and keep the
+    collection itself for the carried payload. See [Model a
+    collection](/docs/keiki/how-to/model-a-collection).
+  </Accordion>
+
+  <Accordion title="My guard branches on a collection and the build is green — is it verified?">
+    Probably not. A clean build does **not** mean a guard is solver-visible; the opaque-guard audit
+    is opt-in. Set `warnOpaqueGuards = True` and re-run the well-formedness check — it flags every
+    edge whose guard branches on an opaque `TApp` term the symbolic analyses cannot see. Once you
+    know which guard is invisible, project it to a scalar. See [Why
+    SMT?](/docs/keiki/explanation/why-smt).
+  </Accordion>
+
+  <Accordion title="Why does my replay return Nothing?">
+    A **hidden input**. Replay folds events back through the transducer; if an event dropped a field
+    a later edge needs to decide, that field is read at a vertex where it was never written and the
+    fold stalls. Add the field back to the event (additively). `checkHiddenInputs` names the exact
+    edge and register involved, so you do not have to guess. See [Evolve a schema
+    safely](/docs/keiki/cookbook/evolve-a-schema-safely).
+  </Accordion>
+
+  <Accordion title="step returned Nothing — was the command rejected or was it ambiguous?">
+    `step` collapses every non-result to `Nothing`. Use `stepEither` to recover the reason: it
+    returns `NoOutgoingEdges` (the source vertex has no edges at all), `NoMatchingEdge` (edges exist
+    but none guarded true for this command — a legitimate domain rejection), or `AmbiguousEdges`
+    (two or more guards matched at once). `AmbiguousEdges` is a **defect**, not a rejection: it means
+    overlapping guards, which the well-formedness check would have caught. See [Step
+    failure](/docs/keiki/reference/step-failure) and [Diagnose a rejected
+    command](/docs/keiki/how-to/diagnose-a-rejected-command).
+  </Accordion>
+
+  <Accordion title="How do I evolve an event or register schema?">
+    Write an explicit **wire→current upcaster** at the boundary and keep changes **additive by
+    convention** — new optional fields, never a repurposed or removed one. Be aware that the
+    register-shape hash changes when the register layout changes, which **invalidates existing
+    snapshots** (they rebuild from the log on next read). See [Shape](/docs/keiki/reference/shape) and
+    [Evolve a schema safely](/docs/keiki/cookbook/evolve-a-schema-safely).
+  </Accordion>
+
+  <Accordion title="Should I call delta and omega, or step?">
+    Use **`step`** — and `stepEither` when you want the rejection reason. `delta` (the next-state
+    half) and `omega` (the output half) are the lower-level pieces `step` is built from; reach for
+    them only when you genuinely need one half in isolation. For everyday command handling, `step`
+    is the right surface.
+  </Accordion>
+
+  <Accordion title="Should this become its own aggregate or stay in registers?">
+    Ask whether it has **its own identity and lifecycle**. If it is created, changes state, and is
+    retired on its own timeline, promote it to its **own aggregate** and coordinate the two with a
+    Process. If all you need are **set-level facts** about it — how many, the total, whether any are
+    open — keep it in registers as a **scalar tally**. See [Model a
+    collection](/docs/keiki/how-to/model-a-collection).
+  </Accordion>
+
+  <Accordion title="The (.>) operator will not compile — it clashes with lens.">
+    `(.>)` collides with lens's composition operator. Inside a `B.do` block, use the verb form —
+    `B.requireGt` and its siblings — which reads cleanly and never clashes. Outside a builder block,
+    bring the operators in under a qualified `Keiki.Operators` import so the symbol is namespaced.
+    See [Operators](/docs/keiki/reference/operators).
+  </Accordion>
+
+  <Accordion title="Is compose how the runtime fires cross-context flows?">
+    No. `compose` is **lockstep** — it fuses two transducers that advance together, in the same step,
+    as one machine. It does not model an asynchronous, cross-context flow. The runtime models that
+    with the `lmapMaybeCi` adapters, which let one machine react to another's outputs across a
+    boundary without forcing them into a single synchronous step. See [The composition
+    algebra](/docs/keiki/explanation/the-composition-algebra).
   </Accordion>
 </Accordions>
