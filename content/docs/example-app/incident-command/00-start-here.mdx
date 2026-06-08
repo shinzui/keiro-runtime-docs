@@ -1,0 +1,61 @@
+---
+title: "00 — Start here"
+description: "What the incident-command service is, the reading order for this tour, and the executables that drive it."
+---
+
+This is an **ordered source tour** of the `incident-command` service — the command side of
+`keiro-runtime-jitsurei`. It reads the real Haskell at the pinned commit (`04420ed`), one chapter
+per concern, and links each feature back to the canonical keiro reference page. Read the chapters
+in order.
+
+## What the service is
+
+`incident-command` (Haskell package `incident-command`, modules `IncidentCommand.*`, source under
+`services/incident-command/src/`) runs the emergency scene. It owns three aggregates — **Incident**,
+**FieldResource**, and **Triage** — plus an **Escalation** process manager and a durable
+**evacuation workflow**. When a triage marks a critical (red-tag) patient it emits a *transfer
+need*; that need leaves the service through the outbox and Kafka and arrives at
+[Hospital Capacity](/docs/example-app/hospital-capacity).
+
+The service ships two executables:
+
+```haskell
+-- services/incident-command/app/IncidentCommandCli.hs
+run :: Telemetry.ServiceTracer -> [String] -> IO ()
+run tracer args =
+  case args of
+    ["smoke"] -> putStrLn smokeMessage
+    ["scenario", "mass-casualty"] -> putStr massCasualtyScenario
+    ["scenario", "mass-casualty", "--durable"] -> durableMassCasualtyScenarioWithTelemetry tracer >>= putStr
+    "command" : commandArgs -> runCommandCliWithTelemetry tracer commandArgs >>= putStrLn
+    ["diagrams", "keiki"] -> do
+      writeKeikiDiagrams defaultDiagramFile
+      putStrLn ("wrote Keiki diagrams to " <> defaultDiagramFile)
+    _ -> putStrLn usage
+```
+
+- **`incident-command-cli`** (`app/IncidentCommandCli.hs`) drives the synchronous write path:
+  individual commands (`command …`), the packaged `mass-casualty` scenario (with `--durable` to run
+  the escalation PM + evacuation workflow), and `diagrams keiki` to regenerate the Keiki state
+  diagrams.
+- **`incident-command-worker`** (`app/IncidentCommandWorker.hs`) drives the asynchronous side:
+  projections, the escalation timer, the inbox consumer, and the outbox publishers. Its subcommands
+  are listed in [chapter 07](/docs/example-app/incident-command/07-wiring-and-the-cli).
+
+Both executables wrap everything in a top-level OpenTelemetry span (`withApplicationSpan`) so a
+single CLI invocation is one trace; tracing is off unless `SEIHOU_TRACING_ENABLED` is set.
+
+## The chapters
+
+<Cards>
+  <Card title="01 — Aggregates and transducers" href="/docs/example-app/incident-command/01-aggregates-and-transducers" description="The three aggregates as Keiki transducers, and the keiro EventStreams that wrap them." />
+  <Card title="02 — The command cycle" href="/docs/example-app/incident-command/02-the-command-cycle" description="runIncidentCommandDurably → runCommandWithProjections: hydrate, transduce, append, project — in one transaction." />
+  <Card title="03 — Read models and projections" href="/docs/example-app/incident-command/03-read-models-and-projections" description="The dashboard, evacuation-zone, and audit read models, and inline vs async projection." />
+  <Card title="04 — Routers" href="/docs/example-app/incident-command/04-routers" description="Content-based fan-out: the resource-dispatch and capacity-change routers." />
+  <Card title="05 — Escalation PM and timers" href="/docs/example-app/incident-command/05-escalation-process-manager-and-timers" description="The escalation process manager and its durable timer worker." />
+  <Card title="06 — The evacuation workflow" href="/docs/example-app/incident-command/06-the-evacuation-workflow" description="A durable workflow with named steps that parks on an awakeable awaiting Hospital Capacity." />
+  <Card title="07 — Wiring and the CLI" href="/docs/example-app/incident-command/07-wiring-and-the-cli" description="How it all composes: Store.hs, the executables, and the scenario." />
+</Cards>
+
+Keep the [runtime feature map](/docs/example-app/overview/03-runtime-feature-map) open in another
+tab — it indexes every feature below to its keiro reference page.

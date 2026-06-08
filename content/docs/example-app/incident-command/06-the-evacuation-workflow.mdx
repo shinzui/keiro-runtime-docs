@@ -1,0 +1,92 @@
+---
+title: "06 — The evacuation workflow"
+description: "A durable workflow with named steps that parks on an awakeable awaiting Hospital Capacity's acknowledgement, then resumes."
+---
+
+The evacuation workflow is where Incident Command demonstrates **durable execution**: a journaled,
+replayable procedure with named steps that can **park** on an external signal and resume later — even
+across a process restart. Read the keiro [durable execution](/docs/keiro/explanation/durable-execution)
+explanation, the [durable workflows](/docs/keiro/reference/durable-workflows) reference, and the
+[durable-execution walkthrough](/docs/keiro/walkthrough/durable-execution/00-start-here) alongside
+this chapter.
+
+## The workflow as a straight-line procedure
+
+A keiro workflow reads like ordinary monadic code; the runtime journals each `step` so that on
+replay completed steps return their recorded result instead of re-executing. The whole evacuation
+procedure is six lines:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/EvacuationWorkflow.hs
+evacuationWorkflow
+  :: (Workflow :> es, Store :> es, IOE :> es)
+  => EvacuationWorkflowInput
+  -> Eff es EvacuationWorkflowSummary
+evacuationWorkflow input = do
+  commandPost <- step (StepName "establish-command-post") (establishCommandPost input)
+  transport <- step (StepName "request-transport") (requestTransport input)
+  notification <- step (StepName "notify-hospital-capacity") (notifyHospitalCapacity input)
+  (_awakeableId, awaitCapacity) <- awakeableNamed (StepName "hospital-capacity-acknowledgement")
+  acknowledgement <- awaitCapacity
+  step (StepName "mark-evacuation-ready") (markEvacuationReady input commandPost transport notification acknowledgement)
+```
+
+Each `step` has a **name**. The name is the journal key: keiro records the step's result under that
+name, and on replay it short-circuits a named step that has already completed. (The
+`queryEvacuationWorkflowSteps` helper in `Store.hs` reads exactly those rows from
+`keiro_workflow_steps`.)
+
+## Parking on an awakeable
+
+The fourth line is the interesting one. `awakeableNamed` registers a named **awakeable** — a
+suspension point — and returns its id plus an `awaitCapacity` action. Calling `awaitCapacity`
+**parks the workflow**: the run returns `Suspended` and the procedure stops at this point until the
+awakeable is signalled. The id is deterministic, derived from the workflow name and incident id, so
+an external caller can compute it without holding a handle:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/EvacuationWorkflow.hs
+evacuationCapacityAwakeableId :: IncidentId -> AwakeableId
+evacuationCapacityAwakeableId incidentId =
+  deterministicAwakeableId evacuationWorkflowName (evacuationWorkflowId incidentId) "hospital-capacity-acknowledgement"
+```
+
+The steps before the awakeable (`establishCommandPost`, `requestTransport`,
+`notifyHospitalCapacity`) are local placeholders in this example — they build the transport request
+and the hospital notification. The real work is the **wait**: the workflow cannot complete until
+Hospital Capacity acknowledges that it can accept the transfer.
+
+## How it is resumed
+
+The other side of the awakeable lives in `Store.hs`. When Incident Command's inbox accepts a
+hospital response, it computes the same deterministic id and calls keiro's `signalAwakeable` with
+the acknowledgement payload:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Store.hs
+signalEvacuationCapacityAcknowledgementWithTelemetry tracer store incidentId acknowledgement =
+  withApplicationSpan tracer "incident-command.workflow signal hospital-capacity" ( … ) $
+  runStoreIO store $
+    signalAwakeable (evacuationCapacityAwakeableId incidentId) acknowledgement
+```
+
+Signalling stores the payload against the awakeable id; the next time the workflow runs
+(`runWorkflowWith`, wrapped as `runEvacuationWorkflowDurablyWithTelemetry`), replay reaches the
+`awaitCapacity` call, finds the signalled value, and continues to `mark-evacuation-ready` — returning
+`Completed` with an `EvacuationWorkflowSummary`. The outcome mapping is explicit:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Store.hs
+toEvacuationWorkflowRun :: WorkflowOutcome EvacuationWorkflowSummary -> EvacuationWorkflowRun
+toEvacuationWorkflowRun = \case
+  Completed workflowSummary -> EvacuationWorkflowRun { outcome = "completed", summary = Just workflowSummary }
+  Suspended -> EvacuationWorkflowRun { outcome = "suspended", summary = Nothing }
+  Cancelled -> EvacuationWorkflowRun { outcome = "cancelled", summary = Nothing }
+  ContinuedAsNew -> EvacuationWorkflowRun { outcome = "continued-as-new", summary = Nothing }
+```
+
+This is the keiro half of the cross-service handoff: the evacuation workflow **parks** here, and the
+acknowledgement that wakes it travels back from Hospital Capacity's
+[reservation workflow](/docs/example-app/hospital-capacity) over Kafka.
+The end-to-end path — triage → transfer need → reservation → confirmation → awakeable signal — is the
+spine of the [cross-service message flow](/docs/example-app/cross-service).

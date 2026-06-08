@@ -71,9 +71,13 @@ This section must always reflect the actual current state of the work.
       directory-stub `index.mdx` files, and added the `docs/keiro-runtime-jitsurei-source-sync.md`
       pointer pinned at app commit `04420ed`. Gate green: `typecheck`, `check-doc-links.mjs`
       (351 files), `build`, `lint:links` all pass.
-- [ ] **M2 — Incident Command walkthrough.** Write `incident-command/` (start-here + 7
-      chapters): aggregates/transducers, command cycle, read models, routers, escalation PM +
-      timers, evacuation workflow, wiring/CLI.
+- [x] **M2 — Incident Command walkthrough.** _(done 2026-06-07)_ Wrote `incident-command/`
+      (index + start-here + 7 chapters): aggregates/transducers, command cycle, read models,
+      routers, escalation PM + timers, evacuation workflow, wiring/CLI. Every chapter carries real
+      Haskell excerpts (with `-- services/...` source comments) + keiro reference cross-links;
+      embedded Keiki diagrams. Forward links to not-yet-written M3–M5 chapters point at the
+      relevant subsection index for now (M6 can deepen). Gate green: `check-doc-links.mjs`
+      (359 files), `typecheck`, `build`.
 - [ ] **M3 — Hospital Capacity walkthrough.** Write `hospital-capacity/` (start-here + 6
       chapters): aggregates/transducers, command cycle + read models, surge PM, reservation
       workflow, the `keiro-pgmq` reservation work queue, wiring/CLI.
@@ -171,6 +175,16 @@ Record every decision made while working on the plan.
   demonstrates how to use most of the keiro runtime."
   Date: 2026-06-08
 
+
+- Decision: To keep every milestone independently link-clean (the link checker fails the build on
+  any broken internal link), a chapter in an earlier milestone that wants to reference a chapter in
+  a not-yet-written later milestone links to that **subsection's `index.mdx`** (which always exists
+  after M1) rather than the deep chapter URL. M6 may optionally deepen these once all chapters
+  exist.
+  Rationale: reconciles the plan's "chapters cross-link each other" intent with the per-milestone
+  green-build acceptance gate and the Idempotence rule against committing pages that link to
+  not-yet-created siblings.
+  Date: 2026-06-07
 
 ## Outcomes & Retrospective
 

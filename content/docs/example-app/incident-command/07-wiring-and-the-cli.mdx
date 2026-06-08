@@ -1,0 +1,145 @@
+---
+title: "07 — Wiring and the CLI"
+description: "How the pieces compose: the Store façade, the CLI and worker executables, and the packaged scenario."
+---
+
+The previous chapters each covered one concern. This one shows how they compose into a runnable
+service: the `Store.hs` façade that owns the database and every run-entrypoint, the two executables,
+and the scenario that exercises them. For the framework view of background processing, read
+[scaling the workers](/docs/keiro/explanation/scaling-the-workers).
+
+## The Store façade
+
+`Store.hs` is the service's composition root. It owns the connection settings and the
+`withIncidentCommandStore` bracket, and it re-exports a run-function for **every** capability —
+commands, the resource router, the escalation PM and timer, the evacuation workflow and its
+awakeable signal, the inbox accept, and the outbox enqueue/publish:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Store.hs
+withIncidentCommandStore :: (KirokuStore -> IO a) -> IO a
+withIncidentCommandStore action = do
+  connString <- connectionStringFromEnvironment
+  withStore (incidentConnectionSettings connString) action
+
+incidentConnectionSettings :: Text -> ConnectionSettings
+incidentConnectionSettings connString =
+  (defaultConnectionSettings connString)
+    { schema = "incident_command"
+    , poolSize = 4
+    }
+```
+
+The default connection string points at the local dev database, overridable by environment:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Store.hs
+defaultConnectionString :: Text
+defaultConnectionString = "postgresql://127.0.0.1:55431/incident_command_dev"
+
+connectionStringFromEnvironment :: IO Text
+connectionStringFromEnvironment =
+  maybe defaultConnectionString Text.pack <$> lookupEnv "INCIDENT_COMMAND_DATABASE_URL"
+```
+
+<Callout type="info">
+  **Work in progress.** `Store.hs` is a *horizontal* module — it bundles the wiring for all three
+  aggregates and every cross-cutting capability in one file. The app's vertical-slice refactor
+  (EP-9) has not yet split it per aggregate; the same applies to `CommandCli.hs`. Expect these two
+  modules to be carved up in a later revision. The per-aggregate `CommandProcessor.hs`,
+  `Projection.hs`, etc. are already vertical.
+</Callout>
+
+## The command CLI
+
+`CommandCli.hs` parses a `command <aggregate> …` line into a typed `CommandDispatch`, runs it
+against the store, and renders the result. It is the synchronous, human-facing front door:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/CommandCli.hs
+data CommandDispatch
+  = DispatchIncident !IncidentId !IncidentCommand
+  | DispatchFieldResource !ResourceId !FieldResourceCommand
+  | DispatchTriage !TriageRecordId !TriageCommand
+
+parseCommandDispatch :: [String] -> Either String CommandDispatch
+parseCommandDispatch = \case
+  "incident" : args -> parseIncidentCommand args
+  "resource" : args -> parseResourceCommand args
+  "triage" : args -> parseTriageCommand args
+  _ -> Left usage
+```
+
+`incident-command-cli` (`app/IncidentCommandCli.hs`) dispatches `command …` here, and also serves
+the `smoke`, `scenario mass-casualty [--durable]`, and `diagrams keiki` subcommands seen in
+[chapter 00](/docs/example-app/incident-command/00-start-here).
+
+## The worker CLI
+
+`WorkerCli.hs` enumerates the asynchronous subcommands — the things you run repeatedly or on a
+schedule rather than per request:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/WorkerCli.hs
+data WorkerCommand
+  = RunProjectionWorkerOnce
+  | RebuildProjections
+  | RunTimerWorkerOnce
+  | ConsumeHospitalKafkaInboxOnce
+  | EnqueueTransferNeedOutbox !String
+  | RunOutboxPublisherDryRunOnce
+  | RunOutboxPublisherKafkaOnce
+```
+
+`app/IncidentCommandWorker.hs` maps each to a `Store.hs` entrypoint — for example `timers once` runs
+`runDueEscalationTimerWithTelemetry` (the [escalation timer](/docs/example-app/incident-command/05-escalation-process-manager-and-timers)),
+and `inbox consume-hospital-kafka once` runs the
+[Kafka inbox consumer](/docs/example-app/cross-service). Each is a **bounded
+one-shot** (the `…Once` naming): the worker does one unit of work and exits, so the same binary
+serves both a cron-style drain and a tight loop. [Running it](/docs/example-app/running-it)
+lists the full command set.
+
+## Telemetry wiring
+
+Both executables open a tracer once at startup and wrap the whole invocation in a span:
+
+```haskell
+-- services/incident-command/app/IncidentCommandCli.hs
+main = do
+  args <- getArgs
+  telemetryConfig <- telemetryConfigFromEnvironment
+  withTelemetry telemetryConfig $ \tracer ->
+    withApplicationSpan tracer (cliSpanName args) (cliSpanAttributes args) $
+      run tracer args
+```
+
+`Telemetry.hs` makes tracing **opt-in**: `withTelemetry` returns `Nothing` (a no-op tracer) unless
+`SEIHOU_TRACING_ENABLED` is set, in which case it initialises the global OpenTelemetry provider and
+hands a real `Tracer` down through every `…WithTelemetry` entrypoint. The
+[cross-service tour](/docs/example-app/cross-service) covers
+how those spans connect across services.
+
+## The scenario
+
+`Scenario.hs` strings the whole service together as a deterministic narrative — declaring a
+mass-casualty incident, proving the hazardous-dispatch and premature-closure guards reject, ordering
+an evacuation, and recording triage. The `--durable` variant additionally runs the escalation PM and
+the evacuation workflow. Its asserted transcript is the contract the
+[Running it](/docs/example-app/running-it) tour shows you running:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Scenario.hs
+massCasualtyScenario :: String
+massCasualtyScenario =
+  scenarioAssertions `seq` unlines
+    [ "Incident " <> show incidentId <> " declared severity MassCasualty"
+    , "Hazardous-material dispatch before safety perimeter: rejected"
+    , "Safety perimeter established"
+    -- …
+    ]
+```
+
+That is the full service: pure transducers, wrapped in EventStreams, driven through one command
+cycle, projected to read models, fanned out by routers, escalated by a PM with a durable timer, and
+coordinated by a durable workflow — all composed in `Store.hs` and exposed through two small
+executables.

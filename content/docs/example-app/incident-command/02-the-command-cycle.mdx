@@ -1,0 +1,112 @@
+---
+title: "02 — The command cycle"
+description: "How a command becomes durable: runIncidentCommandDurably → runCommandWithProjections — hydrate, transduce, append, and project in one transaction."
+---
+
+This chapter follows a single command from the CLI to durable storage. The write path is the heart
+of keiro; read the [command cycle](/docs/keiro/explanation/the-command-cycle) explanation and the
+[command](/docs/keiro/reference/command) reference alongside this, and the keiro
+[command-cycle walkthrough](/docs/keiro/walkthrough/command-cycle/00-start-here) for the framework
+internals.
+
+## The per-aggregate entrypoint
+
+Each aggregate exposes a thin command processor. For Incident it is two functions — one with
+telemetry, one without — that name the application span, attach domain attributes, and delegate to a
+shared `runDurableCommand`:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Incident/CommandProcessor.hs
+runIncidentCommandDurably :: KirokuStore -> IncidentId -> IncidentCommand -> IO (Either CommandFailure CommandSuccess)
+runIncidentCommandDurably store incidentId command =
+  runIncidentCommandDurablyWithTelemetry Nothing store incidentId command
+
+runIncidentCommandDurablyWithTelemetry :: ServiceTracer -> KirokuStore -> IncidentId -> IncidentCommand -> IO (Either CommandFailure CommandSuccess)
+runIncidentCommandDurablyWithTelemetry tracer store incidentId command =
+  withApplicationSpan
+    tracer
+    "incident-command.command processor incident"
+    (incidentCommandAttributes incidentId command) $
+    runDurableCommand tracer store incidentEventStream (incidentStream incidentId) command [incidentDashboardProjection]
+```
+
+Three things to notice:
+
+1. **The target stream is derived from the id.** `incidentStream incidentId` resolves to
+   `incident-<typeid>` — the command always lands on exactly one aggregate stream.
+2. **Projections travel with the command.** The last argument,
+   `[incidentDashboardProjection]`, is the list of *inline* projections run in the **same
+   transaction** as the append (see [chapter 03](/docs/example-app/incident-command/03-read-models-and-projections)).
+3. **The span is named and attributed.** `"incident-command.command processor incident"` plus
+   `emergency.incident.id`, `emergency.command.id`, and `emergency.command.name` attributes — this
+   is the application span that parents keiro's own command span.
+
+## runDurableCommand → runCommandWithProjections
+
+`runDurableCommand` lives in `Store.hs`. It is the single place the service calls keiro's
+`runCommandWithProjections`, and it maps keiro's nested `Either` result into the service's
+`CommandFailure` / `CommandSuccess` types:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Store.hs
+runDurableCommand
+  :: (BoolAlg phi (RegFile rs, ci), Eq co)
+  => ServiceTracer
+  -> KirokuStore
+  -> EventStream phi rs s ci co
+  -> Stream (EventStream phi rs s ci co)
+  -> ci
+  -> [InlineProjection co]
+  -> IO (Either CommandFailure CommandSuccess)
+runDurableCommand tracer store eventStream targetStream command projections = do
+  result <-
+    runStoreIO store $
+      runCommandWithProjections (commandOptionsWithTelemetry tracer) eventStream targetStream command projections
+  pure $
+    case result of
+      Left storeError -> Left (CommandStoreFailed storeError)
+      Right (Left commandError) -> Left (CommandProcessorFailed commandError)
+      Right (Right commandResult) -> Right (toCommandSuccess commandResult)
+```
+
+`runCommandWithProjections` (from `Keiro.Projection`) is the command cycle:
+
+- **Hydrate** — read the target stream's events and replay them through the transducer to rebuild
+  the `(state, registers)` pair.
+- **Transduce** — step the transducer with the command. If a guard rejects it, no events are
+  produced and the result is `Right (Left CommandRejected)` — which `runDurableCommand` surfaces as
+  `CommandProcessorFailed`.
+- **Append** — encode the new events with the codec and append them at the expected version
+  (optimistic concurrency; keiro retries on conflict up to `retryLimit`).
+- **Project** — run each inline projection against the just-appended events **inside the same
+  transaction**, so the read model can never be out of step with the log.
+
+The two layers of `Either` are deliberate: the outer `Left` is an infrastructure failure
+(`StoreError`), the inner `Left` is a domain rejection (`CommandError`). The service keeps them
+distinct in `CommandFailure`:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Store.hs
+data CommandFailure
+  = CommandStoreFailed !StoreError
+  | CommandProcessorFailed !CommandError
+```
+
+## The run options
+
+`commandOptionsWithTelemetry` is how the tracer is threaded into keiro. It starts from
+`defaultRunCommandOptions` and overrides only the `tracer` field — leaving `retryLimit`, `pageSize`,
+`eventIds`, `beforeAppend`, and `metadata` at their defaults:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Store.hs
+commandOptionsWithTelemetry :: ServiceTracer -> RunCommandOptions
+commandOptionsWithTelemetry tracer =
+  let RunCommandOptions { … } = defaultRunCommandOptions
+   in RunCommandOptions { …, tracer, … }
+```
+
+The same `runDurableCommand` serves **every** aggregate in the service — the FieldResource and
+Triage processors call it with their own EventStream, stream, and projection list. That is why this
+one function is the chokepoint for the whole write path, and why it is the right place to thread
+telemetry and error mapping once.
