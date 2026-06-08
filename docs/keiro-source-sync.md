@@ -50,6 +50,10 @@ keiro 0.1.0.0 (development line; keiro-pgmq is a new package at version 0.1.0.0)
 >   Notable real-world caveat folded into the docs: `enqueue` is **not** transactional with a domain
 >   write — `rei`'s live producer sends via raw SQL in the same transaction, so the package covers the
 >   consumer side and the transactional-enqueue cookbook documents the inline-SQL pattern.
+>   The `keiro-runtime-jitsurei` application is now documented in full under
+>   `content/docs/example-app/` and pinned separately — see
+>   [`keiro-runtime-jitsurei-source-sync.md`](keiro-runtime-jitsurei-source-sync.md) for that app's
+>   own source pointer.
 > - **Schema:** keiro's own migrations are unchanged (still **nine** files / **nine** tables).
 >   `keiro-pgmq` owns no keiro tables — it uses PGMQ's `pgmq.q_*` / `pgmq.q_*_dlq` queue tables, which
 >   PGMQ (not keiro) creates.

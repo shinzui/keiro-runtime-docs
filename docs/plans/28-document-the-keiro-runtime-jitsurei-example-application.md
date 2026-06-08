@@ -96,9 +96,13 @@ This section must always reflect the actual current state of the work.
       observing traces (Jaeger + `verify-traces`/`verify-example`). All `just`/script commands
       cross-checked against the app `justfile` / `run-scenario.sh` / `process-compose.yaml`. Gate
       green: `check-doc-links.mjs` (375 files), `typecheck`, `build`.
-- [ ] **M6 — Cross-links + finalization.** Add inbound cross-links from existing keiro pgmq
-      pages and the keiro family / top index into the new section; run the full `pnpm run
-      check` gate; fill Outcomes & Retrospective.
+- [x] **M6 — Cross-links + finalization.** _(done 2026-06-07)_ Added "Seen in a real service"
+      `<Callout>` inbound links from the five existing pgmq pages
+      (`keiro/reference/pgmq-jobs`, `keiro/explanation/background-jobs-with-pgmq`,
+      `keiro/how-to/dead-letter-and-retry-jobs`, `keiro/cookbook/scheduled-job-drain`,
+      `integrations/keiro-with-pgmq`) to the new pgmq chapter; added discoverability cards on
+      `getting-started/the-keiro-family` and the top-level `index.mdx`; cross-referenced the new
+      source-sync pointer from `keiro-source-sync.md`. Ran the full gate (see Outcomes).
 
 
 ## Surprises & Discoveries
@@ -201,7 +205,54 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Completed 2026-06-07.** All six milestones landed; one commit per milestone on `master`, each
+carrying the `ExecPlan:` + `Intention:` trailers.
+
+**What was delivered.** A new top-level `content/docs/example-app/` section (sidebar title
+`keiro-runtime-jitsurei`) of **30 pages** plus 6 `meta.json` files:
+- `index.mdx` (landing, architecture Mermaid, jitsurei-vs-jitsurei callout) + `overview/` (4 pages:
+  what-it-demonstrates, the-domain, architecture-and-boundaries, runtime-feature-map).
+- `incident-command/` (start-here + 7 chapters), `hospital-capacity/` (start-here + 6 chapters,
+  including the signature pgmq chapter), `cross-service/` (index + 5 chapters), `running-it/`
+  (index + 4 chapters).
+- The `docs/keiro-runtime-jitsurei-source-sync.md` pointer pinned at app commit `04420ed`.
+- Inbound links from the five existing keiro pgmq pages, discoverability cards on the family/top
+  pages, and a cross-reference from `docs/keiro-source-sync.md`.
+
+**Result vs. purpose.** The original goal — a guided, source-grounded tour of a complete keiro
+application with links back to the canonical reference pages, plus a runnable `running-it/` guide — is
+met. Every chapter carries real Haskell excerpts with `-- services/.../File.hs` source comments
+transcribed from the app at `04420ed`, at least one keiro cross-link, and (where they illustrate
+state) embedded Keiki/Mermaid diagrams.
+
+**Final gate (M6).**
+- `pnpm run typecheck` — **pass**.
+- `pnpm run lint` (oxlint) — **pass** (only pre-existing warnings in `src/`, exit 0).
+- `pnpm run build` — **pass** (all new pages prerendered).
+- `pnpm run lint:links` (`check-doc-links.mjs` over 375 files + linkinator over the built site) —
+  **pass**, no broken internal links.
+- `pnpm run format:check` (oxfmt) — **fail, as expected**: 322 of 467 files report format issues.
+  This is the **pre-existing baseline** (repo memory `oxfmt-mdx-baseline-not-clean`), not a
+  regression from this work — the hand-authored MDX tree already failed `oxfmt --check` before this
+  plan, and per the plan it was deliberately not reformatted. The binding gates are typecheck,
+  lint:links, and build, all green.
+
+**Gaps / deferred (intentional).**
+- Per the Decision Log, forward references written in earlier milestones to chapters created in
+  later milestones link to the relevant **subsection index** rather than the deep chapter URL (so
+  each milestone stayed link-clean). These remain index-level links; deepening them is a possible
+  future polish but adds no correctness value.
+- A few chapters (e.g. Hospital Capacity's command-cycle and aggregates chapters) lean on
+  "identical to Incident Command's chapter N" cross-references rather than re-deriving the mechanics,
+  to avoid repetition; this is by design.
+
+**Lessons.**
+- The link checker fails the build on any broken internal link, so the cleanest way to keep a
+  multi-milestone docs plan green is the index-link rule above — committed to the Decision Log so
+  future work follows it.
+- The app's own `docs/` (scenarios, walkthroughs, contracts, observability, generated Keiki
+  diagrams) was the right primary source: it made the prose accurate without guessing, and the
+  generated `docs/diagrams/keiki.md` blocks dropped straight into the pages.
 
 
 ## Context and Orientation
