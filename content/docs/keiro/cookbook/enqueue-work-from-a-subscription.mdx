@@ -1,0 +1,118 @@
+---
+title: "Enqueue work from a subscription"
+description: "A subscription reacts to an event by handing a slow, retryable side effect — an external HTTP call — to a keiro-pgmq job, so the call's retries and back-off never block the subscription drain."
+---
+
+A subscription drains its category **in order**: a slow or failing handler holds up every event
+behind it. So when an event should trigger an external side effect that is slow and *needs retries* —
+calling a third-party HTTP API, pushing to a webhook, talking to a flaky service — do not make the
+call inline. Have the subscription **enqueue a [`keiro-pgmq`](/docs/keiro/explanation/background-jobs-with-pgmq)
+job** and return immediately; a job worker makes the call, on the queue's retry/dead-letter policy.
+
+## Problem
+
+A process manager or router reacts to a domain event by calling an external service. Doing it in the
+subscription handler is wrong on three counts:
+
+- **It blocks the drain.** The HTTP round-trip (and every retry) stalls every later event in the
+  category behind it.
+- **Retries land in the wrong place.** A subscription's only recovery is to *re-deliver the source
+  event*, which re-runs **all** of that event's other effects — not just the call that failed.
+- **A poison target wedges the worker.** A permanently-failing endpoint either spins forever or halts
+  the subscription, instead of being parked out of the way.
+
+## Solution
+
+Split the *decision* from the *side effect*. The subscription decides "this needs an external call"
+and enqueues a job describing it; the job carries its own [`RetryPolicy`](/docs/keiro/reference/pgmq-jobs#retrypolicy)
+and dead-letter queue, so back-off and failure isolation belong to the queue, not the event log.
+
+```haskell
+-- The subscription handler: decide + enqueue, then ack fast.
+handleEvent :: (Pgmq :> es) => RecordedEvent -> OrderEvent -> Eff es ()
+handleEvent recorded = \case
+  OrderConfirmed o -> do
+    -- Derive a stable dedupe key so an at-least-once redelivery enqueues at most once.
+    let item = NotifyShipperItem
+                 { dedupeKey    = "notify-shipper:" <> orderId o
+                 , sourceMsgId  = recorded ^. #eventId
+                 , shipperUrl   = o ^. #shipperWebhook
+                 , body         = shipmentRequest o
+                 }
+    unlessAlreadyQueued item $
+      enqueue notifyShipperJob item        -- returns immediately; no HTTP here
+  _ -> pure ()
+```
+
+The job's handler is where the call actually happens, and it maps transport outcomes onto a
+[`JobOutcome`](/docs/keiro/reference/pgmq-jobs#joboutcome) so the queue does the retrying:
+
+```haskell
+notifyShipperJob :: Job NotifyShipperItem
+notifyShipperJob =
+  Job
+    { jobName  = "notify-shipper"
+    , jobQueue = queueRef "fulfillment.notify_shipper"
+    , jobCodec = aesonJobCodec
+    , jobPolicy = RetryPolicy { maxRetries = 5, defaultRetryDelay = RetryDelay 10, useDeadLetter = True }
+    }
+
+handleNotifyShipper :: NotifyShipperItem -> Eff es JobOutcome
+handleNotifyShipper item = do
+  result <- httpPost (shipperUrl item) (body item)
+  pure $ case result of
+    Right ()                 -> Done                       -- ack, delete the message
+    Left (Transient _status) -> Retry (RetryDelay 10)      -- 5xx / timeout → back off and retry
+    Left (Permanent reason)  -> Dead reason                -- 4xx / bad config → dead-letter, don't retry
+```
+
+The distinction in that `case` is the whole point, and the same rule the
+[dead-letter-and-retry](/docs/keiro/how-to/dead-letter-and-retry-jobs) how-to teaches: a **transient**
+failure (a 5xx, a timeout) `Retry`s on the policy's back-off; a **deterministic** one (a 4xx, an
+unroutable URL) goes straight to `Dead` rather than burning all five attempts on a call that will fail
+identically every time.
+
+## Idempotency on both ends
+
+Both hops are at-least-once, so guard both:
+
+- **Enqueue once.** A subscription can re-deliver the source event, so the handler can run twice.
+  `enqueue` is a plain send with no dedupe of its own — derive a stable key from the source event (an
+  id, a correlation key) and skip the enqueue if that work is already decided or already on the queue.
+  The hospital-capacity dispatcher does exactly this, querying both its read model and the live queue
+  table before sending:
+
+  ```sql
+  SELECT EXISTS (SELECT 1 FROM transfer_decisions WHERE reservation_id = $1)
+      OR EXISTS (SELECT 1 FROM pgmq.q_hospital_capacity_reservation_work
+                 WHERE message ->> 'reservation_id' = $1)
+  ```
+
+- **Make the call idempotent.** A retried (or duplicate) job means the HTTP call can happen more than
+  once. Send an idempotency key the remote understands, or make the effect naturally repeatable, so a
+  second delivery is a benign no-op.
+
+<Callout type="info">
+This is the shape of the hospital-capacity **reservation work queue**: an accepted transfer need is
+not turned into a reservation synchronously — the dispatcher enqueues a `keiro-pgmq` job and a worker
+drains it to run the command, with store failures mapped to `Retry` and domain rejections to `Dead`.
+See [the pgmq reservation work queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
+for the same pattern in a running service.
+</Callout>
+
+## When *not* to use this
+
+- **If the enqueue must be atomic with a domain write** (the job must exist iff the row committed),
+  the plain `enqueue` above has a dual-write hazard — send via raw SQL in the same transaction
+  instead. See [Enqueue a job transactionally](/docs/keiro/cookbook/transactional-job-enqueue).
+- **If the thing you are sending is a domain event other contexts consume**, it is an integration
+  event, not transient work — publish it through the [outbox](/docs/keiro/explanation/the-outbox-pattern)
+  and consume it through the [inbox](/docs/keiro/explanation/the-inbox-pattern), which give you
+  transactional publication and a dedupe table that a job queue does not.
+
+## Related
+
+- [Background jobs with PGMQ](/docs/keiro/explanation/background-jobs-with-pgmq) — why `keiro-pgmq` exists and when a job is the right tool.
+- [Idempotent fan-out](/docs/keiro/cookbook/idempotent-fan-out) — the same at-least-once discipline when a subscription dispatches a *command* instead of a job.
+- [Dead-letter and retry jobs](/docs/keiro/how-to/dead-letter-and-retry-jobs) — mapping outcomes to `Retry` vs `Dead`.
+- [Run a process manager as a subscription](/docs/keiro/how-to/run-a-process-manager-as-a-subscription) — wiring the producing subscription to a live adapter.
