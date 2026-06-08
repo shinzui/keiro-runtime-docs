@@ -93,6 +93,16 @@ Both hops are at-least-once, so guard both:
   second delivery is a benign no-op.
 
 <Callout type="info">
+**The subscription already dissolves the dual-write hazard — that is the point.** A bare `enqueue` is
+not atomic with a database write, so enqueuing *inside a command handler* risks committing the row but
+losing the job. Here there is no such pair: the source event is **already durably committed** in the
+event store before the subscription ever runs, and the subscription's at-least-once redelivery keeps
+re-running the handler until the `enqueue` succeeds. "Row committed, job lost" cannot persist — a
+crash before the send just re-delivers the event. So for this pattern you want the plain `enqueue`,
+with the producer-side dedupe above; the transactional form below is the exception, not the default.
+</Callout>
+
+<Callout type="info">
 This is the shape of the hospital-capacity **reservation work queue**: an accepted transfer need is
 not turned into a reservation synchronously — the dispatcher enqueues a `keiro-pgmq` job and a worker
 drains it to run the command, with store failures mapped to `Retry` and domain rejections to `Dead`.
@@ -102,9 +112,12 @@ for the same pattern in a running service.
 
 ## When *not* to use this
 
-- **If the enqueue must be atomic with a domain write** (the job must exist iff the row committed),
-  the plain `enqueue` above has a dual-write hazard — send via raw SQL in the same transaction
-  instead. See [Enqueue a job transactionally](/docs/keiro/cookbook/transactional-job-enqueue).
+- **If you are enqueuing from a *command handler*, not a subscription** — building the job in the same
+  action that writes the domain row, so the job must exist iff that row commits — then the dual-write
+  hazard is real and the plain `enqueue` is not enough: send via raw SQL in the same transaction
+  instead. This is the unusual case; a subscription, reacting to an already-committed event, does not
+  need it (see the callout above). See [Enqueue a job
+  transactionally](/docs/keiro/cookbook/transactional-job-enqueue).
 - **If the thing you are sending is a domain event other contexts consume**, it is an integration
   event, not transient work — publish it through the [outbox](/docs/keiro/explanation/the-outbox-pattern)
   and consume it through the [inbox](/docs/keiro/explanation/the-inbox-pattern), which give you
