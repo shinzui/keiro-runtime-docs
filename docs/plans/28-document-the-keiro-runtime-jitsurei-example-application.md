@@ -84,9 +84,12 @@ This section must always reflect the actual current state of the work.
       prominent cross-links to the existing keiro pgmq pages), wiring/CLI. Real Haskell excerpts +
       keiro cross-links + Keiki diagrams throughout. Gate green: `check-doc-links.mjs` (366 files),
       `typecheck`, `build`.
-- [ ] **M4 — Cross-service integration.** Write `cross-service/` (index + 5 chapters): the
-      end-to-end message flow, message contracts, outbox + Kafka publishing, inbox + consuming,
-      telemetry / trace continuity.
+- [x] **M4 — Cross-service integration.** _(done 2026-06-07)_ Wrote `cross-service/` (index + 5
+      chapters): the end-to-end message flow (with a Mermaid sequence diagram of
+      `mass-casualty-transfer`), message contracts (the `IntegrationMessage` envelope + the
+      duplicated-per-service rationale), outbox + Kafka publishing, inbox + consuming (ack-decision
+      mapping), telemetry / trace continuity. Real Haskell excerpts + keiro cross-links throughout.
+      Gate green: `check-doc-links.mjs` (371 files), `typecheck`, `build`.
 - [ ] **M5 — Running it.** Write `running-it/` (index + 4 chapters): prerequisites/setup,
       running the scenarios, the workers, observing traces.
 - [ ] **M6 — Cross-links + finalization.** Add inbound cross-links from existing keiro pgmq

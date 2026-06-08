@@ -1,0 +1,112 @@
+---
+title: "02 — Outbox and publishing"
+description: "Enqueue-in-transaction then claim-and-publish: how a private event becomes an outbox row and reaches Kafka."
+---
+
+The outbox pattern is how a service turns a private decision into a public message **without** a
+distributed transaction: the message is written to an outbox table in the *same* database
+transaction as the domain write, and a separate worker later claims and publishes it. Read the keiro
+[outbox pattern](/docs/keiro/explanation/the-outbox-pattern) explanation and
+[outbox](/docs/keiro/reference/outbox) reference alongside.
+
+## From private event to outbox row
+
+`Integration/Outbox.hs` maps a private `TransferNeedEmitted` event to a public `IntegrationEvent`. It
+builds the `IntegrationMessage` (the [contract](/docs/example-app/cross-service/01-message-contracts)),
+then wraps it as a keiro `IntegrationEvent` carrying the destination topic, a partition key, the
+serialized payload bytes, the source event linkage, and a **trace context**:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Integration/Outbox.hs
+triageEventToOutboxEvent :: RecordedEvent -> TriageEvent -> Maybe IncidentIntegrationOutboxEvent
+triageEventToOutboxEvent recorded = \case
+  TransferNeedEmitted transferNeed ->
+    let traceParent = defaultTraceParent
+        publicMessage = incidentTransferNeedMessage transferNeed traceParent recorded.createdAt
+        publicEvent =
+          IntegrationEvent
+            { messageId = publicMessage.messageId
+            , source = incidentIntegrationSource          -- "incident-command"
+            , destination = incidentEventsTopic           -- "emergency.incident.events"
+            , key = Just (Text.pack (show transferNeed.incidentId))
+            , eventType = messageType publicMessage
+            , schemaVersion = publicMessage.schemaVersion
+            , contentType = ApplicationJson
+            , sourceEventId = Just recorded.eventId
+            , sourceGlobalPosition = Just recorded.globalPosition
+            , payloadBytes = LazyByteString.toStrict (Aeson.encode publicMessage)
+            , occurredAt = recorded.createdAt
+            , traceContext = Just TraceContext {traceparent = traceParent, tracestate = Nothing}
+            -- …
+            }
+     in Just IncidentIntegrationOutboxEvent { outboxId = outboxIdForMessage publicMessage.messageId, event = publicEvent }
+  _ -> Nothing
+```
+
+The `outboxId` is derived deterministically from the message id, so re-deriving the outbox row for
+the same message is idempotent.
+
+## Enqueue in the same transaction
+
+`Store.hs` enqueues that event with keiro's `enqueueIntegrationEventTx` **inside a transaction** —
+the same primitive a domain write uses, so in production the outbox row and the events commit or roll
+back together:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Store.hs
+        Just outboxEvent -> do
+          result <-
+            runStoreIO store $
+              runTransaction $
+                enqueueIntegrationEventTx outboxEvent.outboxId outboxEvent.event
+          -- …
+```
+
+In this example the enqueue is driven on demand by
+`incident-command-worker outbox enqueue-transfer-need <triage-id>`, which reads the latest transfer
+need and writes its outbox row.
+
+## Claim and publish
+
+A second step drains the outbox. `publishClaimedOutbox` claims pending rows and hands each to a
+publish function; the service provides two — a **dry-run** that always succeeds (for deterministic
+span evidence) and a **real Kafka** publish:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Store.hs
+runOutboxPublisherDryRunOnceWithTelemetry tracer store = do
+  metrics <- serviceMetricsFromGlobalProvider tracer
+  runStoreIO store $
+    publishClaimedOutbox (\_row -> pure PublishSucceeded) (outboxPublishOptionsWithTelemetry tracer) metrics
+
+runOutboxPublisherKafkaOnceWithTelemetry tracer store config = do
+  metrics <- serviceMetricsFromGlobalProvider tracer
+  runStoreIO store $
+    publishClaimedOutbox (liftIO . publishOutboxRowToKafka config) (outboxPublishOptionsWithTelemetry tracer) metrics
+```
+
+## The Kafka publish itself
+
+`Integration/KafkaPublisher.hs` turns a keiro `OutboxRow` into a Kafka record via keiro's
+`Keiro.Outbox.Kafka.outboxRowToKafkaRecord` (which carries the headers, including the trace-parent),
+produces it with `hw-kafka-client`, waits for the delivery report, and maps the result back to a
+`PublishOutcome`:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Integration/KafkaPublisher.hs
+publishOutboxRowToKafka :: KafkaPublishConfig -> OutboxRow -> IO PublishOutcome
+publishOutboxRowToKafka config row = do
+  result <- publishKafkaProducerRecord config (KeiroKafka.outboxRowToKafkaRecord row)
+  pure (kafkaPublishResultToOutcome (first (Text.pack . show) result))
+
+kafkaPublishResultToOutcome :: Either Text () -> PublishOutcome
+kafkaPublishResultToOutcome = \case
+  Left err -> PublishFailed err
+  Right () -> PublishSucceeded
+```
+
+A `PublishFailed` leaves the row claimed-but-unpublished for the next pass; a `PublishSucceeded`
+marks it done. Hospital Capacity's outbox is identical in shape — its
+`enqueue-latest-reservation-response` and `enqueue-latest-capacity-snapshot` worker commands feed the
+same publisher for `emergency.hospital.events`. The consuming side is
+[next](/docs/example-app/cross-service/03-inbox-and-consuming).

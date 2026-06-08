@@ -1,0 +1,92 @@
+---
+title: "03 — Inbox and consuming"
+description: "Consume from Kafka, dedupe through the inbox, store the accepted message, and dispatch — exactly once."
+---
+
+The inbox is the mirror of the outbox: a deduplicating inbound buffer that accepts each external
+message **exactly once** into the service's own database before any local handler runs. This chapter
+reads Hospital Capacity's consumer and inbox. Read the keiro
+[inbox pattern](/docs/keiro/explanation/the-inbox-pattern) explanation and
+[inbox](/docs/keiro/reference/inbox) reference alongside.
+
+## The Kafka consumer
+
+`Integration/KafkaConsumer.hs` subscribes to `emergency.incident.events` through the
+**shibuya-kafka-adapter** and runs a Shibuya processor over the stream. The one-shot variant takes a
+single message (`Stream.take 1`) so a worker invocation drains one record and exits:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/Integration/KafkaConsumer.hs
+runConsumer store config = do
+  let consumerProperties =
+        brokersList (BrokerAddress <$> config.brokers)
+          <> KafkaConsumer.groupId (ConsumerGroupId config.groupId)
+          <> noAutoOffsetStore
+      subscription = KafkaConsumer.topics (TopicName <$> config.topics) <> offsetReset Earliest
+  runKafkaConsumer consumerProperties subscription $ do
+    Adapter{adapterName, source, shutdown} <- kafkaAdapter (defaultConfig (TopicName <$> config.topics))
+    let adapter = Adapter {adapterName, source = Stream.take 1 source, shutdown}
+        processorId = ProcessorId (Text.intercalate "," config.topics)
+    _processor <- runWithMetrics 1 processorId adapter (processOne store)
+    pure ()
+```
+
+Each ingested envelope is handed to `acceptIncidentKafkaEnvelope`, and the result is turned into a
+Shibuya **ack decision** — the heart of at-least-once-plus-dedupe semantics:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/Integration/KafkaConsumer.hs
+inboxResultAck :: Either HospitalInboxFailure AcceptedTransferNeed -> AckDecision
+inboxResultAck = \case
+  Right{} -> AckOk
+  Left HospitalInboxDuplicate -> AckOk                                   -- already processed → ack
+  Left HospitalInboxInProgress -> AckRetry (RetryDelay 5)
+  Left (HospitalInboxPreviouslyFailed reason) -> AckDeadLetter (PoisonPill …)
+  Left (HospitalInboxDedupeFailed err) -> AckDeadLetter (InvalidPayload err)
+  Left (HospitalInboxDecodeFailed err) -> AckDeadLetter (InvalidPayload (Text.pack (show err)))
+  Left (HospitalInboxStoreFailed _err) -> AckRetry (RetryDelay 5)
+```
+
+Note the key line: a **duplicate is `AckOk`** — re-delivering a message that was already accepted is a
+no-op success, not an error. A transient store failure retries; a malformed payload dead-letters.
+
+## Decode the envelope into a contract message
+
+`Integration/Inbox.hs` first turns the raw Kafka envelope into a keiro `IntegrationEvent` (via
+`integrationEventFromKafka`), then decodes the payload bytes into an
+[`IntegrationMessage`](/docs/example-app/cross-service/01-message-contracts), and rejects anything
+that is not the message type this consumer expects:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/Integration/Inbox.hs
+  (event, kafka) <- mapLeft KafkaEnvelopeDecodeFailed (integrationEventFromKafka inboundRecord)
+  message <- mapLeft ContractDecodeFailed (Aeson.eitherDecodeStrict event.payloadBytes)
+  case message.payload of
+    IncidentTransferNeedDeclared{} -> pure HospitalInboundMessage {event, kafka, message}
+    _ -> Left (UnexpectedIntegrationMessage (messageType message))
+```
+
+## Dedupe + store in one transaction
+
+The accept runs through keiro's `runInboxTransaction` with a dedupe policy keyed on the integration
+message id, and the application's accept handler writes `accepted_transfer_needs` with an
+`ON CONFLICT (message_id) DO NOTHING` upsert — so even if the inbox layer and the table both see a
+replay, the row is written at most once:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/Integration/Inbox.hs
+      Tx.statement (acceptedTransferNeedJson accepted) upsertAcceptedTransferNeedStmt
+      pure accepted
+-- upsertAcceptedTransferNeedStmt: INSERT … ON CONFLICT (message_id) DO NOTHING
+```
+
+The keiro inbox returns an `InboxResult` (`InboxProcessed` / `InboxDuplicate` / `InboxInProgress` /
+`InboxPreviouslyFailed`) — exactly the cases `inboxResultAck` maps above. In Incident Command the
+symmetric path (`acceptHospitalKafkaEnvelope` in its `Store.hs`) additionally **signals the
+evacuation workflow's awakeable** when it accepts a hospital response, and feeds the
+[capacity-change router](/docs/example-app/incident-command/04-routers) when it accepts a capacity
+snapshot.
+
+Once a transfer need is in `accepted_transfer_needs`, the
+[transfer-need router / pgmq dispatcher](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
+picks it up — that is where the inbound message becomes local reservation work.

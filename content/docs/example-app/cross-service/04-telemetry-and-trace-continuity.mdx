@@ -1,0 +1,96 @@
+---
+title: "04 — Telemetry and trace continuity"
+description: "How one OpenTelemetry trace spans both services: opt-in OTLP setup, the traceparent carried through Kafka and pgmq, and withApplicationSpan."
+---
+
+The final piece is what makes the [end-to-end flow](/docs/example-app/cross-service/00-the-message-flow)
+legible: a **single trace** that spans both services, Kafka, and pgmq. This chapter reads the
+telemetry wiring and explains how the W3C `traceparent` stays continuous across the boundary. Read
+the keiro [telemetry](/docs/keiro/reference/telemetry) reference and the app's own
+`docs/observability.md` alongside.
+
+## Tracing is opt-in
+
+Both services run with a **no-op** tracer by default; real spans are emitted only when
+`SEIHOU_TRACING_ENABLED` is set. `Telemetry.hs` makes the tracer a `Maybe`:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Telemetry.hs
+type ServiceTracer = Maybe OTel.Tracer
+
+withTelemetry :: TelemetryConfig -> (ServiceTracer -> IO a) -> IO a
+withTelemetry config action =
+  case config.mode of
+    TelemetryDisabled -> action Nothing
+    TelemetryEnabled ->
+      withOtelServiceName config.serviceName $
+        bracket OTel.initializeGlobalTracerProvider (\p -> void $ OTel.shutdownTracerProvider p Nothing) $ \provider ->
+          bracket OTelMetric.initializeGlobalMeterProvider (\mp -> void $ OTelMetric.shutdownMeterProvider mp Nothing) $ \_ ->
+            action (Just (OTel.makeTracer provider (instrumentationLibrary config) OTel.tracerOptions))
+```
+
+`telemetryConfigFromEnvironment` also honours `OTEL_SDK_DISABLED`, and `OTEL_SERVICE_NAME` is set to
+the service name (`incident-command` / `hospital-capacity`) so Jaeger shows two distinct services.
+
+## Application spans wrap every entrypoint
+
+`withApplicationSpan` opens a named internal span and attaches domain attributes; when the tracer is
+`Nothing` it is a transparent pass-through:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Telemetry.hs
+withApplicationSpan :: ServiceTracer -> Text -> [(Text, Text)] -> IO a -> IO a
+withApplicationSpan Nothing _ _ action = action
+withApplicationSpan (Just tracer) spanName attributes action =
+  OTelCore.inSpan' tracer spanName OTelCore.defaultSpanArguments{OTelCore.kind = OTelCore.Internal} $ \spanHandle -> do
+    traverse_ (uncurry (OTelCore.addAttribute spanHandle)) attributes
+    action
+```
+
+This is why every command processor, router, PM, workflow, and worker entrypoint in the previous
+chapters opened a `withApplicationSpan "<service>.<operation>"` — those are the application spans, and
+they **parent** keiro's own command/workflow/outbox spans (named after the stream, e.g.
+`incident-inc_…`, or `workflow incident-evacuation`). The tracer is threaded down into keiro through
+the `RunCommandOptions`/`WorkflowRunOptions`/`OutboxPublishOptions` records (see
+[the command cycle](/docs/example-app/incident-command/02-the-command-cycle)).
+
+## The traceparent crosses the boundary
+
+Continuity across services hinges on the **W3C `traceparent`** travelling with the message:
+
+- The [contract](/docs/example-app/cross-service/01-message-contracts) carries a `traceParent` field,
+  and the [outbox event](/docs/example-app/cross-service/02-outbox-and-publishing) sets a keiro
+  `TraceContext {traceparent = …}`. keiro's `outboxRowToKafkaRecord` emits it as a Kafka **header**.
+- On the way in, the [inbox decode](/docs/example-app/cross-service/03-inbox-and-consuming) reads the
+  Kafka headers back through `integrationEventFromKafka`, so the consumer span can continue the same
+  trace rather than starting a new one.
+- The **pgmq** path carries the trace the same way: the reservation-work queue runs through
+  `runPgmqTraced`, so a job enqueued and later drained stays on the trace.
+
+From `docs/observability.md`, the deterministic Kafka probe even pins a trace id
+(`0af7651916cd43dd8448eb211c80319c`) and the verifier asserts the consumer spans remain on it.
+
+## What a finished trace looks like
+
+The trace for `mass-casualty-transfer` includes spans such as (from `docs/observability.md`):
+
+```text
+incident-command.cli scenario mass-casualty durable
+  incident-command.command processor incident
+  incident-command.process-manager incident-escalation
+  incident-command.workflow evacuation
+  workflow incident-evacuation
+  send emergency.incident.events
+emergency.incident.events process            (hospital-capacity)
+  hospital-capacity.command processor reservation
+  hospital-capacity.workflow reservation
+  publish hospital_capacity_reservation_work
+  receive hospital_capacity_reservation_work
+  send emergency.hospital.events
+emergency.hospital.events process            (incident-command)
+```
+
+Kafka spans record `messaging.system=kafka`; Shibuya processing spans record
+`messaging.system=shibuya` and `shibuya.ack.decision`; pgmq spans record `messaging.system=pgmq`.
+Together they are one connected trace across both services — which is exactly what
+[Running it · observing traces](/docs/example-app/running-it) shows you finding in Jaeger.

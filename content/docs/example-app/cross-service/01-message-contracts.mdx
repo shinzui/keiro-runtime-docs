@@ -1,0 +1,104 @@
+---
+title: "01 — Message contracts"
+description: "The IntegrationMessage envelope, its seven payloads, idempotency keys, trace-parent headers, topic routing, and why the contracts are duplicated per service."
+---
+
+Everything that crosses the boundary is an **`IntegrationMessage`**. This chapter reads the contract
+module both services keep — `Integration/Contracts.hs` — and the neutral schema and fixtures that
+define the wire format. Read the keiro
+[integration event](/docs/keiro/reference/integration-event) reference alongside.
+
+## The envelope
+
+Every message shares one envelope: a `msg_…` id, a schema version, timestamps, causation/correlation
+ids, an idempotency key, a **W3C trace-parent**, and a typed payload:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Integration/Contracts.hs
+data IntegrationMessage = IntegrationMessage
+  { messageId :: !Text
+  , schemaVersion :: !Int
+  , occurredAt :: !Text
+  , causationId :: !Text
+  , correlationId :: !Text
+  , idempotencyKey :: !Text
+  , traceParent :: !Text
+  , payload :: !IntegrationPayload
+  }
+```
+
+The seven payloads are the whole vocabulary of the integration:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Integration/Contracts.hs
+data IntegrationPayload
+  = IncidentTransferNeedDeclared !IncidentTransferNeedDeclaredData
+  | TransferReservationRequested !TransferReservationRequestedData
+  | HospitalCapacitySnapshotPublished !HospitalCapacitySnapshotPublishedData
+  | TransferReservationAccepted !TransferReservationAcceptedData
+  | TransferReservationRejected !TransferReservationRejectedData
+  | PatientAdmitted !PatientAdmittedData
+  | TransferExpired !TransferExpiredData
+```
+
+## Topic routing is content-derived
+
+The payload determines the topic. The first two messages belong on `emergency.incident.events`;
+everything else on `emergency.hospital.events`:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Integration/Contracts.hs
+isIncidentTopicMessage :: IntegrationMessage -> Bool
+isIncidentTopicMessage integrationMessage =
+  case integrationMessage.payload of
+    IncidentTransferNeedDeclared{} -> True
+    TransferReservationRequested{} -> True
+    _ -> False
+
+isHospitalTopicMessage :: IntegrationMessage -> Bool
+isHospitalTopicMessage = not . isIncidentTopicMessage
+```
+
+## The decoder is strict — and prefix-checked
+
+`FromJSON IntegrationMessage` rejects an unknown schema version and **validates the TypeID prefix**
+of every id field — `messageId` must be a `msg`, `causationId` a `cmd` or `msg`, `correlationId` one
+of `wf`/`msg`/`inc`/`rsv`. A malformed id is a parse failure, not a silently-accepted string:
+
+```haskell
+-- services/incident-command/src/IncidentCommand/Integration/Contracts.hs
+      schemaVersion <- obj .: "schemaVersion"
+      if schemaVersion == 1 then pure () else fail ("unsupported schemaVersion " <> show (schemaVersion :: Int))
+      messageId <- obj .: "messageId" >>= requireTypeId ["msg"]
+      messageTypeName <- obj .: "messageType"
+      -- …
+      causationId <- obj .: "causationId" >>= requireTypeId ["cmd", "msg"]
+      correlationId <- obj .: "correlationId" >>= requireTypeId ["wf", "msg", "inc", "rsv"]
+```
+
+## Idempotency keys are service-qualified
+
+The inbox and outbox dedupe on `idempotencyKey`, so the keys are deterministic per logical effect
+(from `docs/contracts/README.md`):
+
+```text
+incident-transfer-need:<incidentId>:<triageRecordId>
+transfer-reservation-request:<incidentId>:<reservationId>
+hospital-capacity-snapshot:<hospitalId>:<snapshotId>
+transfer-reservation-accepted:<reservationId>
+transfer-reservation-rejected:<reservationId>
+patient-admitted:<reservationId>
+transfer-expired:<reservationId>
+```
+
+## Why the contract is duplicated, not shared
+
+Both `IncidentCommand.Integration.Contracts` and `HospitalCapacity.Integration.Contracts` define
+**their own** copy of these types. The canonical contract is **not** Haskell — it is the neutral JSON
+schema (`docs/contracts/schemas/integration-message.schema.json`) and the golden fixtures
+(`docs/contracts/fixtures/*.json`). Each service's compatibility tests read those neutral fixtures,
+so the two copies are kept in sync by the *wire format*, not by a shared library. As the app's own
+README puts it: *"They are not Haskell domain events and are not implemented by a shared package."*
+This is the [integration-events](/docs/keiro/explanation/integration-events) principle taken to its
+conclusion — the only contract that crosses the boundary is the bytes on the topic. The schema even
+pins the id shape: `"messageId": { "pattern": "^msg_[0-9a-hjkmnp-tv-z]{26}$" }`.
