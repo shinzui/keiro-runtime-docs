@@ -1,0 +1,61 @@
+---
+title: "00 — What it demonstrates"
+description: "Every keiro runtime feature keiro-runtime-jitsurei exercises, the file(s) that demonstrate each, and the canonical keiro doc for each."
+---
+
+The reason to read `keiro-runtime-jitsurei` is that it uses **almost every keiro runtime feature
+in anger** — with real domain code, across a real service boundary, under one trace. If you have
+learned a keiro subsystem abstractly elsewhere on this site, this application is where you can see
+it wired into a working program.
+
+The application's own feature-selection guide
+(`docs/walkthroughs/runtime-feature-use.md`) frames each feature as "reach for X when…"; the table
+below turns that into a "demonstrated by" index. Every row links the keiro concept page on the left
+to the app source on the right.
+
+## Feature → demonstrated by
+
+| Runtime feature | Demonstrated by (app source) | Canonical keiro doc |
+|---|---|---|
+| Aggregate / transducer + EventStream | `Incident/`, `FieldResource/`, `Triage/`, `Hospital/`, `Capacity/`, `Reservation/` — each a `{Transducer,EventStream}.hs` pair | [event stream &amp; stream](/docs/keiro/reference/event-stream-and-stream) |
+| Command cycle (write path) | `*/CommandProcessor.hs` (`runCommandWithProjections`) | [the command cycle](/docs/keiro/explanation/the-command-cycle), [command](/docs/keiro/reference/command) |
+| Read models / projections | `*/Projection.hs`, `CommandAudit/Projection.hs` | [projections, read models &amp; snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots), [projection](/docs/keiro/reference/projection) |
+| Routers (content-based fan-out) | `ResourceRouter.hs`, `CapacityChangeRouter.hs`, `TransferNeedRouter.hs` | [routers &amp; content-based dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch), [router](/docs/keiro/reference/router) |
+| Process managers + durable timers | `Escalation.hs` (`runDueEscalationTimer`), `SurgeManager.hs` | [process managers &amp; sagas](/docs/keiro/explanation/process-managers-and-sagas), [durable timers](/docs/keiro/explanation/durable-timers) |
+| Durable workflows + awakeables | `EvacuationWorkflow.hs`, `ReservationWorkflow.hs` | [durable execution](/docs/keiro/explanation/durable-execution), [durable workflows](/docs/keiro/reference/durable-workflows) |
+| Outbox / inbox | `*/Integration/{Outbox,Inbox}.hs` | [the outbox pattern](/docs/keiro/explanation/the-outbox-pattern), [the inbox pattern](/docs/keiro/explanation/the-inbox-pattern) |
+| Kafka transport (shibuya) | `*/Integration/{KafkaPublisher,KafkaConsumer}.hs` | [integration events](/docs/keiro/explanation/integration-events) |
+| Message contracts | `*/Integration/Contracts.hs` | [integration event](/docs/keiro/reference/integration-event) |
+| PGMQ background job | `Reservation/WorkQueue.hs`, `Integration/ReservationWorkDispatch.hs` | [pgmq jobs](/docs/keiro/reference/pgmq-jobs), [keiro with pgmq](/docs/integrations/keiro-with-pgmq) |
+| TypeID identifiers | `*/Identity.hs`, `*/Domain/Types.hs` | (via `mmzk-typeid` + `typeid-hs`) |
+| Telemetry (OpenTelemetry) | `*/Telemetry.hs` | [telemetry](/docs/keiro/reference/telemetry) |
+| Wiring / CLI / scenarios | `Store.hs`, `app/*Cli.hs`, `app/*Worker.hs`, `Scenario.hs` | [scaling the workers](/docs/keiro/explanation/scaling-the-workers) |
+
+`*` is `IncidentCommand/` or `HospitalCapacity/` under `services/<service>/src/`. The only feature
+that lives in just one service is the **PGMQ background job** — Hospital Capacity's reservation
+work queue.
+
+## How the three scenarios exercise the features
+
+The application packages three runnable scenarios. Each lights up a different slice of the runtime
+(from `docs/scenarios/README.md`):
+
+| Scenario | Primary boundary | Runtime features it exercises |
+|---|---|---|
+| `mass-casualty-transfer` | Incident Command → Hospital Capacity | TypeID, Keiki, Kiroku, command processor, process manager, router, workflow, outbox, Kafka, inbox, PGMQ, Shibuya, OpenTelemetry |
+| `hospital-divert-reroute` | Hospital Capacity local aggregate + read model | Keiki guard rejection, Kiroku append, capacity read model, reroute-ready state |
+| `supply-shortage-escalation` | Hospital Capacity local escalation | Keiki supply register, process manager, timer worker, capacity read model |
+
+`mass-casualty-transfer` is the full cross-boundary demo — it is the one that touches every box in
+the architecture diagram, and it is the narrative spine of the
+[cross-service](/docs/example-app/cross-service) chapters. The other two are tighter, single-service
+stories that isolate guard rejection and local escalation.
+
+## Where each feature is documented in this section
+
+Use the [runtime feature map](/docs/example-app/overview/03-runtime-feature-map) as the index from
+each feature to the exact chapter that walks its source. The two service tours
+([Incident Command](/docs/example-app/incident-command),
+[Hospital Capacity](/docs/example-app/hospital-capacity)) cover the per-service features; the
+[cross-service](/docs/example-app/cross-service) tour covers the contracts, outbox/inbox, Kafka, and
+trace continuity that join them.
