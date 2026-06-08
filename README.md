@@ -7,12 +7,12 @@ a static [TanStack Start](https://tanstack.com/start) SPA; all the prose lives a
 
 The libraries it documents:
 
-| Library     | 漢字 | What it is                                                        |
-| ----------- | ---- | ----------------------------------------------------------------- |
-| **kiroku**  | 記録 | An append-only PostgreSQL event store — the persistence foundation. |
-| **keiro**   | 経路 | An event-sourcing framework and durable workflow engine.          |
-| **keiki**   | 継起 | A pure, dependency-free mathematical core (the decision semantics). |
-| **shibuya** | —    | Supervised, Broadway-style queue processing.                      |
+| Library     | 漢字 | What it is                                                               |
+| ----------- | ---- | ------------------------------------------------------------------------ |
+| **kiroku**  | 記録 | An append-only PostgreSQL event store — the persistence foundation.      |
+| **keiro**   | 経路 | An event-sourcing framework and durable workflow engine.                 |
+| **keiki**   | 継起 | A pure, dependency-free mathematical core (the decision semantics).      |
+| **shibuya** | 渋谷 | Supervised, Broadway-style queue processing.                             |
 | **pgmq**    | —    | A PostgreSQL-native message queue — the queue substrate (via `pgmq-hs`). |
 
 ## Getting started
@@ -29,16 +29,16 @@ Open the URL Vite prints (default <http://localhost:3000>).
 
 ## Common scripts
 
-| Command                | What it does                                                            |
-| ---------------------- | ---------------------------------------------------------------------- |
-| `pnpm dev`             | Dev server with hot reload.                                            |
-| `pnpm build`           | Prerender the static SPA into `.output/public/`.                       |
-| `pnpm start`           | Serve a built `.output/public/`.                                       |
-| `pnpm typecheck`       | `fumadocs-mdx` + `tsc --noEmit`.                                       |
-| `pnpm lint`            | `oxlint`.                                                               |
-| `pnpm format:check`    | `oxfmt --check .` (use `pnpm format` to write).                        |
-| `pnpm lint:links`      | Source-level `/docs` link check, then a `linkinator` crawl of the build. |
-| `pnpm check`           | The full gate: typecheck → lint → format:check → build → link check.   |
+| Command             | What it does                                                             |
+| ------------------- | ------------------------------------------------------------------------ |
+| `pnpm dev`          | Dev server with hot reload.                                              |
+| `pnpm build`        | Prerender the static SPA into `.output/public/`.                         |
+| `pnpm start`        | Serve a built `.output/public/`.                                         |
+| `pnpm typecheck`    | `fumadocs-mdx` + `tsc --noEmit`.                                         |
+| `pnpm lint`         | `oxlint`.                                                                |
+| `pnpm format:check` | `oxfmt --check .` (use `pnpm format` to write).                          |
+| `pnpm lint:links`   | Source-level `/docs` link check, then a `linkinator` crawl of the build. |
+| `pnpm check`        | The full gate: typecheck → lint → format:check → build → link check.     |
 
 `pnpm check` mirrors the CI workflow in `.github/workflows/ci.yml`; run it before pushing.
 
