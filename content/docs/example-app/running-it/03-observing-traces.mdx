@@ -1,0 +1,82 @@
+---
+title: "03 — Observing traces"
+description: "Open Jaeger, find the cross-service trace, and run the trace verifier."
+---
+
+The payoff of running `mass-casualty-transfer --trace` is a **single trace that spans both
+services**. This chapter shows how to see it. It cross-checks against the app's `docs/observability.md`
+and is the operational complement to
+[Cross-service · telemetry and trace continuity](/docs/example-app/cross-service/04-telemetry-and-trace-continuity).
+
+## Open Jaeger
+
+With infrastructure up ([setup](/docs/example-app/running-it/00-prerequisites-and-setup)), the Jaeger
+UI is at:
+
+```text
+http://127.0.0.1:16686
+```
+
+After a traced run, Jaeger should list **two** service names — `incident-command` and
+`hospital-capacity`:
+
+```bash
+curl -fsS http://127.0.0.1:16686/api/services
+```
+
+<Callout type="info">
+  If another local tool already holds IPv4 `127.0.0.1:16686`, query the compose Jaeger over IPv6
+  loopback instead, and pass `JAEGER_URL` to the verifier:
+
+  ```bash
+  curl -g -fsS 'http://[::1]:16686/api/services'
+  JAEGER_URL='http://[::1]:16686' just verify-traces
+  ```
+</Callout>
+
+## Find the trace
+
+Search by service `incident-command` and operation
+`incident-command.cli scenario mass-casualty durable` — the top-level CLI span. Expanding it shows
+the application spans parenting keiro's own spans, the `send …` / `… process` Kafka spans, and the
+`publish` / `receive hospital_capacity_reservation_work` pgmq spans, all on one trace. The full list
+of expected span names is in
+[the telemetry chapter](/docs/example-app/cross-service/04-telemetry-and-trace-continuity#what-a-finished-trace-looks-like).
+
+## Verify automatically
+
+Two recipes assert the trace shape rather than eyeballing it:
+
+```bash
+just verify-traces     # bash scripts/verify-jaeger-traces.sh
+just verify-example    # bash scripts/validate-documentation-grade-example.sh
+```
+
+`verify-traces` checks Jaeger for both service names and the required application operations, plus
+representative TypeID, Shibuya, Kafka, pgmq, status-code, and **trace-continuity** attributes. It
+assumes the traced scenario, the outbox dry-run publishers, the Kafka inbox probe, and the
+reservation-work worker have already run. `verify-example` is the documentation-grade default gate.
+
+For a fully live run from scratch (per `docs/observability.md`), start Postgres, Redpanda, and
+Jaeger first, then opt in explicitly:
+
+```bash
+SEIHOU_RUN_LIVE_SCENARIOS=true nix develop --command just verify-example
+```
+
+## Metrics, too
+
+The same OTLP setup emits keiro metrics. For deterministic evidence without a metrics backend, use
+the console exporter on a traced run:
+
+```bash
+SEIHOU_TRACING_ENABLED=true \
+  OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+  OTEL_TRACES_SAMPLER=always_on \
+  OTEL_METRICS_EXPORTER=console \
+  just scenario mass-casualty-transfer
+```
+
+Expect names such as `keiro.workflow.steps.executed`, `keiro.workflow.steps.replayed`,
+`keiro.outbox.published`, and `keiro.outbox.backlog`. That closes the loop: you have built, run, and
+**observed** the whole keiro family working together across two services.

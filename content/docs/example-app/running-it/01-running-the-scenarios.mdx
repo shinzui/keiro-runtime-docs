@@ -1,0 +1,78 @@
+---
+title: "01 — Running the scenarios"
+description: "The three packaged scenarios, how to run them with --trace and --reset, and what to expect — mapped to the chapters that explain them."
+---
+
+`keiro-runtime-jitsurei` packages three runnable scenarios. List them:
+
+```bash
+just scenario-list
+# mass-casualty-transfer
+# hospital-divert-reroute
+# supply-shortage-escalation
+```
+
+Each is driven by `runtime/scenarios/run-scenario.sh`, which the root `just scenario` recipe
+delegates to.
+
+## Running one
+
+```bash
+just scenario mass-casualty-transfer --trace
+```
+
+`--trace` sets `SEIHOU_TRACING_ENABLED=true`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`,
+and `OTEL_TRACES_SAMPLER=always_on` for the run. To run with a clean, deterministic database, use the
+script directly with `--reset`:
+
+```bash
+runtime/scenarios/run-scenario.sh run mass-casualty-transfer --reset --trace
+```
+
+<Callout type="warn">
+  `--reset` calls each service's `just reset-db --confirm`, which **drops and recreates the two local
+  development databases**, and recreates the Kafka topics. Never point it at a non-development
+  connection string.
+</Callout>
+
+## The three scenarios
+
+| Scenario | What it shows | Explained in |
+|---|---|---|
+| `mass-casualty-transfer` | the full cross-boundary flow — transfer need → Kafka → inbox → pgmq reservation work → workflow acknowledgement → response back | [Cross-service · the message flow](/docs/example-app/cross-service/00-the-message-flow) |
+| `hospital-divert-reroute` | a `total-divert` reservation **rejected by the aggregate guard** before any cross-service publication, plus the readiness read model | [Hospital Capacity · aggregates](/docs/example-app/hospital-capacity/01-aggregates-and-transducers) |
+| `supply-shortage-escalation` | a capacity breach + supply constraint driving the **surge process manager** and its **timer worker** | [Hospital Capacity · the surge PM](/docs/example-app/hospital-capacity/03-the-surge-process-manager) |
+
+`mass-casualty-transfer` is the one that exercises every box in the architecture diagram; the other
+two are tighter single-service stories. The script's `run_mass_casualty_transfer` runs the durable
+Incident Command and Hospital Capacity scenarios, then the
+[bounded workers](/docs/example-app/running-it/02-the-workers) in order.
+
+## What to expect
+
+The scenarios print deterministic transcripts (the checked-in copies are under
+`docs/scenarios/transcripts/`). A slice of `mass-casualty-transfer.txt`:
+
+```text
+## Service scenarios
+declare incident: appended 1 event(s), stream StreamVersion 1
+incident escalation process manager: scheduled 1 timer(s)
+dispatch before safety perimeter: rejected
+order evacuation: appended 1 event(s), stream StreamVersion 5
+evacuation workflow first run: suspended
+hospital capacity acknowledgement: signalled
+evacuation workflow resumed: completed status=ready-for-evacuation …
+…
+## Bounded workers
+incident outbox enqueue-transfer-need: message=msg_… destination=emergency.incident.events
+incident outbox publish-kafka once: claimed=1 published=1
+hospital inbox consume-incident-kafka once: completed
+```
+
+Notice the markers that tie back to the walkthrough: a guard `rejected` line
+([aggregates](/docs/example-app/incident-command/01-aggregates-and-transducers)), the workflow
+`suspended` then `resumed`
+([evacuation workflow](/docs/example-app/incident-command/06-the-evacuation-workflow)), and the
+outbox `claimed=1 published=1` ([outbox](/docs/example-app/cross-service/02-outbox-and-publishing)).
+The cross-service run leaves a trace in Jaeger —
+[observing it](/docs/example-app/running-it/03-observing-traces) is the last chapter.

@@ -1,0 +1,79 @@
+---
+title: "02 — The workers"
+description: "The per-service worker subcommands — projections, timers, inbox, outbox, and reservation work — and the order the cross-service scenario runs them."
+---
+
+The scenarios are driven by **bounded worker** invocations: each `…-worker` subcommand does one unit
+of work and exits, so they compose into a deterministic sequence (and, in production, into
+cron-style drains). This chapter is the operational reference for those subcommands. Read
+[scaling the workers](/docs/keiro/explanation/scaling-the-workers) for the framework view of why
+workers are separated from the write path.
+
+## Incident Command worker
+
+```text
+incident-command-worker projections once
+incident-command-worker projections rebuild
+incident-command-worker timers once
+incident-command-worker inbox consume-hospital-kafka once
+incident-command-worker outbox enqueue-transfer-need <triage-id>
+incident-command-worker outbox publish-dry-run once
+incident-command-worker outbox publish-kafka once
+```
+
+- **projections once / rebuild** — drive the async projections (see
+  [Incident Command · read models](/docs/example-app/incident-command/03-read-models-and-projections)).
+- **timers once** — fire one due escalation timer
+  ([escalation PM](/docs/example-app/incident-command/05-escalation-process-manager-and-timers)).
+- **inbox consume-hospital-kafka once** — consume one hospital response and signal the evacuation
+  workflow ([inbox](/docs/example-app/cross-service/03-inbox-and-consuming)).
+- **outbox …** — enqueue a transfer need and publish the outbox
+  ([outbox](/docs/example-app/cross-service/02-outbox-and-publishing)); `publish-dry-run` is the
+  no-network variant used for deterministic span evidence.
+
+## Hospital Capacity worker
+
+```text
+hospital-capacity-worker timers once
+hospital-capacity-worker inbox consume-incident-kafka once
+hospital-capacity-worker routing-region register <hospital-id> <region>
+hospital-capacity-worker reservation-work setup
+hospital-capacity-worker reservation-work enqueue-latest
+hospital-capacity-worker reservation-work enqueue-malformed
+hospital-capacity-worker reservation-work consume once
+hospital-capacity-worker reservation-work confirm-latest
+hospital-capacity-worker outbox enqueue-latest-reservation-response
+hospital-capacity-worker outbox enqueue-latest-capacity-snapshot
+hospital-capacity-worker outbox publish-dry-run once
+hospital-capacity-worker outbox publish-kafka once
+```
+
+The **`reservation-work …`** subfamily is the operational surface of the
+[pgmq queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue): `setup` ensures
+the queue and its DLQ exist; `enqueue-latest` turns the latest accepted transfer need into a job;
+`consume once` drains one job (`runJobOnce`); `confirm-latest` signals the reservation workflow's
+awakeable; `enqueue-malformed` is the deliberate DLQ probe.
+
+## The order the cross-service scenario runs them
+
+`run_mass_casualty_transfer` runs the workers in exactly this sequence (also the body of the root
+`just run-workers` recipe):
+
+```bash
+incident-command-worker  outbox enqueue-transfer-need tri_01h455vb4pex5vsknk084sn02s
+incident-command-worker  outbox publish-kafka once
+hospital-capacity-worker inbox consume-incident-kafka once
+hospital-capacity-worker routing-region register hosp_01h455vb4pex5vsknk084sn02s north
+hospital-capacity-worker reservation-work setup
+hospital-capacity-worker reservation-work enqueue-latest
+hospital-capacity-worker reservation-work consume once
+hospital-capacity-worker reservation-work confirm-latest
+hospital-capacity-worker outbox enqueue-latest-reservation-response
+hospital-capacity-worker outbox enqueue-latest-capacity-snapshot
+hospital-capacity-worker outbox publish-kafka once
+incident-command-worker  inbox consume-hospital-kafka once
+```
+
+Read top to bottom, that *is* the [end-to-end message flow](/docs/example-app/cross-service/00-the-message-flow):
+publish the transfer need, consume it, route it to reservation work, drain and confirm the
+reservation, publish the response, and consume it back to wake the evacuation workflow.

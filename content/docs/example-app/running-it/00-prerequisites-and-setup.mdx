@@ -1,0 +1,99 @@
+---
+title: "00 — Prerequisites and setup"
+description: "From a clean checkout to a built workspace: the Nix dev shell, local infrastructure, databases, and migrations."
+---
+
+This chapter takes you from a clean checkout of `keiro-runtime-jitsurei` to a built workspace with
+infrastructure running and databases migrated. All commands run from the **app repo root** and are
+real recipes in its `justfile` / `process-compose.yaml`.
+
+<Steps>
+
+<Step>
+### Enter the dev shell
+
+The repo ships a Nix flake (`flake.nix`) that provides GHC, Cabal, `psql`, `rpk` (Redpanda),
+`jaeger`, `process-compose`, and `just`. Enter it:
+
+```bash
+nix develop
+```
+
+Everything below assumes you are inside this shell (or that you prefix commands with
+`nix develop --command …`, as the app's `docs/observability.md` does).
+</Step>
+
+<Step>
+### Start local infrastructure
+
+`process-compose.yaml` defines two Postgres instances (incident on port **55431**, hospital on
+**55432**), a Redpanda (Kafka) broker on **9092**, and a Jaeger instance. Start them:
+
+```bash
+just dev-up        # = process-compose up
+```
+
+The compose file initialises each Postgres data dir on first run and creates the dev databases as
+dependent steps. Stop everything later with `just dev-down`.
+</Step>
+
+<Step>
+### Create the databases
+
+If you are not using the compose-managed create step, the root recipe creates both dev databases
+explicitly:
+
+```bash
+just create-databases
+# createdb -h 127.0.0.1 -p 55431 incident_command_dev
+# createdb -h 127.0.0.1 -p 55432 hospital_capacity_dev
+```
+</Step>
+
+<Step>
+### Apply the migrations
+
+`just migrate-all` delegates to each service's own `just migrate`, which first installs the
+**typeid-hs** SQL functions (so `inc_…`, `hosp_…` ids work in the database) and then applies the
+service's seven SQL migrations — foundation, the Kiroku event store, read models, timers, workflows,
+outbox, and inbox:
+
+```bash
+just migrate-all
+# per service: typeid-hs SQL, then migrations/001_foundation.sql … 007_inbox.sql
+```
+
+<Callout type="info">
+  Each service's `just migrate` references a machine-local `typeid_sql_dir` path for the typeid-hs
+  SQL. If that path differs on your machine, point it at your local `typeid-hs/typeid-hs-sql`
+  checkout before running `migrate-all`.
+</Callout>
+</Step>
+
+<Step>
+### Create the Kafka topics
+
+```bash
+just kafka-topics
+# rpk topic create emergency.incident.events emergency.hospital.events --brokers 127.0.0.1:9092
+```
+</Step>
+
+<Step>
+### Build everything
+
+```bash
+just build-all     # cabal build all, in both services
+```
+
+A quick sanity check — the two smoke commands should each print a banner:
+
+```bash
+just scenario smoke   # runs incident-smoke and hospital-smoke
+```
+</Step>
+
+</Steps>
+
+With infrastructure up, databases migrated, topics created, and the workspace built, you are ready to
+[run the scenarios](/docs/example-app/running-it/01-running-the-scenarios).

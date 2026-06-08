@@ -90,8 +90,12 @@ This section must always reflect the actual current state of the work.
       duplicated-per-service rationale), outbox + Kafka publishing, inbox + consuming (ack-decision
       mapping), telemetry / trace continuity. Real Haskell excerpts + keiro cross-links throughout.
       Gate green: `check-doc-links.mjs` (371 files), `typecheck`, `build`.
-- [ ] **M5 — Running it.** Write `running-it/` (index + 4 chapters): prerequisites/setup,
-      running the scenarios, the workers, observing traces.
+- [x] **M5 — Running it.** _(done 2026-06-07)_ Wrote `running-it/` (index + 4 chapters):
+      prerequisites/setup (`<Steps>`), running the scenarios (with the `--reset` warning + expected
+      transcript excerpt), the workers (full subcommand reference + the cross-service run order),
+      observing traces (Jaeger + `verify-traces`/`verify-example`). All `just`/script commands
+      cross-checked against the app `justfile` / `run-scenario.sh` / `process-compose.yaml`. Gate
+      green: `check-doc-links.mjs` (375 files), `typecheck`, `build`.
 - [ ] **M6 — Cross-links + finalization.** Add inbound cross-links from existing keiro pgmq
       pages and the keiro family / top index into the new section; run the full `pnpm run
       check` gate; fill Outcomes & Retrospective.
