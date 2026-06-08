@@ -1,0 +1,52 @@
+---
+title: "00 — Start here"
+description: "What the hospital-capacity service is, the reading order for this tour, and the executables that drive it."
+---
+
+This is an **ordered source tour** of the `hospital-capacity` service — the receiving side of
+`keiro-runtime-jitsurei`. It reads the real Haskell at the pinned commit (`04420ed`), one chapter
+per concern, and links each feature back to the canonical keiro reference page.
+
+## What the service is
+
+`hospital-capacity` (Haskell package `hospital-capacity`, modules `HospitalCapacity.*`, source under
+`services/hospital-capacity/src/`) absorbs the patients. It owns three aggregates — **Hospital**,
+**Capacity**, and **Reservation** — a **Surge** process manager, a durable **reservation workflow**,
+and its signature feature: a **`keiro-pgmq` background-job queue** that drains reservation work. When
+[Incident Command](/docs/example-app/incident-command) publishes a transfer need, this service
+consumes it, routes it to reservation work, holds a bed, and publishes its response back over Kafka.
+
+The service ships two executables:
+
+```haskell
+-- services/hospital-capacity/app/HospitalCapacityCli.hs
+run tracer args =
+  case args of
+    ["smoke"] -> putStrLn smokeMessage
+    ["scenario", "regional-surge"] -> putStr regionalSurgeScenario
+    ["scenario", "regional-surge", "--durable"] -> durableRegionalSurgeScenarioWithTelemetry tracer >>= putStr
+    ["diagrams", "keiki"] -> do { … }
+```
+
+- **`hospital-capacity-cli`** drives the synchronous write path and the packaged `regional-surge`
+  scenario (with `--durable` for the surge PM + reservation workflow), plus `diagrams keiki`.
+- **`hospital-capacity-worker`** drives the asynchronous side: the surge timer, the inbox consumer,
+  the outbox publishers, and the **reservation-work queue** (`setup` / `enqueue-latest` /
+  `consume once` / `enqueue-malformed` / `confirm-latest`). Its full command set is in
+  [chapter 06](/docs/example-app/hospital-capacity/06-wiring-and-the-cli).
+
+## The chapters
+
+<Cards>
+  <Card title="01 — Aggregates and transducers" href="/docs/example-app/hospital-capacity/01-aggregates-and-transducers" description="Hospital, Capacity, and Reservation as Keiki transducers, with their EventStreams." />
+  <Card title="02 — Command cycle and read models" href="/docs/example-app/hospital-capacity/02-command-cycle-and-read-models" description="The three command processors and the hospital-readiness / transfer-decisions read models." />
+  <Card title="03 — The surge process manager" href="/docs/example-app/hospital-capacity/03-the-surge-process-manager" description="The surge PM that reacts to capacity pressure and schedules a follow-up timer." />
+  <Card title="04 — The reservation workflow" href="/docs/example-app/hospital-capacity/04-the-reservation-workflow" description="A durable workflow: hold → await confirmation → release/retain → summarize." />
+  <Card title="05 — The pgmq reservation work queue" href="/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue" description="The keiro-pgmq job: codec, retry policy, DLQ, runJobOnce — the app's signature background-job example." />
+  <Card title="06 — Wiring and the CLI" href="/docs/example-app/hospital-capacity/06-wiring-and-the-cli" description="The Store façade, the pgmq pool, and the executables." />
+</Cards>
+
+Keep the [runtime feature map](/docs/example-app/overview/03-runtime-feature-map) open in another
+tab. Much of this service mirrors [Incident Command](/docs/example-app/incident-command); the
+genuinely new material is the [reservation workflow](/docs/example-app/hospital-capacity/04-the-reservation-workflow)
+and the [pgmq work queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue).

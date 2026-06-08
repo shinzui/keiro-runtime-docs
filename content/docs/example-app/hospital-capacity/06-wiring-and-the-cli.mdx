@@ -1,0 +1,97 @@
+---
+title: "06 — Wiring and the CLI"
+description: "How Hospital Capacity composes: the Store façade, the separate pgmq connection pool, and the executables."
+---
+
+This chapter shows how Hospital Capacity composes into a runnable service. It is the counterpart of
+[Incident Command's chapter 07](/docs/example-app/incident-command/07-wiring-and-the-cli), with one
+extra moving part: the **pgmq connection pool** is managed separately from the Kiroku store. Read
+[scaling the workers](/docs/keiro/explanation/scaling-the-workers) for the framework view.
+
+## The Store façade
+
+`Store.hs` owns the database connection and re-exports a run-function for every capability —
+commands, the surge PM and timer, the reservation workflow and its confirmation signal, the
+transfer-need router, the inbox accept, and the outbox enqueue/publish:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/Store.hs
+defaultConnectionString :: Text
+defaultConnectionString = "postgresql://127.0.0.1:55432/hospital_capacity_dev"
+
+connectionStringFromEnvironment :: IO Text
+connectionStringFromEnvironment =
+  maybe defaultConnectionString Text.pack <$> lookupEnv "HOSPITAL_CAPACITY_DATABASE_URL"
+
+withHospitalCapacityStore :: (KirokuStore -> IO a) -> IO a
+withHospitalCapacityStore action = do
+  connString <- connectionStringFromEnvironment
+  withStore (hospitalConnectionSettings connString) action
+```
+
+<Callout type="info">
+  **Work in progress.** As in Incident Command, `Store.hs` and `CommandCli.hs` are *horizontal*
+  modules that still bundle all three aggregates; the app's vertical-slice refactor (EP-9) has not
+  yet split them. The per-aggregate `CommandProcessor.hs`, `Projection.hs`, etc. are already
+  vertical.
+</Callout>
+
+## The pgmq pool is separate
+
+The [reservation work queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
+uses its own `hasql-pool` connection — `withHospitalPgmqPool` — rather than the Kiroku store handle,
+because pgmq operations go through the `pgmq-effectful` interpreter, not Kiroku:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/Reservation/WorkQueue.hs
+withHospitalPgmqPool :: Text -> (Pool.Pool -> IO a) -> IO a
+withHospitalPgmqPool connectionString action =
+  bracket (Pool.acquire config) Pool.release action
+ where
+  settings = HasqlSettings.connectionString connectionString
+  config = PoolConfig.settings [ PoolConfig.size 4, PoolConfig.staticConnectionSettings settings ]
+```
+
+So the reservation-work worker commands open **both** handles — the pgmq pool *and* the Kiroku store —
+and hand them to the consumer:
+
+```haskell
+-- services/hospital-capacity/app/HospitalCapacityWorker.hs
+Right ConsumeReservationWorkOnce -> do
+  connectionString <- connectionStringFromEnvironment
+  result <-
+    withHospitalPgmqPool connectionString $ \pool ->
+      withHospitalCapacityStore (\store -> runReservationWorkConsumerOnceWithTelemetry tracer store pool)
+  -- …
+```
+
+## The worker CLI
+
+`WorkerCli.hs` enumerates the asynchronous subcommands, including the full reservation-work lifecycle:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/WorkerCli.hs
+data WorkerCommand
+  = RunTimerWorkerOnce
+  | ConsumeIncidentKafkaInboxOnce
+  | RegisterHospitalRoutingRegion !String !String
+  | SetupReservationWorkQueues
+  | EnqueueLatestReservationWork
+  | EnqueueMalformedReservationWork
+  | ConsumeReservationWorkOnce
+  | ConfirmLatestReservationWork
+  | EnqueueLatestReservationResponseOutbox
+  | EnqueueLatestCapacitySnapshotOutbox
+  | RunOutboxPublisherDryRunOnce
+  | RunOutboxPublisherKafkaOnce
+```
+
+The `reservation-work …` subfamily — `setup`, `enqueue-latest`, `enqueue-malformed`, `consume once`,
+`confirm-latest` — is the operational surface of the pgmq queue, and
+[Running it · the workers](/docs/example-app/running-it) shows the full sequence. The
+`routing-region register` command seeds the region lookup the
+[transfer-need router](/docs/example-app/cross-service) uses to find candidate hospitals.
+
+That is the full service: three aggregates wrapped in EventStreams, driven through one command cycle,
+projected to read models, escalated by the surge PM, coordinated by the reservation workflow, and —
+uniquely in this app — fed by a `keiro-pgmq` background-job queue with retries and a DLQ.

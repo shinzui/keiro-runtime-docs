@@ -1,0 +1,75 @@
+---
+title: "02 — Command cycle and read models"
+description: "The three Hospital Capacity command processors and the hospital-readiness and transfer-decisions read models."
+---
+
+The write path and read side here are structurally identical to
+[Incident Command's chapters 02](/docs/example-app/incident-command/02-the-command-cycle) and
+[03](/docs/example-app/incident-command/03-read-models-and-projections) — the same
+`runCommandWithProjections` cycle and the same inline-projection pattern — so this chapter is
+deliberately short and points out only what differs. Read the keiro
+[command](/docs/keiro/reference/command) and [projection](/docs/keiro/reference/projection)
+references for the framework view.
+
+## Three command processors, one shared runner
+
+Each aggregate has a thin processor that names its application span, attaches domain attributes, and
+delegates to the service-wide `runDurableCommand` in `Store.hs`. The Reservation processor is the
+one the [pgmq queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue) and the
+[reservation workflow](/docs/example-app/hospital-capacity/04-the-reservation-workflow) both call:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/Reservation/CommandProcessor.hs
+runReservationCommandDurablyWithTelemetry :: ServiceTracer -> KirokuStore -> TransferReservationId -> ReservationCommand -> IO (Either CommandFailure CommandSuccess)
+runReservationCommandDurablyWithTelemetry tracer store reservationId command =
+  withApplicationSpan
+    tracer
+    "hospital-capacity.command processor reservation"
+    (reservationCommandAttributes reservationId command) $
+    runDurableCommand
+      tracer
+      store
+      reservationEventStream
+      (reservationStream reservationId)
+      command
+      [transferDecisionProjection]
+```
+
+Just as in Incident Command, the failure type keeps infrastructure (`CommandStoreFailed`) and domain
+(`CommandProcessorFailed`) errors distinct — that distinction is exactly what the pgmq handler uses
+to choose between **retrying** and **dead-lettering** a job
+([chapter 05](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)).
+
+`Hospital/CommandProcessor.hs`, `Capacity/CommandProcessor.hs`, and
+`Reservation/CommandProcessor.hs` follow the same pattern, each passing its own EventStream, stream,
+and inline projection.
+
+## The two read models
+
+Hospital Capacity exposes two scenario-facing read models. Both declare `Strong` consistency, so a
+query reflects everything appended so far:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/Hospital/Projection.hs
+hospitalReadinessReadModel :: ReadModel HospitalReadinessQuery (Maybe HospitalReadiness)
+hospitalReadinessReadModel =
+  ReadModel
+    { name = "hospital-capacity-readiness"
+    , tableName = "hospital_readiness"
+    -- …
+    , defaultConsistency = Strong
+    -- …
+    }
+```
+
+| Read model | Table | Defined in | Fed from |
+|---|---|---|---|
+| Hospital readiness | `hospital_readiness` | `Hospital/Projection.hs`, `Capacity/Projection.hs` | hospital + capacity events |
+| Transfer decisions | `transfer_decisions` | `Reservation/Projection.hs` | reservation events |
+
+`transfer_decisions` is more than a dashboard: the
+[reservation-work dispatcher](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
+queries it (together with the live pgmq queue) to decide whether a reservation has *already* been
+decided or is *already pending*, so it never enqueues duplicate work for the same reservation. As in
+Incident Command, the read side is not just for humans — the integration code queries it to stay
+idempotent.

@@ -1,0 +1,85 @@
+---
+title: "04 — The reservation workflow"
+description: "A durable workflow: hold a bed, park on an awakeable awaiting confirmation, then release-or-retain and summarize."
+---
+
+The reservation workflow is the **receiving** end of the cross-service handoff that
+[Incident Command's evacuation workflow](/docs/example-app/incident-command/06-the-evacuation-workflow)
+begins. It is a keiro durable workflow that holds a bed, **parks** on an awakeable awaiting a
+confirmation, and then either retains or releases the capacity. Read the keiro
+[durable execution](/docs/keiro/explanation/durable-execution) explanation and
+[durable workflows](/docs/keiro/reference/durable-workflows) reference alongside.
+
+## The procedure
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/ReservationWorkflow.hs
+reservationWorkflow
+  :: (Workflow :> es, Store :> es, IOE :> es)
+  => ReservationWorkflowInput
+  -> Eff es ReservationWorkflowSummary
+reservationWorkflow input = do
+  hold <- step (StepName "create-transfer-hold") (createTransferHold input)
+  (_awakeableId, awaitConfirmation) <- awakeableNamed (StepName "reservation-confirmation")
+  confirmation <- awaitConfirmation
+  release <- step (StepName "release-or-retain-capacity") (releaseOrRetainCapacity input confirmation)
+  step (StepName "summarize-reservation") (summarizeReservation input hold confirmation release)
+```
+
+Four named steps with an awakeable in the middle — the same skeleton as the evacuation workflow:
+
+1. **`create-transfer-hold`** records that a bed is held.
+2. **`reservation-confirmation`** registers a named awakeable and `awaitConfirmation` **parks** the
+   workflow (it returns `Suspended`) until that awakeable is signalled.
+3. **`release-or-retain-capacity`** branches on the confirmation: `retained` if accepted, `released`
+   otherwise.
+4. **`summarize-reservation`** produces the final `ReservationWorkflowSummary` with
+   `status = "confirmed"` or `"rerouted"`.
+
+The branch is plain Haskell over the awaited value:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/ReservationWorkflow.hs
+releaseOrRetainCapacity input confirmation =
+  pure CapacityRelease
+    { reservationId = idText input.reservationId
+    , hospitalId = idText input.hospitalId
+    , status = if confirmation.accepted then "retained" else "released"
+    }
+```
+
+## The awakeable id is deterministic
+
+As with evacuation, the awakeable id is derived from the workflow name and the reservation id, so the
+signaller can compute it without holding a handle:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/ReservationWorkflow.hs
+reservationWorkflowName :: WorkflowName
+reservationWorkflowName = WorkflowName "hospital-transfer-reservation"
+
+reservationConfirmationAwakeableId :: TransferReservationId -> AwakeableId
+reservationConfirmationAwakeableId reservationId =
+  deterministicAwakeableId reservationWorkflowName (reservationWorkflowId reservationId) "reservation-confirmation"
+```
+
+## How it is signalled
+
+`Store.hs` exposes `signalReservationConfirmation`, which computes the same id and calls keiro's
+`signalAwakeable` with the `ReservationConfirmation` payload:
+
+```haskell
+-- services/hospital-capacity/src/HospitalCapacity/Store.hs
+signalReservationConfirmationWithTelemetry tracer store reservationId confirmation =
+  -- … withApplicationSpan … →
+    signalAwakeable (reservationConfirmationAwakeableId reservationId) confirmation
+```
+
+`hospital-capacity-worker reservation-work confirm-latest` drives that signal in the scenario.
+Putting the two workflows together: a transfer need from Incident Command becomes reservation work
+here, which holds a bed and parks; once confirmed, Hospital Capacity publishes a response that, back
+in Incident Command, signals the **evacuation** workflow's awakeable. The
+[cross-service tour](/docs/example-app/cross-service) traces that full loop. Note that the bed-hold
+*work itself* — turning an accepted transfer need into a `RequestTransferReservation` command — runs
+through the [pgmq queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue),
+covered next.

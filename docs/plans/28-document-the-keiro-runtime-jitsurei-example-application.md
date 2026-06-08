@@ -78,9 +78,12 @@ This section must always reflect the actual current state of the work.
       embedded Keiki diagrams. Forward links to not-yet-written M3–M5 chapters point at the
       relevant subsection index for now (M6 can deepen). Gate green: `check-doc-links.mjs`
       (359 files), `typecheck`, `build`.
-- [ ] **M3 — Hospital Capacity walkthrough.** Write `hospital-capacity/` (start-here + 6
-      chapters): aggregates/transducers, command cycle + read models, surge PM, reservation
-      workflow, the `keiro-pgmq` reservation work queue, wiring/CLI.
+- [x] **M3 — Hospital Capacity walkthrough.** _(done 2026-06-07)_ Wrote `hospital-capacity/`
+      (index + start-here + 6 chapters): aggregates/transducers, command cycle + read models, surge
+      PM, reservation workflow, the `keiro-pgmq` reservation work queue (signature chapter, with
+      prominent cross-links to the existing keiro pgmq pages), wiring/CLI. Real Haskell excerpts +
+      keiro cross-links + Keiki diagrams throughout. Gate green: `check-doc-links.mjs` (366 files),
+      `typecheck`, `build`.
 - [ ] **M4 — Cross-service integration.** Write `cross-service/` (index + 5 chapters): the
       end-to-end message flow, message contracts, outbox + Kafka publishing, inbox + consuming,
       telemetry / trace continuity.
