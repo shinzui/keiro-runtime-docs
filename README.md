@@ -1,0 +1,74 @@
+# keiro-runtime-docs
+
+The documentation site for the **keiro runtime** — a family of five Haskell libraries for building
+event-sourced systems on PostgreSQL. It is a [Fumadocs](https://fumadocs.dev) content site rendered as
+a static [TanStack Start](https://tanstack.com/start) SPA; all the prose lives as MDX under
+`content/docs/`.
+
+The libraries it documents:
+
+| Library     | 漢字 | What it is                                                        |
+| ----------- | ---- | ----------------------------------------------------------------- |
+| **kiroku**  | 記録 | An append-only PostgreSQL event store — the persistence foundation. |
+| **keiro**   | 経路 | An event-sourcing framework and durable workflow engine.          |
+| **keiki**   | 継起 | A pure, dependency-free mathematical core (the decision semantics). |
+| **shibuya** | —    | Supervised, Broadway-style queue processing.                      |
+| **pgmq**    | —    | A PostgreSQL-native message queue — the queue substrate (via `pgmq-hs`). |
+
+## Getting started
+
+Requires **Node 22** and **pnpm**. (A Nix dev shell is provided; it also supplies `oxlint`/`oxfmt` and
+the PragmataPro font used for code-block ligatures.)
+
+```bash
+pnpm install        # postinstall runs `fumadocs-mdx`, generating the .source/ collection
+pnpm dev            # local dev server with hot reload
+```
+
+Open the URL Vite prints (default <http://localhost:3000>).
+
+## Common scripts
+
+| Command                | What it does                                                            |
+| ---------------------- | ---------------------------------------------------------------------- |
+| `pnpm dev`             | Dev server with hot reload.                                            |
+| `pnpm build`           | Prerender the static SPA into `.output/public/`.                       |
+| `pnpm start`           | Serve a built `.output/public/`.                                       |
+| `pnpm typecheck`       | `fumadocs-mdx` + `tsc --noEmit`.                                       |
+| `pnpm lint`            | `oxlint`.                                                               |
+| `pnpm format:check`    | `oxfmt --check .` (use `pnpm format` to write).                        |
+| `pnpm lint:links`      | Source-level `/docs` link check, then a `linkinator` crawl of the build. |
+| `pnpm check`           | The full gate: typecheck → lint → format:check → build → link check.   |
+
+`pnpm check` mirrors the CI workflow in `.github/workflows/ci.yml`; run it before pushing.
+
+## Project layout
+
+```text
+content/docs/        # all documentation, as MDX — the source of truth
+  <product>/         # kiroku, keiro, keiki, shibuya, pgmq
+    tutorials/  how-to/  reference/  explanation/  cookbook/  walkthrough/  faq.mdx
+    meta.json        # per-folder sidebar order (the `pages` array)
+  integrations/      # cross-product integration guides
+  example-app/       # walkthrough of keiro-runtime-jitsurei, the reference app
+  _templates/        # per-doc-type starting points (hidden from the sidebar)
+src/                 # the TanStack Start app shell, routes, and MDX components
+scripts/             # check-doc-links.mjs, copy-fonts.mjs
+```
+
+## Writing docs
+
+The docs follow the [Diátaxis](https://diataxis.fr) framework — every page is exactly one of Tutorial,
+How-To Guide, Reference, or Explanation, plus the extras Cookbook, Code Walkthrough, and FAQ. The house
+voice is **problem-first** (open with the reader's problem, then the mechanism), product names are
+always lowercase, and em-dashes are the house punctuation.
+
+To add a page: copy the matching template from `content/docs/_templates/`, save it under the right
+`<product>/<section>/` folder with a lowercase-hyphenated name, fill in the frontmatter, then add its
+name (without `.mdx`) to that folder's `meta.json` `pages` array. The full authoring and style guide
+lives at [`content/docs/getting-started/contributing.mdx`](content/docs/getting-started/contributing.mdx).
+
+## Deployment
+
+`pnpm build` prerenders a fully static SPA into `.output/public/`, which can be served by any static
+host. CI builds and link-checks every push and pull request to `master`.
