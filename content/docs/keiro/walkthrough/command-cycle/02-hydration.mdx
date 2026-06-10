@@ -100,9 +100,10 @@ The accumulator is the `Replay` from chapter 01, seeded with the event stream's 
 Two steps per event, and each maps to one `CommandError` constructor. First `decodeRecorded` turns the
 `RecordedEvent` back into a domain event; a `CodecError` here becomes `HydrationDecodeFailed` (the same
 boundary we read in [05 — The codec on the boundary](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary)).
-Then `Keiki.applyEventStreaming` steps the transducer with that event; a `Nothing` — the machine
-rejecting an event that is *already in the log* — becomes `HydrationReplayFailed (recorded ^. #streamVersion)`.
-The first `Left` short-circuits the rest of the fold: `applyRecorded (Left err) _ = pure (Left err)`.
+Then `Keiki.applyEventStreaming` steps the transducer with that event — the next section unpacks what
+that step *actually does* with the event — and a `Nothing` becomes
+`HydrationReplayFailed (recorded ^. #streamVersion)`. The first `Left` short-circuits the rest of the
+fold: `applyRecorded (Left err) _ = pure (Left err)`.
 
 The registers are threaded on *every* step via `nextRegisters`, even across steps that leave the
 machine `InFlight`. That matters because keiki's register file is the durable side-channel the
@@ -122,6 +123,47 @@ flowchart LR
   Next --> Page
   Next --> Fin["finishReplay"]
 ```
+
+## What an event *does* to the machine — output inversion
+
+The line doing the real work is `Keiki.applyEventStreaming … event`, and it is worth slowing down on,
+because the move is not the obvious one. The transducer's *forward* direction turns a **command** into
+events (`ci → [co]`); hydration runs it **backwards**, from the events. So a recorded event is never
+"applied" the way a command is. It is used as a **witness of which edge fired**.
+
+From a `Settled s` state, `applyEventStreaming` walks the outgoing edges of the current control state
+`s` and, for each, tries to *invert* that edge's output against the recorded event: `solveOutput` asks
+"what command input `ci` would this edge have emitted to produce exactly this event?" The unique edge
+whose output inverts to a `ci` that *also* satisfies the edge's guard **is** the transition that
+originally happened. keiro commits to it, runs that edge's register update, and advances to its target
+vertex. If no edge inverts — or more than one does — the step is `Nothing`, which is the
+`HydrationReplayFailed` we just saw. This is the inversion the foundation tour previews as
+[the event-replay inverse](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step); the full
+mechanics — `solveOutput`, and the shared-index trick that makes output invertible without
+`unsafeCoerce` — live in keiki's
+[output and predicate](/docs/keiki/walkthrough/core-and-builder/05-output-and-predicate) and
+[edges and step semantics](/docs/keiki/walkthrough/core-and-builder/06-edges-and-step-semantics)
+chapters.
+
+That covers the common case — a *letter edge*, one event per transition. But a single edge may emit
+**several** events (`output = [o1, …, oN]`). On replay the first event, `o1`, selects the edge and runs
+the update exactly as above; the remaining `[o2, …, oN]` are evaluated up front and parked in a queue.
+That queue *is* what `InFlight` holds: the machine sitting at the target vertex with a list of
+**expected** events still owed by the in-flight transition. Each subsequent recorded event is then
+**equality-checked** against the queue head — no edge search, no register update, because the update
+already ran when the edge was chosen — popping the queue until it empties and the wrapper snaps back to
+`Settled`. (A mismatch there means the log's events for that transition are out of order, and is the
+other source of a `Nothing`.)
+
+So across a multi-event transition the replay momentarily reads as `InFlight`, then settles. Which is
+exactly why the finish rule below cares which of the two a completed replay lands in.
+
+<Callout type="info">
+  This inversion is also why a register can be *populated for streams that already exist*: adding a new
+  guard-backing register and writing it from the edges lets hydration re-derive its value by folding the
+  existing log — but only when that value is recoverable from the events. See
+  [Back a new rule with a register](/docs/keiro/how-to/back-a-rule-with-a-register).
+</Callout>
 
 ## `Settled` vs. `InFlight` — the finish rule
 

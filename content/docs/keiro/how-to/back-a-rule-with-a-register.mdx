@@ -1,0 +1,124 @@
+---
+title: "Back a new rule with a register"
+description: "Introduce a business rule whose guard needs accumulated state: add a register slot, write to it from the edges, and let hydration re-derive its value for existing streams — when the value is recoverable from the log."
+---
+
+You are adding a business rule. Its guard has to consult some value the machine has accumulated over
+its life — a running count, a high-water mark, a "has X ever happened" flag, the last recorded amount.
+Control state alone can't answer it, so the value belongs in a **register**. The catch: streams already
+exist, and their logs predate the rule. The new register has to hold the right value for *those*
+streams too, the first time the new guard runs.
+
+<Callout type="info">
+  Assumes you've read [02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration), in
+  particular [output inversion](/docs/keiro/walkthrough/command-cycle/02-hydration#what-an-event-does-to-the-machine-output-inversion)
+  — this how-to is the applied form of that mechanism.
+</Callout>
+
+## Goal
+
+Add a register that a new guard reads, and have it populated correctly for **existing** streams without
+a migration script or any rewrite of stored events.
+
+## The one idea: you don't back-fill a register, you re-derive it
+
+There is no "fill in the new column" step, because a register is never *stored* on the event path — it
+is *recomputed*. Hydration rebuilds the register file by replaying the stream's events and re-running
+each edge's `update` (see [Threading state and registers](/docs/keiro/walkthrough/foundation/05-threading-state-and-registers)).
+So "populate the register for existing streams" means exactly: **teach the edges to write the slot, then
+let hydration fold the existing log through that new write.** The next command on an existing stream
+hydrates first, so the register is already current before the new guard ever runs — no cold-start gap,
+no backfill job.
+
+Two things make that automatic rather than something you orchestrate:
+
+- A stream with `stateCodec = Nothing` never snapshots, so it *always* full-replays — the new write
+  runs over the whole history every time.
+- A stream that *does* snapshot is still safe: adding a slot changes the register-file shape, which
+  changes `defaultStateCodec`'s `shapeHash`. Older snapshots fail the reuse gate and are discarded, and
+  hydration silently falls back to a full replay (the [snapshot reference](/docs/keiro/reference/snapshot)).
+  An old snapshot — taken before the slot existed — can never be loaded into the new register file.
+
+## The test that decides whether this works
+
+A register can only be re-derived from what its stream's events actually carry. Before you write any
+code, answer one question about the value your new guard needs:
+
+> Is it a pure function of facts already recorded in this stream's event history?
+
+**Yes — it's derivable.** Then this how-to applies directly. The edge `update`'s right-hand term reads
+only the current registers and the command input recovered from the event by `solveOutput`, so as long
+as the inputs it needs were emitted, replay reconstructs the value exactly. Counting events of a kind,
+tracking the latest emitted amount, flagging that a particular event ever occurred — all derivable,
+because the events that drive them are in the log.
+
+**No — it needs a fact the events never recorded.** Then replay has nothing to fold, and there is no
+honest way to invent the historic value. If your update or guard reads an input field the event doesn't
+carry, keiki's **build-time hidden-input check** fails by name (`InCtor "…" leaves field {"…"}
+unrecovered`; see [Fix a hidden-input replay failure](/docs/keiki/cookbook/fix-a-hidden-input-replay-failure)).
+Your options are then a deliberate choice, not a mechanism:
+
+- Start emitting the missing fact as a field going forward, and default the historic prefix at the
+  store boundary with an upcaster (see [Evolve an event schema](/docs/keiro/how-to/evolve-an-event-schema)
+  and keiki's [Evolve a schema safely](/docs/keiki/cookbook/evolve-a-schema-safely)). Old streams then
+  carry your chosen default for the period before the field existed; the guard treats them accordingly.
+- Or make the rule **prospective** — it binds only from the point the field starts being recorded.
+
+You are re-interpreting an immutable log, never rewriting it. Two streams that are indistinguishable in
+their events stay indistinguishable under the new rule; the log is the only thing replay can read.
+
+## Steps (the derivable case)
+
+1. **Add the slot to the register set `rs`** and seed it in the event stream's `initialRegisters`. This
+   is the value a brand-new (empty) stream starts from — typically a zero, an empty flag, or a neutral
+   high-water mark.
+
+2. **Write the slot from every edge that historically produced the relevant events.** The update's
+   right-hand term may read the current registers (`proj #slot`) and the recovered input. Mirror the
+   `jitsurei` user-registration edge, which sets a slot from an input field:
+
+   ```haskell
+   -- builder form
+   B.onCmd inCtorConfirm $ \d -> B.do
+     B.slot @"lastConfirmedAt" .= d.at      -- the new write; folds over historic Confirm events on replay
+     ...
+   ```
+
+   Combine several slot writes on one edge with `combine` — its `Disjoint` check rejects writing the
+   same slot twice at compile time (see [The update language](/docs/keiki/walkthrough/core-and-builder/04-update-language)).
+
+3. **Read the slot in the new guard.** A guard projects the register with `proj` and compares it to the
+   input, exactly as the existing confirm-code guard reads `proj (#confirmCode :: …)`. Here `inpPlace`
+   is the edge's command-specific input projector (the `inpConfirm` of its constructor), and `.>=` is
+   keiki's relational predicate:
+
+   ```haskell
+   guard = ... .&& (inpPlace #amount .>= proj (#lastAmount :: Index OrderRegs Amount))
+   ```
+
+4. **If the slot is fed from an input field, make sure that field is on the event.** This is the
+   hidden-input discipline: emit every field your guards and updates read, or the slot can't be
+   recovered on replay. The build-time check enforces it.
+
+5. **(If the stream snapshots) bump `stateCodecVersion`.** The shape change alone already invalidates
+   old snapshots via the `shapeHash`, but bumping the version makes the incompatibility explicit and
+   documents the cutover.
+
+## Verify it worked
+
+Take a stream whose events predate the rule, hydrate it, and assert the new register holds the value the
+history implies — e.g. the count of the relevant events so far, or the latest emitted amount. Then send
+a command that the new guard should reject given that history, and confirm it is rejected with
+`CommandRejected`. Because hydration full-replays (snapshot invalidated or absent), the very first
+post-deploy command on an existing stream already sees the folded register.
+
+## Related
+
+- [02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration) — output inversion and the
+  `Settled`/`InFlight` replay this builds on.
+- [Fix a hidden-input replay failure](/docs/keiki/cookbook/fix-a-hidden-input-replay-failure) — what
+  happens when the value isn't recoverable, and the check that names it.
+- [Evolve a schema safely](/docs/keiki/cookbook/evolve-a-schema-safely) — defaulting the historic
+  prefix when you add a field to feed the register.
+- [Why a SymTransducer, not a Decider](/docs/keiro/explanation/why-symtransducer-not-decider) — why
+  registers are a separate bank that can't be recovered from control state alone.
