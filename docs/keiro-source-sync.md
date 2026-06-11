@@ -20,12 +20,23 @@ the affected pages, then bump the pointer below.
 ## Last reviewed commit
 
 ```text
-f8950f46511f2e9505d8bb5aed9731e3e1d09f03  (f8950f4)
-2026-06-10 (MasterPlan-8: the keiro-dsl typed-spec toolchain + the Keiro.Stream StreamCategory API)
+9fa283b6cfbf3734367f3bef4801001e6b19abfc  (9fa283b)
+2026-06-10 (StreamCategory compound-category convention: camelCase, supersedes '_')
 keiro 0.1.0.0 (development line; keiro-dsl is a new authoring package at version 0.1.0.0)
 ```
 
-> **Note.** The `f6ebb16..f8950f4` range is **MasterPlan 8 — `keiro-dsl`** (a brand-new authoring
+> **Note.** The `f8950f4..9fa283b` range is a **one-line convention change**: compound
+> aggregate/saga stream categories are now written in **camelCase** (e.g. `hospitalSurge`,
+> `incidentEscalation`) instead of snake_case with `_`. Rationale: reads better and avoids mixing the
+> join `_` with the `_` that TypeID id segments already carry. `:` stays reserved for the workflow
+> family (`wf:<name>`). **Validation is unchanged** — `category` still rejects only `-`, `$all`, and
+> the empty string, so no API or type changed; this is purely a documented authoring convention
+> (`3ba633c`, touching the `StreamCategory` docstring, the category test, and ExecPlan #66). Folded
+> into `reference/event-stream-and-stream.mdx` (the `StreamCategory` warn callout) and `faq.mdx` (the
+> "build an aggregate's stream name safely" entry) — the only two pages that spelled out the old `_`
+> join. The trailing commit `9fa283b` is a plan-doc status update only.
+>
+> **Note (prior range).** The `f6ebb16..f8950f4` range is **MasterPlan 8 — `keiro-dsl`** (a brand-new authoring
 > package + CLI) plus **plan 66**, the `Keiro.Stream` `StreamCategory` API. The only **library** source
 > change in the range is `keiro-core/src/Keiro/Stream.hs` (verified: `keiro-core/src` and `keiro/src`
 > diff is Stream.hs only, +96 lines); everything else is the new `keiro-dsl/` package, the in-repo
@@ -146,6 +157,12 @@ keiro 0.1.0.0 (development line; keiro-dsl is a new authoring package at version
 
 ### Previous pointers (for traceability)
 
+- `f8950f46511f2e9505d8bb5aed9731e3e1d09f03` (`f8950f4`, 2026-06-10, keiro 0.1.0.0) — the baseline
+  before the camelCase convention change. The `f8950f4..9fa283b` range only restyled the **compound
+  stream category** convention from snake_case (`hospital_surge`) to camelCase (`hospitalSurge`) in the
+  `StreamCategory` docstring + test (`3ba633c`); validation is unchanged (still rejects only
+  `-`/`$all`/empty). The docs round retouched the two pages that spelled out the old `_` join —
+  `reference/event-stream-and-stream.mdx` and `faq.mdx`. No source/API/migration change.
 - `f6ebb162446f0ad6ae4b37498f77968c594a5c4c` (`f6ebb16`, 2026-06-07, keiro 0.1.0.0) — the baseline
   before MasterPlan 8. The `f6ebb16..f8950f4` range added the **`keiro-dsl`** typed-spec toolchain (a
   new authoring package + CLI: `check`/`scaffold`/`harness`/`diff` over a `.keiro` spec, the firewall
