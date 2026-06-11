@@ -1,0 +1,71 @@
+---
+title: "Inbox disposition: the three inversions"
+description: "Write an intake's disposition table so the checker accepts it — with the three counter-intuitive outcomes (duplicate is success, previouslyFailed is dead-letter, decodeFailed is dead-letter) stated the safe way."
+---
+
+The single most error-prone decision in a keiro service is an inbox's **disposition table** — the map
+from each delivery outcome to an ack/retry/dead-letter action. Three of its outcomes are dangerously
+counter-intuitive, and they are exactly the ones a human or coding agent gets wrong. `keiro-dsl check`
+forces the table to be **complete** and rejects the unsafe inversions, so the spec is where you get
+this right. This recipe is the `intake.keiro` fixture's table, annotated.
+
+## The table
+
+```text
+intake incidentInbox {
+  contract emergency
+  topic incidentEvents
+  accept IncidentTransferNeedDeclared
+  bind messageId from header "keiro-message-id" required cross-check body
+  bind key from kafka-key
+  dedupe key messageId policy PreferIntegrationMessageId
+  decode { envelope strict-required lenient-optional ; body strict schemaVersion == 1 }
+  disposition {                              # MANDATORY + COMPLETE — all seven outcomes
+    processed        => ackOk
+    duplicate        => ackOk                # inversion 1: a replay is SUCCESS, not a retry
+    inProgress       => retry 5s
+    previouslyFailed => deadLetter "prior failure"   # inversion 2: NOT retry
+    decodeFailed     => deadLetter           # inversion 3: poison, NOT unbounded retry
+    dedupeFailed     => deadLetter
+    storeFailed      => retry 5s
+  }
+}
+```
+
+## Why each inversion is what it is
+
+- **`duplicate => ackOk`.** The inbox makes at-least-once delivery exactly-once *by design* — a
+  duplicate means the effect already happened. Acking it is success. Retrying a duplicate would loop
+  forever on a message that is, correctly, a no-op. (See [the inbox
+  pattern](/docs/keiro/explanation/the-inbox-pattern).)
+- **`previouslyFailed => deadLetter` (not retry).** A message the inbox has already *recorded as
+  failed* should not be silently retried by re-delivery — that hides a real fault behind an unbounded
+  loop. Dead-letter it so the failure is visible and handled deliberately.
+- **`decodeFailed => deadLetter` (not retry).** A payload that will not decode is **poison**: it will
+  never decode no matter how many times it is redelivered. Retrying it unbounded is a hot loop;
+  dead-letter it.
+
+The other four are the intuitive ones: `processed => ackOk`, `inProgress`/`storeFailed => retry`
+(transient, worth re-delivering), `dedupeFailed => deadLetter`.
+
+## What the checker enforces
+
+```bash
+keiro-dsl check intake.keiro ; echo "exit=$?"   # OK / exit 0
+```
+
+Try the negative fixtures to see the rejections:
+
+- `intake-dup-retry.keiro` maps `duplicate => retry` → rejected.
+- `intake-pf-retry.keiro` maps `previouslyFailed => retry` → rejected.
+- `intake-incomplete.keiro` omits an outcome → rejected (incomplete table).
+
+Each is a line-numbered diagnostic naming the rule — so the unsafe table never reaches the scaffolder,
+let alone production.
+
+## Related
+
+- [Choose an inbox dedupe policy](/docs/keiro/how-to/choose-an-inbox-dedupe-policy) — the `dedupe`/`bind` line.
+- [Wire a Kafka consumer to the inbox](/docs/keiro/how-to/wire-a-kafka-consumer-to-the-inbox) — the runtime side.
+- [Inbox reference](/docs/keiro/reference/inbox) — `InboxResult` and the disposition the spec maps onto.
+- [keiro-dsl notation](/docs/keiro/reference/keiro-dsl-notation#contract--intake--emit--publisher) — the full intake grammar.

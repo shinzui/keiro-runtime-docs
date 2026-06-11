@@ -1,0 +1,163 @@
+---
+title: "Author a service with keiro-dsl"
+description: "Walk the full write → check → scaffold → fill → harness → diff loop on one aggregate, with the agent never touching a generated module."
+---
+
+This tutorial closes the full keiro-dsl loop on a real captured fixture, the `Reservation` aggregate,
+end to end. By the end you will have written a typed spec, had it rejected and accepted, scaffolded the
+deterministic layer plus typed holes, filled one hole, run the harness that pins your fill, and gated a
+later change. For the concepts behind each step — the firewall, the dangerous-decision checks — read
+[The keiro-dsl service toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain) first; for the full
+grammar, keep the [notation reference](/docs/keiro/reference/keiro-dsl-notation) open.
+
+<Callout type="info">
+Run everything from the keiro repo root. The CLI is `cabal run keiro-dsl --` (shown as `keiro-dsl`
+below). The fixtures referenced live under `keiro-dsl/test/fixtures/` and the reference fills under
+`keiro-dsl/test/conformance/`.
+</Callout>
+
+## 1. Write the spec
+
+`keiro-dsl/test/fixtures/reservation.keiro` declares one `aggregate Reservation`: a few id types and
+enums, a `rule`, four registers, six states (three terminal), two commands, two events, and two
+transitions — the first carrying a guard and a register write — plus a `wire` line and a `projection`
+with a `status-map`. The decision-bearing core of it:
+
+```text
+aggregate Reservation
+  regs
+    reservationState ReservationVertex = Unrequested
+  states Unrequested Held Confirmed Expired!
+
+  command RequestTransferReservation { reservationId hospitalId commandId divertStatus lifeCriticalOverride:Bool }
+  event   TransferReservationCreated = fields(RequestTransferReservation)
+
+  Unrequested -- RequestTransferReservation -->
+    guard divertStatus != TotalDivert || lifeCriticalOverride
+    write reservationState := Held
+    emit  TransferReservationCreated
+    goto  Held
+
+  wire kind=ctorName fields=camelCase schemaVersion=1
+  projection transfer_decisions consistency=Strong key=reservationId
+    status-map { Created=>held Confirmed=>confirmed }
+```
+
+Write the smallest spec that captures the decisions; the deterministic boilerplate is derived, so do
+not hand-write it.
+
+## 2. Parse (sanity)
+
+```bash
+keiro-dsl parse keiro-dsl/test/fixtures/reservation.keiro
+```
+
+It echoes the spec pretty-printed (round-trips). A parse error is line-numbered — fix the notation.
+
+## 3. Check (the gate — before any Haskell)
+
+```bash
+keiro-dsl check keiro-dsl/test/fixtures/reservation.keiro ; echo "exit=$?"
+# OK
+# exit=0
+```
+
+`OK` / exit 0 means every required decision is present and no dangerous inversion is stated the wrong
+way. Warnings (e.g. benign-inversion notices) are informational and pass. To see a rejection, try a
+sibling fixture: `reservation-no-statusmap.keiro` reports `StatusMapNotTotal`,
+`reservation-clock.keiro` reports `ClockSampled`. Each `error[Code]` names the rule and line — fix the
+**spec**, not the generated code.
+
+## 4. Scaffold (emit generated layer + holes)
+
+```bash
+keiro-dsl scaffold keiro-dsl/test/fixtures/reservation.keiro --out /tmp/gen
+find /tmp/gen -name '*.hs' | sort
+```
+
+You get four `-- @generated` modules (`Domain`, `Codec`, `EventStream`, `Projection`) + a `Harness` +
+a create-if-absent `HospitalCapacity/Reservation/Holes.hs`. The `Domain` module has the state-vertex
+enum, the command/event records and sums, the `ReservationRegs` type-list, `initialReservationRegs`,
+and the two TH splices — and **no** keiki symbolic operator. Confirm the firewall holds (it always
+should):
+
+```bash
+grep -RnE './=|\.==|\.\|\||(^| )lit |B\.slot|B\.requireGuard' /tmp/gen/Generated \
+  && echo BREACH || echo "firewall OK"
+```
+
+The guard you must encode is annotated in `Holes.hs`:
+
+```text
+-- HOLE guard: divertStatus != TotalDivert || lifeCriticalOverride
+```
+
+<Callout type="warn">
+Re-running `scaffold` overwrites every `-- @generated` module but **never** clobbers a filled hole
+module. Never edit a `-- @generated` line — change the `.keiro` and re-scaffold instead.
+</Callout>
+
+## 5. Fill the transducer hole
+
+Open `Holes.hs` and fill the body against the **generated** names (the TH-produced
+`inCtor…`/`wire…`/`…TermFields`, the `Keiro.Codec`, the `ProcessManager` wiring). The committed
+reference fill lives at `keiro-dsl/test/conformance/HospitalCapacity/Reservation/Holes.hs`; it encodes
+the guard with keiki operators:
+
+```haskell
+B.requireGuard (d.divertStatus ./= lit TotalDivert .|| d.lifeCriticalOverride .== lit True)
+B.slot @"reservationState" =: lit ReservationHeld
+B.emit wireTransferReservationCreated TransferReservationCreatedTermFields { … }
+B.goto ReservationHeld
+```
+
+These symbolic operators live **only** here, never in a `-- @generated` module — that is the firewall.
+Use the [conformance corpus](/docs/keiro/cookbook/inbox-disposition-the-three-inversions) and the
+in-repo `docs/corpus/keiro-dsl-corpus.md` index to see how a real spec's holes were filled.
+
+## 6. Run the harness (pin behaviour)
+
+The scaffolder emits a harness plus golden round-trips. Compile and run it via the relevant `cabal
+test` component:
+
+```bash
+cabal test keiro-dsl-conformance
+# PASS  validateTransducer is empty
+# PASS  clock-free: spec samples no wall clock
+# PASS  golden round-trip: TransferReservationCreated
+# PASS  golden round-trip: TransferReservationConfirmed
+# PASS  accepts RequestTransferReservation from ReservationUnrequested
+```
+
+The harness — not the scaffold — is what guarantees your fill matches the spec. To prove it, run
+`bash keiro-dsl/test/mutation-test.sh`: it flips the filled guard `./=` to `.==` and shows the specific
+`accepts RequestTransferReservation …` assertion turn **red**. Restoring returns it to green. Two
+agents can fill the holes differently but correctly and both stay green; one wrong guard reddens a
+named test.
+
+## 7. Diff (gate evolution over time)
+
+When you later change the spec, gate the change against history:
+
+```bash
+keiro-dsl diff --since <git-ref> keiro-dsl/test/fixtures/reservation.keiro ; echo "exit=$?"
+```
+
+`reservation-v2.keiro` evolves `TransferReservationConfirmed` to v2 with `upcast from v1 = HOLE`.
+`bash keiro-dsl/test/diff-test.sh` shows that adding a field **without** the version bump is `BREAKING`
+(exit non-zero), while the v2 + upcaster form is `ADDITIVE` (exit 0) — the merge gate. The
+`keiro-dsl-conformance-v2` component then proves the v2 codec (`schemaVersion = 2`, `upcasters`)
+compiles and the filled upcaster migrates a v1-tagged payload through the chain.
+
+## What you did
+
+You wrote → checked → scaffolded → filled → ran the harness → diffed, and never touched a generated
+module. The spec rejected the unsafe shapes before any Haskell existed; the scaffold emitted the
+symbol-free 67–96%; the harness pinned your one filled hole to behaviour; and `diff` gated the next
+change. Next, apply it to a non-aggregate node — see the [notation
+reference](/docs/keiro/reference/keiro-dsl-notation) for `process`/`timer`, `intake`/`emit`,
+`workqueue`/`dispatch`, and `workflow`/`operation`, and the how-tos for each CLI step:
+
+- [Check a service spec](/docs/keiro/how-to/check-a-service-spec)
+- [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes)
+- [Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff)

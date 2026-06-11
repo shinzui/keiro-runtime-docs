@@ -13,17 +13,58 @@ the affected pages, then bump the pointer below.
 - Relevant packages: `keiro` (framework library), `keiro-core` (pure core: `Codec`, `EventStream`,
   `Stream`, `Integration.Event`, `Snapshot.Policy`), `keiro-migrations` (the `keiro-migrate`
   executable and embedded schema), `keiro-pgmq` (the typed background-job queue — `Keiro.PGMQ.*`),
+  `keiro-dsl` (the typed-spec authoring toolchain + CLI — `Keiro.Dsl.*`; authoring-only, the code it
+  scaffolds depends only on keiro/keiki),
   `keiro-test-support` (test fixtures); `jitsurei` (the runnable worked example).
 
 ## Last reviewed commit
 
 ```text
-f6ebb162446f0ad6ae4b37498f77968c594a5c4c  (f6ebb16)
-2026-06-07 (MasterPlan-7: the keiro-pgmq typed background-job queue package + its two consumer migrations)
-keiro 0.1.0.0 (development line; keiro-pgmq is a new package at version 0.1.0.0)
+f8950f46511f2e9505d8bb5aed9731e3e1d09f03  (f8950f4)
+2026-06-10 (MasterPlan-8: the keiro-dsl typed-spec toolchain + the Keiro.Stream StreamCategory API)
+keiro 0.1.0.0 (development line; keiro-dsl is a new authoring package at version 0.1.0.0)
 ```
 
-> **Note.** The `ac197da..f6ebb16` range is **MasterPlan 7 — `keiro-pgmq`**, a brand-new package, plus
+> **Note.** The `f6ebb16..f8950f4` range is **MasterPlan 8 — `keiro-dsl`** (a brand-new authoring
+> package + CLI) plus **plan 66**, the `Keiro.Stream` `StreamCategory` API. The only **library** source
+> change in the range is `keiro-core/src/Keiro/Stream.hs` (verified: `keiro-core/src` and `keiro/src`
+> diff is Stream.hs only, +96 lines); everything else is the new `keiro-dsl/` package, the in-repo
+> `jitsurei/` refactor onto the new API, docs/plans, and a `keiro/test/Main.hs` smoke test. So **no
+> existing keiro reference/explanation page describing the v1/v2 runtime was invalidated** — this round
+> is the StreamCategory fold + an additive new "Service DSL" doc area.
+> - **`StreamCategory` API (`27dc22a`, `b99fbb8`; plan 66):** `Keiro.Stream` adds a validated,
+>   phantom-typed stream **category** — `StreamCategory a`, `category`/`categoryUnsafe`,
+>   `CategoryError`, `categoryName`, `StreamIdSegment`, `entityStream`/`entityStreamId` — so an author
+>   declares a category once and derives both per-entity streams and the `CategoryName`. `category`
+>   rejects the empty string, `$all`, and any text containing `-` (kiroku's category/id boundary),
+>   turning the silent saga-prefix mis-parse into a fail-stop. The name mechanics delegate to kiroku's
+>   `streamNameInCategory` (kiroku plan #55), keeping the category rule single-sourced in the store.
+>   The in-repo `jitsurei/OrderStream.hs` was refactored onto it (`5af73f9`). Folded into
+>   `reference/event-stream-and-stream.mdx` (new "Safe, category-based construction" section),
+>   `walkthrough/foundation/01-the-stream-handle.mdx` (the source it tours changed),
+>   `walkthrough/command-cycle/06-the-typed-handles.mdx`, and a new `faq.mdx` entry. Note: the
+>   `example-app/` (hospital-capacity, incident-command) pages were **not** touched — those belong to
+>   the separately-pinned `keiro-runtime-jitsurei` app, which was not refactored in this range.
+> - **`keiro-dsl` package (MasterPlan 8, plans 58–66):** a typed-spec toolchain. A `.keiro` file is the
+>   source of truth; `keiro-dsl` `check`s it, `scaffold`s the symbol-free `-- @generated` deterministic
+>   layer + typed holes, emits a harness that pins behaviour, and `diff --since` gates evolution. The
+>   load-bearing **firewall invariant**: no generated module ever contains a keiki symbolic operator —
+>   the symbolic transducer is a hole, not generated. Covers all seven node families (`aggregate`,
+>   `process`+`timer`, `contract`/`intake`/`emit`/`publisher`, `workqueue`/`dispatch`,
+>   `workflow`/`operation`) + evolution. The spec extension is `.keiro` (renamed from `.kdsl` at
+>   `2d59f54`). Documented as a new **Service DSL** subsystem under `content/docs/keiro/`:
+>   `explanation/the-keiro-dsl-toolchain.mdx`, `reference/keiro-dsl-notation.mdx` (notation + CLI),
+>   `tutorials/author-a-service-with-keiro-dsl.mdx` (the write→check→scaffold→fill→harness→diff loop),
+>   three how-tos (`check-a-service-spec`, `scaffold-and-fill-holes`, `gate-spec-evolution-with-diff`),
+>   one cookbook recipe (`inbox-disposition-the-three-inversions`), two `faq.mdx` entries, the keiro
+>   `index.mdx` callout, the `getting-started` family/choosing pages, and the five section index
+>   cards + meta.json wiring. Authoring source: the in-repo `agents/skills/keiro-dsl-authoring/`
+>   (SKILL/NOTATION/LOOP/WALKTHROUGH) and `docs/corpus/keiro-dsl-corpus.md`.
+> - **Schema:** no new keiro migrations — keiro-dsl emits no tables (read-model migrations are
+>   delegated to `codd`); still **nine** migration files / **nine** tables.
+> - **Telemetry:** no new keiro instruments in this range.
+
+> **Note (prior range).** The `ac197da..f6ebb16` range is **MasterPlan 7 — `keiro-pgmq`**, a brand-new package, plus
 > doc-only plan/masterplan entries. The keiro/keiro-core libraries are byte-identical across this range
 > (verified: the diff is `keiro-pgmq/`, `docs/`, and keiro's own `cabal.project`/`mori.dhall` only) —
 > so no existing keiro doc page was invalidated; this round is **additive**.
@@ -105,6 +146,14 @@ keiro 0.1.0.0 (development line; keiro-pgmq is a new package at version 0.1.0.0)
 
 ### Previous pointers (for traceability)
 
+- `f6ebb162446f0ad6ae4b37498f77968c594a5c4c` (`f6ebb16`, 2026-06-07, keiro 0.1.0.0) — the baseline
+  before MasterPlan 8. The `f6ebb16..f8950f4` range added the **`keiro-dsl`** typed-spec toolchain (a
+  new authoring package + CLI: `check`/`scaffold`/`harness`/`diff` over a `.keiro` spec, the firewall
+  invariant, all seven node families) and the **`Keiro.Stream` `StreamCategory` API** (plan 66 —
+  validated, phantom-typed stream categories; the in-repo `jitsurei` was refactored onto it). The only
+  library source change is `keiro-core/src/Keiro/Stream.hs`; the docs round folded StreamCategory into
+  the event-stream/stream pages and added an additive **Service DSL** doc area. No new
+  migrations/tables (still nine/nine).
 - `ac197da3b2b11aae2e00ce2e4587a7fb99b9ffc1` (`ac197da`, 2026-06-06, keiro 0.1.0.0) — the baseline
   before MasterPlan 7. The `ac197da..f6ebb16` range added the **`keiro-pgmq`** package (the typed
   background-job queue — `Keiro.PGMQ.Runtime`/`.Codec`/`.Job` + umbrella; EP-1/plan 55) and the two
@@ -148,8 +197,8 @@ keiro 0.1.0.0 (development line; keiro-pgmq is a new package at version 0.1.0.0)
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline f6ebb16..HEAD
-   git -C "$KEIRO" diff --stat f6ebb16..HEAD
+   git -C "$KEIRO" log --oneline f8950f4..HEAD
+   git -C "$KEIRO" diff --stat f8950f4..HEAD
    ```
    keiro also keeps its own `docs/`, `CHANGELOG.md`, and `docs/plans|masterplans` entries — the
    prose diff there is the fastest way to understand intent before touching the source. Note that

@@ -10,9 +10,11 @@ description: "Keiro.Stream: a phantom-typed newtype over kiroku's StreamName, an
 
 ## What this part covers
 
-`keiro-core/src/Keiro/Stream.hs` — the whole file, forty lines. It defines the **typed handle** every
-command targets: a `Stream a`. Everything else in the foundation (the `EventStream`, the command cycle)
-takes one of these handles and resolves it to the physical stream the event store reads and appends to.
+`keiro-core/src/Keiro/Stream.hs` — the whole file. It defines the **typed handle** every command
+targets: a `Stream a`. Everything else in the foundation (the `EventStream`, the command cycle) takes
+one of these handles and resolves it to the physical stream the event store reads and appends to. The
+file has two halves: the bare newtype + its three functions (this section), and a safe,
+category-based construction layer that single-sources the stream's category prefix (below).
 
 ## The newtype
 
@@ -68,18 +70,55 @@ tag `a`, not at runtime.
 
 ## The jitsurei anchor
 
-The worked example (`jitsurei/src/Jitsurei/OrderStream.hs`) builds a handle for an order aggregate:
+The worked example (`jitsurei/src/Jitsurei/OrderStream.hs`) builds a handle for an order aggregate.
+It no longer hand-assembles the `"order-"` prefix; it declares the category once and derives the
+stream from it (the category API, below):
 
 ```haskell
 -- jitsurei/src/Jitsurei/OrderStream.hs
+orderCategory :: Stream.StreamCategory a
+orderCategory = Stream.categoryUnsafe "order"
+
 orderStream :: OrderId -> Stream OrderEventStream
-orderStream orderId = stream ("order-" <> orderIdText orderId)
+orderStream = Stream.entityStream orderCategory . orderIdText   -- renders "order-<id>"
 ```
 
 `orderStream` takes a domain `OrderId`, renders it into a `Text` name (`"order-…"`), and tags the
 resulting handle as a `Stream OrderEventStream`. From here on the type checker treats this handle as
 *the order stream's* — you cannot accidentally pass it where a different aggregate's handle is
 expected.
+
+## Safe, category-based construction
+
+The second half of the file exists because `stream` takes a *raw* `Text`, and the prefix you put in
+front of the first `-` is not cosmetic. In kiroku a stream name's **category** is the substring before
+its first `-`, and that category is the join key for [`readCategory`](/docs/kiroku/reference/core-types)
+and category subscriptions — every stream sharing the prefix fans in. Hand-writing `"order-" <> …` at
+each call site duplicates that join key and invites a subtler bug: a "category" that itself contains a
+`-` (a saga prefix like `"hospital-surge-"`) silently parses as `hospital`, fanning the saga's stream
+into the wrong aggregate.
+
+So `Keiro.Stream` adds a validated, phantom-typed category:
+
+```haskell
+-- keiro-core/src/Keiro/Stream.hs
+newtype StreamCategory a = StreamCategory { categoryTextOf :: Text }
+
+category       :: Text -> Either CategoryError (StreamCategory a)  -- rejects "", "$all", and any text with `-`
+categoryUnsafe :: Text -> StreamCategory a                         -- for static literals; `error`s on bad input
+categoryName   :: StreamCategory a -> CategoryName                 -- the CategoryName for category reads/subs
+entityStream   :: StreamCategory a -> Text -> Stream a             -- renders "<category>-<id>"
+entityStreamId :: StreamIdSegment i => StreamCategory a -> i -> Stream a
+```
+
+Two things make this more than a convenience. First, `category` **rejects** a prefix containing `-`,
+turning the silent mis-parse into a definition-site failure. Second, `entityStream` delegates the
+actual name mechanics to kiroku's `streamNameInCategory`, and `categoryName` reads back the matching
+`CategoryName` — so `categoryName cat` always equals kiroku's own category-of-stream-name for any
+stream `entityStream cat id` produces. The per-entity stream and the category read are derived from
+*one* declaration and cannot drift. The [EventStream and Stream reference](/docs/keiro/reference/event-stream-and-stream#safe-category-based-construction-streamcategory)
+covers the full surface; the rule it enforces is owned by kiroku
+([core types](/docs/kiroku/reference/core-types)).
 
 ## How a handle becomes a physical name
 

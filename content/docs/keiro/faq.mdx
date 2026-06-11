@@ -146,4 +146,37 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     actually a domain event, that pattern *is* the [outbox](/docs/keiro/explanation/the-outbox-pattern) —
     use it.
   </Accordion>
+
+  <Accordion title="What is keiro-dsl and do I need it to use keiro?">
+    `keiro-dsl` is a separate **authoring** package and CLI — you do **not** need it to use keiro.
+    A `.keiro` file is a typed *specification* of a keiro service; `keiro-dsl` turns it into compiling
+    Haskell: a symbol-free `-- @generated` deterministic layer (domain ADTs, codecs, stream/projection
+    wiring, the TH splices) plus precisely-typed **holes** for the behaviour-bearing code you fill by
+    hand. The code it scaffolds depends only on keiro/keiki, never on keiro-dsl. It earns its keep on
+    regular, multi-node services — especially when a coding agent is doing the filling — because the
+    spec forces the dangerous decisions to be explicit. See [The keiro-dsl service
+    toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain) and the
+    [tutorial](/docs/keiro/tutorials/author-a-service-with-keiro-dsl).
+  </Accordion>
+
+  <Accordion title="Does keiro-dsl generate the whole service, including the transducer?">
+    **No — and that is the point.** The scaffolder emits only the deterministic ~67–96% (the boilerplate);
+    it never emits the symbolic transducer logic (keiki's `./=` / `lit` / `B.slot` / `B.requireGuard`).
+    That is the most brittle, framework-coupled code, and exactly what a human or coding agent writes
+    well from a spec plus examples — so it is left as a **hole** and pinned by a generated harness. The
+    **firewall invariant** — no `-- @generated` line ever contains a keiki symbolic operator — is what
+    makes the generated layer safe to overwrite on every scaffold while your filled holes are
+    create-if-absent. See [The keiro-dsl service toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain#the-load-bearing-scope-decision-the-firewall).
+  </Accordion>
+
+  <Accordion title="How do I build an aggregate's stream name safely?">
+    Declare the **category** once with `Keiro.Stream.categoryUnsafe` (or `category` for validated
+    input) and derive both the per-entity stream and the matching `CategoryName` from it —
+    `entityStream` / `entityStreamId` render `"<category>-<id>"`, and `categoryName` gives the
+    `CategoryName` for category-scoped reads and subscriptions. This single-sources the category prefix
+    and rejects a prefix containing `-` (kiroku's category/id boundary), which would otherwise silently
+    fan a saga stream like `"hospital-surge-…"` into the wrong aggregate. Join a compound category with
+    `_`, never `-`. See [Safe, category-based
+    construction](/docs/keiro/reference/event-stream-and-stream#safe-category-based-construction-streamcategory).
+  </Accordion>
 </Accordions>

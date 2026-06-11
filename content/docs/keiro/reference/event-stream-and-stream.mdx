@@ -139,13 +139,83 @@ streamName    :: Stream a -> StreamName                              -- recover 
 mapStreamName :: (StreamName -> StreamName) -> Stream a -> Stream a  -- transform the name, keep the tag
 ```
 
-The `jitsurei` order stream builds its handle as
-`orderStream orderId = stream ("order-" <> orderIdText orderId)`, typed `OrderId -> Stream
-OrderEventStream`.
-
 <Callout type="info">
 The design notes' old name for this type was `AggregateId a`; the shipped type is `Stream a`. Trust
 the source.
+</Callout>
+
+## Safe, category-based construction (`StreamCategory`)
+
+`stream` takes a raw `Text`, so the physical name `"order-" <> orderIdText orderId` is hand-assembled
+at every call site. That leaks an invariant the **store**, not the caller, owns: in kiroku a stream
+name's *category* is the substring before its first `-`, and category-scoped reads
+([`Kiroku.Store.Read.readCategory`](/docs/kiroku/reference/core-types)) and category subscriptions
+fan in every stream that shares that prefix. So the literal `"order-"` is not cosmetic — it is the
+**join key** deciding which streams a projection or subscription sees. Hand-writing it per call site
+has three hazards: no single source of truth (a typo spawns an orphan category), silent
+mis-parsing (a "category" that itself contains a `-`, e.g. a saga prefix `"hospital-surge-"`, parses
+as the category `hospital`, fanning the saga's stream into the wrong aggregate), and no typed bridge
+back to the `CategoryName` a `readCategory`/subscription needs.
+
+`Keiro.Stream` closes this with a validated, phantom-typed **category**: declare it once and derive
+both per-entity streams and the category name from it.
+
+```haskell
+newtype StreamCategory a = StreamCategory { categoryTextOf :: Text }
+  deriving stock (Generic, Eq, Ord, Show)
+
+data CategoryError
+  = CategoryEmpty                    -- the empty string
+  | CategoryContainsSeparator !Text  -- contains the reserved `-` category/id boundary
+  | CategoryReserved !Text           -- equals a store-reserved name ($all)
+  deriving stock (Eq, Show, Generic)
+
+category       :: Text -> Either CategoryError (StreamCategory a)  -- validating smart constructor
+categoryUnsafe :: Text -> StreamCategory a                         -- partial; `error`s on an invalid literal
+categoryName   :: StreamCategory a -> CategoryName                 -- the matching CategoryName for category reads/subs
+entityStream   :: StreamCategory a -> Text -> Stream a             -- render "<category>-<id>"
+entityStreamId :: StreamIdSegment i => StreamCategory a -> i -> Stream a
+
+class StreamIdSegment i where
+  renderIdSegment :: i -> Text
+-- instances for Text and String ship; add one per typed id:
+-- instance StreamIdSegment OrderId where renderIdSegment = orderIdText
+```
+
+- `category t` **rejects** the empty string, any text containing `-` (kiroku's category/id boundary —
+  this is hazard #2 turned into a fail-stop), and the reserved name `$all`. Returns
+  `Left CategoryError` otherwise.
+- `categoryUnsafe t` is for static, known-good literals at a definition site
+  (`orderCategory = categoryUnsafe "order"`); it `error`s on an invalid category, so **never** pass
+  user input to it.
+- `entityStream`/`entityStreamId` delegate the name mechanics to kiroku's `streamNameInCategory`, so
+  the category rule stays single-sourced in the store. The phantom type carries from the
+  `StreamCategory`, so the result is correctly tagged.
+- `categoryName cat` recovers the `CategoryName` for category-scoped reads and subscription targets
+  **from the same definition** — and by construction `categoryName cat` always equals
+  `Kiroku.Store.Types.categoryName (streamName (entityStream cat id))`, so the per-entity stream and
+  the category read can never disagree.
+
+```haskell
+orderCategory :: StreamCategory a
+orderCategory = Stream.categoryUnsafe "order"          -- validated once at the definition site
+
+orderStream :: OrderId -> Stream OrderEventStream
+orderStream = Stream.entityStream orderCategory . orderIdText   -- renders "order-<id>"
+
+orderCommandStream :: OrderId -> Stream OrderCommand
+orderCommandStream = Stream.entityStream orderCategory . orderIdText
+```
+
+This is exactly how the `jitsurei` order stream now builds its handles — the two `stream ("order-" <>
+…)` literals collapse to one declared category.
+
+<Callout type="warn">
+The type is named `StreamCategory`, **not** `Category`, to avoid clashing with the
+`Kiroku.Store.Subscription.Types.Category` subscription-target constructor that consumer code often
+imports alongside this module. Join a **compound** category with `_` (e.g. `"hospital_surge"` for a
+saga over hospital surges) — never with `-`, which `category` rejects. The `:` separator is reserved
+for the workflow stream family (`wf:<name>`).
 </Callout>
 
 For why an `EventStream` carries a `SymTransducer` directly rather than a decide/evolve pair, see

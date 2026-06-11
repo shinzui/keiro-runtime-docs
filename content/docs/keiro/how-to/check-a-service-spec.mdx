@@ -1,0 +1,56 @@
+---
+title: "Check a service spec"
+description: "Run keiro-dsl check to reject a .keiro spec before any Haskell is written — and read the diagnostics that name the dangerous decision and line."
+---
+
+`keiro-dsl check` is the gate: it runs the validator over a `.keiro` spec and exits non-zero if any
+required decision is missing or any dangerous inversion is stated the wrong way. Run it **before** you
+scaffold or write any Haskell — a rejection is a spec fix, not a code fix. For the grammar see the
+[notation reference](/docs/keiro/reference/keiro-dsl-notation); for *why* these checks exist see [The
+keiro-dsl service toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain).
+
+## Run it
+
+```bash
+# from the keiro repo root
+keiro-dsl check service.keiro ; echo "exit=$?"
+# OK
+# exit=0
+```
+
+`OK` / exit 0 means every required decision is present. Any `error[Code]` (exit non-zero) names the
+rule and the line. **Warnings** (e.g. the benign-inversion notice for a timer's `on-reject Fired`) are
+informational and pass — `check` only fails on `Error`-severity diagnostics.
+
+## The rejections you must resolve in the spec
+
+Each of these is a dangerous decision the checker forces you to state — correctly — before any code
+exists:
+
+| Code | What it means | Fix in the spec |
+|---|---|---|
+| `StatusMapNotTotal` | A projection's `status-map` does not cover every event | Add the missing `Event=>status` rows |
+| `EvtVersionMissingUpcaster` | A `vN` (N > 1) event has no contiguous upcaster | Add `upcast from v(N-1) = HOLE` |
+| `ClockSampled` / `ProcessFireAtNotInjected` | A guard/deadline reads the wall clock | Compute time from a `:Time` input field |
+| `ProcessDispatchIdSupplied` | A user-supplied dispatch-id | Remove it — dispatch-ids are runtime-owned |
+| `Disposition*` | The inbox table is incomplete, or `duplicate`/`previouslyFailed`/`decodeFailed` is mapped the unsafe way | Complete the table; `duplicate => ackOk`, `previouslyFailed => deadLetter`, `decodeFailed => deadLetter` |
+| `EmitSkipMissing` | An outbox `map` lacks `_ => skip` | Add the mandatory `_ => skip` arm |
+| `WqPhysicalDivergence` | A captured physical queue/table name does not match the re-derived one | Fix the `derive` block to match the logical name |
+| `AwaitSignalMismatch` | A `signal <label> of <wf>` has no matching `await <label>` | Align the labels — else the workflow waits forever |
+| `*UnresolvedRef` | A saga/target/fire/enqueue/publisher reference does not resolve | Point it at a declared node |
+
+## Wire it into CI
+
+`check` is designed to gate a merge. The exit code is the contract:
+
+```bash
+keiro-dsl check service.keiro || exit 1   # fail the build on any error-severity diagnostic
+```
+
+Read a spec from stdin with `/dev/stdin` as the file argument.
+
+## Related
+
+- [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — the full loop.
+- [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) — the next step once `check` is green.
+- [Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff) — the lifecycle gate.

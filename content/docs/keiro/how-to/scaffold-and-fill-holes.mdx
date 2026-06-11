@@ -1,0 +1,82 @@
+---
+title: "Scaffold and fill holes"
+description: "Emit the symbol-free deterministic layer plus typed holes from a .keiro spec, fill only the hole modules against the generated signatures, and verify the firewall holds."
+---
+
+`keiro-dsl scaffold` turns a checked `.keiro` spec into compiling Haskell: a `-- @generated`
+deterministic layer plus precisely-typed **holes** in hand-owned modules for the behaviour-bearing
+pieces. Your job is to fill the holes — never to edit a generated module. See [The keiro-dsl service
+toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain) for the firewall rationale.
+
+## Emit the modules
+
+```bash
+# from the keiro repo root, after `check` is green
+keiro-dsl scaffold service.keiro --out gen/
+find gen -name '*.hs' | sort
+```
+
+You get:
+
+- **`-- @generated` modules** (`Domain`, `Codec`, `EventStream`, `Projection`, the process/timer/
+  contract wiring, a `Harness`). These are **overwritten unconditionally** on every scaffold.
+- **Create-if-absent hole modules** (`Holes.hs`, `ProcessHoles.hs`). Re-scaffolding **never** clobbers
+  a filled hole module — so the Nth scaffold is as safe as the first.
+
+## The two rules
+
+<Callout type="warn">
+**Never edit a `-- @generated` line.** If a generated module is wrong, the spec is wrong — change the
+`.keiro` and re-scaffold. **No generated module contains a keiki symbolic operator** (the firewall);
+verify it:
+
+```bash
+grep -RnE './=|\.==|\.\|\||(^| )lit |B\.slot|B\.requireGuard' gen/Generated \
+  && echo BREACH || echo "firewall OK"
+```
+
+A breach is a scaffolder bug, not something to fix in place.
+</Callout>
+
+## Fill the holes
+
+Each hole is a typed signature with a `-- HOLE …` annotation carrying the spec decision to encode, e.g.
+
+```text
+-- HOLE guard: divertStatus != TotalDivert || lifeCriticalOverride
+```
+
+Fill the body against the **generated** names (the TH-produced `inCtor…`/`wire…`/`…TermFields`, the
+`Keiro.Codec`, the `ProcessManager` wiring). The keiki symbolic operators live only here:
+
+```haskell
+B.requireGuard (d.divertStatus ./= lit TotalDivert .|| d.lifeCriticalOverride .== lit True)
+B.slot @"reservationState" =: lit ReservationHeld
+B.emit wireTransferReservationCreated TransferReservationCreatedTermFields { … }
+B.goto ReservationHeld
+```
+
+The hole-kinds are a closed set: the transducer body, a projection's `apply` SQL, an upcaster body, a
+process `handle`, the deadline window/fire command, a fan-out body, a dedup raw-SQL, and the workflow
+body. The in-repo `docs/corpus/keiro-dsl-corpus.md` index pairs each fixture spec with the reference
+fill it maps to — consult it as worked examples.
+
+## Verify with the harness
+
+The scaffolder emits a harness that pins your fill to behaviour (not text). Run it via the relevant
+`cabal test` component; a wrong fill turns a **specific** named test red:
+
+```bash
+cabal test keiro-dsl-conformance
+# PASS  validateTransducer is empty
+# PASS  golden round-trip: TransferReservationCreated
+# PASS  accepts RequestTransferReservation from ReservationUnrequested
+```
+
+Green harness = your fill matches the spec.
+
+## Related
+
+- [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — the loop end to end.
+- [Check a service spec](/docs/keiro/how-to/check-a-service-spec) — the step before this one.
+- [keiro-dsl notation](/docs/keiro/reference/keiro-dsl-notation) — what each node scaffolds.
