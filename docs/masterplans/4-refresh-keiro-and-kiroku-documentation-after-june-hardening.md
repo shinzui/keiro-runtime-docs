@@ -139,8 +139,6 @@ plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original vision.
 
-(To be filled during and after implementation.)
-
 - EP-1 completed on 2026-06-15. It updated Kiroku store API, write-path, category, migration, and adjacent global-order docs against `shinzui/kiroku` commit `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a`; validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, and `git diff --check`. EP-6 still owns the final `docs/kiroku-source-sync.md` pointer update.
 - EP-2 completed on 2026-06-15. It updated Kiroku subscription, Shibuya adapter, metrics websocket,
   and integration docs against `shinzui/kiroku` commit `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a`;

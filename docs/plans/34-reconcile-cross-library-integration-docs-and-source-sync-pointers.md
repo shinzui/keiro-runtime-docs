@@ -63,8 +63,6 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
-
 EP-6 reconciled the integration story after EP-1 through EP-5. The integrations landing page no
 longer calls current pages outlines, `keiro-with-kiroku` now explains the persistence,
 transaction/source-consistency, stream/category, subscription, and worker boundary, and
