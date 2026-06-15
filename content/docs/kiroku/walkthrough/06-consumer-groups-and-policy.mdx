@@ -96,6 +96,13 @@ Three things to notice:
 ordering conc` rather than the convenience `mkProcessor` — because `mkProcessor` hardcodes
    `Unordered/Serial`, which would _drop the partitioned-ordering guarantee_. Building the record
    directly is what pins `(PartitionedInOrder, Serial)`.
+4. **Partially opened groups are cleaned up.** If creating member `m` throws after earlier members
+   opened, the helper shuts down the already-created adapters before rethrowing, so a failed startup
+   does not leak live Kiroku subscriptions.
+5. **Synchronous handler exceptions become retries.** The helper wraps the shibuya handler with
+   `guardKirokuHandler`; a synchronous exception maps to `AckRetry (RetryDelay 1)` instead of
+   escaping through the Kiroku worker thread. Asynchronous exceptions still propagate for
+   cancellation and shutdown.
 
 ## How a group stays correct
 
@@ -107,6 +114,8 @@ Put the pieces together and the correctness argument is short:
 - **the policy gate** forces each member to process its slice `Serial`ly, so that per-member order
   survives.
 - **shibuya** runs the `N` members in parallel under one supervised app.
+- **the handler guard** keeps ordinary synchronous handler failures on the retry/dead-letter path,
+  while still letting cancellation behave like cancellation.
 
 The result is the property you actually want from a partitioned projection: **order within a
 stream, parallelism across streams**, with kiroku still checkpointing each member independently

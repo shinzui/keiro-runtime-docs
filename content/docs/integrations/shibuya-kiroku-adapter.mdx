@@ -1,13 +1,90 @@
 ---
 title: shibuya ⇄ kiroku adapter
-description: The headline cross-package adapter — feeding kiroku events through shibuya pipelines.
+description: Feed kiroku subscriptions through shibuya processors while Kiroku keeps durable ordering, retry, dead-letter, and checkpoint ownership.
 ---
 
-This is the headline cross-package integration: an adapter that feeds events from
-kiroku (記録, an append-only PostgreSQL event store) through shibuya's supervised,
-Broadway-style queue pipelines for concurrent processing with backpressure.
+`shibuya-kiroku-adapter` turns a Kiroku subscription into a shibuya `Adapter`. Kiroku still owns the
+event log, catch-up/live handoff, retries, dead letters, and durable checkpoints; shibuya owns
+processor supervision, handler execution, metrics, and coordinated shutdown.
 
-<Callout type="info">
-  Documentation in progress. This page will describe the adapter's wiring, delivery guarantees, and
-  a runnable jitsurei (実例, worked example).
-</Callout>
+The adapter is intentionally small. It uses Kiroku's `subscriptionAckStream`, converts each
+`RecordedEvent` into a shibuya `Envelope`, and waits for shibuya's `AckDecision` before letting the
+Kiroku worker move on.
+
+## Delivery contract
+
+Every delivered event is ack-coupled:
+
+| shibuya decision | Kiroku result |
+| --- | --- |
+| `AckOk` | `Continue`; checkpoint advances past the event. |
+| `AckRetry delay` | `Retry delay`; the same event is redelivered, bounded by Kiroku's retry policy. |
+| `AckDeadLetter reason` | `DeadLetter`; the event is written to `kiroku.dead_letters` and the checkpoint advances. |
+| `AckHalt` | The subscription is cancelled; the in-flight event is not checkpointed and replays on restart. |
+
+The bridge carries a zero-based `attempt` counter on the envelope. First delivery is attempt `0`;
+each Kiroku retry increments it.
+
+## Ordering and backpressure
+
+Kiroku delivers each worker's events in ascending global position and blocks on the shibuya ack
+before producing the next event. That means the adapter source never exposes more than one
+un-finalized event per worker, so checkpointing cannot race ahead of handler completion.
+
+For a non-group `AllStreams` adapter, the publisher-side queue inherits Kiroku's default
+`PauseAndResume` overflow policy. If the queue fills, live fan-out pauses and the worker
+re-catches-up from its durable checkpoint; events are not dropped. Category adapters and
+consumer-group members do not register publisher queues. They fetch filtered batches from the
+database when the publisher position advances, and the ack-coupled handler directly throttles those
+fetch loops.
+
+## Filters and targets
+
+`KirokuAdapterConfig` accepts the same target and filter concepts as a native Kiroku subscription:
+
+- `subscriptionTarget`: `AllStreams` or `Category categoryName`.
+- `eventTypeFilter`: `AllEventTypes` or `OnlyEventTypes`.
+- `selector`: an opaque `RecordedEvent -> Bool` predicate.
+
+Kiroku applies `eventTypeFilter` and `selector` before the event reaches shibuya. Filtered-out events
+are skipped and checkpointed past; they are not retried, dead-lettered, or exposed to the adapter.
+
+## Envelope mapping
+
+The adapter maps `RecordedEvent` into shibuya's envelope without inventing a new cursor:
+
+| Kiroku field | Shibuya envelope field |
+| --- | --- |
+| `eventId` | `messageId` |
+| `globalPosition` | `cursor` |
+| `createdAt` | `enqueuedAt` |
+| `metadata.traceparent` / `tracestate` | `traceContext` |
+| `RecordedEvent` | `payload` |
+
+Envelope attributes include the Kiroku subscription name, optional consumer-group member, event type,
+and event global position. `headers` is currently `Nothing`; Kiroku metadata is preserved on the
+`RecordedEvent` payload and selected trace context is copied into `traceContext`.
+
+## Consumer groups
+
+`kirokuConsumerGroupProcessors` builds a size-`N` group as `N` shibuya processors named
+`<subscriptionName>-member-<m>`. Each member has its own Kiroku checkpoint under
+`(subscriptionName, member)`.
+
+The adapter validates policy before opening subscriptions. Each member must run `Serial`, and the
+group is presented as `PartitionedInOrder`: events from the same originating stream hash to the same
+member, preserving per-stream order, while different streams can run on different members.
+
+The helper also guards synchronous handler exceptions by mapping them to `AckRetry (RetryDelay 1)`;
+asynchronous exceptions still propagate for cancellation and shutdown. If processor creation fails
+part-way through a group, already-created adapters are cleaned up before the error escapes.
+
+## Related
+
+- [Integrate with shibuya](/docs/kiroku/how-to/integrate-with-shibuya) — task-oriented wiring guide.
+- [The shibuya adapter walkthrough](/docs/kiroku/walkthrough/05-the-shibuya-adapter) — source-level
+  bridge explanation.
+- [Consumer groups and policy](/docs/kiroku/walkthrough/06-consumer-groups-and-policy) — how the
+  group helper pins ordering and concurrency.
+- [Subscriptions and consumer groups](/docs/kiroku/explanation/subscriptions-and-consumer-groups) —
+  native Kiroku subscription semantics.

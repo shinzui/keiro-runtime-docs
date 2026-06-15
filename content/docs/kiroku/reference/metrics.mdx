@@ -212,8 +212,12 @@ data ServerMessage
   `subscribe_events` message. It can **replay** history from a chosen `from_position` and/or restrict
   to a single `category`. It rides the public `EventPublisher` broadcast and the public effectful
   reads — it creates **no persistent subscription** and writes nothing to the `subscriptions`
-  checkpoint table, so transient watchers leave no trace. Under back-pressure a slow client drops the
-  oldest undelivered batches (`wsEventQueueCap`) rather than stalling the publisher.
+  checkpoint table, so transient watchers leave no trace. For all-stream replay, the server attaches
+  to the live broadcast first, replays history up to that covered boundary, then switches to live
+  events strictly above the highest covered position; if replay reading fails, it sends an `error`
+  frame and stops the tail instead of entering live mode with a gap. Category tails are DB-driven and
+  stop after surfacing a category-read error. Under back-pressure a slow all-stream live client drops
+  the oldest undelivered broadcast batches (`wsEventQueueCap`) rather than stalling the publisher.
 
 ## Server lifecycle
 

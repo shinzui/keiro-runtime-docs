@@ -15,11 +15,12 @@ most:
 
 - **`CatchingUp`** — the worker reads history **directly from the database** in batches from its
   checkpoint, until it reaches the position of the last event the in-process publisher has seen.
-- **`Live`** — caught up. For an `AllStreams` subscription the worker now receives new events
-  pushed from the publisher's in-memory queue; for a `Category` subscription it re-queries with
-  the category filter whenever the publisher advances. A `LISTEN/NOTIFY` wake-up
-  (`pg_notify '<schema>.events'`) tells it when there is something new, so an idle subscription
-  costs almost nothing.
+- **`Live`** — caught up. For a non-group `AllStreams` subscription the worker receives new events
+  pushed from the publisher's in-memory queue. For `Category` subscriptions and all consumer-group
+  members, live mode is database-driven: the worker re-queries with its category/partition filter
+  when the publisher's position advances. A `LISTEN/NOTIFY` wake-up (`pg_notify '<schema>.events'`)
+  tells it when there is something new, so an idle category does no database work while unrelated
+  categories receive traffic.
 
 There are three further states — `Paused` (recoverable backpressure), `Reconnecting` (the live
 connection dropped; back off and re-catch-up), and `Retrying` — plus the terminal `Stopped`. You can
@@ -53,13 +54,33 @@ The handler returns a `SubscriptionResult` per event:
   moves on.
 - `DeadLetter reason` — record this event in `kiroku.dead_letters` and advance past it now.
 
+## Targets and filters
+
+`SubscriptionTarget` chooses the source:
+
+- `AllStreams` reads the global stream.
+- `Category (CategoryName "orders")` reads all streams whose category is `orders` (the stream-name
+  prefix before the first `-`).
+
+`EventTypeFilter` is the structured, introspectable event-type filter: `AllEventTypes` or
+`OnlyEventTypes (Set EventType)`. `selector :: Maybe (RecordedEvent -> Bool)` is the opaque escape
+hatch for any extra predicate. Kiroku AND-composes them before calling your handler. A filtered-out
+event is not retried, dead-lettered, or delivered to the stream bridge, but the worker still advances
+past it, so a filter cannot wedge a subscription behind an event it intentionally ignores.
+
 ## Backpressure without loss
 
-If your handler is slow and the publisher's bounded per-subscriber queue fills, the default
-`OverflowPolicy` is **`PauseAndResume`**: the publisher stops pushing, the worker drains and then
-re-catches-up from its checkpoint — **no events are lost** and the checkpoint stays monotonic.
-The alternatives are `DropSubscription` (fail fast with `SubscriptionOverflowed`) and `DropOldest`
-(lossy best-effort), for consumers that prefer a hard error or can tolerate loss.
+For a non-group `AllStreams` subscription, the publisher owns a bounded per-subscriber queue. If that
+queue fills, the default `OverflowPolicy` is **`PauseAndResume`**: the publisher stops pushing, the
+worker drains any stale queued batches and re-catches-up from its checkpoint — **no events are lost**
+and the checkpoint stays monotonic. The alternatives are `DropSubscription` (fail fast with
+`SubscriptionOverflowed`) and `DropOldest` (lossy best-effort), for consumers that prefer a hard
+error or can tolerate loss.
+
+`queueCapacity` and `overflowPolicy` apply only to that non-group `AllStreams` publisher queue.
+`Category` subscriptions and consumer-group members do not register publisher queues; they use the
+publisher's position as a wake-up/catch-up target and fetch their own filtered batches from the
+database.
 
 ## Consumer groups: static hash partitioning (ADR 0002)
 

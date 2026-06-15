@@ -28,8 +28,8 @@ worker's I/O ports:
 runWorker
   :: MonadIO m
   => Pool                           -- connection pool: catch-up + DB-driven live fetches, checkpoints
-  -> TBQueue (Vector RecordedEvent) -- the publisher's bounded per-subscriber queue (AllStreams live source)
-  -> TVar SubscriberStatus          -- publisher → worker signal: Active | Paused | Overflowed
+  -> TBQueue (Vector RecordedEvent) -- live queue used by non-group AllStreams workers
+  -> TVar SubscriberStatus          -- publisher → worker signal for non-group AllStreams live workers
   -> TVar SubscriptionState         -- the observable FSM state, written on every transition (currentState reads it)
   -> TVar GlobalPosition            -- the publisher's last-published $all position: the catch-up *target*
   -> TVar (Map Text Word64)         -- per-category NOTIFY generation counters (Category live wake-ups)
@@ -57,21 +57,21 @@ The module header states the loop's shape plainly:
 -- Run the subscription worker loop. Two phases:
 --
 -- Phase 1 (catch-up): queries the database directly until reaching publisherPosition.
--- Phase 2 (live): for AllStreams, reads from the bounded TBQueue the publisher delivers to;
---   for Category, re-queries the database whenever the publisher advances (the broadcast
---   TBQueue is unused for category subscriptions).
+-- Phase 2 (live): for non-group AllStreams, reads from the bounded TBQueue the publisher delivers to;
+--   for Category and consumer-group members, re-queries the database whenever the publisher advances.
 --
--- Runs until the handler returns 'Stop', the thread is cancelled, or the publisher signals
--- overflow on the subscriber's status TVar (in which case SubscriptionOverflowed is thrown
--- and surfaces through Async.waitCatch).
+-- Runs until the handler returns 'Stop', the thread is cancelled, a DB-driven live loop reconnects,
+-- or the publisher signals overflow on a non-group AllStreams subscriber's status TVar (in which
+-- case SubscriptionOverflowed is thrown and surfaces through Async.waitCatch).
 ```
 
 So the same worker first **drains history** straight from PostgreSQL, then — once its cursor
 reaches the publisher's last-published position — flips to **live**. The live source differs by
-target: an `AllStreams` subscription reads pre-broadcast events from the publisher's bounded
-per-subscriber queue; a `Category` (and consumer-group member) subscription bypasses the broadcast
-and re-queries the database with a SQL category filter whenever the publisher advances. That is why
-a highly selective category subscription never has to fetch-and-discard the whole `$all` log.
+target: a non-group `AllStreams` subscription reads pre-broadcast events from the publisher's
+bounded per-subscriber queue; a `Category` subscription or any consumer-group member bypasses the
+broadcast and re-queries the database with a SQL target/partition filter whenever the publisher
+advances. That is why a highly selective category subscription never has to fetch-and-discard the
+whole `$all` log.
 
 ## Why catch-up reads the database, not the queue
 
@@ -180,11 +180,12 @@ nextInput = \case
   Stopped{}       -> pure Cancelled
 ```
 
-A few things this makes concrete. The `AllStreams` live path filters `(> c)` because a subscription
-registers its queue **before** catch-up starts, so an event appended mid-catch-up can be both fetched
-from SQL _and_ waiting in the queue — the filter stops live mode replaying it or rewinding the
-checkpoint. The two **DB-driven** live loops (`liveLoopCategoryNotify` for a non-group `Category`,
-`liveLoopDbDriven` for any group member) run to their own natural termination and report back through
+A few things this makes concrete. The non-group `AllStreams` live path filters `(> c)` because that
+subscription registers its publisher queue **before** catch-up starts, so an event appended
+mid-catch-up can be both fetched from SQL _and_ waiting in the queue — the filter stops live mode
+replaying it or rewinding the checkpoint. The two **DB-driven** live loops (`liveLoopCategoryNotify`
+for a non-group `Category`, `liveLoopDbDriven` for any group member) run to their own natural
+termination and report back through
 `liveExitToInput`: a clean handler stop becomes `HandlerStopped`, a fetch error becomes
 `ConnectionLost` (which `step` turns into `Reconnecting`). `AllStreams` has no such loop because it
 never fetches — its reconnect is the publisher's concern.

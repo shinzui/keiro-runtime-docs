@@ -59,7 +59,7 @@ flowchart TD
     Tick["broadcast TChan ()<br/>(debounced)"]
     Pub["EventPublisher<br/>(reads $all once, fans out)"]
   end
-  LiveQ["per-subscriber TBQueue<br/>(Vector RecordedEvent)<br/>cap = queueCapacity (16)"]
+  LiveQ["AllStreams publisher TBQueue<br/>(Vector RecordedEvent)<br/>cap = queueCapacity (16)"]
   subgraph worker["kiroku worker (push)"]
     W["runWorker / processEvents<br/>(one event at a time)"]
     BH["bridgeHandler<br/>writeTBQueue then takeTMVar"]
@@ -91,10 +91,10 @@ Read it as two halves joined at the worker:
    the `Notifier`'s dedicated connection, which writes a `()` tick to a broadcast `TChan`. The shared
    `EventPublisher` wakes on that tick (or a 30 s safety poll), **debounces** by draining all pending
    ticks, reads the new `$all` events **once** in 1000-event batches, and fans each batch out to every
-   `AllStreams` subscriber's own bounded `TBQueue`. The worker reads its batch from that queue. (A
-   `Category` or consumer-group worker skips the broadcast and re-queries with a SQL filter when the
-   publisher's position advances — same wakeup, different fetch. Catch-up always reads the database
-   directly.)
+   registered non-group `AllStreams` subscriber's own bounded `TBQueue`. The worker reads its batch
+   from that queue. (A `Category` or consumer-group worker registers no publisher queue and
+   re-queries with a SQL filter when the publisher's position advances — same wakeup, different
+   fetch. Catch-up always reads the database directly.)
 2. **Back half — pull, the subject of this part.** The worker hands each event, one at a time, to the
    `bridgeHandler`, which enqueues an `AckItem` on the **ack `TBQueue`** and blocks on a one-shot
    reply `TMVar`. Streamly's `unfoldrM` pulls items off that queue on demand; the adapter wraps each
@@ -121,7 +121,7 @@ kirokuAdapter store (KirokuAdapterConfig subName subTarget bs buf cg etf sel) = 
         (defaultSubscriptionConfig subName subTarget (\_ -> pure Continue))
           { batchSize       = bs
           , queueCapacity   = 16             -- the *front-half* per-subscriber queue (batches)
-          , overflowPolicy  = DropSubscription
+          -- overflowPolicy is inherited from defaultSubscriptionConfig: PauseAndResume
           , consumerGroup   = cg
           , eventTypeFilter = etf
           , selector        = sel
@@ -150,7 +150,8 @@ Three steps, three things to notice:
    per-event verdict. (`subscriptionAckStream` overwrites this field with its own `bridgeHandler`
    anyway; the placeholder just satisfies the smart constructor.)
 2. There are **two** capacities, and they are different queues. `queueCapacity = 16` sizes the
-   front-half per-subscriber queue (the one the publisher fills, measured in _batches_).
+   front-half publisher queue (measured in _batches_) only for non-group `AllStreams` adapters;
+   category adapters and consumer-group members are DB-driven and do not register that queue.
    `buf` / `bufferSize` (default 256) sizes the back-half ack queue (the one the bridge fills,
    measured in _items_). Keep them straight — they sit on opposite sides of the worker and fail
    differently (see [deadlocks](#why-there-are-no-deadlocks) and [performance](#why-there-are-no-performance-problems)).
@@ -484,14 +485,12 @@ Confidence here rests on three properties — bounded memory, no busy-polling, a
 of the shared publisher — each of which falls out of code already shown.
 
 - **Bounded memory.** The back-half ack queue is depth-1 in practice (ack-coupling), so the bridge
-  buffers a single event. The front-half per-subscriber queue is bounded at `queueCapacity` (16
-  batches); the publisher _never blocks_ on a slow subscriber — when a subscriber's queue is full it
-  applies that subscriber's `OverflowPolicy` and moves on. The adapter selects `DropSubscription`, so a
-  sustained-slow handler does not silently inflate memory or stall its neighbours: its queue fills, the
-  publisher marks it `Overflowed`, the worker's FSM halts with `SubscriptionOverflowed`, and shibuya's
-  supervisor restarts the processor, which re-catches-up from the durable checkpoint. (Lossless if you
-  prefer: switch the underlying policy to `PauseAndResume`, which drains and re-catches-up without
-  dropping. The adapter's choice trades a restart for never stalling the _shared_ `$all` broadcaster.)
+  buffers a single event. The front-half publisher queue is bounded at `queueCapacity` (16 batches)
+  for non-group `AllStreams` adapters; the publisher _never blocks_ on a slow subscriber. The adapter
+  inherits Kiroku's default `PauseAndResume` policy, so a full publisher queue pauses fan-out, drains
+  stale batches, and re-catches-up from the durable checkpoint without dropping events. Category
+  adapters and consumer-group members avoid the front-half queue entirely and throttle their own
+  DB-driven fetch loops through the same per-event ack.
 - **No busy-polling.** Every wait in the chain is a blocking STM retry, not a spin. An idle
   subscription costs nothing: the publisher parks on its `TChan`/safety timer, the worker parks on
   `readTBQueue`, the bridge parks on `takeTMVar`. A `Category` worker parks on its category's
@@ -500,11 +499,11 @@ of the shared publisher — each of which falls out of code already shown.
   during a listener reconnect — at most one empty fetch per 30 s, not per tick.
 - **No redundant database load, no head-of-line blocking on the shared path.** `NOTIFY` ticks are
   **debounced**: `drainTicks` collapses a burst of notifications into a single fetch. The
-  `EventPublisher` reads the `$all` log **once** per cycle (in 1000-event batches) and fans the result
-  out to every `AllStreams` subscriber, so N subscribers cost one read, not N. And because the
-  publisher decouples from consumers via the bounded per-subscriber queues, one slow shibuya handler
-  cannot back-pressure the broadcaster and starve the other subscribers — the property that makes the
-  `DropSubscription` choice safe.
+  `EventPublisher` reads the `$all` log **once** per cycle (in 1000-event batches) and fans the
+  result out to every registered non-group `AllStreams` subscriber, so N `$all` subscribers cost one
+  read, not N. And because the publisher decouples from consumers via bounded per-subscriber queues,
+  one slow shibuya handler cannot back-pressure the broadcaster and starve the other subscribers;
+  under `PauseAndResume` that slow subscriber recovers by re-reading from its checkpoint.
 
 True backpressure to the _database_ still exists where it should: on catch-up and on the `Category` /
 consumer-group live loops, the worker fetches a batch and then delivers it event-by-event through the

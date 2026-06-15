@@ -27,17 +27,29 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Audit Kiroku subscription, adapter, metrics, OTel, and CLI commits from `0a39598..HEAD`.
-- [ ] Update subscription concepts and reference docs for current targets, filters, overflow, retry, dead-letter, and consumer-group behavior.
-- [ ] Update subscription walkthrough pages for current FSM, worker driver, event publisher, Shibuya adapter, consumer-group policy, and tracing behavior.
-- [ ] Update metrics, OpenTelemetry, and operator CLI docs for current websocket replay handoff and span/event surfaces.
-- [ ] Update integration pages or record cross-link needs for EP-6.
-- [ ] Run docs validation commands and record results.
+- [x] Audit Kiroku subscription, adapter, metrics, OTel, and CLI commits from `0a39598..HEAD`.
+- [x] Update subscription concepts and reference docs for current targets, filters, overflow, retry, dead-letter, and consumer-group behavior.
+- [x] Update subscription walkthrough pages for current FSM, worker driver, event publisher, Shibuya adapter, consumer-group policy, and tracing behavior.
+- [x] Update metrics, OpenTelemetry, and operator CLI docs for current websocket replay handoff and span/event surfaces.
+- [x] Update integration pages or record cross-link needs for EP-6.
+- [x] Run docs validation commands and record results.
 
 
 ## Surprises & Discoveries
 
-(None yet.)
+- The current store only registers publisher queues for non-group `AllStreams` subscriptions.
+  `Category` subscriptions and all consumer-group members use DB-driven live loops gated by the
+  publisher position, so docs must not describe unused category/group queues.
+- `EventTypeFilter` and `selector` are AND-composed before handler delivery. Filtered-out events do
+  not reach handlers, streams, retries, or dead letters, but checkpoint progress still advances past
+  them.
+- `shibuya-kiroku-adapter` now exposes `queueCapacity` and inherits Kiroku's lossless
+  `PauseAndResume` overflow policy instead of setting `DropSubscription`.
+- `kirokuConsumerGroupProcessors` wraps handlers with `guardKirokuHandler`, mapping synchronous
+  exceptions to `AckRetry (RetryDelay 1)`, and cleans up already-opened adapters if later member
+  creation fails.
+- `/ws/events` attaches to live broadcast before all-stream replay and terminates the tail on replay
+  or category-read errors after sending an error frame, avoiding a live handoff with a gap.
 
 
 ## Decision Log
@@ -47,6 +59,9 @@ Record every decision made while working on the plan.
 - Decision: Keep subscription semantics and adapter semantics in one child plan.
   Rationale: The Shibuya adapter is a direct consumer of Kiroku subscription behavior; splitting them would duplicate the ack, overflow, and consumer-group explanations.
   Date: 2026-06-15
+- Decision: Expand `content/docs/integrations/shibuya-kiroku-adapter.mdx` during EP-2 instead of deferring the placeholder to EP-6.
+  Rationale: EP-2 has the source evidence for the adapter's delivery, overflow, filter, envelope, and consumer-group contract; EP-6 can later reconcile links and source-sync pointers rather than author the behavior from scratch.
+  Date: 2026-06-15
 
 
 ## Outcomes & Retrospective
@@ -54,7 +69,12 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Draft docs now describe the current Kiroku subscription and adapter behavior: target-specific live
+sources, filter checkpointing, lossless adapter overflow, ack-coupled Shibuya checkpointing, guarded
+consumer-group handlers, websocket replay handoff, and the expanded integration page. Validation
+passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, and `git diff --check`.
+EP-6 still owns the final `docs/kiroku-source-sync.md` pointer update and any whole-site integration
+reconciliation after the Keiro plans complete.
 
 
 ## Context and Orientation

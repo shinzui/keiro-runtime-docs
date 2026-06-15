@@ -1,6 +1,6 @@
 ---
 title: "03 — The event publisher"
-description: "Reading EventPublisher.hs: the single $all broadcaster that reads new events once and fans them out to every subscriber's bounded queue, with per-subscriber overflow policy."
+description: "Reading EventPublisher.hs: the single $all broadcaster that reads new events once for non-group AllStreams subscribers, tracks the store head for DB-driven subscribers, and applies per-subscriber overflow policy."
 ---
 
 <Callout type="info">
@@ -11,15 +11,17 @@ description: "Reading EventPublisher.hs: the single $all broadcaster that reads 
 ## What this part covers
 
 `kiroku-store/src/Kiroku/Store/Subscription/EventPublisher.hs` — the **centralized `$all`
-broadcaster**. The [worker driver](/docs/kiroku/walkthrough/02-the-worker-driver) reads its
-`AllStreams` live events from "the publisher's bounded queue" and treats `lastPublished` as its
-catch-up target; this part is the other side of that seam — the single thread that fills those
-queues.
+broadcaster**. The [worker driver](/docs/kiroku/walkthrough/02-the-worker-driver) reads a non-group
+`AllStreams` subscription's live events from "the publisher's bounded queue" and every subscription
+treats `lastPublished` as its catch-up target; this part is the other side of that seam — the single
+thread that fills `$all` queues and tracks the store head for DB-driven workers.
 
-The core idea is **read once, fan out many**. Rather than have every `AllStreams` subscription poll
-the database for new events independently, one `EventPublisher` thread reads each new batch of the
-global stream **once** and hands it to every registered subscriber through that subscriber's own
-bounded queue. One database reader, N in-memory consumers.
+The core idea is **read once, fan out where it helps**. Rather than have every non-group
+`AllStreams` subscription poll the database for new events independently, one `EventPublisher` thread
+reads each new batch of the global stream **once** and hands it to every registered `$all` subscriber
+through that subscriber's own bounded queue. Category subscriptions and consumer-group members do
+not register for fan-out; they use the publisher's position as a wake-up/catch-up boundary and fetch
+their own filtered batches from the database.
 
 ## Why bounded per-subscriber queues
 
@@ -55,8 +57,8 @@ worker's `liveQueue`, `subStatus` is its `statusVar`, and `subPolicy` is the con
 
 ## The lifecycle API
 
-Four functions bound the publisher's life, and they map one-to-one onto the store and a `subscribe`
-call:
+Four functions bound the publisher's life. Only non-group `AllStreams` subscriptions call the
+registration function; every worker reads the position function:
 
 ```haskell
 startPublisher       :: Pool -> TChan () -> Maybe (KirokuEvent -> IO ()) -> StoreSettings -> m EventPublisher
@@ -69,13 +71,13 @@ stopPublisher        :: EventPublisher -> m ()
 - **`startPublisher`** runs once when the store opens. It seeds `lastPublished` from the current
   global position (so a fresh subscriber's catch-up has a target immediately), takes a **personal
   copy** of the Notifier's broadcast channel with `dupTChan`, and forks the broadcast loop.
-- **`subscribePublisher`** is the registration `subscribe` calls. It is a single STM transaction:
-  allocate a bounded `TBQueue` of `cap` batches, a fresh `Active` status, insert the `Subscriber`
-  into the registry under a new id, and return the queue, the status `TVar`, and an `unsubscribe`
-  action that deletes the entry. **Forgetting to `unsubscribe` is a leak** — the publisher would keep
-  pushing to a queue with no reader, which fills and trips the overflow policy needlessly. (That is
-  exactly why the worker's `finally` cleanup runs it on every exit — see
-  [part 04](/docs/kiroku/walkthrough/04-subscribe-and-lifecycle).)
+- **`subscribePublisher`** is the registration used only by non-group `AllStreams` subscriptions. It
+  is a single STM transaction: allocate a bounded `TBQueue` of `cap` batches, a fresh `Active`
+  status, insert the `Subscriber` into the registry under a new id, and return the queue, the status
+  `TVar`, and an `unsubscribe` action that deletes the entry. **Forgetting to `unsubscribe` is a
+  leak** — the publisher would keep pushing to a queue with no reader, which fills and trips the
+  overflow policy needlessly. (That is exactly why the worker's `finally` cleanup runs it on every
+  exit — see [part 04](/docs/kiroku/walkthrough/04-subscribe-and-lifecycle).)
 - **`publisherPosition`** / **`lastPublished`** is the shared catch-up target. Every worker reads it
   as `pubPosVar`: while its cursor is behind, it stays in `CatchingUp` reading history from the DB;
   once it reaches `lastPublished`, it goes `Live`.
@@ -114,6 +116,24 @@ other queued tick so a burst of appends collapses into a single fetch rather tha
 notification.
 
 ### Fetch once, deliver per subscriber
+
+```haskell
+fetchAndBroadcast = do
+  GlobalPosition pos <- readTVarIO posVar
+  subs <- readTVarIO subsVar
+  if IntMap.null subs
+    then cheapAdvance
+    else do
+      result <- Pool.use pool (Session.statement (pos, publisherBatchSize) SQL.readAllForwardStmt)  -- batch of 1000
+      ...
+```
+
+If the subscriber registry is empty, `cheapAdvance` reads only the current global position and
+updates `lastPublished`. It decodes no event rows and fans out to no queues, but DB-driven category
+and consumer-group workers still see the publisher position advance and can leave catch-up/live waits
+without requiring an otherwise-unused queue.
+
+When there are registered `$all` subscribers, the loop reads and broadcasts:
 
 ```haskell
 fetchAndBroadcast = do
@@ -203,21 +223,20 @@ flowchart LR
   drives its `QueueBackpressured` / `QueueOverflowed` inputs.
 - Every worker — `AllStreams`, `Category`, or group member — uses **`lastPublished`** as its catch-up
   target.
-- A **`Category` or consumer-group** worker registers (so it shares `lastPublished` and gets an
-  `unsubscribe`) but reads its live events from the database instead, via the NOTIFY-driven or
-  DB-driven live loop. Its `subQueue` is therefore "unused for category subscriptions": the publisher
-  still fans out to it, but under the default `PauseAndResume` the queue simply fills once and the
-  subscriber sits `Paused`, ignored, until it unsubscribes.
+- A **`Category` or consumer-group** worker does **not** register a publisher queue. It reads its
+  live events from the database via the NOTIFY-driven category loop or the group polling loop, and
+  uses `lastPublished` only as the shared catch-up/live boundary and wake-up gate.
 
 ## The publisher, in one sentence
 
 `EventPublisher` is the one thread that turns each `LISTEN/NOTIFY` tick (or a 30-second safety poll)
-into a single `$all` read, fans the batch out to every registered subscriber's **bounded** queue with
-its own overflow policy applied in-place, and advances `lastPublished` — so N subscriptions share one
-database reader and no slow consumer can ever block the broadcast or grow its memory without bound.
+into either a cheap head-position advance or a single `$all` read, fans batches out to every
+registered non-group `$all` subscriber's **bounded** queue with its own overflow policy applied
+in-place, and advances `lastPublished` — so `$all` subscribers share one database reader, category
+and group workers avoid unused queues, and no slow consumer can block the broadcast or grow its
+memory without bound.
 
 ## Next
 
 [04 — subscribe & lifecycle](/docs/kiroku/walkthrough/04-subscribe-and-lifecycle): how `subscribe`
-registers a subscriber with this publisher, spawns the worker, and hands back a cleanup-guaranteeing
-handle.
+allocates the worker's live source, spawns the worker, and hands back a cleanup-guaranteeing handle.

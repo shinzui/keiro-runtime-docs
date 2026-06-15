@@ -64,6 +64,7 @@ event's processing outcome (`AckDecision`) drives kiroku's checkpoint.
    | `subscriptionTarget :: SubscriptionTarget`  | (required)      | `AllStreams` or `Category categoryName`.                                                       |
    | `batchSize :: Int32`                        | `100`           | Events per database fetch during catch-up.                                                     |
    | `bufferSize :: Natural`                     | `256`           | `TBQueue` capacity — the backpressure threshold.                                               |
+   | `queueCapacity :: Natural`                  | `16`            | Publisher-side burst capacity in batches; active only for non-group `AllStreams` adapters.     |
    | `consumerGroup :: Maybe ConsumerGroup`      | `Nothing`       | `Just (ConsumerGroup {member, size})` makes this adapter one member of a group.                |
    | `eventTypeFilter :: EventTypeFilter`        | `AllEventTypes` | Deliver only chosen event types (worker-side; checkpoint still advances past filtered events). |
    | `selector :: Maybe (RecordedEvent -> Bool)` | `Nothing`       | Opaque per-event predicate, AND-composed with `eventTypeFilter`.                               |
@@ -82,6 +83,12 @@ event's processing outcome (`AckDecision`) drives kiroku's checkpoint.
    The blocking-per-event coupling is also your **backpressure**: a slow handler throttles
    database polling. The envelope's `attempt` (a zero-based redelivery counter) lets a handler
    observe how many times kiroku has redelivered an event.
+
+   For a non-group `AllStreams` adapter, the publisher-side queue uses Kiroku's default
+   `PauseAndResume` overflow policy. A full queue pauses live fan-out and re-catches-up from the
+   durable checkpoint instead of dropping events. Category adapters and consumer-group members do
+   not register publisher queues; they fetch filtered batches from the database and are naturally
+   throttled by the ack-coupled handler.
 
 4. **For consumer groups**, present a whole size-`N` group as one `PartitionedInOrder` unit with
    `kirokuConsumerGroupProcessors` — one call yields `N` ready-to-run processors (ids
@@ -107,6 +114,11 @@ event's processing outcome (`AckDecision`) drives kiroku's checkpoint.
    instead, give each process one `kirokuAdapter` with its own `member` index and the same
    `subscriptionName`; kiroku's per-member checkpoint (keyed by `(subscriptionName, member)`) lets
    each resume independently. Exactly one live process must own each member index.
+
+   `kirokuConsumerGroupProcessors` also guards synchronous exceptions from the shibuya handler:
+   instead of letting a throwing handler kill the Kiroku worker, it maps the exception to
+   `AckRetry (RetryDelay 1)`. Asynchronous exceptions still propagate normally for cancellation and
+   shutdown.
 
 ## Verify it worked
 

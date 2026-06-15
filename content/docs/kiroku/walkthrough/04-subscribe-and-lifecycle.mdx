@@ -26,10 +26,9 @@ subscribe store config = liftIO $ do
     when (n < 1 || m < 0 || m >= n) $
       throwIO (InvalidConsumerGroup m n)
 
-  -- 2. Register with the publisher: a bounded queue + a status TVar + an unsubscribe action.
-  (queue, statusVar, unsubscribe) <-
-    atomically $ Pub.subscribePublisher (store ^. #publisher)
-                                        (queueCapacity config) (overflowPolicy config)
+  -- 2. Allocate the live source. Non-group AllStreams registers a bounded publisher queue;
+  --    category and consumer-group workers are DB-driven and register no publisher queue.
+  (queue, statusVar, unsubscribe) <- allocateLiveSource store config
 
   -- 3. Seed the observable state TVar with the catch-up entry state.
   stateVar <- newTVarIO (CatchingUp (GlobalPosition 0) 0)
@@ -71,8 +70,10 @@ Six things happen, in order. Read each:
 1. **Eager validation.** A bad `(member, size)` is a _programmer_ error, so `subscribe` throws
    `InvalidConsumerGroup` immediately rather than starting a doomed worker. This is also why
    `subscribe`'s signature stays non-`Either` — the only failures here are bugs.
-2. **Publisher registration** gives the worker its live source (the bounded `queue`) and a
-   `statusVar` the publisher uses to signal overflow.
+2. **Live-source allocation** gives the worker its live source. A non-group `AllStreams`
+   subscription registers a bounded publisher queue and a `statusVar` for overflow/backpressure.
+   Category subscriptions and consumer-group members register no publisher queue; their live loops
+   fetch filtered batches from the database when the publisher position advances.
 3. **The observable `stateVar`** is seeded with `CatchingUp` so a `currentState` read _before_ the
    worker's first transition still returns something sensible.
 4. **Registry registration.** The worker's _own_ `stateVar` is inserted into the store's central
@@ -81,11 +82,12 @@ Six things happen, in order. Read each:
    `TVar` the worker writes and `currentState` reads, so there is one coherent value. The insert
    happens _before_ forking, so a caller that snapshots immediately after `subscribe` returns
    already sees this subscription.
-5. **The cleanup contract.** `runWorker ... \`finally\` cleanup` removes the subscription from the
-   publisher's registry **and** the subscription-state registry whenever the worker exits —
-   gracefully on `Stop`, by cancellation, or on any exception. Forgetting the publisher half would
-   leave an entry with no reader, tripping this subscriber's overflow policy on the next batch;
-   forgetting the registry half would leak a stale state entry. The registry delete is
+5. **The cleanup contract.** `runWorker ... \`finally\` cleanup` removes the subscription from any
+   publisher registry entry it owns **and** from the subscription-state registry whenever the worker
+   exits — gracefully on `Stop`, by cancellation, or on any exception. Forgetting the publisher half
+   for a registered `$all` worker would leave an entry with no reader, tripping this subscriber's
+   overflow policy on the next batch; forgetting the registry half would leak a stale state entry.
+   The registry delete is
    **token-conditional** (`dropMine`), so a stale cleanup from an older worker that shared the key
    cannot remove a newer worker's live entry.
 6. **The handle** exposes exactly three capabilities: `cancel`, `wait`, and `currentState` — but
