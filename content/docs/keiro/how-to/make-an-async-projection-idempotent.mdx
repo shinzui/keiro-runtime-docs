@@ -1,10 +1,12 @@
 ---
 title: "Make an async projection idempotent"
-description: "Use a source-event-id unique index and ON CONFLICT DO NOTHING so at-least-once redelivery is safe."
+description: "Use AsyncProjection's idempotency key and keiro_projection_dedup so at-least-once redelivery is safe."
 ---
 
 An async projection runs off a subscription with **at-least-once** delivery, so the same event may be
-applied twice. You make the apply idempotent so a redelivery writes nothing.
+applied twice. `AsyncProjection` now centralizes the first line of defense: `applyAsyncProjection`
+inserts `(projection_name, event_id)` into `kiroku.keiro_projection_dedup` in the same transaction as
+your read-model update, and skips the update when that row already exists.
 
 <Callout type="info">
   Assumes you understand the projection primitives (see
@@ -13,30 +15,31 @@ applied twice. You make the apply idempotent so a redelivery writes nothing.
 
 ## Goal
 
-Apply each event at most once to the read-model table, even under redelivery.
+Apply each event at most once per projection within the retained dedup window, even under redelivery.
 
 ## Steps
 
-1. **Add a unique key on the source event id** to the read-model table:
-
-   ```sql
-   ALTER TABLE my_read_model ADD COLUMN source_event_id UUID;
-   CREATE UNIQUE INDEX my_read_model_source_event_id_uniq ON my_read_model (source_event_id);
-   -- in the projection's Tx, INSERT ... ON CONFLICT (source_event_id) DO NOTHING
-   ```
-
-2. **Key the projection off the event id** via `idempotencyKey`, and write with `ON CONFLICT DO
-   NOTHING`:
+1. **Key the projection off the event id** via `idempotencyKey`, then put the real table update in
+   `applyRecorded`:
 
    ```haskell
    myAsyncProjection :: AsyncProjection
    myAsyncProjection = AsyncProjection
      { name             = "orders-summary-async"
      , subscriptionName = "orders-summary-async"
-     , applyRecorded    = \recorded -> Tx.statement (params recorded) upsertOnConflictDoNothingStmt
+     , applyRecorded    = \recorded -> Tx.statement (params recorded) upsertSummaryStmt
      , idempotencyKey   = \recorded -> recorded ^. #eventId
      }
    ```
+
+   The subscription worker should run `applyAsyncProjection myAsyncProjection recorded`, not call
+   `applyRecorded` directly. Keiro writes the dedup row first; only the first delivery for that
+   `(projection, event)` runs `applyRecorded`.
+
+2. **Keep table writes domain-idempotent when practical.** The central dedup table protects ordinary
+   redelivery. Still prefer natural upserts in the read model when the business key allows it; they
+   make manual rebuilds, operator replays after dedup pruning, and future migrations easier to reason
+   about.
 
 <Callout type="warn">
 keiro ships **no** async-projection worker. `applyAsyncProjection myAsyncProjection recorded` hands
@@ -46,8 +49,9 @@ you the `Tx.Transaction ()`; you must wire it to a kiroku subscription and advan
 
 ## Verify it worked
 
-Apply the same `RecordedEvent` twice in a test: the second `INSERT … ON CONFLICT DO NOTHING` affects
-zero rows, and the table holds exactly one row for that `source_event_id`.
+Apply the same `RecordedEvent` twice in a test through `applyAsyncProjection`: the first call writes
+one `keiro_projection_dedup` row and updates the read model; the second call conflicts on the dedup
+primary key and skips `applyRecorded`.
 
 ## Related
 

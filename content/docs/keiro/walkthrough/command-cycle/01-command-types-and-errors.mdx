@@ -73,10 +73,11 @@ data CommandError
   | EncodeFailed !CodecError             -- an emitted event could not be encoded for append
   | StoreFailed !StoreError              -- the store rejected the append (non-retryable)
   | RetryExhausted !Int !StoreError      -- optimistic-concurrency retries ran out (limit, last error)
+  | ConflictFixpoint !StreamVersion !StoreError -- retry observed no stream-version progress
   deriving stock (Generic, Eq, Show)
 ```
 
-The six constructors line up one-to-one with the three phases of the cycle:
+The constructors line up with the three phases of the cycle:
 
 - **Hydrate** can fail two ways. `HydrationDecodeFailed` wraps a [`CodecError`](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary)
   when a *stored* event will not decode during replay. `HydrationReplayFailed` carries the
@@ -85,16 +86,19 @@ The six constructors line up one-to-one with the three phases of the cycle:
   [02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration)).
 - **Transduce** fails exactly one way: `CommandRejected`, when the transducer refuses the command in
   the hydrated state.
-- **Append** fails three ways. `EncodeFailed` wraps a `CodecError` from encoding an *emitted* event;
-  `StoreFailed` carries a non-retryable `StoreError`; and `RetryExhausted` carries the configured retry
-  limit and the last `StoreError` after optimistic-concurrency retries run out.
+- **Append** fails four ways. `EncodeFailed` wraps a `CodecError` from encoding an *emitted* event;
+  `StoreFailed` carries a non-retryable `StoreError`; `RetryExhausted` carries the attempts made and
+  the last `StoreError` after optimistic-concurrency retries run out; and `ConflictFixpoint` catches
+  retryable conflicts that rehydrate to the same stream version again (commonly a soft-deleted
+  stream that still collides but reads as empty).
 
 <Callout type="warn">
 There are **three** caller-visible outcomes, not two, and they are easy to conflate:
 
 - a **rejection** is `Left CommandRejected`;
 - a **no-op** is a *successful* `Right CommandResult` with `eventsAppended = 0` — not an error;
-- a **store failure** is `Left (StoreFailed …)` or `Left (RetryExhausted …)`.
+- a **store failure** is `Left (StoreFailed …)`, `Left (RetryExhausted …)`, or
+  `Left (ConflictFixpoint …)`.
 
 A no-op is not a `Left`. Code that treats "no events appended" as a failure will misread accepted
 commands that simply had nothing to do.

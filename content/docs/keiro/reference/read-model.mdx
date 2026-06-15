@@ -40,9 +40,10 @@ data ConsistencyMode
 />
 
 <Callout type="warn">
-In `runQuery`, **`Strong` and `Eventual` are behaviorally identical** — both skip waiting. Only
-`PositionWait` with a `Just target` blocks (polling `subscriptions.last_seen`). For read-your-writes,
-pass the `GlobalPosition` a command just returned as the `PositionWait` target.
+`Strong` now waits: it captures the store head at query start, then polls the model's subscription
+position until it reaches that head or times out. Use it only for read models advanced by an async
+worker. Inline-only models should usually use `Eventual`, because no subscription worker can move
+while the query is waiting.
 </Callout>
 
 ## `ReadModelError`
@@ -69,7 +70,7 @@ in a transaction. On schema drift it hard-fails with `ReadModelStaleSchema`; whi
 `Live` it fails with `ReadModelNotLive`.
 
 Each of these takes the opt-in [metrics](/docs/keiro/reference/telemetry#metrics-surface) handle as
-its leading argument. When a `Strong`/`AwaitPosition` wait hits its deadline, `waitFor` records the
+its leading argument. When a `Strong`/`PositionWait` wait hits its deadline, `waitFor` records the
 [`keiro.projection.wait.timeouts`](/docs/keiro/reference/telemetry#metric-catalogue) counter; pass
 `Nothing` to disable it. (These signatures gained the `Maybe KeiroMetrics` argument with the metrics
 surface; 0.1.0.0 callers pass `Nothing`.)
@@ -87,7 +88,7 @@ readSubscriptionPosition :: (Store :> es) => Text -> Eff es (Maybe GlobalPositio
 ## The registry
 
 ```haskell
-data ReadModelStatus = Live | Rebuilding | Paused | Abandoned
+data ReadModelStatus = Live | Rebuilding | Paused | Abandoned | UnknownStatus Text
   deriving stock (Generic, Eq, Show)
 
 data ReadModelMetadata = ReadModelMetadata
@@ -105,10 +106,10 @@ markLive          :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMet
 markAbandoned     :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMetadata
 ```
 
-`registerReadModel` is an idempotent `INSERT … ON CONFLICT (name) DO NOTHING` that returns the
-existing row **unchanged** — it never overwrites the stored `version`/`shapeHash`. That is exactly
-what lets `validateMetadata` detect drift. An unrecognized stored status decodes defensively to
-`Paused`.
+`registerReadModel` is an idempotent insert that returns the existing row **unchanged** — it never
+overwrites the stored `version`/`shapeHash`. That is exactly what lets `validateMetadata` detect
+drift. An unrecognized stored status decodes defensively to `UnknownStatus raw`, preserving the
+database value for diagnostics.
 
 ## Rebuild lifecycle — skeleton only
 

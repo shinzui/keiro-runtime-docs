@@ -27,17 +27,30 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Audit the Keiro `9fa283b..HEAD` source range for command/core/read-side/schema changes.
-- [ ] Update command, stream, codec, snapshot, and replay-safety reference and foundation walkthrough docs.
-- [ ] Update projection and read-model docs for strong consistency and async projection deduplication.
-- [ ] Update migration/schema docs for expected-schema drift checks and the current schema shape relevant to this plan.
-- [ ] Update tests/fixture guidance for the current Postgres fixture behavior if needed.
-- [ ] Run docs validation commands and record results.
+- [x] Audit the Keiro `9fa283b..HEAD` source range for command/core/read-side/schema changes.
+- [x] Update command, stream, codec, snapshot, and replay-safety reference and foundation walkthrough docs.
+- [x] Update projection and read-model docs for strong consistency and async projection deduplication.
+- [x] Update migration/schema docs for expected-schema drift checks and the current schema shape relevant to this plan.
+- [x] Update tests/fixture guidance for the current Postgres fixture behavior if needed.
+- [x] Run docs validation commands and record results.
 
 
 ## Surprises & Discoveries
 
-(None yet.)
+- `Strong` read-model consistency is implemented now. It captures the current store head and waits for
+  the subscription position to catch up; it is no longer behaviorally equivalent to `Eventual`.
+- The hardened codec API makes both `decode` and upcasters `EventType`-aware. Malformed
+  `schemaVersion` metadata is an error when present, and the default to version 1 applies only when
+  the metadata object or key is absent.
+- Command execution retries optimistic conflicts by rehydrating and replanning, but `DuplicateEvent`
+  is non-retryable. Snapshot write failure after a successful append is advisory: it is counted by
+  metrics and does not fail the command.
+- Async projection idempotency moved into the centralized
+  `kiroku.keiro_projection_dedup` table. Projection examples should not tell every projection to own
+  a duplicate `source_event_id` table solely for framework-level replay protection.
+- `keiro-migrations` now has an expected-schema drift gate and a `keiro-write-expected-schema`
+  helper. The shared Postgres fixture uses no-check migration application for fixture setup; strict
+  schema drift checking belongs to `keiro-migrations-test`.
 
 
 ## Decision Log
@@ -54,7 +67,18 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Completed on 2026-06-15 against `shinzui/keiro` commit
+`f1d67a01b7457387a4861e7268d1c521ef82287d`. The Keiro command, codec, stream, snapshot,
+projection, read-model, migration/schema, fixture, and matching walkthrough docs now describe the
+June hardening behavior: event-type-aware codecs and upcasters, stricter schema-version metadata,
+snapshot boundary handling, conflict retries and snapshot failure accounting, strong consistency
+waits, centralized async projection deduplication, expected-schema drift checks, and the current
+test fixture model.
+
+Validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`,
+`git diff --check`, and a stale-claim `rg` scan for the old strong-consistency, codec,
+migration-count, and projection-dedup wording. EP-6 still owns the final
+`docs/keiro-source-sync.md` pointer update.
 
 
 ## Context and Orientation

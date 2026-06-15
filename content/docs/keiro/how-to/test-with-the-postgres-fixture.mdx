@@ -20,7 +20,8 @@ and migration cost per test.
 ## Steps
 
 1. **Wrap the whole suite in `withMigratedSuite`.** It starts one cached PostgreSQL server, creates a
-   `keiro_template` database, and applies `allKeiroMigrations` (kiroku + keiro) to it **once**:
+   `keiro_template` database, and applies Kiroku + Keiro embedded migrations to it **once** with
+   `runAllKeiroMigrationsNoCheck`:
 
    ```haskell
    import Keiro.Test.Postgres (withMigratedSuite, withFreshStore)
@@ -36,12 +37,23 @@ and migration cost per test.
              pure ()
    ```
 
-2. **Use `withFreshStore fixture` as the `around` action.** For each example it clones a fresh
+2. **Use `withMigratedSuiteWith` when every clone needs extra schema.** The hook receives the
+   template database connection string after framework migrations and before any clone is created:
+
+   ```haskell
+   main =
+     withMigratedSuiteWith installExtraSchema \fixture ->
+       hspec $
+         describe "orders" $ around (withFreshStore fixture) $ do
+           it "uses the extra schema" \store -> pure ()
+   ```
+
+3. **Use `withFreshStore fixture` as the `around` action.** For each example it clones a fresh
    database with `CREATE DATABASE … TEMPLATE keiro_template`, opens a `KirokuStore` against it, runs
    the example, then drops the clone with `DROP DATABASE … WITH (FORCE)`. The expensive work
    (startup + migrations) already happened once in step 1; the clone is cheap.
 
-3. **(Two databases) Use `withFreshStores2` for cross-context tests.** When a test needs two isolated
+4. **(Two databases) Use `withFreshStores2` for cross-context tests.** When a test needs two isolated
    databases — for example to exercise an outbox-to-inbox hop between two services — `withFreshStores2`
    provides a pair of independent stores cloned from the same template:
 
@@ -55,6 +67,10 @@ and migration cost per test.
 Run the suite (`cabal test`). Each example sees an empty, migrated database: the keiro tables exist
 (migrations ran against the template) but carry no rows from other tests (each example got a fresh
 clone). Writing a row in one example and asserting it is absent in the next confirms isolation.
+
+Fixture setup intentionally skips codd expected-schema verification so tests start quickly from a
+fresh template. The strict drift check lives in `keiro-migrations-test`, which compares the migrated
+schema against `keiro-migrations/expected-schema`.
 
 ## Related
 

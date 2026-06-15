@@ -52,7 +52,7 @@ An `Upcaster` is one rung of the migration chain:
 -- | One rung of an upcaster chain: the source schema version it upgrades FROM,
 -- paired with a pure migration that rewrites a version-n payload into the
 -- version-(n+1) shape. A migration may reject malformed input with a Left.
-type Upcaster = (Int, Value -> Either Text Value)
+type Upcaster = (Int, EventType -> Value -> Either Text Value)
 ```
 
 ## The error type
@@ -60,18 +60,24 @@ type Upcaster = (Int, Value -> Either Text Value)
 ```haskell
 -- keiro-core/src/Keiro/Codec.hs
 data CodecError
-  = UnknownEventType !EventType ![Text]   -- tag not in eventTypes (offending tag, allowed set)
-  | InvalidSchemaVersion !Int             -- schemaVersion is not >= 1
-  | UnknownVersion !Int                   -- stored version is < 1 or beyond the chain
-  | UpcasterError !Int !Text              -- an upcaster rejected its input (source version, msg)
-  | DecodeFailed !Text                    -- the current decode rejected a migrated payload
-  | GapInUpcasterChain !Int !Int          -- reached version n, next rung starts later
+  = UnknownEventType !EventType ![EventType]
+  | InvalidSchemaVersion !Int
+  | UnknownVersion !Int
+  | VersionAhead !Int !Int
+  | UpcasterError !Int !Text
+  | DecodeFailed !Text
+  | GapInUpcasterChain !Int !Int
+  | IncompleteUpcasterChain !Int !Int
+  | MalformedSchemaVersionStamp !Value
+  | NonObjectCallerMetadata !Value
   deriving stock (Generic, Eq, Show)
 ```
 
 Encoding can fail only two ways — `InvalidSchemaVersion` (a misconfigured codec) or `UnknownEventType`
-(a value whose tag is not in `eventTypes`). Decoding adds the four migration faults: `UnknownVersion`,
-`UpcasterError`, `DecodeFailed`, and `GapInUpcasterChain`.
+(a value whose tag is not in `eventTypes`) — plus `NonObjectCallerMetadata` when caller metadata is
+not a JSON object. Decoding adds migration and stored-metadata faults including `VersionAhead`,
+`UnknownVersion`, `UpcasterError`, `DecodeFailed`, `GapInUpcasterChain`,
+`IncompleteUpcasterChain`, and `MalformedSchemaVersionStamp`.
 
 ## The functions
 
@@ -80,10 +86,10 @@ Encoding can fail only two ways — `InvalidSchemaVersion` (a misconfigured code
 encodeForAppend             :: Codec e -> e -> Either CodecError EventData
 encodeForAppendWithMetadata :: Codec e -> Maybe Value -> e -> Either CodecError EventData
 decodeRecorded              :: Codec e -> RecordedEvent -> Either CodecError e
-decodeRaw                   :: Codec e -> Int -> Value -> Either CodecError e
-migrateToCurrent            :: Codec e -> Int -> Value -> Either CodecError Value
-extractSchemaVersion        :: RecordedEvent -> Int            -- defaults to 1 when absent/invalid
-metadataFor                 :: Int -> Maybe Value -> Value     -- inserts the schemaVersion key
+decodeRaw                   :: Codec e -> EventType -> Int -> Value -> Either CodecError e
+migrateToCurrent            :: Codec e -> EventType -> Int -> Value -> Either CodecError Value
+extractSchemaVersion        :: RecordedEvent -> Either CodecError Int
+metadataFor                 :: Int -> Maybe Value -> Either CodecError Value
 ```
 
 ## The write stamp
@@ -91,8 +97,8 @@ metadataFor                 :: Int -> Maybe Value -> Value     -- inserts the sc
 Producers call `encodeForAppend` (or `encodeForAppendWithMetadata` to merge in caller metadata). Both
 **stamp the codec's `schemaVersion` into the event's metadata** via `metadataFor`. The key detail, from
 the Haddock: the schema-version key *always wins* over any clashing key in the caller's metadata, so
-the stamp on disk is authoritative. `encodeForAppend` is just `encodeForAppendWithMetadata` with no
-caller metadata.
+the stamp on disk is authoritative. Caller metadata must be an object. `encodeForAppend` is just
+`encodeForAppendWithMetadata` with no caller metadata.
 
 Encoding rejects a misconfigured codec with `InvalidSchemaVersion` (when `schemaVersion` is not `>= 1`)
 and a value whose tag is outside `eventTypes` with `UnknownEventType`.
@@ -104,8 +110,8 @@ Consumers call `decodeRecorded`. It does three things in order:
 1. **Reject unknown tags first.** If the recorded event's type tag is not in `eventTypes`, decoding
    stops with `UnknownEventType`. **An unknown `eventType` on read is fatal** — the codec will not
    guess.
-2. **Read the stamped version back** via `extractSchemaVersion`, which defaults to `1` when the
-   metadata is absent, is not an object, lacks the `schemaVersion` key, or holds a non-integer.
+2. **Read the stamped version back** via `extractSchemaVersion`, which defaults to `1` only when
+   metadata is absent or the object lacks `schemaVersion`; malformed present metadata is an error.
 3. **Migrate then decode** via `decodeRaw`: it calls `migrateToCurrent` to replay the upcaster chain
    from the stored version up to the codec's `schemaVersion`, then runs the current `decode` on the
    migrated payload. A payload already at or beyond the current version passes through unchanged.
@@ -114,7 +120,7 @@ Consumers call `decodeRecorded`. It does three things in order:
 flowchart LR
   Rec["RecordedEvent"] --> Known{"eventType in eventTypes?"}
   Known -- "no" --> Fatal["UnknownEventType (fatal)"]
-  Known -- "yes" --> Ver["extractSchemaVersion (default 1)"]
+  Known -- "yes" --> Ver["extractSchemaVersion (default 1 if absent)"]
   Ver --> Mig["migrateToCurrent: replay upcasters n, n+1, … up to schemaVersion"]
   Mig --> Dec["decode (current version)"]
   Dec --> Val["domain event e"]

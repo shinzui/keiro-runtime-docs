@@ -1,6 +1,6 @@
 ---
 title: "05 — The codec on the boundary"
-description: "Reading Keiro.Codec: the value-level Codec record and six CodecError constructors, stamping the schema version on write, checking-migrating-decoding on read, and the jitsurei v1→v2 OrderPlaced upcaster."
+description: "Reading Keiro.Codec: the value-level Codec record and CodecError constructors, stamping the schema version on write, checking-migrating-decoding on read, and the jitsurei v1→v2 OrderPlaced upcaster."
 ---
 
 This chapter reads `keiro-core/src/Keiro/Codec.hs` — the serialization boundary the command cycle
@@ -14,14 +14,14 @@ A codec is a plain **value-level record**, not a typeclass:
 
 ```haskell
 -- keiro-core/src/Keiro/Codec.hs
-type Upcaster = (Int, Value -> Either Text Value)  -- (source version, pure migration)
+type Upcaster = (Int, EventType -> Value -> Either Text Value)
 
 data Codec e = Codec
   { eventTypes :: !(NonEmpty Text)          -- the complete event-type allow-list this codec owns
   , eventType :: !(e -> Text)               -- project a domain value to its wire tag
   , schemaVersion :: !Int                   -- current payload version; must be >= 1
   , encode :: !(e -> Value)                 -- current-version JSON serialization
-  , decode :: !(Value -> Either Text e)     -- only ever sees payloads migrated to schemaVersion
+  , decode :: !(EventType -> Value -> Either Text e)
   , upcasters :: ![Upcaster]                -- migrations keyed by source version
   }
   deriving stock (Generic)
@@ -33,31 +33,37 @@ data Codec e = Codec
     eventType: { type: "e -> Text", description: "Projects a domain value to its wire tag; must land in eventTypes." },
     schemaVersion: { type: "Int", description: "The current payload version; must be >= 1. Stamped on append, the migration target on read." },
     encode: { type: "e -> Value", description: "The current-version JSON serialization." },
-    decode: { type: "Value -> Either Text e", description: "Only ever sees payloads already migrated to schemaVersion." },
-    upcasters: { type: "[Upcaster]", description: "Migrations keyed by source version; an Upcaster is (Int, Value -> Either Text Value)." },
+    decode: { type: "EventType -> Value -> Either Text e", description: "Only ever sees payloads already migrated to schemaVersion." },
+    upcasters: { type: "[Upcaster]", description: "Migrations keyed by source version; an Upcaster also receives the event type tag." },
   }}
 />
 
 Because it is a value, one event type can carry several codecs (different streams, different policies),
 and upcasters are first-class data you can list, test, and compose. The errors it can raise are a
-closed set of six:
+closed set:
 
 ```haskell
 data CodecError
-  = UnknownEventType !EventType ![Text]   -- tag not in eventTypes (offending tag, allowed set)
-  | InvalidSchemaVersion !Int             -- schemaVersion is not >= 1
-  | UnknownVersion !Int                   -- stored version < 1, or beyond the chain
-  | UpcasterError !Int !Text              -- an upcaster rejected its input (source version, msg)
-  | DecodeFailed !Text                    -- the current decode rejected a migrated payload
-  | GapInUpcasterChain !Int !Int          -- reached version n, next rung starts later
+  = UnknownEventType !EventType ![EventType]
+  | InvalidSchemaVersion !Int
+  | UnknownVersion !Int
+  | VersionAhead !Int !Int
+  | UpcasterError !Int !Text
+  | DecodeFailed !Text
+  | GapInUpcasterChain !Int !Int
+  | IncompleteUpcasterChain !Int !Int
+  | MalformedSchemaVersionStamp !Value
+  | NonObjectCallerMetadata !Value
   deriving stock (Generic, Eq, Show)
 ```
 
 Each constructor is raised at a specific spot below: `InvalidSchemaVersion` and `UnknownEventType` on
 the write side (and `UnknownEventType` again on read for an unknown tag); `UnknownVersion`,
-`UpcasterError`, `GapInUpcasterChain` inside migration; and `DecodeFailed` from the final decode. The
-command cycle wraps these as `EncodeFailed` (on write) or `HydrationDecodeFailed` (on hydrate), the two
-codec-shaped `CommandError`s from [chapter 01](/docs/keiro/walkthrough/command-cycle/01-command-types-and-errors).
+`VersionAhead`, `UpcasterError`, `GapInUpcasterChain`, and `IncompleteUpcasterChain` inside migration;
+`MalformedSchemaVersionStamp` when the stored version marker is present but bad; and `DecodeFailed`
+from the final decode. The command cycle wraps these as `EncodeFailed` (on write) or
+`HydrationDecodeFailed` (on hydrate), the two codec-shaped `CommandError`s from
+[chapter 01](/docs/keiro/walkthrough/command-cycle/01-command-types-and-errors).
 
 ## Write: stamp the schema version
 
@@ -69,15 +75,17 @@ encodeForAppendWithMetadata codec metadata value = do
   let selectedType = codec ^. #eventType $ value
   unless (selectedType `List.elem` NonEmpty.toList (codec ^. #eventTypes)) $
     Left (UnknownEventType (EventType selectedType) (NonEmpty.toList (codec ^. #eventTypes)))
+  stampedMetadata <- metadataFor (codec ^. #schemaVersion) metadata
   pure EventData { eventId = Nothing, eventType = EventType selectedType
                  , payload = codec ^. #encode $ value
-                 , metadata = Just (metadataFor (codec ^. #schemaVersion) metadata)
+                 , metadata = Just stampedMetadata
                  , causationId = Nothing, correlationId = Nothing }
 
 metadataFor version existing =
-  Object $ baseObject existing & KeyMap.insert schemaVersionKey (Number (fromIntegral version))
-  where baseObject (Just (Object object)) = object
-        baseObject _ = KeyMap.empty
+  case existing of
+    Just (Object object) -> Right (insertVersion object)
+    Nothing -> Right (insertVersion KeyMap.empty)
+    Just value -> Left (NonObjectCallerMetadata value)
 ```
 
 `encodeForAppend` is `encodeForAppendWithMetadata codec Nothing`. The general form guards two ways
@@ -99,27 +107,26 @@ on `RunCommandOptions` can be merged freely without endangering the stamp.
 decodeRecorded codec recorded = do
   unless (isKnownEventType (recorded ^. #eventType) codec) $
     Left (UnknownEventType (recorded ^. #eventType) (NonEmpty.toList (codec ^. #eventTypes)))
-  decodeRaw codec (extractSchemaVersion recorded) (recorded ^. #payload)
+  version <- extractSchemaVersion recorded
+  decodeRaw codec (recorded ^. #eventType) version (recorded ^. #payload)
 
-decodeRaw codec version payload = do
-  migrated <- migrateToCurrent codec version payload
-  case codec ^. #decode $ migrated of
+decodeRaw codec selectedType version payload = do
+  migrated <- migrateToCurrent codec selectedType version payload
+  case (codec ^. #decode) selectedType migrated of
     Right value -> Right value
     Left message -> Left (DecodeFailed message)
 
--- Defaults to 1 when metadata is absent, not an object, lacks the key, or is non-integer.
+-- Defaults to 1 only when metadata is absent or the key is absent.
 extractSchemaVersion recorded =
-  fromMaybe 1 $ do
-    Object object <- recorded ^. #metadata
-    Number number <- KeyMap.lookup schemaVersionKey object
-    Scientific.toBoundedInteger number
+  ...
 ```
 
 `decodeRecorded` is the read door. First it checks the stored tag against `eventTypes` —
-`UnknownEventType` if it misses. Then `extractSchemaVersion` reads the stamped version back, defaulting
-to `1` when the metadata is absent, not an object, missing the key, or non-integer (so pre-stamp events
-still decode). `decodeRaw` migrates the payload up to the current version and runs the codec's `decode`,
-lifting a rejection to `DecodeFailed`. The migration loop is the heart of it:
+`UnknownEventType` if it misses. Then `extractSchemaVersion` reads the stamped version back,
+defaulting to `1` only when metadata is absent or the object lacks the key (so pre-stamp events still
+decode); present malformed metadata is `MalformedSchemaVersionStamp`. `decodeRaw` migrates the
+payload up to the current version and runs the codec's event-type-aware `decode`, lifting a rejection
+to `DecodeFailed`. The migration loop is the heart of it:
 
 ```haskell
 migrateToCurrent codec sourceVersion payload

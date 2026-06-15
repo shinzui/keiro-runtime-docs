@@ -52,6 +52,7 @@ commandErrorClass = \case
   EncodeFailed{} -> "encode_failed"
   StoreFailed{} -> "store_failed"
   RetryExhausted{} -> "retry_exhausted"
+  ConflictFixpoint{} -> "conflict_fixpoint"
 ```
 
 Telemetry is cross-cutting; the [operations tour](/docs/keiro/walkthrough/operations/00-start-here) and the
@@ -198,14 +199,16 @@ On a store error, the conflict loop decides whether to retry:
 
 ```haskell
 retryOrFail options retry remaining storeError
-  | isRetryableConflict storeError, remaining > 0 = retry (remaining - 1)
-  | isRetryableConflict storeError = pure (Left (RetryExhausted (options ^. #retryLimit) storeError))
+  | isRetryableConflict storeError, attemptNo <= options ^. #retryLimit = retry (attemptNo + 1)
+  | isRetryableConflict storeError = pure (Left (RetryExhausted attemptNo storeError))
   | otherwise = pure (Left (StoreFailed storeError))
 ```
 
 A retryable conflict with budget left re-enters `attempt` (which re-hydrates and re-transduces from the
-current head); a retryable conflict with no budget becomes `RetryExhausted` carrying the configured
-limit and the last error; anything else is `StoreFailed`. The retryable set is the sharp part:
+current head); a retryable conflict with no budget becomes `RetryExhausted` carrying the attempts made
+and the last error; anything else is `StoreFailed`. If a `StreamAlreadyExists` retry rehydrates to the
+same stream version as the previous attempt, the runner stops with `ConflictFixpoint` rather than
+looping on an invisible conflict. The retryable set is the sharp part:
 
 ```haskell
 isRetryableConflict = \case

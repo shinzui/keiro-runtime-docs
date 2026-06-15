@@ -63,10 +63,17 @@ runCommandWithProjections ::
 ## `applyAsyncProjection`
 
 Apply one event to an `AsyncProjection`, yielding the `Tx` the (caller-supplied) worker runs.
+Keiro inserts `(projection_name, event_id)` into `keiro_projection_dedup` in the same transaction as
+`applyRecorded`. If the insert conflicts, the event was already applied within the retained dedup
+window and `applyRecorded` is skipped.
 
 ```haskell
 applyAsyncProjection :: AsyncProjection -> RecordedEvent -> Tx.Transaction ()
+pruneAsyncProjectionDedupBefore :: (Store :> es) => UTCTime -> Eff es Int64
 ```
+
+Only prune dedup rows older than the subscription system can redeliver. Pruning intentionally
+re-opens those events for application if they are replayed later.
 
 ## `recordProjectionLag`
 

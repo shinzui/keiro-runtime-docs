@@ -32,8 +32,9 @@ writeSnapshot       :: (Store :> es) => StreamId -> StreamVersion -> StateCodec 
 <Callout type="info">
 `hydrateWithSnapshot` returning `Nothing` — a miss, a stale row, or an undecodable payload — is
 benign: hydration falls back to a full replay. The snapshot write is **synchronous**, performed by
-`writeSnapshotIfNeeded` after the append inside the command-running effect (see the
-[Command walkthrough](/docs/keiro/walkthrough/command-cycle/03-the-command-processor)).
+`writeSnapshotIfNeeded` after the command append has committed. If that write fails, the command
+still succeeds and the failure is recorded on the optional metrics handle (see the
+[Command reference](/docs/keiro/reference/command)).
 </Callout>
 
 ## The state codec and the policy
@@ -52,15 +53,19 @@ defaultStateCodec ::
 ```
 
 `SnapshotPolicy` (also defined in `Keiro.EventStream`) decides *when* to snapshot; `shouldSnapshot`
-evaluates it. `Bool` is the terminality flag (from `Keiki.isFinal`); `Every n` fires when the version
-is a positive multiple of `n`:
+evaluates a single post-append version and `shouldSnapshotSpan` evaluates the half-open span
+`(preVersion, postVersion]` that a multi-event append covered. `Every n` fires when the version is a
+positive multiple of `n`; over a span, it fires when any positive multiple was crossed:
 
 ```haskell
-shouldSnapshot :: SnapshotPolicy state -> Bool -> state -> StreamVersion -> Bool
+shouldSnapshot :: SnapshotPolicy state -> Terminality -> state -> StreamVersion -> Bool
 shouldSnapshot Never              _ _ _ = False
 shouldSnapshot (Every interval)   _ _ (StreamVersion version) = ...   -- positive multiple of interval
-shouldSnapshot OnTerminal terminal _ _ = terminal
-shouldSnapshot (Custom decide)    _ state version = decide state version
+shouldSnapshot OnTerminal terminal _ _ = terminal == Terminal
+shouldSnapshot (Custom decide)    terminal state version = decide terminal state version
+
+shouldSnapshotSpan ::
+  SnapshotPolicy state -> Terminality -> state -> StreamVersion -> StreamVersion -> Bool
 ```
 
 An `EventStream` with `stateCodec = Nothing` disables snapshotting regardless of policy.

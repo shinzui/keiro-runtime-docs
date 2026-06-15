@@ -26,10 +26,11 @@ output.
 />
 
 <Callout type="info">
-`stateCodec = Nothing` disables snapshotting **regardless** of `snapshotPolicy`. The `jitsurei` order
-stream shows both ends: `orderEventStream` uses `snapshotPolicy = Never`, `stateCodec = Nothing`,
-while `snapshotOrderEventStream` uses `snapshotPolicy = Every 2`,
-`stateCodec = Just (defaultStateCodec @OrderRegs @OrderState 1)`.
+`stateCodec = Nothing` disables snapshotting at runtime. `mkEventStream` now warns when
+`snapshotPolicy` is not `Never` but `stateCodec` is `Nothing`, because that configuration asks for
+snapshots that can never be written. The `jitsurei` order stream shows both ends: `orderEventStream`
+uses `snapshotPolicy = Never`, `stateCodec = Nothing`, while `snapshotOrderEventStream` uses
+`snapshotPolicy = Every 2`, `stateCodec = Just (defaultStateCodec @OrderRegs @OrderState 1)`.
 </Callout>
 
 ## Replay-safety validation (`Keiro.EventStream.Validate`)
@@ -105,9 +106,14 @@ data SnapshotPolicy state
   = Never                                  -- never snapshot; always replay the full log
   | Every !Int                             -- snapshot when version is a positive multiple of n
   | OnTerminal                             -- snapshot only at a final state
-  | Custom !(state -> StreamVersion -> Bool)
+  | Custom !(Terminality -> state -> StreamVersion -> Bool)
   deriving stock (Generic)
 ```
+
+Command handling evaluates policies over the half-open stream-version span `(preVersion,
+postVersion]` for an append. `Every n` fires when any positive multiple of `n` lies inside that span,
+so a multi-event append that jumps from version `2` to `4` still writes a snapshot for `Every 3`.
+`OnTerminal` and `Custom` use the post-append state and terminality.
 
 ## `StateCodec`
 
@@ -168,6 +174,7 @@ data CategoryError
   = CategoryEmpty                    -- the empty string
   | CategoryContainsSeparator !Text  -- contains the reserved `-` category/id boundary
   | CategoryReserved !Text           -- equals a store-reserved name ($all)
+  | CategoryContainsIllegalChar !Char !Text -- whitespace or control character
   deriving stock (Eq, Show, Generic)
 
 category       :: Text -> Either CategoryError (StreamCategory a)  -- validating smart constructor
@@ -183,8 +190,8 @@ class StreamIdSegment i where
 ```
 
 - `category t` **rejects** the empty string, any text containing `-` (kiroku's category/id boundary —
-  this is hazard #2 turned into a fail-stop), and the reserved name `$all`. Returns
-  `Left CategoryError` otherwise.
+  this is hazard #2 turned into a fail-stop), the reserved name `$all`, and whitespace/control
+  characters. Returns `Left CategoryError` otherwise.
 - `categoryUnsafe t` is for static, known-good literals at a definition site
   (`orderCategory = categoryUnsafe "order"`); it `error`s on an invalid category, so **never** pass
   user input to it.

@@ -33,6 +33,7 @@ data CommandError
   | EncodeFailed !CodecError                -- an emitted event could not be encoded for append
   | StoreFailed !StoreError                 -- the store rejected the append (non-retryable)
   | RetryExhausted !Int !StoreError         -- optimistic-concurrency retries ran out (limit, last error)
+  | ConflictFixpoint !StreamVersion !StoreError -- retry observed no stream-version progress
   deriving stock (Generic, Eq, Show)
 ```
 
@@ -54,15 +55,30 @@ Knobs for a single command invocation.
     pageSize: { type: "Int32", description: "Read-batch size during hydration", default: "256" },
     eventIds: { type: "[EventId]", description: "Caller ids assigned to emitted events, in order", default: "[]" },
     beforeAppend: { type: "IO ()", description: "Hook run before each append attempt (test seam)", default: "pure ()" },
+    retryBackoffMicros: { type: "Int", description: "Base OCC retry backoff; capped at 100ms and jittered; 0 disables", default: "5000" },
+    metrics: { type: "Maybe KeiroMetrics", description: "Optional command/snapshot metrics handle", default: "Nothing" },
     tracer: { type: "Maybe Tracer", description: "Optional OpenTelemetry tracer", default: "Nothing" },
     metadata: { type: "Maybe Value", description: "JSON merged into every event's metadata", default: "Nothing" },
   }}
 />
 
 ```haskell
--- Defaults: 3 retries, 256-event read pages, no caller ids, no-op hook, no tracer, no metadata.
+-- Defaults: 3 retries, 256-event read pages, no caller ids, no-op hook,
+-- 5ms base retry backoff, no metrics, no tracer, no metadata.
 defaultRunCommandOptions :: RunCommandOptions
 ```
+
+Retry behavior:
+
+- Optimistic-concurrency conflicts are retried by rehydrating, re-planning, and appending again.
+  Each retry records conflict/retry metrics when a metrics handle is installed.
+- `StreamAlreadyExists` can be retryable, but if the next hydration observes the same stream version
+  as the previous attempt, the command stops with `ConflictFixpoint`. This catches soft-deleted or
+  otherwise unreadable streams that keep colliding without making visible progress.
+- `DuplicateEvent` is not retried; it is surfaced as `StoreFailed` and counted with
+  `keiro.command.duplicates` when metrics are enabled.
+- Snapshot writes happen after a successful append. If the snapshot write fails, the command result
+  still succeeds and `keiro.snapshot.write.failures` is incremented.
 
 ## `runCommand` — append only
 

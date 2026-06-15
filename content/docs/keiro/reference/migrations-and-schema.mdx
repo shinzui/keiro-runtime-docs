@@ -1,11 +1,11 @@
 ---
 title: "Migrations and schema"
-description: "Reference for Keiro.Migrations: the migration accessors, the four runners, the keiro-migrate CLI (migrate + new), the migration scaffold, and the nine tables keiro owns."
+description: "Reference for Keiro.Migrations: the migration accessors, runners, keiro-migrate CLI, expected-schema drift checks, and the tables keiro owns."
 ---
 
 The functions on this page live in `Keiro.Migrations` (package `keiro-migrations`); the CLI is the
-`keiro-migrate` executable. keiro's schema ships as **embedded codd migrations** — nine SQL files
-under `keiro-migrations/sql-migrations/`, baked into the binary with Template Haskell and applied in
+`keiro-migrate` executable. keiro's schema ships as **embedded codd migrations** under
+`keiro-migrations/sql-migrations/`, baked into the binary with Template Haskell and applied in
 filename-timestamp order. For the task narrative, see
 [Run the migrations](/docs/keiro/how-to/run-migrations).
 
@@ -40,6 +40,22 @@ The `runKeiro*` pair applies keiro-owned SQL only; the `runAll*` pair applies ki
 `*NoCheck` variants skip codd's expected-schema verification (for dev databases that keep no
 checked-in schema representation); the others take a `VerifySchemas` mode. The `DiffTime` is the
 connect timeout.
+
+## Expected-schema drift checks
+
+`keiro-migrations/expected-schema` is the checked-in codd representation of the full Kiroku + Keiro
+schema in the dedicated `kiroku` schema. The migration test applies embedded migrations to a fresh
+database and compares the result against that tree. When a schema change is intentional, add a new
+forward SQL file, regenerate the expected schema, inspect both diffs, and commit them together:
+
+```bash
+cabal run keiro-write-expected-schema
+git diff -- keiro-migrations/sql-migrations keiro-migrations/expected-schema
+cabal test keiro-migrations-test
+```
+
+Fixture-only suites deliberately use `runAllKeiroMigrationsNoCheck`; `keiro-migrations-test` is the
+canonical strict drift gate.
 
 ## The `keiro-migrate` CLI
 
@@ -103,11 +119,8 @@ scaffold bakes it into every new file.
 
 ## Tables keiro owns
 
-All nine tables live in the **`kiroku` schema**. The first five come from the
-bootstrap/outbox/inbox/timer-recovery migrations; the next three are the
-[durable-workflow](/docs/keiro/reference/durable-workflows) tables; the last is the
-[subscription-sharding](/docs/keiro/reference/subscription-sharding) lease table. Field detail lives on
-the owning subsystem's reference page; this is the map.
+All framework tables live in the **`kiroku` schema**. Field detail lives on the owning subsystem's
+reference page; this is the map.
 
 | Table | Migration | Purpose | Owning reference |
 |---|---|---|---|
@@ -116,12 +129,14 @@ the owning subsystem's reference page; this is the map.
 | `keiro_timers` | bootstrap (+ timer-recovery) | Durable timers for process managers and workflow sleeps | [Keiro.Timer](/docs/keiro/reference/timers) |
 | `keiro_outbox` | outbox | Transactional outbox rows awaiting publish | [Outbox](/docs/keiro/reference/outbox) |
 | `keiro_inbox` | inbox | Inbound dedupe ledger keyed by `(source, dedupe_key)` | [Inbox](/docs/keiro/reference/inbox) |
+| `keiro_projection_dedup` | projection-dedup | Async projection idempotency ledger keyed by `(projection_name, event_id)` | [Projection](/docs/keiro/reference/projection) |
 | `keiro_workflow_steps` | workflow-steps (+ workflow-generation) | Step-lookup index backing replay and unfinished-workflow discovery | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
+| `keiro_workflows` | workflows-instances (+ wake-after, gc-index) | Workflow instance lifecycle, leasing, retry, wake, and GC metadata | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro_awakeables` | awakeables | Pending external completions (durable promises) | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro_workflow_children` | workflow-children | Durable parent→child workflow links | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro_subscription_shards` | subscription-shards | Consumer-group bucket-ownership leases for sharded category subscriptions | [Subscription sharding](/docs/keiro/reference/subscription-sharding#the-lease-table) |
 
-The nine migration files, applied in this order:
+Relevant migration files, applied in this order:
 
 ```text
 2026-05-17-00-00-00-keiro-bootstrap.sql           -- keiro_snapshots, keiro_read_models, keiro_timers
@@ -133,6 +148,11 @@ The nine migration files, applied in this order:
 2026-06-03-02-00-00-keiro-workflow-children.sql   -- keiro_workflow_children
 2026-06-05-00-00-00-keiro-workflow-generation.sql -- ALTER keiro_workflow_steps: add generation, widen PK + lookup index
 2026-06-05-01-00-00-keiro-subscription-shards.sql -- keiro_subscription_shards
+2026-06-11-00-00-04-keiro-workflows-instances.sql -- keiro_workflows
+2026-06-15-13-22-31-keiro-messaging-crash-recovery.sql -- inbox/outbox/timer recovery columns/indexes
+2026-06-15-21-49-37-keiro-projection-dedup.sql    -- keiro_projection_dedup
+2026-06-15-22-10-00-keiro-workflow-gc-index.sql   -- workflow GC index
+2026-06-15-22-20-00-keiro-workflows-wake-after.sql -- workflow wake-after column/index
 ```
 
 The timer-recovery migration adds the `last_error` column (populated only for dead-lettered timers)
@@ -144,9 +164,13 @@ unchanged, routing entirely on its JSON payload discriminator. The **workflow-ge
 `keiro_workflow_steps` and widens its primary key to `(workflow_id, workflow_name, generation,
 step_name)` — a strict relaxation no existing row can violate — to support
 [continue-as-new rotation](/docs/keiro/reference/durable-workflows#versioning-and-rotation). The
-**subscription-shards** migration (EP-51) adds the `keiro_subscription_shards` lease table. Both
-MasterPlan-6 migrations open with a `SET search_path TO kiroku, pg_catalog;` pin so unqualified names
-resolve into the `kiroku` schema on an incremental upgrade.
+**subscription-shards** migration (EP-51) adds the `keiro_subscription_shards` lease table. The
+projection-dedup migration adds `keiro_projection_dedup` with a primary key on
+`(projection_name, event_id)` and an `applied_at` pruning index. Recent workflow and messaging
+migrations are listed here so schema drift checks are complete; their behavior is documented on the
+owning subsystem pages and refreshed by later child plans. New migrations open with a
+`SET search_path TO kiroku, pg_catalog;` pin so unqualified names resolve into the `kiroku` schema on
+an incremental upgrade.
 
 <Cards>
   <Card title="Run the migrations" href="/docs/keiro/how-to/run-migrations" />

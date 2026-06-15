@@ -1,6 +1,6 @@
 ---
 title: "03 — The read-model query path"
-description: "Reading Keiro.ReadModel: runQueryWith validates schema, then maybe waits, then queries — with the keiro_read_models registry, the drift hard-error, and the Strong == Eventual gotcha."
+description: "Reading Keiro.ReadModel: runQueryWith validates schema, then maybe waits, then queries — with the keiro_read_models registry, drift hard-errors, and Strong consistency."
 ---
 
 This chapter reads `keiro/src/Keiro/ReadModel.hs` and `keiro/src/Keiro/ReadModel/Schema.hs` — the
@@ -97,7 +97,9 @@ and just falls back to a full replay. Read models fail loud; snapshots fail quie
 
 ```haskell
 -- keiro/src/Keiro/ReadModel.hs
-waitIfNeeded _ Strong _ = pure (Right ())
+waitIfNeeded metrics Strong readModel = do
+  target <- storeHeadPosition
+  waitFor metrics (defaultStrongWaitOptions & #target ?~ target) readModel target
 waitIfNeeded _ Eventual _ = pure (Right ())
 waitIfNeeded metrics (PositionWait options) readModel =
   case options ^. #target of
@@ -105,16 +107,15 @@ waitIfNeeded metrics (PositionWait options) readModel =
     Just targetPosition -> waitFor metrics options readModel targetPosition
 ```
 
-Here is the gotcha in three lines: `Strong` and `Eventual` are the **same** — both return `Right ()`
-immediately (and ignore the metrics handle). A `PositionWait` with `target = Nothing` also returns
-immediately. Only `PositionWait` with a `Just target` calls `waitFor`, which polls
-`subscriptions.last_seen` until the target `GlobalPosition` is reached or `timeoutMicros` elapses. On
-a genuine give-up `waitFor` records the
+`Strong` captures the store head at query start and then calls `waitFor` with that position.
+`Eventual` returns immediately. A `PositionWait` with `target = Nothing` also returns immediately;
+with a `Just target`, it polls `subscriptions.last_seen` until the target `GlobalPosition` is reached
+or `timeoutMicros` elapses. On a genuine give-up `waitFor` records the
 [`keiro.projection.wait.timeouts`](/docs/keiro/reference/telemetry#metric-catalogue) counter (a no-op
 under a `Nothing` handle) before returning `ReadModelWaitTimeout`. `waitFor`'s poll SQL:
 
 ```sql
-SELECT last_seen
+SELECT min(last_seen)
 FROM subscriptions
 WHERE subscription_name = $1
 ```
@@ -122,9 +123,9 @@ WHERE subscription_name = $1
 (The `subscriptions` table is **kiroku-owned** — it is not in keiro's own migration.)
 
 <Callout type="warn">
-If you reach for `Strong` expecting it to wait for an async projection to catch up, it will not.
-`Strong == Eventual` in this code path; both skip the wait. Read-your-writes against an *async*
-projection needs `PositionWait` with the command's `GlobalPosition` as `target`. (An *inline*
+Do not use `Strong` for an inline-only model with no subscription worker: the cursor cannot advance
+while the query is waiting, so it will time out. Read-your-writes against an *async* projection is
+usually best served by `PositionWait` with the command's `GlobalPosition` as `target`. (An *inline*
 projection, by contrast, already committed with the events — see chapter 04.) See
 [Choose a consistency mode](/docs/keiro/how-to/choose-a-consistency-mode).
 </Callout>
@@ -135,7 +136,7 @@ The registry lives in `Keiro.ReadModel.Schema`:
 
 ```haskell
 -- keiro/src/Keiro/ReadModel/Schema.hs
-data ReadModelStatus = Live | Rebuilding | Paused | Abandoned
+data ReadModelStatus = Live | Rebuilding | Paused | Abandoned | UnknownStatus Text
   deriving stock (Generic, Eq, Show)
 
 data ReadModelMetadata = ReadModelMetadata
@@ -160,16 +161,16 @@ when one is already present — it never overwrites the stored `version`/`shape_
 -- registerReadModelStmt: insert-if-absent, then return whichever row stands
 INSERT INTO keiro_read_models (name, version, shape_hash, status, last_built_at)
 VALUES ($1, $2, $3, 'live', now())
-ON CONFLICT (name) DO NOTHING
+ON CONFLICT (name) DO UPDATE
+  SET name = EXCLUDED.name
 RETURNING name, version, shape_hash, last_built_at, status
--- … UNION ALL with a SELECT of the existing row, so the caller always gets the stored values
 ```
 
 That "never overwrite" behavior is exactly what lets `validateMetadata` detect drift: the stored row
 is the source of truth, and your in-code `version`/`shapeHash` are compared against it. The three
 status transitions (`markRebuilding`/`markLive`/`markAbandoned`) all go through one
 `transitionReadModelStmt` upsert. Decoding is defensive: `statusFromText` maps an unrecognized status
-text to `Paused` rather than failing the read.
+text to `UnknownStatus raw` rather than throwing away the database value.
 
 The DDL:
 
