@@ -3,10 +3,11 @@ title: "Run the workflow resume worker"
 description: "Build a WorkflowRegistry, run resumeWorkflowsOnce on a polling loop, read the ResumeSummary, and drain workflow-sleep timers so suspended workflows recover after waits and crashes."
 ---
 
-A suspended workflow does not resume itself — its function is no longer running; it is a journal in
-the database. The **resume worker** is what notices: each pass it discovers workflows whose journal
-lacks a terminal marker and re-invokes each so it proceeds past a now-resolved wait or a crash. This
-guide wires it into a production loop. For the API, see the [resume-worker
+A suspended workflow does not resume itself — its function is no longer running; it is a journal plus
+an instance row in the database. The **resume worker** is what notices: each pass it discovers
+non-terminal workflow instances due for work, claims each through a lease, and re-invokes it so it
+proceeds past a now-resolved wait or a crash. This guide wires it into a production loop. For the API,
+see the [resume-worker
 reference](/docs/keiro/reference/durable-workflows#the-resume-worker).
 
 ## Build the registry
@@ -60,12 +61,17 @@ data ResumeSummary = ResumeSummary
   , completed      :: Int   -- re-invocations that reached Completed
   , stillSuspended :: Int   -- re-invocations still parked on a wait
   , unknownName    :: Int   -- discovered but absent from the registry (skipped + logged)
+  , failed         :: Int   -- workflows marked terminally failed this pass
+  , transientErrors :: Int  -- store errors while advancing individual workflows
+  , leaseSkipped   :: Int   -- candidates held by another live worker lease
   }
 ```
 
 A steady non-zero `unknownName` means a deployed-then-removed workflow still has live instances —
 re-add it to the registry. A `discovered` count that never drains to zero means some wake source is
-not resolving (a sleep timer no worker drains, an awakeable no one signals).
+not resolving (a sleep timer no worker drains, an awakeable no one signals). A non-zero `leaseSkipped`
+is normal when multiple workers share the same backlog; it means another live owner currently holds
+that instance.
 
 ## Drain the sleep timers too
 
@@ -89,13 +95,17 @@ _ <- runWorkflowTimerWorker mMetrics now myProcessManagerFireAction
 - **Poll interval and run options.** Use `runWorkflowResumeWorkerWith` with a `WorkflowResumeOptions`
   to set the `pollInterval` (microseconds) and thread `runOptions` (snapshot policy + telemetry) into
   every re-invocation.
+- **Lease and crash backoff.** `leaseTtl` defaults to 60 seconds. If a worker dies mid-advance, another
+  worker can claim the instance after that lease expires. Synchronous workflow exceptions increment the
+  instance's attempt count, set `next_attempt_at` with exponential backoff, and eventually append
+  `WorkflowFailed` at `maxAttempts` (default 5).
 - **Metrics.** Thread a `Just KeiroMetrics` through `runOptions` (`opts & #runOptions . #metrics .~ Just m`).
   The worker then records `keiro.workflow.resumed` per re-invocation and samples
   `keiro.workflow.awakeables.pending` once per pass. See the [workflow
   instruments](/docs/keiro/reference/telemetry#workflow-instruments).
-- **Concurrency is safe by construction.** You may run several resume-worker processes: deterministic
-  journal ids and step short-circuiting make two workers racing the same workflow converge to the same
-  journal, each side effect at most once. The `useAdvisoryLock` field is reserved and has no effect.
+- **Concurrency is lease-first, append-safe.** You may run several resume-worker processes. The
+  `keiro_workflows` row lease prevents duplicate steady-state work; if a lease expires during a race,
+  deterministic journal ids and step short-circuiting still make competing appends converge.
 
 ## React faster with push delivery
 

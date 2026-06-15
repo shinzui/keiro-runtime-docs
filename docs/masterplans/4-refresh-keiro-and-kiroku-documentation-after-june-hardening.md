@@ -35,7 +35,7 @@ The split keeps most child plans independently verifiable. EP-1 and EP-2 can pro
 | EP-2 | Refresh Kiroku subscriptions adapter observability and metrics documentation | `docs/plans/30-refresh-kiroku-subscriptions-adapter-observability-and-metrics-documentation.md` | None | EP-1 | Complete |
 | EP-3 | Refresh Keiro command core read side and schema documentation | `docs/plans/31-refresh-keiro-command-core-read-side-and-schema-documentation.md` | None | EP-1 | Complete |
 | EP-4 | Refresh Keiro messaging workers and PGMQ documentation | `docs/plans/32-refresh-keiro-messaging-workers-and-pgmq-documentation.md` | None | EP-2 | Complete |
-| EP-5 | Refresh Keiro durable workflow resume and lifecycle documentation | `docs/plans/33-refresh-keiro-durable-workflow-resume-and-lifecycle-documentation.md` | None | EP-3 | Not Started |
+| EP-5 | Refresh Keiro durable workflow resume and lifecycle documentation | `docs/plans/33-refresh-keiro-durable-workflow-resume-and-lifecycle-documentation.md` | None | EP-3 | Complete |
 | EP-6 | Reconcile cross library integration docs and source sync pointers | `docs/plans/34-reconcile-cross-library-integration-docs-and-source-sync-pointers.md` | EP-1, EP-2, EP-3, EP-4, EP-5 | None | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -77,8 +77,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] EP-3: Validate Keiro command/read-side docs against current source and docs app checks.
 - [x] EP-4: Audit Keiro inbox/outbox/timer/shard/process-manager/router/PGMQ changes and update messaging, worker, and background-job docs.
 - [x] EP-4: Validate worker and PGMQ docs against current source and docs app checks.
-- [ ] EP-5: Audit Keiro durable workflow hardening, instance leasing, sleep/wake, child workflow, GC, and lifecycle changes and update workflow docs.
-- [ ] EP-5: Validate durable workflow docs against current source and docs app checks.
+- [x] EP-5: Audit Keiro durable workflow hardening, instance leasing, sleep/wake, child workflow, GC, and lifecycle changes and update workflow docs.
+- [x] EP-5: Validate durable workflow docs against current source and docs app checks.
 - [ ] EP-6: Reconcile integration pages, landing/index pages, navigation, source-sync pointers, and cross-library terminology after EP-1 through EP-5.
 - [ ] EP-6: Run whole-site validation and record final source pins.
 
@@ -107,6 +107,12 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - EP-4 found that `keiro-pgmq` now documents a much broader queue API than older pages assumed,
   including classified job decode errors, `RetryDefault`, tuning validation, producer headers,
   tracing, batch enqueue, FIFO groups, queue provisioning, DLQ redrive/archive, and queue metrics.
+- EP-5 found that durable workflow resume is now driven by `keiro_workflows` lifecycle rows with
+  leases, attempts, backoff, `wake_after`, and GC metadata rather than by deriving lifecycle directly
+  from step rows on every pass.
+- EP-5 found that awakeable ids are now journaled random ids for new workflows, with
+  `deterministicAwakeableId` retained only as a legacy generation-0 adoption helper; patch decisions
+  are likewise based on a recorded active patch set rather than a `startedInFlight` heuristic.
 
 
 ## Decision Log
@@ -148,3 +154,10 @@ Compare the result against the original vision.
   `pnpm run format:check`, `pnpm build`, `git diff --check`, and a stale-claim scan for superseded
   outbox, codec, PGMQ, and process-manager/router delivery wording. EP-6 still owns the final
   source-sync pointer and cross-library reconciliation.
+- EP-5 completed on 2026-06-15. It updated Keiro durable workflow reference, how-to, tutorial,
+  cookbook, source-tour, schema, migration, and telemetry docs against `shinzui/keiro` commit
+  `f1d67a01b7457387a4861e7268d1c521ef82287d`; validation passed with `pnpm run typecheck`,
+  `pnpm run format:check`, `pnpm build`, `git diff --check`, and a stale-claim scan for superseded
+  deterministic-awakeable, advisory-lock, step-row-discovery, step at-most-once, and patch
+  classification wording. EP-6 still owns the final source-sync pointer and cross-library
+  reconciliation.

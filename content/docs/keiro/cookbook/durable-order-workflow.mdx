@@ -11,15 +11,15 @@ primitives, plus the registry the resume worker needs.
 
 ## Problem
 
-Run a linear process — reserve, wait, await an external callback, charge, ship — exactly once per
-step, surviving restarts and idle waits, without scattering it across per-event handlers.
+Run a linear process — reserve, wait, await an external callback, charge, ship — with journaled
+checkpoints that survive restarts and idle waits, without scattering it across per-event handlers.
 
 ## Solution
 
 ```haskell
 import Keiro.Workflow           (StepName (..), WorkflowId (..), Workflow, step)
 import Keiro.Workflow.Sleep     (sleepNamed)
-import Keiro.Workflow.Awakeable (AwakeableId, awakeableNamed, deterministicAwakeableId)
+import Keiro.Workflow.Awakeable (AwakeableId, awakeableNamed)
 import Keiro.Workflow.Child     (awaitChild, spawnChild)
 import Keiro.Workflow.Resume    (WorkflowDef (..), WorkflowRegistry)
 import Keiro.Workflow.Types     (WorkflowName (..))
@@ -34,24 +34,24 @@ orderFulfillmentWorkflow :: (Workflow :> es, Store :> es, IOE :> es) => OrderId 
 orderFulfillmentWorkflow orderId = do
   _reservation <- step (StepName "reserve-inventory") (reserveInventory orderId)
   sleepNamed (StepName "cooling-off") 300                  -- durable 5-minute wait (a keiro_timers row)
-  (_awkId, awaitPayment) <- awakeableNamed (StepName "payment-webhook")
+  (awkId, awaitPayment) <- awakeableNamed (StepName "payment-webhook")
+  _ <- step (StepName "send-payment-link") (sendPaymentLink orderId awkId)
   payment <- awaitPayment                                  -- suspend until the webhook signals
   _charge <- step (StepName "charge") (chargeCard orderId payment)
   childHandle <- spawnChild shipOrderWorkflowName (shipChildId orderId) (shipOrderWorkflow orderId)
   awaitChild childHandle                                   -- the tracking number is the result
 
--- 2. The child: an ordinary one-step workflow with its OWN distinct id.
+-- 2. The child: an ordinary one-step workflow with its own execution id.
 shipOrderWorkflow :: (Workflow :> es, IOE :> es) => OrderId -> Eff es Text
 shipOrderWorkflow orderId = step (StepName "create-shipment") (createShipment orderId)
 
--- 3. Distinct child id — discovery groups by workflow_id, so parent and child must differ.
+-- 3. Child id: reusing the same child (name,id) attaches to the existing execution.
 shipChildId :: OrderId -> WorkflowId
 shipChildId orderId = WorkflowId (orderIdText orderId <> "-ship")
 
--- 4. The external signaller computes the SAME deterministic id the workflow allocated.
-paymentWebhookAwakeableId :: OrderId -> AwakeableId
-paymentWebhookAwakeableId orderId =
-  deterministicAwakeableId orderFulfillmentWorkflowName (WorkflowId (orderIdText orderId)) "payment-webhook"
+-- 4. The external signaller receives the opaque AwakeableId from sendPaymentLink.
+sendPaymentLink :: OrderId -> AwakeableId -> Eff es ()
+sendPaymentLink = ...
 
 -- 5. The registry the resume worker re-invokes through — parent AND child.
 appRegistry :: (Store :> es, IOE :> es) => WorkflowRegistry es
@@ -68,12 +68,12 @@ appRegistry = Map.fromList
 - A **timer worker** (`runWorkflowTimerWorker`) fires the sleep; the **resume worker**
   (`resumeWorkflowsOnce defaultWorkflowResumeOptions appRegistry`) replays past it and parks on the
   payment awakeable.
-- The **payment webhook** calls `signalAwakeable (paymentWebhookAwakeableId orderId) confirmation`; the
-  next resume pass charges, spawns and drives the `ship-order` child, and the parent completes with the
-  child's tracking number.
+- The **payment webhook** calls `signalAwakeable awakeableId confirmation` with the id it received from
+  `sendPaymentLink`; the next resume pass charges, spawns and drives the `ship-order` child, and the
+  parent completes with the child's tracking number.
 
-Every completed checkpoint short-circuits on replay, so no side effect runs twice — even across a
-process restart.
+Every committed checkpoint short-circuits on replay. Make each step action idempotent for the crash
+window before its journal append commits, especially external calls such as `sendPaymentLink`.
 
 <Cards>
   <Card title="Write a durable workflow" href="/docs/keiro/how-to/write-a-durable-workflow" />

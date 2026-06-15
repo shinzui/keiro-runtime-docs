@@ -130,7 +130,7 @@ reference page; this is the map.
 | `keiro_outbox` | outbox | Transactional outbox rows awaiting publish | [Outbox](/docs/keiro/reference/outbox) |
 | `keiro_inbox` | inbox | Inbound dedupe ledger keyed by `(source, dedupe_key)` | [Inbox](/docs/keiro/reference/inbox) |
 | `keiro_projection_dedup` | projection-dedup | Async projection idempotency ledger keyed by `(projection_name, event_id)` | [Projection](/docs/keiro/reference/projection) |
-| `keiro_workflow_steps` | workflow-steps (+ workflow-generation) | Step-lookup index backing replay and unfinished-workflow discovery | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
+| `keiro_workflow_steps` | workflow-steps (+ workflow-generation) | Step-lookup index backing replay and current-generation lookups | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro_workflows` | workflows-instances (+ wake-after, gc-index) | Workflow instance lifecycle, leasing, retry, wake, and GC metadata | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro_awakeables` | awakeables | Pending external completions (durable promises) | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro_workflow_children` | workflow-children | Durable parent→child workflow links | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
@@ -152,7 +152,7 @@ Relevant migration files, applied in this order:
 2026-06-15-13-22-31-keiro-messaging-crash-recovery.sql -- inbox/outbox/timer recovery columns/indexes
 2026-06-15-21-49-37-keiro-projection-dedup.sql    -- keiro_projection_dedup
 2026-06-15-22-10-00-keiro-workflow-gc-index.sql   -- workflow GC index
-2026-06-15-22-20-00-keiro-workflows-wake-after.sql -- workflow wake-after column/index
+2026-06-15-22-20-00-keiro-workflows-wake-after.sql -- workflow wake-after column
 ```
 
 The timer-recovery migration adds the `last_error` column (populated only for dead-lettered timers)
@@ -164,11 +164,15 @@ unchanged, routing entirely on its JSON payload discriminator. The **workflow-ge
 `keiro_workflow_steps` and widens its primary key to `(workflow_id, workflow_name, generation,
 step_name)` — a strict relaxation no existing row can violate — to support
 [continue-as-new rotation](/docs/keiro/reference/durable-workflows#versioning-and-rotation). The
-**subscription-shards** migration (EP-51) adds the `keiro_subscription_shards` lease table. The
+**workflows-instances** migration adds `keiro_workflows`, backfills current generations and terminal
+statuses from the step index, seeds running child workflow rows, and widens child status to include
+`failed`. The wake-after migration adds the `wake_after` hint that lets sleeping workflows drop out of
+resume discovery until their timer is due; the GC-index migration supports terminal-instance pruning.
+The **subscription-shards** migration (EP-51) adds the `keiro_subscription_shards` lease table. The
 projection-dedup migration adds `keiro_projection_dedup` with a primary key on
 `(projection_name, event_id)` and an `applied_at` pruning index. Recent workflow and messaging
 migrations are listed here so schema drift checks are complete; their behavior is documented on the
-owning subsystem pages and refreshed by later child plans. New migrations open with a
+owning subsystem pages. New migrations open with a
 `SET search_path TO kiroku, pg_catalog;` pin so unqualified names resolve into the `kiroku` schema on
 an incremental upgrade.
 

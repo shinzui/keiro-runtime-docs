@@ -11,9 +11,12 @@ workflow module, so it stays cycle-free.
 ## Three identity newtypes
 
 ```haskell
-newtype WorkflowName = WorkflowName { unWorkflowName :: Text }   -- the definition, e.g. "order-fulfillment"
+newtype WorkflowName = WorkflowName { unWorkflowName :: Text }   -- the definition, e.g. "orderFulfillment"
 newtype WorkflowId   = WorkflowId   { unWorkflowId   :: Text }   -- one instance (a UUID-as-text or any stable string)
 newtype StepName     = StepName     { unStepName     :: Text }   -- a checkpoint label
+
+mkWorkflowName :: Text -> Either WorkflowIdentityError WorkflowName
+mkWorkflowId   :: Text -> Either WorkflowIdentityError WorkflowId
 ```
 
 A `WorkflowName` names a *definition* and is part of every journal stream name and every deterministic
@@ -32,11 +35,13 @@ workflowStreamName (WorkflowName name) (WorkflowId wid) =
   StreamName ("wf:" <> name <> "-" <> wid)
 ```
 
-Every instance owns exactly one kiroku stream. The `:` and `-` are **structural** — names and ids must
-not make the boundary ambiguous, the same caveat the v1 process-manager `pm:<name>-<correlationId>`
-convention carries. There is no separate "history table"; the stream *is* the history. (Continue-as-new
-adds a sibling, `workflowGenerationStreamName`, that suffixes a rotated journal with `#<g>`; generation
-0 keeps this bare name — see [chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation).)
+Every instance owns exactly one generation-0 kiroku stream. The `:`, `-`, and `#` characters are
+structural. Prefer `mkWorkflowName` and `mkWorkflowId`: workflow names reject `:`, `-`, and `#`;
+workflow ids reject `:` and `#` but allow UUID-style hyphens. The raw constructors remain for
+compatibility but can create ambiguous stream names. There is no separate "history table"; the stream
+*is* the history. (Continue-as-new adds a sibling, `workflowGenerationStreamName`, that suffixes a
+rotated journal with `#<g>`; generation 0 keeps this bare name — see
+[chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation).)
 
 ## The journal event sum
 
@@ -96,11 +101,11 @@ continuedAsNewStepName = "__workflow_continued_as_new__"   -- EP-48: terminal *f
 continueSeedStepName   = "__workflow_seed__"               -- EP-48: the carried continueAsNew seed
 ```
 
-The comment is explicit that these literals are an integration contract: `findUnfinishedWorkflowIds`'s
-SQL hard-codes `'__workflow_completed__'` and `'__workflow_cancelled__'`, so **the literal here must
-match the literal in that SQL** ([chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery)).
-`continuedAsNewStepName` is deliberately *not* in that SQL's terminal set, and `continueSeedStepName`
-carries a rotation's seed onto the next generation — both are detailed in
+The comments are explicit that these literals are an integration contract: journal append maps them
+to `keiro_workflows` statuses and the resume worker treats `completed`, `cancelled`, and `failed` as
+terminal ([chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery)).
+`continuedAsNewStepName` is terminal only for its old generation, not for the logical workflow, and
+`continueSeedStepName` carries a rotation's seed onto the next generation — both are detailed in
 [chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation).
 
 The **prefixes** are how the three waits (and `patch`) journal their completions without new event types:
@@ -120,7 +125,7 @@ chapters 04–06 and 09.
 ```haskell
 type WorkflowState = Map Text Aeson.Value   -- step name -> recorded JSON result
 
-data WorkflowOutcome a = Completed a | Suspended | Cancelled | ContinuedAsNew
+data WorkflowOutcome a = Completed a | Suspended | Cancelled | Failed | ContinuedAsNew
   deriving stock (Eq, Show, Functor)
 ```
 
@@ -128,8 +133,9 @@ data WorkflowOutcome a = Completed a | Suspended | Cancelled | ContinuedAsNew
 contract the snapshot machinery ([chapter 08](/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry))
 consumes, so it must stay a `Map Text Value` with dynamic step-name keys. `WorkflowOutcome` is the
 result of a run: `Completed a` (ran to the end, marker journaled), `Suspended` (parked at an unresolved
-wait), `Cancelled` (the journal carried a cancellation marker), or `ContinuedAsNew` (the run rotated its
-journal — still unfinished, [chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation)).
+wait), `Cancelled` (the journal carried a cancellation marker), `Failed` (the journal carried a failure
+marker), or `ContinuedAsNew` (the run rotated its journal — still unfinished,
+[chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation)).
 The next chapter shows how `runWorkflowWith` produces each.
 
 <Cards>

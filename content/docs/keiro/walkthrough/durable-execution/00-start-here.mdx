@@ -35,11 +35,12 @@ avoids the positional-history replay nondeterminism that ordinary code movement 
 durable-execution systems. The ordinal convenience forms (`sleep`, `awakeable`) trade that safety for
 brevity.
 
-**2. The journal stream is the source of truth; the tables are derived.** Three tables
-(`keiro_workflow_steps`, `keiro_awakeables`, `keiro_workflow_children`) are fast-lookup indexes and
-operator-visible state, kept in sync **inside the same transaction** as each journal append. Replay
-always folds the journal stream; the index exists so the hot path and the resume worker can ask "does
-this step exist?" / "which workflows are unfinished?" without rescanning streams.
+**2. The journal stream is the source of truth; the tables are derived.** Four tables
+(`keiro_workflow_steps`, `keiro_workflows`, `keiro_awakeables`, `keiro_workflow_children`) are
+fast-lookup indexes and operator-visible state, kept in sync **inside the same transaction** as each
+journal append. Replay always folds the journal stream; the indexes exist so the hot path can ask
+"does this step exist?" and the resume/GC workers can ask "which workflow instances are due?"
+without rescanning streams.
 
 ## The design in one picture
 
@@ -54,7 +55,7 @@ flowchart TD
   Exec --> Complete["body returns -> appendCompletion (WorkflowCompleted) -> Completed"]
   Wake["wake source: timer fire / signalAwakeable / child finish"] --> Append["appendJournalEntry (StepRecorded under sleep:/awk:/child:)"]
   Append -.-> Load
-  Worker["resume worker: findUnfinishedWorkflowIds -> re-invoke"] -.-> Run
+  Worker["resume worker: find due keiro_workflows rows -> lease -> re-invoke"] -.-> Run
 ```
 
 ## The modules this tour reads
@@ -62,12 +63,14 @@ flowchart TD
 ```text
 keiro/src/Keiro/Workflow/Types.hs        -- identity, the journal codec, reserved step names
 keiro/src/Keiro/Workflow.hs              -- the Workflow effect, runWorkflowWith, the replay loop
-keiro/src/Keiro/Workflow/Schema.hs       -- the keiro_workflow_steps index + discovery SQL
+keiro/src/Keiro/Workflow/Schema.hs       -- the keiro_workflow_steps index + due-instance discovery SQL
+keiro/src/Keiro/Workflow/Instance.hs     -- the keiro_workflows lifecycle row, leases, and crash backoff
 keiro/src/Keiro/Workflow/Sleep.hs        -- durable sleep on the keiro_timers table
 keiro/src/Keiro/Workflow/Awakeable.hs    -- awakeables (+ Awakeable/Schema.hs)
 keiro/src/Keiro/Workflow/Child.hs        -- child workflows (+ Child/Schema.hs)
 keiro/src/Keiro/Workflow/Resume.hs       -- the resume / crash-recovery worker
 keiro/src/Keiro/Workflow/Snapshot.hs     -- the workflow snapshot codec + Keiro.Telemetry instruments
+keiro/src/Keiro/Workflow/Gc.hs           -- optional terminal-instance pruning
 ```
 
 Chapter 09 returns to `Types.hs`, `Schema.hs`, and `Workflow.hs` for the MasterPlan-6 additions —
@@ -78,13 +81,13 @@ continue-as-new journal rotation and the `patch` versioning API.
 <Cards>
   <Card title="01 — The types and the journal codec" href="/docs/keiro/walkthrough/durable-execution/01-the-types-and-journal-codec" description="WorkflowName/Id/StepName, workflowStreamName, the WorkflowJournalEvent sum and its self-describing codec, the reserved sleep:/awk:/child: prefixes, WorkflowState, and WorkflowOutcome." />
   <Card title="02 — The effect and the replay loop" href="/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop" description="The Workflow effect, step/awaitStep, runWorkflowWith top to bottom: loadJournal, the hit/miss handler, the WorkflowSuspend sentinel, appendJournalTx, and the deterministic journal id." />
-  <Card title="03 — The step index and discovery" href="/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery" description="keiro_workflow_steps, recordStepTx's ON CONFLICT DO NOTHING, stepExists, and the findUnfinishedWorkflowIds anti-join the resume worker is built on." />
+  <Card title="03 — The step index and discovery" href="/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery" description="keiro_workflow_steps, the keiro_workflows lifecycle row, recordStepTx's ON CONFLICT DO NOTHING, stepExists, wake_after, and due-instance discovery." />
   <Card title="04 — Durable sleep" href="/docs/keiro/walkthrough/durable-execution/04-durable-sleep" description="The payload discriminator, the deterministic sleepTimerId, sleepNamed as an awaitStep arm that schedules a keiro_timers row, workflowSleepFireAction, and runWorkflowTimerWorker." />
-  <Card title="05 — Awakeables" href="/docs/keiro/walkthrough/durable-execution/05-awakeables" description="The deterministic AwakeableId, awaitCancellable, and the idempotent, crash-safe signalAwakeable — why it re-appends the journal entry whenever the row is completed." />
-  <Card title="06 — Child workflows" href="/docs/keiro/walkthrough/durable-execution/06-child-workflows" description="spawnChild as a journaled parent step + link row, awaitChild over awaitStep, cancelChild's two-marker dance, and runChildWorkflow/childCompletionHook waking the parent." />
-  <Card title="07 — The resume worker" href="/docs/keiro/walkthrough/durable-execution/07-the-resume-worker" description="The registry, resumeWorkflowsOnce's discovery union and per-workflow advance, child routing, the ResumeSummary, and why no advisory lock is needed." />
+  <Card title="05 — Awakeables" href="/docs/keiro/walkthrough/durable-execution/05-awakeables" description="The journaled opaque AwakeableId, awaitCancellable, and the idempotent, crash-safe signalAwakeable — why it re-appends the journal entry whenever the row is completed." />
+  <Card title="06 — Child workflows" href="/docs/keiro/walkthrough/durable-execution/06-child-workflows" description="spawnChild as a journaled parent step + link row, awaitChild over awaitStep, cancelChild's two-marker dance, failed-child envelopes, and runChildWorkflow/childCompletionHook waking the parent." />
+  <Card title="07 — The resume worker" href="/docs/keiro/walkthrough/durable-execution/07-the-resume-worker" description="The registry, resumeWorkflowsOnce's discovery union, instance leases, crash backoff, child routing, and the ResumeSummary." />
   <Card title="08 — Snapshots and telemetry" href="/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry" description="The fixed-shape-hash workflowStateCodec, tail replay from a snapshot seed, and the six keiro.workflow.* instruments plus the withWorkflowSpan run span." />
-  <Card title="09 — Versioning and rotation" href="/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation" description="The generation column and #<g> stream suffix, currentGeneration, the ContinueAsNew/WorkflowRotate unwind and crash-safe rotateGeneration, restoreSeed as an ordinary step, and the patch hit/miss handler keyed on startedInFlight." />
+  <Card title="09 — Versioning and rotation" href="/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation" description="The generation column and #<g> stream suffix, currentGeneration, the ContinueAsNew/WorkflowRotate unwind and crash-safe rotateGeneration, restoreSeed as an ordinary step, and the patch hit/miss handler keyed on the recorded active patch set." />
 </Cards>
 
 ## What this tour assumes

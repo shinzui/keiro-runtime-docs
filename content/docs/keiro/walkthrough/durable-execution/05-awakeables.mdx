@@ -1,15 +1,16 @@
 ---
 title: "05 — Awakeables"
-description: "Keiro.Workflow.Awakeable: the deterministic AwakeableId, awaitCancellable's arm, the keiro_awakeables row lifecycle, and the idempotent, crash-safe signalAwakeable that re-appends the journal entry whenever the row is completed."
+description: "Keiro.Workflow.Awakeable: the journaled opaque AwakeableId, awaitCancellable's arm, the keiro_awakeables row lifecycle, and the idempotent, crash-safe signalAwakeable that re-appends the journal entry whenever the row is completed."
 ---
 
 `keiro/src/Keiro/Workflow/Awakeable.hs` is the second wake source: a durable promise an **external**
 system resolves — a webhook, a human approver, an LLM tool call. The workflow allocates an id, hands
 it out, and suspends; an external `signalAwakeable` records the result and the next run continues.
 Where a sleep's wake source is a timer the framework drains, an awakeable's wake source is *someone
-else's code*, which puts the weight on the id being deterministic and the signal being crash-safe.
+else's code*, which puts the weight on handing out the right opaque id and making the signal
+crash-safe.
 
-## The deterministic id
+## The journaled id
 
 ```haskell
 newtype AwakeableId = AwakeableId UUID
@@ -21,24 +22,24 @@ deterministicAwakeableId (WorkflowName name) (WorkflowId wid) label =
     Text.intercalate ":" ["keiro", "awakeable", name, wid, label]
 ```
 
-A v5 UUID over `("keiro":"awakeable":name:id:label)` — the same recipe as the sleep timer id. The
-module header pins down why determinism is non-negotiable:
+New allocations are random v4 UUIDs that the workflow journals under `awkid:<label>`. Replay reads
+that recorded id, so the workflow reuses the exact id it already handed to the external system without
+making the id guessable from `(workflow name, workflow id, label)`. The `ToJSON`/`FromJSON` instances
+are over the inner UUID, so a workflow can journal the id and webhook payloads can carry it.
 
-> a resumed workflow re-runs from the top and must allocate the *same* id it already handed out and
-> journaled, so the `await` hit path matches.
-
-The `ToJSON`/`FromJSON` instances are over the inner UUID, so a workflow can journal the id with `step`
-and a webhook payload can carry it. Crucially, the external signaller computes the same id *without
-reading the journal back* — `deterministicAwakeableId name id label` is a pure function the application
-can call from its webhook handler.
+`deterministicAwakeableId` remains exported only as a legacy generation-0 adoption helper. If an older
+in-flight workflow already registered a row under the v5 id, the first post-change allocation adopts
+that row; new workflows should use the `AwakeableId` returned by `awakeableNamed`.
 
 ## `awakeableNamed`: allocate id + await
 
 ```haskell
 awakeableNamed (StepName label) = do
   (name, wid) <- currentWorkflow
-  let aid = deterministicAwakeableId name wid label
-      stepNm = StepName (awakeableStepPrefix <> awakeableIdText aid)   -- "awk:<uuid>"
+  gen <- currentRunGeneration
+  aid <- step (StepName (awakeableAllocStepPrefix <> label)) $
+           allocateAwakeableId name wid gen label
+  let stepNm = StepName (awakeableStepPrefix <> awakeableIdText aid)   -- "awk:<uuid>"
       await = awaitCancellable name wid aid stepNm
   pure (aid, await)
 ```
@@ -61,6 +62,7 @@ awaitCancellable name wid aid stepNm =
 This is `awaitStep` with a richer arm. Because `awaitStep` runs `arm` only on the miss path and re-runs
 it on every resume until the step is journaled, the arm does two jobs each time it runs: (1) if the
 awakeable was **cancelled**, throw `WorkflowAwakeableCancelled` instead of suspending forever; (2)
+if a completed row already stores a payload, append the journal entry from that stored payload; (3)
 otherwise (re-)insert the idempotent `pending` row and suspend. On the **hit** path (the signal already
 journaled the result) the arm never runs — so a signalled-then-cancelled race still returns the
 signalled value: a resolved promise cannot be un-resolved.
@@ -114,26 +116,33 @@ signalAwakeable aid result = do
     Nothing -> pure False
     Just row -> do
       now <- liftIO getCurrentTime
-      transitioned <- runTransaction $ completeAwakeableTx (awakeableIdToUuid aid) (toJSON result) now
-      let journalled
-            | transitioned = Just (toJSON result)                 -- we just wrote it
-            | row ^. #status == Completed = row ^. #payload        -- already completed: re-append stored payload
-            | otherwise = Nothing                                  -- pending->cancelled race, or already cancelled
-      case journalled of
-        Just payload -> appendJournalEntry (WorkflowName (row ^. #ownerWorkflowName))
-                                           (WorkflowId (row ^. #ownerWorkflowId))
-                                           StepRecorded { stepName = awakeableStepPrefix <> awakeableIdText aid
-                                                        , result = payload, recordedAt = now }
-        Nothing -> pure ()
-      pure transitioned
+      let ownerName = WorkflowName (row ^. #ownerWorkflowName)
+          ownerId   = WorkflowId   (row ^. #ownerWorkflowId)
+          payload   = if row ^. #status == Completed then row ^. #payload else Just (toJSON result)
+      gen <- currentGeneration ownerName ownerId
+      case payload of
+        Nothing -> pure False
+        Just payloadValue -> do
+          appendTx <- prepareJournalAppend ownerName ownerId gen StepRecorded { ... payloadValue ... }
+          (transitioned, appendOutcome) <- runTransaction $ do
+            transitioned <-
+              if row ^. #status == Pending
+                then completeAwakeableTx (awakeableIdToUuid aid) (toJSON result) now
+                else pure False
+            appendOutcome <- appendTx
+            condemnOnAppendConflict appendOutcome
+            pure (transitioned, appendOutcome)
+          throwOnAppendConflict appendOutcome
+          pure transitioned
 ```
 
 The key insight is the middle guard. The journal entry is **(re-)appended whenever the row is
 `completed`** — using the value just written, or, for an *already*-completed row whose journal append
-never happened (a crash between the row update and the append), the **stored payload**. So a signal
-that finds a completed-but-unjournaled awakeable repairs it. `appendJournalEntry` is itself idempotent
-(deterministic id, duplicate treated as success), so the re-append collapses to a no-op once the entry
-is present. The consequence the Haddock flags:
+never happened before the atomic path existed, the **stored payload**. For a pending row, the row
+transition and journal append now commit in one transaction; for an already-completed row, the
+re-append repairs old wedges. The append path is itself idempotent (deterministic id, duplicate treated
+as success), so the re-append collapses to a no-op once the entry is present. The consequence the
+Haddock flags:
 
 > A `False` return therefore does not mean "nothing happened": the journal may still have been repaired.
 

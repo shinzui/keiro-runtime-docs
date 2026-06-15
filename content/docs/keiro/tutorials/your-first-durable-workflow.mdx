@@ -1,12 +1,12 @@
 ---
 title: "Your first durable workflow"
-description: "Write a small durable workflow with a named step, a durable sleep, and an external awakeable; run it to suspension, resume it, and watch a completed step never run twice."
+description: "Write a small durable workflow with a named step, a durable sleep, and an external awakeable; run it to suspension, resume it, and watch a journaled step replay without running again."
 ---
 
 In this tutorial you write a **durable workflow** — an ordinary function whose checkpoints survive a
 crash — run it to its first suspension, resume it past a durable sleep, signal an external awakeable,
-and prove that a finished step is never re-executed. You will see the journal-and-replay model do its
-work with your own output.
+and prove that a journaled step replays without running again. You will see the journal-and-replay
+model do its work with your own output.
 
 This is a learning lesson; for the concept first, skim [Understanding durable
 execution](/docs/keiro/explanation/durable-execution). The runnable, end-to-end version of everything
@@ -17,13 +17,13 @@ is `jitsurei/src/Jitsurei/DurableWorkflow.hs`.
 
 An open kiroku `Store` with keiro's migrations applied (the [getting-started
 tutorial](/docs/keiro/tutorials/getting-started) covers opening a store; [Run the
-migrations](/docs/keiro/how-to/run-migrations) covers the schema, which now includes the three
-workflow tables). The imports for this tutorial:
+migrations](/docs/keiro/how-to/run-migrations) covers the schema, which now includes the workflow
+tables). The imports for this tutorial:
 
 ```haskell
 import Keiro.Workflow           (StepName (..), WorkflowId (..), step, runWorkflow, WorkflowOutcome (..))
 import Keiro.Workflow.Sleep     (sleepNamed, runWorkflowTimerWorker)
-import Keiro.Workflow.Awakeable (awakeableNamed, signalAwakeable, deterministicAwakeableId)
+import Keiro.Workflow.Awakeable (AwakeableId, awakeableNamed, signalAwakeable)
 import Keiro.Workflow.Resume    (resumeWorkflowsOnce, defaultWorkflowResumeOptions, WorkflowDef (..), WorkflowRegistry)
 import Keiro.Workflow.Types     (WorkflowName (..))
 import qualified Data.Map.Strict as Map
@@ -44,7 +44,9 @@ greetWorkflow name = do
          liftIO (putStrLn ("  reserve ran for " <> Text.unpack name))
          pure ("RES-" <> name)
   sleepNamed (StepName "cooling-off") 2          -- a durable 2-second wait
-  (_awkId, awaitPayment) <- awakeableNamed (StepName "payment")
+  (awkId, awaitPayment) <- awakeableNamed (StepName "payment")
+  step (StepName "hand-out-payment-id") $
+         liftIO (savePaymentAwakeable name awkId)
   payment <- awaitPayment                          -- SUSPEND until an external signal
   step (StepName "charge") $ do
     liftIO (putStrLn ("  charge ran with " <> Text.unpack payment))
@@ -110,11 +112,12 @@ awakeable.
 
 ### Signal the awakeable
 
-An awakeable is a durable promise an external system resolves. Compute the same deterministic id the
-workflow allocated, and signal it with a payload:
+An awakeable is a durable promise an external system resolves. The workflow handed the opaque
+`AwakeableId` to the outside world before it suspended; in a real service that might be a webhook link,
+an approval row, or a message to another service. Load that id and signal it with a payload:
 
 ```haskell
-let awkId = deterministicAwakeableId wfName wfId "payment"
+awkId <- loadPaymentAwakeable "order-1"  -- the id saved by savePaymentAwakeable
 signalled <- signalAwakeable awkId ("pay_demo" :: Text)
 -- signalled == True
 ```
@@ -148,8 +151,8 @@ the process.
 
 You exercised the three behaviours that make durable execution work:
 
-- **Run-once-and-journal.** Each `step` ran its action at most once; replays returned the recorded
-  result. `reserve` printed on the first run and never again.
+- **Run-and-journal.** Each journaled `step` replayed from its recorded result. `reserve` printed on
+  the first run and never again.
 - **Suspend-and-resume.** A `sleepNamed` and an `awakeableNamed` each suspended the run; an external
   wake source (a timer fire, a `signalAwakeable`) journaled the completion; a resume pass continued.
 - **Crash safety by re-invocation.** Resuming is just running the same function again — the journal

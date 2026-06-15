@@ -35,12 +35,13 @@ orderFulfillmentWorkflow orderId = do
   awaitChild childHandle                                        -- wait for a child workflow
 ```
 
-- **`step name action`** runs `action` once and journals its JSON result; a replay returns the
-  recorded value without re-running. Anything `ToJSON`/`FromJSON` works as a result.
+- **`step name action`** runs `action` and journals its JSON result; a replay returns the recorded
+  value without re-running. If the process crashes before the append commits, the action may run
+  again, so external effects still need idempotency. Anything `ToJSON`/`FromJSON` works as a result.
 - **`sleepNamed name delta`** durably pauses (a `keiro_timers` row) and resumes when a timer worker
   fires it. No thread is held.
-- **`awakeableNamed name`** returns a deterministic id and an `await`; the workflow suspends until an
-  external caller runs `signalAwakeable`.
+- **`awakeableNamed name`** returns an opaque, journaled id and an `await`; the workflow suspends until
+  an external caller runs `signalAwakeable`.
 - **`spawnChild` / `awaitChild`** spawn and wait on a child workflow with its own journal.
 
 <Callout type="warn">
@@ -60,6 +61,8 @@ case outcome of
   Completed tracking -> ...   -- finished; `tracking` is the function's result
   Suspended          -> ...   -- parked at a wait; a resume pass will continue it later
   Cancelled          -> ...   -- a parent cancelled this (child) workflow
+  Failed             -> ...   -- a failure marker is already in the journal
+  ContinuedAsNew     -> ...   -- rotated; a later pass drives the new generation
 ```
 
 Running the same `(name, id)` again replays the journal and short-circuits completed steps, so calling
@@ -70,18 +73,20 @@ you [run the resume worker](/docs/keiro/how-to/run-the-workflow-resume-worker) o
 
 - **Sleeps** fire when a timer worker drains `keiro_timers`. Run `runWorkflowTimerWorker` (it handles
   both workflow sleeps and ordinary process-manager timers in one pass) on your timer polling loop.
-- **Awakeables** resolve when an external system calls `signalAwakeable awkId payload`. Compute the id
-  with `deterministicAwakeableId name id label` — the signaller never needs to read the journal back.
-  Repair one that will never arrive with `cancelAwakeable awkId`; the workflow's `await` then throws
+- **Awakeables** resolve when an external system calls `signalAwakeable awkId payload`. Hand the
+  `AwakeableId` returned by `awakeableNamed` to that system (for example, store it in the approval row
+  or include it in the webhook link). New ids are random and journaled so replay recovers the same id;
+  `deterministicAwakeableId` exists only for legacy generation-0 adoption. Repair one that will never
+  arrive with `cancelAwakeable awkId`; the workflow's `await` then throws
   `WorkflowAwakeableCancelled`, which you can `catch` for compensation.
 - **Children** must be **registered in the resume worker's registry** by name — `spawnChild` does not
   run the child inline; the worker drives it. Repair a parent stuck on a never-finishing child by
   driving or cancelling the child (`cancelChild`).
 
 <Callout type="warn">
-**A parent and its child must use distinct `WorkflowId`s.** Discovery groups by `workflow_id`, so a
-shared id lets a completed child mask an unfinished parent. Derive the child id, e.g.
-`WorkflowId (parentId <> "-ship")`.
+**A child id names one child execution for that child workflow name.** Reusing the same child
+`(WorkflowName, WorkflowId)` attaches to the existing execution and re-delivers its stored result. To
+run a fresh child after `continueAsNew`, derive a fresh child id from the carried seed.
 </Callout>
 
 ## Set run options for long journals
@@ -107,8 +112,8 @@ Replay short-circuits a *journaled* step — but a step that **crashes before it
 the next pass. So keep the action inside a `step` idempotent with respect to the outside world: pass
 deterministic external ids, dedupe at the destination, or model the effect through keiro's
 [outbox](/docs/keiro/explanation/the-outbox-pattern) / [idempotent
-commands](/docs/keiro/how-to/make-commands-idempotent). The journal guarantees *at most once per
-completed step*; your action should be safe under *at least once until it completes*.
+commands](/docs/keiro/how-to/make-commands-idempotent). The journal guarantees *skip after the step is
+journaled*; your action should be safe under *at least once until it commits*.
 
 ## Versioning a running workflow
 

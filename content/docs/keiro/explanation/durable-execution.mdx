@@ -55,7 +55,8 @@ stream named `wf:<name>-<id>`) plus **replay**.
 
 - Each `step name action` either **runs** `action` and journals its result, or — on a re-run where
   `name` is already journaled — **returns the recorded result without running the action again**. A
-  side effect happens at most once.
+  journaled side effect is not run again; if the process crashes after the action runs but before the
+  journal append commits, the action may run again on resume.
 - A wait (`sleepNamed`, `awaitPayment`, `awaitChild`) **suspends**: the function stops, an external
   wake source is armed (a timer row, a pending awakeable, a child link), and `runWorkflow` returns
   `Suspended`. Nothing after the wait has run.
@@ -64,9 +65,9 @@ stream named `wf:<name>-<id>`) plus **replay**.
   result, the now-resolved wait returns immediately, and only the un-journaled tail runs for real.
 
 So "resume" is not a special code path — it is *the same function, run again*. The journal is what
-makes re-running it cheap and safe. A `runWorkflow` returns one of four [outcomes](/docs/keiro/reference/durable-workflows#running-a-workflow):
-`Completed a`, `Suspended`, `Cancelled`, or `ContinuedAsNew` (the run rotated its journal — see
-*Evolving a running workflow* below).
+makes re-running it cheap and safe. A `runWorkflow` returns one of five [outcomes](/docs/keiro/reference/durable-workflows#running-a-workflow):
+`Completed a`, `Suspended`, `Cancelled`, `Failed`, or `ContinuedAsNew` (the run rotated its journal —
+see *Evolving a running workflow* below).
 
 ## Named steps, not positional history
 
@@ -95,14 +96,15 @@ Everything above is built from four authoring primitives (the [reference](/docs/
 has the signatures):
 
 - **`step`** — a named, journaled, replay-skipping checkpoint. The workhorse: wrap any side-effecting
-  action so it runs at most once.
+  action so it is skipped once its result is journaled. The action itself must still be idempotent
+  across a crash before the append commits.
 - **`sleepNamed` / `sleep`** — a durable delay backed by the existing [`keiro_timers`](/docs/keiro/explanation/durable-timers)
   table. The pause's only durable state is one timer row, so it survives a restart with no external
   scheduler and no in-memory timer thread. A timer worker fires it and journals the completion.
 - **`awakeableNamed` / `awakeable`** — a durable promise an *external* system resolves: a webhook, a
-  human approval, an LLM tool call. The workflow gets a deterministic id and suspends; an external
-  `signalAwakeable` records the payload and the next run continues. `signalAwakeable` is idempotent and
-  crash-safe.
+  human approval, an LLM tool call. The workflow gets an opaque, journaled id and suspends; an
+  external `signalAwakeable` records the payload and the next run continues. `signalAwakeable` is
+  idempotent and crash-safe.
 - **child workflows (`spawnChild` / `awaitChild` / `cancelChild`)** — fan-out / fan-in. A parent spawns
   a child (a second workflow with its own journal), waits for its result, and may cancel it. The spawn
   is journaled in the parent, so a parent replay never re-spawns.
@@ -114,17 +116,18 @@ all journal their completions as ordinary `StepRecorded` events under reserved p
 ## Who turns the crank: the resume worker
 
 A suspended workflow does not resume itself — its function is not running any more; it is a journal in
-a database. A background **resume worker** is what notices. Each pass it asks the database "which
-workflows have steps but no terminal marker?" and re-invokes each so it proceeds past a now-resolved
-wait or a crash.
+a database. A background **resume worker** is what notices. Each pass it asks the `keiro_workflows`
+instance table for non-terminal, due workflows, claims each through an expiry-based lease, and
+re-invokes it so it proceeds past a now-resolved wait or a crash.
 
 Because a workflow's *body* is application code while only its *journal* is in the database, the
 worker needs the application to supply a **registry**: a map from each `WorkflowName` to a function
 that rebuilds the body from an id. This is the exact analogue of the `fire` action the
 [timer worker](/docs/keiro/explanation/durable-timers) takes — the worker owns discovery and database
-access; the application owns the domain behaviour. Discovery is a plain index query with **no upstream
-subscription dependency**, and a discovered workflow whose name is missing from the registry is
-surfaced (as `unknownName`), never silently lost.
+access; the application owns the domain behaviour. Discovery has **no upstream subscription
+dependency**, and a discovered workflow whose name is missing from the registry is surfaced (as
+`unknownName`), never silently lost. A worker crash records attempts and backs off the instance; at the
+configured ceiling the worker appends `WorkflowFailed`.
 
 ## When to use a workflow vs a process manager
 

@@ -33,34 +33,36 @@ else. The module header makes the consequence explicit:
 ## The deterministic timer id
 
 ```haskell
-sleepTimerId name wid fullStep =
+sleepTimerId name wid gen fullStep =
   TimerId $ UUID.V5.generateNamed UUID.V5.namespaceURL $ ...
-    Text.intercalate ":" ["keiro", "workflow-sleep", unWorkflowName name, unWorkflowId wid, fullStep]
+    Text.intercalate ":" ["keiro", "workflow-sleep", unWorkflowName name, unWorkflowId wid, show gen, fullStep]
 ```
 
-A v5 UUID over `("keiro":"workflow-sleep":name:id:fullStep)`. The step name is part of the key, so two
-distinct sleeps in one workflow get distinct timers. Determinism is what makes the arm idempotent:
-every resume that re-enters the not-yet-resolved sleep computes the *same* id, and
-`scheduleTimerTx`'s `ON CONFLICT` re-arms only a still-`Scheduled` row, so the repeat collapses to a
-no-op — exactly the idempotent arming `awaitStep` requires.
+A v5 UUID over `("keiro":"workflow-sleep":name:id:generation:fullStep)` for generation 1 and later;
+generation 0 keeps the legacy `("keiro":"workflow-sleep":name:id:fullStep)` shape so older in-flight
+timers remain signalable. The step name is part of the key, so two distinct sleeps in one workflow get
+distinct timers. Determinism is what makes the arm idempotent: every resume that re-enters the
+not-yet-resolved sleep computes the *same* id, and `scheduleTimerOnceTx` preserves the first `fire_at`,
+so the repeat collapses to a no-op — exactly the idempotent arming `awaitStep` requires.
 
 ## `sleepNamed`: an `awaitStep` whose arm schedules a timer
 
 ```haskell
 sleepNamed userStep delta = do
   (name, wid) <- currentWorkflow
+  gen <- currentRunGeneration
   let full = sleepStepName userStep            -- "sleep:" <> suffix
       armedStep = StepName full
   void . awaitValue armedStep $ do
     now <- liftIO getCurrentTime
     let request = TimerRequest
-          { timerId = sleepTimerId name wid full
+          { timerId = sleepTimerId name wid gen full
           , processManagerName = unWorkflowName name   -- (= workflow name)
           , correlationId = unWorkflowId wid            -- (= workflow id)
           , fireAt = addUTCTime delta now
           , payload = sleepTimerPayload full
           }
-    runTransaction (scheduleTimerTx request)
+    runTransaction (scheduleTimerOnceTx request >> setWorkflowWakeAfterTx name wid (request ^. #fireAt))
 ```
 
 This is the whole primitive: name the step `sleep:<suffix>`, then `awaitStep` on it with an arm that
@@ -69,6 +71,10 @@ inserts a `keiro_timers` row. On the **first** encounter the step is not journal
 not journaled, so the arm runs again — but the deterministic id makes it a no-op. Once the timer fires
 and journals `sleep:<suffix>`, the step *is* journaled, so `awaitStep` takes the hit path and returns
 immediately.
+
+The same transaction stores the timer's first `fire_at` in `keiro_workflows.wake_after`. Resume
+discovery filters out rows whose `wake_after` is still in the future, so a sleeping workflow does not
+get re-invoked on every worker pass before the timer is due.
 
 Notice the reuse of the `TimerRequest` fields: `processManagerName` carries the workflow **name** and
 `correlationId` carries the workflow **id**, so the fire action can reconstruct the workflow identity

@@ -1,14 +1,16 @@
 ---
 title: "03 — The step index and discovery"
-description: "Keiro.Workflow.Schema: the keiro_workflow_steps table, recordStepTx's ON CONFLICT DO NOTHING upsert, stepExists, and the findUnfinishedWorkflowIds anti-join that seeds the resume worker."
+description: "Keiro.Workflow.Schema and Instance: keiro_workflow_steps, keiro_workflows, recordStepTx's ON CONFLICT DO NOTHING upsert, stepExists, wake_after, and due-instance discovery."
 ---
 
 `keiro/src/Keiro/Workflow/Schema.hs` owns the `keiro_workflow_steps` table — the **derived index** of
-journaled steps. The journal stream is the source of truth for replay; this table is a fast-lookup view
-kept in sync inside the same transaction as each journal append (you saw `recordStepTx` composed into
-`appendJournalTx` in [chapter 02](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop)).
-It exists so the hot path and the resume worker can answer "does this step exist?" and "which workflows
-are unfinished?" without rescanning streams.
+journaled steps. `Keiro.Workflow.Instance` owns `keiro_workflows` — one lifecycle row per logical
+workflow instance. The journal stream is still the source of truth for replay; these tables are
+fast-lookup and operator-visible views kept in sync inside journal append transactions.
+
+`keiro_workflow_steps` answers "does this step exist?" without rescanning streams. `keiro_workflows`
+answers "which workflow instances are due for resume or GC?" without deriving lifecycle from step rows
+on every pass.
 
 ## The table
 
@@ -16,21 +18,20 @@ are unfinished?" without rescanning streams.
 CREATE TABLE IF NOT EXISTS keiro_workflow_steps (
   workflow_id    text        NOT NULL,
   workflow_name  text        NOT NULL,
+  generation     integer     NOT NULL DEFAULT 0,
   step_name      text        NOT NULL,
   result         jsonb       NOT NULL,
   recorded_at    timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (workflow_id, step_name)
+  PRIMARY KEY (workflow_id, workflow_name, generation, step_name)
 );
-CREATE INDEX IF NOT EXISTS keiro_workflow_steps_workflow_idx ON keiro_workflow_steps (workflow_id);
+CREATE INDEX IF NOT EXISTS keiro_workflow_steps_workflow_idx
+  ON keiro_workflow_steps (workflow_id, workflow_name, generation);
 ```
 
-The primary key `(workflow_id, step_name)` is what makes a step's identity its **name** at the storage
-layer too: one row per named step per instance. The terminal completion marker is just a row whose
-`step_name` is `__workflow_completed__` and whose `result` is JSON `null`. The migration comment ties
-the schema to the runtime contract:
-
-> The reserved step name `__workflow_completed__` is written when a workflow finishes … its absence is
-> how `findUnfinishedWorkflowIds` distinguishes an in-flight workflow from a completed one.
+The primary key is what makes a step's identity its **name** within a logical workflow generation: one
+row per named step per `(workflow_id, workflow_name, generation)`. The terminal markers are ordinary
+rows whose `step_name` is one of `__workflow_completed__`, `__workflow_cancelled__`,
+`__workflow_failed__`, or `__workflow_continued_as_new__`.
 
 The row type mirrors the table:
 
@@ -39,25 +40,16 @@ data WorkflowStepRow = WorkflowStepRow
   { workflowId :: !Text, workflowName :: !Text, generation :: !Int, stepName :: !Text, result :: !Value, recordedAt :: !UTCTime }
 ```
 
-<Callout type="info">
-This chapter reads the table as the **workflow-steps** migration creates it. The later
-**workflow-generation** migration (EP-48) adds the `generation` column (default 0, shown above), widens
-the primary key to `(workflow_id, workflow_name, generation, step_name)`, and replaces the
-`(workflow_id)` lookup index with `(workflow_id, workflow_name, generation)`. Every lookup below gains a
-`generation` argument, and `findUnfinishedWorkflowIds` is reworked to scope its terminal check to the
-*current* generation. The base shapes here are unchanged at generation 0; the rotated forms are read in
-[chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation).
-</Callout>
-
 ## `recordStepTx`: idempotent upsert
 
 ```haskell
 recordStepStmt =
   preparable
     """
-    INSERT INTO keiro_workflow_steps (workflow_id, workflow_name, step_name, result, recorded_at)
-    VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (workflow_id, step_name) DO NOTHING
+    INSERT INTO keiro_workflow_steps
+      (workflow_id, workflow_name, generation, step_name, result, recorded_at)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT (workflow_id, workflow_name, generation, step_name) DO NOTHING
     """
     ...
 ```
@@ -72,7 +64,10 @@ the index and the journal can never disagree: either both commit or neither does
 stepExistsStmt =
   preparable
     """
-    SELECT EXISTS (SELECT 1 FROM keiro_workflow_steps WHERE workflow_id = $1 AND step_name = $2)
+    SELECT EXISTS (
+      SELECT 1 FROM keiro_workflow_steps
+      WHERE workflow_id = $1 AND workflow_name = $2 AND generation = $3 AND step_name = $4
+    )
     """
     ...
 ```
@@ -82,35 +77,59 @@ This is the workhorse behind the wake-source helpers' idempotence. `appendJourna
 append — relying on the index rather than the event store's duplicate-id rejection, so the check is a
 cheap indexed lookup.
 
-## `findUnfinishedWorkflowIds`: the discovery anti-join
+## `keiro_workflows`: the lifecycle row
 
-The query the resume worker is built on returns every workflow that has steps but **no terminal
-marker**:
+The resume worker no longer derives lifecycle by anti-joining step rows on every pass. The
+`keiro-workflows-instances` migration backfills and maintains one row per logical workflow:
 
 ```sql
-SELECT DISTINCT s.workflow_id, s.workflow_name
-FROM keiro_workflow_steps s
-WHERE NOT EXISTS (
-  SELECT 1 FROM keiro_workflow_steps c
-  WHERE c.workflow_id = s.workflow_id
-    AND c.step_name IN ('__workflow_completed__', '__workflow_cancelled__')
-)
+CREATE TABLE IF NOT EXISTS keiro_workflows (
+  workflow_id      TEXT        NOT NULL,
+  workflow_name    TEXT        NOT NULL,
+  generation       INTEGER     NOT NULL DEFAULT 0,
+  status           TEXT        NOT NULL DEFAULT 'running',
+  attempts         INTEGER     NOT NULL DEFAULT 0,
+  last_error       TEXT,
+  next_attempt_at  TIMESTAMPTZ,
+  leased_by        TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at     TIMESTAMPTZ,
+  wake_after       TIMESTAMPTZ,
+  PRIMARY KEY (workflow_id, workflow_name)
+);
 ```
 
-A correlated `NOT EXISTS` anti-join: a workflow drops out of discovery the moment *either* terminal
-marker row exists, so a **completed** workflow and a **cancelled** workflow both look "finished". The
-source comment is blunt about the coupling:
+`upsertInstanceTx` runs beside journal-index writes: ordinary `StepRecorded` rows keep status
+`running`; `WorkflowCompleted`, `WorkflowCancelled`, and `WorkflowFailed` make the instance terminal
+and set `completed_at`; a suspended run marks the row `suspended`.
 
-> The literals `__workflow_completed__` / `__workflow_cancelled__` must match
-> `Keiro.Workflow.Types.completedStepName` / `.cancelledStepName`.
+The lease and attempt fields are operational state for the resume worker. `claimInstance` sets
+`leased_by` and `lease_expires_at` only for `running`/`suspended` rows whose lease is expired and whose
+`next_attempt_at` is due. `recordCrashTx` increments `attempts`, stores `last_error`, and sets
+`next_attempt_at` to an exponential backoff. `releaseInstance owner progressed ...` clears the lease;
+when `progressed` is true it also resets attempts and errors.
 
-Note the query groups by `workflow_id` alone (via the `c.workflow_id = s.workflow_id` correlation) — it
-does **not** also match on name. That is the reason a parent and child must use **distinct** ids: a
-child's terminal marker under a shared id would satisfy the `NOT EXISTS` and hide the still-unfinished
-parent. The worked example guards against this by suffixing the child id (`<order>-ship`).
+## `findUnfinishedWorkflowIds`: due instance discovery
 
-`loadStepIndex` (a full `SELECT step_name, result WHERE workflow_id = $1`) rounds out the read surface;
-it is exposed for completeness, though the replay loop pre-loads from the journal stream instead.
+The query the resume worker is built on is now simple lifecycle discovery:
+
+```sql
+SELECT workflow_id, workflow_name
+FROM keiro_workflows
+WHERE status NOT IN ('completed', 'cancelled', 'failed')
+  AND (wake_after IS NULL OR wake_after <= $1)
+ORDER BY workflow_name, workflow_id
+```
+
+The explicit timestamp makes `wake_after` a self-expiring skip. `sleepNamed` stores the first timer
+`fire_at` in `keiro_workflows.wake_after`, so a workflow parked only on a not-yet-due sleep disappears
+from discovery until the timer is due. Wake sources that append a completion keep using the same
+journal append path, so the next due resume pass replays past them.
+
+`loadStepIndex` rounds out the read surface; it is exposed for completeness, though the replay loop
+pre-loads from the journal stream instead.
 
 <Cards>
   <Card title="← 02 — The effect and the replay loop" href="/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop" />

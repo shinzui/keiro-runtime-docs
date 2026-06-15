@@ -27,16 +27,28 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Audit Keiro durable workflow commits from `9fa283b..HEAD`.
-- [ ] Update durable workflow reference and tutorial docs for current identity, run options, journal, step, sleep, awakeable, child, patch, and continue-as-new semantics.
-- [ ] Update durable-execution walkthrough pages for current resume loop, instance leasing, wake-after, generation, and GC behavior.
-- [ ] Update migration/schema and operations cross-links or record finalization needs for EP-6.
-- [ ] Run docs validation commands and record results.
+- [x] Audit Keiro durable workflow commits from `9fa283b..HEAD`.
+- [x] Update durable workflow reference and tutorial docs for current identity, run options, journal, step, sleep, awakeable, child, patch, and continue-as-new semantics.
+- [x] Update durable-execution walkthrough pages for current resume loop, instance leasing, wake-after, generation, and GC behavior.
+- [x] Update migration/schema and operations cross-links or record finalization needs for EP-6.
+- [x] Run docs validation commands and record results.
 
 
 ## Surprises & Discoveries
 
-(None yet.)
+- Awakeable allocation is no longer generally deterministic. New `awakeableNamed` allocations journal
+  an opaque random id under `awkid:<label>`; `deterministicAwakeableId` remains only for legacy
+  generation-0 adoption, so docs needed to stop telling signallers to recompute ids.
+- Workflow resume discovery is now centered on the `keiro_workflows` instance row, not an anti-join
+  over step rows. That row carries status, attempts, lease owner/expiry, next attempt, wake-after,
+  and GC timestamps.
+- Resume workers are lease-first and append-safe: live foreign leases increment `leaseSkipped`,
+  crashes increment attempts with exponential backoff, and the journal append path still serializes
+  same-step races after lease expiry.
+- Patch classification now comes from the recorded active patch set at generation start, not a
+  `startedInFlight` heuristic over ordinary step keys.
+- `WorkflowGc` deletes terminal instances by lifecycle row while preserving completed children whose
+  parent is still non-terminal.
 
 
 ## Decision Log
@@ -53,7 +65,17 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Completed on 2026-06-15 against `shinzui/keiro` commit
+`f1d67a01b7457387a4861e7268d1c521ef82287d`. The updated docs cover validated workflow identity
+constructors, `Failed` outcomes, `activePatches`, journal append serialization, instance leasing,
+resume crash backoff, `wake_after` sleep filtering, random journaled awakeable ids, atomic awakeable
+and child wake paths, child failure envelopes, continue-as-new rotation, active-set patch decisions,
+workflow GC, schema migrations, and workflow telemetry counters.
+
+Validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, `git diff
+--check`, and a focused stale-claim scan for superseded deterministic-awakeable, advisory-lock,
+step-row-discovery, step at-most-once, and patch-classification wording. EP-6 still owns final
+source-sync pointer updates and cross-library integration reconciliation.
 
 
 ## Context and Orientation

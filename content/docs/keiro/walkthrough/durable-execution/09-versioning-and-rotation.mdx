@@ -1,6 +1,6 @@
 ---
 title: "09 — Versioning and rotation"
-description: "How continue-as-new and the patch API land on the named-step journal: the generation column and #<g> stream suffix, currentGeneration, the ContinueAsNew/WorkflowRotate unwind and crash-safe rotateGeneration, restoreSeed as an ordinary step, and the patch hit/miss handler keyed on startedInFlight."
+description: "How continue-as-new and the patch API land on the named-step journal: the generation column and #<g> stream suffix, currentGeneration, the ContinueAsNew/WorkflowRotate unwind and crash-safe rotateGeneration, restoreSeed as an ordinary step, and the patch hit/miss handler keyed on the recorded active patch set."
 ---
 
 The previous chapters built journal-and-replay over named steps. This one reads the two MasterPlan-6
@@ -119,46 +119,40 @@ additive within `schemaVersion = 1` (old journals never carry the tag, so no upc
 ## Discovery scopes to the current generation
 
 A rotated workflow is **not** finished — its work continues on the next generation — so
-`findUnfinishedWorkflowIds` must treat it as unfinished. The query computes one current-generation row per
-logical id and checks *only that generation* for a terminal marker:
+`findUnfinishedWorkflowIds` must treat it as unfinished. Current discovery reads the lifecycle row,
+not an anti-join over step rows:
 
 ```sql
-WITH current_gen AS (
-  SELECT workflow_id, workflow_name, MAX(generation) AS gen
-  FROM keiro_workflow_steps
-  GROUP BY workflow_id, workflow_name
-)
-SELECT cg.workflow_id, cg.workflow_name
-FROM current_gen cg
-WHERE NOT EXISTS (
-  SELECT 1 FROM keiro_workflow_steps c
-  WHERE c.workflow_id = cg.workflow_id
-    AND c.workflow_name = cg.workflow_name
-    AND c.generation = cg.gen
-    AND c.step_name IN ('__workflow_completed__', '__workflow_cancelled__')
-)
+SELECT workflow_id, workflow_name
+FROM keiro_workflows
+WHERE status NOT IN ('completed', 'cancelled', 'failed')
+  AND (wake_after IS NULL OR wake_after <= $1)
 ```
 
-`__workflow_continued_as_new__` is deliberately **not** in the terminal set, and because the check looks
-only at the newest generation, a rotated-away generation's rotation marker is never even considered. The
-resume worker therefore keeps driving a rotating workflow forward, one generation at a time — the
-`ContinuedAsNew` outcome counts toward `resumed`, exactly like a `Suspended` one.
+`__workflow_continued_as_new__` is deliberately **not** a terminal workflow status. A rotation appends
+the next generation's seed step first, so `currentGeneration` moves forward while the `keiro_workflows`
+row remains `running`. The resume worker therefore keeps driving a rotating workflow forward, one
+generation at a time — the `ContinuedAsNew` outcome counts toward `resumed`, exactly like a
+`Suspended` one.
 
-## Patch: the step hit/miss shape, deciding on `startedInFlight`
+## Patch: the step hit/miss shape, deciding from the recorded active set
 
 `patch` reuses the `Step` hit/miss handler shape, but its *miss* path computes a decision instead of
-running a user action. The key is a single flag captured once, before interpretation, from the
-**pre-loaded** journal:
+running a user action. When a fresh workflow generation starts, `runWorkflowWith` records the deployed
+`activePatches` set once under `patchSetStepName`:
 
 ```haskell
-let startedInFlight = any isOrdinaryStepKey (Map.keys initial)
+recordPatchSetIfFresh runGen initial = do
+  let patches = options ^. #activePatches
+      freshStart = Map.keysSet initial `Set.isSubsetOf` Set.singleton continueSeedStepName
+  when (freshStart && not (Set.null patches)) $
+    appendJournal name wid runGen (StepRecorded patchSetStepName (toJSON patches) now)
 ```
 
-`isOrdinaryStepKey` excludes the terminal markers, the rotation names, and the reserved
-`sleep:`/`awk:`/`child:`/`patch:` prefixes — so it is `True` only when the instance has already journaled
-real user logic. Reading the *pre-loaded* map (not the live, mutating one) is what makes the
-classification stable: a fresh instance that runs a step *before* its `patch` call is still correctly seen
-as fresh.
+An in-flight generation that already has ordinary history will not get that new active-set row. A fresh
+generation records the set before user logic runs, so a workflow that executes a step before its first
+`patch` call is still classified from the start-of-generation set rather than from the live mutating
+journal.
 
 ```haskell
 Patch pid -> do
@@ -167,9 +161,10 @@ Patch pid -> do
   case Map.lookup key journal of
     Just stored -> decodeStored key stored          -- hit: replay the recorded decision verbatim
     Nothing -> do                                    -- miss: first encounter
-      let decision = not startedInFlight             -- fresh -> True (new branch); in-flight -> False
+      recordedSet <- maybe (pure []) (decodeStored patchSetStepName) (Map.lookup patchSetStepName journal)
+      let decision = unPatchId pid `elem` recordedSet
           encoded = Aeson.toJSON decision
-      _ <- recordStep name wid gen (StepName key) encoded
+      _ <- appendJournal name wid gen (StepRecorded key encoded now)
       liftIO (atomicModifyIORef' journalRef (\m -> (Map.insert key encoded m, ())))
       pure decision
 ```
@@ -177,8 +172,8 @@ Patch pid -> do
 The decision is journaled under `patch:<patchId>` as an ordinary `StepRecorded`, so the replay loop and
 the step index stay uniform — **no new journal-event constructor for patch**. Every later replay hits the
 stored `Bool` and returns it verbatim, forever. That is the whole guarantee: an instance fresh at the
-patch point runs the new branch; one already in flight when the patch shipped keeps the old branch; and
-neither ever flip-flops across resumes.
+generation start, with the patch id active, runs the new branch; one already in flight when the patch
+shipped keeps the old branch; and neither ever flip-flops across resumes.
 
 The design note worth carrying away: `patch` is the escape hatch for a change that *cross-cuts several
 steps*. For one step changed, **rename the step** — a renamed `StepName` has no journaled history under

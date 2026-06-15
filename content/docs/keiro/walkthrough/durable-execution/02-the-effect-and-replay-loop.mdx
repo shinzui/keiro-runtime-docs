@@ -67,28 +67,32 @@ workflow snapshot codec **cannot** derive a shape hash from `Keiki.Shape.regFile
 static slot list), so it uses a fixed sentinel and self-describing JSON instead — the one keiki mention
 in the whole module family is exactly this *contrast*.
 
-## `runWorkflowWith`: the cancellation short-circuit
+## `runWorkflowWith`: terminal short-circuits
 
 ```haskell
 runWorkflowWith options name wid action = do
-  cancelled <- stepExists wid cancelledStepName
-  if cancelled
-    then pure Cancelled
-    else runActive
+  gen <- currentGeneration name wid
+  cancelled <- stepExists name wid gen cancelledStepName
+  failed    <- stepExists name wid gen failedStepName
+  case (cancelled, failed) of
+    (True, _) -> pure Cancelled
+    (_, True) -> pure Failed
+    _         -> runActive gen
 ```
 
-Before doing anything, the runner checks whether the journal already carries a cancellation marker (a
-single index existence check, keyed under `cancelledStepName`). If so it returns `Cancelled` and
+Before doing anything, the runner resolves the current generation and checks whether the journal
+already carries a cancellation or failure marker. If so it returns `Cancelled` or `Failed` and
 **never runs the user action** — the basis for `cancelChild`
-([chapter 06](/docs/keiro/walkthrough/durable-execution/06-child-workflows)).
+([chapter 06](/docs/keiro/walkthrough/durable-execution/06-child-workflows)) and resume-worker terminal
+failure.
 
 ## Pre-load: fold the journal into a step map
 
 `runActive` first folds the journal stream into the in-memory `step name -> result` map:
 
 ```haskell
-loadJournal options name wid = do
-  let journalName = workflowStreamName name wid
+loadJournal options name wid gen = do
+  let journalName = workflowGenerationStreamName name wid gen
   mSeed <- loadWorkflowSnapshot journalName
   let (seedMap, fromVersion) = case mSeed of
         Just (m, v) -> (m, v)
@@ -183,54 +187,56 @@ appendCompletion name wid now = do
 ```
 
 So replaying an already-completed workflow appends nothing (and takes no terminal snapshot); a fresh
-completion appends the marker and records the `keiro.workflow.journal.length` histogram. This
-idempotence is what makes "just run it again" safe even for a finished workflow.
+completion appends the marker, updates the `keiro_workflows` instance row to `completed`, and records
+the `keiro.workflow.journal.length` histogram. This idempotence is what makes "just run it again" safe
+even for a finished workflow.
 
 ## The core append and the deterministic id
 
 Every journal write goes through one transaction-scoped helper:
 
 ```haskell
-appendJournalTx name wid event = do
+prepareJournalAppend name wid gen event = do
   let key = journalKey event
-      entryId = deterministicJournalId name wid key
+      entryId = deterministicJournalId name wid gen key
+      lockKey = Text.intercalate "/" [unWorkflowId wid, unWorkflowName name, show gen, key]
   ...
-  runTransactionAppending (workflowStreamName name wid) AnyVersion [entry]
-    (\appendResult -> appendResult <$ recordStepTx row)
+  pure $ do
+    lockWorkflowStepTx lockKey
+    lookupStepResultTx ... >>= \case
+      Just stored -> pure (JournalAlreadyPresent stored)
+      Nothing ->
+        appendToStreamTx (workflowGenerationStreamName name wid gen) AnyVersion prepared now >>= \case
+          Right appendResult -> JournalAppended appendResult <$ recordStepTx row <* upsertInstanceTx ...
+          Left err           -> pure (JournalAppendConflict err)
 ```
 
 Two things commit together: the journal event (appended under `entryId`) and the
 `keiro_workflow_steps` index row (`recordStepTx`, [chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery)).
-The id is deterministic:
+The same transaction also upserts the `keiro_workflows` instance row to the status implied by the
+journal event. A transaction-scoped advisory lock serializes same `(workflow,id,generation,step)`
+writers before the step-index check, so lease-expiry races converge on one recorded result. The id is
+deterministic:
 
 ```haskell
-deterministicJournalId (WorkflowName name) (WorkflowId wid) key =
+deterministicJournalId (WorkflowName name) (WorkflowId wid) gen key =
   EventId $ UUID.V5.generateNamed UUID.V5.namespaceURL $ ...
-    Text.intercalate ":" ["keiro", "workflow", name, wid, key]
+    Text.intercalate ":" ["keiro", "workflow", name, wid, show gen, key]
 ```
 
-A v5 UUID over `("keiro":"workflow":name:id:stepName)` — the same recipe as
+A v5 UUID over `("keiro":"workflow":name:id:generation:stepName)` — the same recipe as
 [`deterministicCommandId`](/docs/keiro/walkthrough/workflow/01-the-process-manager-dispatch-loop). The
 same inputs always yield the same id, so a re-append of the same step collapses to the same row. This
 is what makes the wake-source helpers (`appendJournalEntry` / `appendJournalEntryReturningId`)
 idempotent: they pre-check `stepExists` and, on a hit, return the would-be id without appending. That
-deterministic-id-plus-pre-check pattern is why two resume workers can race the same workflow and
+deterministic-id-plus-step-lock pattern is why two resume workers can race after a lease expiry and
 converge ([chapter 07](/docs/keiro/walkthrough/durable-execution/07-the-resume-worker)).
-
-<Callout type="info">
-EP-48 continue-as-new threads a **generation** through this whole path: `runWorkflowWith` resolves the
-current generation once, `appendJournalTx` targets `workflowGenerationStreamName name wid gen`, and the
-id recipe becomes `("keiro":"workflow":name:id:generation:stepName)` so the same step name on two
-generations yields *different* ids. At generation 0 every form here is byte-for-byte unchanged — see
-[chapter 09](/docs/keiro/walkthrough/durable-execution/09-versioning-and-rotation).
-</Callout>
 
 ## Run options and the active-count gauge
 
-`WorkflowRunOptions` carries the snapshot policy, page size, and the opt-in metrics/tracer handles;
-`defaultWorkflowRunOptions` is `Never` / page 100 / no telemetry, so a default-options run "replays and
-behaves exactly as it did" before telemetry existed. The whole run is bracketed to maintain a
-process-global live-run gauge:
+`WorkflowRunOptions` carries the snapshot policy, page size, opt-in metrics/tracer handles, and the
+active patch set; `defaultWorkflowRunOptions` is `Never` / page 100 / no telemetry / no active patches.
+The whole run is bracketed to maintain a process-global live-run gauge:
 
 ```haskell
 bracket_
