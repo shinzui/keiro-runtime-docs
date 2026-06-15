@@ -46,6 +46,12 @@ together or not at all**. This is the crux of the idempotency:
 Because the handler runs inside the transaction, it is an `IntegrationEvent -> Tx.Transaction a`
 (not arbitrary `IO`): its writes are part of the same atomic unit as the dedupe bookkeeping.
 
+When you want poison-message accounting, use `runInboxTransactionWithRetries`. A synchronous handler
+exception is recorded as a failed attempt in a second transaction, and failed rows below the attempt
+ceiling are retried on later deliveries. Once `attempt_count` reaches the ceiling, the wrapper returns
+`InboxPreviouslyFailed` without running the handler; the failed inbox row becomes the durable
+operator record.
+
 ## The dedupe key is identity, not the offset
 
 The dedupe key comes from an `InboxDedupePolicy`. The default,
@@ -71,7 +77,8 @@ path. In the shipped v1 single-transaction wrapper, a row is only ever observed 
 absent, after a rollback) — `processing` never escapes the transaction, and `markFailedTx` is not
 called by `runInboxTransaction`. So `InboxInProgress` and `InboxPreviouslyFailed` results are
 reachable only from those future paths; the v1 happy path is `InboxProcessed` then `InboxDuplicate`
-on redelivery.
+on redelivery. The retrying wrapper is the exception: it records `failed` rows explicitly for
+operator-visible poison accounting.
 
 ## Trade-offs
 

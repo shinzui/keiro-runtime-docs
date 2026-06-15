@@ -61,11 +61,10 @@ schedule: "* * * * *"
 
 ## How it works
 
-`runJobOnce n` builds the job's adapter, takes `n` from its source stream, runs the wrapped handler
-over each (decoding the payload, dead-lettering an undecodable one, mapping the `JobOutcome` to an
-ack), then returns. It blocks only until those `n` are drained — so the process exits promptly and the
-scheduler owns the rhythm. Sizing `n` larger (e.g. `runJobOnce 50 …`) lets one tick clear a backlog
-while still bounding the work per run.
+`runJobOnce n` reads directly from PGMQ, processes up to `n` messages (decoding the payload,
+dead-lettering an undecodable one, mapping the `JobOutcome` to an ack), then returns. It exits when
+the queue is empty or `n` messages have been disposed, so the scheduler owns the rhythm. Sizing `n`
+larger (e.g. `runJobOnce 50 …`) lets one tick clear a backlog while still bounding the work per run.
 
 Pair this with a producer driven by the same clock — a `Router` that fans an event out to enqueues,
 or a periodic sweep that enqueues due items — and the drain stays decoupled from how work arrives. See

@@ -1,11 +1,11 @@
 ---
 title: "Choose an outbox ordering policy"
-description: "Pick PerKeyHeadOfLine, PerSourceStream, StopTheLine, or BestEffort; tune maxAttempts and backoff; and recover rows stranded in publishing."
+description: "Pick PerKeyHeadOfLine, PerSourceStream, StopTheLine, or BestEffort; tune maxAttempts, backoff, and stale-publishing recovery."
 ---
 
 The outbox publisher claims rows under an `OrderingPolicy`, which decides how a stuck row affects
-the rows behind it. This guide helps you pick one, tune the retry/dead-letter knobs, and recover
-the one failure mode the worker does not handle automatically.
+the rows behind it. This guide helps you pick one and tune the retry, dead-letter, and stale-row
+recovery knobs.
 
 <Callout type="info">
 Assumes you publish through the outbox (see [Publish with the
@@ -54,29 +54,22 @@ the table for inspection and, being terminal, stops head-of-line-blocking its ke
 is a fixed delay; `ExponentialBackoff` grows `initial * multiplier ^ (attempt-1)` capped at
 `maxDelay`.
 
-## Recovering stranded publishing rows
+## Recovering stale publishing rows
 
-<Callout type="warn">
-**Known gap (shipped behavior).** The claim query selects only `pending` and `failed` rows — it
-does **not** reclaim `publishing`. A worker that crashes *between* claiming a row (which sets
-`publishing`) and marking it sent/failed strands the row in `publishing` **forever**, and under
-`PerKeyHeadOfLine` / `PerSourceStream` that stranded non-terminal row head-of-line-blocks its key.
-keiro 0.1.0.0 does **not** reclaim it automatically.
-</Callout>
+`publishClaimedOutbox` now begins each pass by calling `requeueStuckOutbox maxAttempts
+publishingTimeout now`. Rows left in `publishing` longer than `publishingTimeout` are reclaimed
+automatically:
 
-This is an operational runbook item, not an automatic recovery. When you observe a key that has
-stopped publishing, look for a row stuck in `publishing` and — **after confirming no worker still
-holds it** (give it well over one publisher tick) — reset it to `pending`:
+- below the attempt ceiling, the row moves back to `failed` and becomes claimable again;
+- at or above the attempt ceiling, the row moves to `dead`;
+- the worker records `keiro.outbox.reclaimed` and `keiro.outbox.deadlettered` when metrics are
+  enabled.
 
-```sql
-UPDATE keiro_outbox
-SET status = 'pending'
-WHERE status = 'publishing'
-  AND updated_at < now() - interval '5 minutes';
-```
-
-The next claim pass picks it up again. Tune the interval to comfortably exceed your worker's tick
-plus publish timeout. Do **not** assume the worker reclaims these rows on its own — it does not.
+Choose `publishingTimeout` above your worst expected broker publish latency. A timeout that is too
+short can republish a row while the first publisher is still running; a timeout that is too long
+increases recovery time after a crash. Publishing remains at-least-once: a crash after the broker
+ack but before `markOutboxSent` can publish the same envelope again, and consumers must still dedupe
+through the inbox.
 
 ## Verify it worked
 

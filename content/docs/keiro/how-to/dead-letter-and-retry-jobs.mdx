@@ -39,6 +39,8 @@ reiQueuePolicy    = RetryPolicy { maxRetries = 3, defaultRetryDelay = RetryDelay
   It only has somewhere to send it when `useDeadLetter = True` — so set both together.
 - **`useDeadLetter = True`** makes [`ensureJobQueue`](/docs/keiro/reference/pgmq-jobs#queue-lifecycle)
   create the `_dlq` queue and configures the adapter to route to it.
+- Prefer `mkRetryPolicy` for runtime configuration; it rejects non-positive `maxRetries` and negative
+  retry delays before a worker starts.
 
 ## Map domain failures to outcomes
 
@@ -74,22 +76,37 @@ operations:
 
 - `Done` → delete the message.
 - `Retry d` → leave it; it becomes visible again after `d` (the next delivery's `attempt` increments).
+- `RetryDefault` → leave it; it becomes visible again after `defaultRetryDelay`.
 - `Dead why` → route to the DLQ as a `PoisonPill why` (or, for a codec rejection, `InvalidPayload`).
 - A message redelivered past `maxRetries` is dead-lettered by the adapter when a DLQ is configured.
+- `JobPayloadFromFuture` from a `keiroJobCodec` payload is retried with `defaultRetryDelay` so a
+  rolling deploy can finish; `JobPayloadMalformed` is dead-lettered.
 
 ## Inspect the dead-letter queue
 
 The DLQ is an ordinary PGMQ queue named `<physical>_dlq`, stored in table
-`pgmq.q_<physical>_dlq`. Read its depth the same way you read any queue:
+`pgmq.q_<physical>_dlq`. Read its depth through the typed metrics helper:
 
 ```haskell
-metrics <- Pgmq.queueMetrics reservationWorkJob.jobQueue.dlqName
+metrics <- jobDlqMetrics reservationWorkJob
 -- metrics.queueLength  -- number of parked messages
 ```
 
 A non-zero DLQ is an operational signal: inspect the parked messages, fix the cause, and (if
 appropriate) re-enqueue them onto the main queue. `keiro-pgmq` does not auto-drain the DLQ — that is
 deliberately an operator decision.
+
+```haskell
+entries <- readDlq reservationWorkJob 10
+moved <- redriveDlq reservationWorkJob 10
+archived <- archiveDlq reservationWorkJob 100
+purgeDlq reservationWorkJob
+```
+
+`readDlq` decodes the preserved original payload when it can and leaves malformed DLQ wrappers
+inspectable. `redriveDlq` is at-least-once: a crash after sending back to the main queue but before
+deleting the DLQ row can leave the payload in both places. `archiveDlq` moves active DLQ rows into
+PGMQ's archive table for audit retention; `purgeDlq` deletes active DLQ rows permanently.
 
 ## Verify it worked
 

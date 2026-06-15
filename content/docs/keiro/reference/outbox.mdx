@@ -27,10 +27,11 @@ data OutboxStatus = OutboxPending | OutboxPublishing | OutboxSent | OutboxFailed
 `OutboxSent` (acked; terminal), `OutboxFailed` (will retry after `next_attempt_at`), `OutboxDead`
 (terminal failure after `maxAttempts`, kept for inspection).
 
-<Callout type="warn">
-A row stranded in `OutboxPublishing` by a worker crash is **not** automatically reclaimed: the
-claim query selects only `pending`/`failed`. Recovery is manual — see [Choose an outbox ordering
-policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy#recovering-stranded-publishing-rows).
+<Callout type="info">
+A row stranded in `OutboxPublishing` by a worker crash is reclaimed by `publishClaimedOutbox` before
+it claims new rows. Stale publishing rows below `maxAttempts` move back to `failed`; rows at or above
+the ceiling move to `dead`. This is at-least-once publishing: a crash after broker ack but before
+`markOutboxSent` can republish the same event, so consumers still dedupe with the inbox.
 </Callout>
 
 ## `OrderingPolicy`
@@ -76,7 +77,8 @@ data OutboxRow = OutboxRow
 ```haskell
 data OutboxPublishOptions = OutboxPublishOptions
   { batchSize :: !Int, maxAttempts :: !Int, backoff :: !BackoffSchedule
-  , orderingPolicy :: !OrderingPolicy, tracer :: !(Maybe Tracer) }
+  , orderingPolicy :: !OrderingPolicy, publishingTimeout :: !NominalDiffTime
+  , tracer :: !(Maybe Tracer) }
 
 data OutboxPublishSummary = OutboxPublishSummary
   { claimed :: !Int, published :: !Int, retried :: !Int, dead :: !Int, haltedOn :: !(Maybe OutboxId) }
@@ -88,13 +90,15 @@ data OutboxPublishSummary = OutboxPublishSummary
     maxAttempts:    { type: "Int", description: "Consecutive failures before a row goes dead.", default: "10" },
     backoff:        { type: "BackoffSchedule", description: "Retry delay curve.", default: "ConstantBackoff 2" },
     orderingPolicy: { type: "OrderingPolicy", description: "Claim-time ordering predicate.", default: "PerKeyHeadOfLine" },
+    publishingTimeout: { type: "NominalDiffTime", description: "How old a publishing row must be before the next publisher pass reclaims it.", default: "300" },
     tracer:         { type: "Maybe Tracer", description: "Optional OpenTelemetry producer-span tracer.", default: "Nothing" },
   }}
 />
 
 ```haskell
--- batch 32, maxAttempts 10, ConstantBackoff 2, PerKeyHeadOfLine, no tracer
+-- batch 32, maxAttempts 10, ConstantBackoff 2, PerKeyHeadOfLine, 300 s publishing timeout, no tracer
 defaultPublishOptions :: OutboxPublishOptions
+mkOutboxPublishOptions :: OutboxPublishOptions -> Either OutboxPublishConfigError OutboxPublishOptions
 ```
 
 `published + retried + dead + (1 if halted)` equals `claimed`; `haltedOn` is populated only under
@@ -155,8 +159,9 @@ Kafka](/docs/keiro/how-to/bridge-the-outbox-to-kafka).
 
 The trailing `Maybe KeiroMetrics` is the opt-in
 [metrics](/docs/keiro/reference/telemetry#metrics-surface) handle: per pass it records the
-`keiro.outbox.backlog` gauge and the `keiro.outbox.published`, `keiro.outbox.retried`, and
-`keiro.outbox.deadlettered` counters. Pass `Nothing` to disable them.
+`keiro.outbox.reclaimed` counter for stale `publishing` rows, the `keiro.outbox.backlog` gauge, and
+the `keiro.outbox.published`, `keiro.outbox.retried`, and `keiro.outbox.deadlettered` counters. Pass
+`Nothing` to disable them.
 
 ## `countOutboxBacklog`
 
@@ -173,17 +178,20 @@ countOutboxBacklog :: (Store :> es) => Eff es Int
 ```haskell
 enqueueOutboxTx   :: OutboxMessage -> Tx.Transaction ()                                   -- INSERT … ON CONFLICT (source, message_id) DO NOTHING
 claimOutboxBatch  :: (Store :> es) => OrderingPolicy -> Int -> UTCTime -> Eff es [OutboxRow]
+requeueStuckOutbox :: (Store :> es) => Int -> NominalDiffTime -> UTCTime -> Eff es (Int, Int)
 markOutboxSent    :: (Store :> es) => OutboxId -> UTCTime -> Eff es ()
 markOutboxFailedTx :: OutboxId -> Text -> Int -> NominalDiffTime -> UTCTime -> Tx.Transaction OutboxStatus
 lookupOutbox      :: (Store :> es) => OutboxId -> Eff es (Maybe OutboxRow)
 listOutbox        :: (Store :> es) => Text -> Eff es [OutboxRow]
+garbageCollectSent :: (Store :> es) => NominalDiffTime -> UTCTime -> Eff es Int
 ```
 
 `claimOutboxBatch` selects `WHERE status IN ('pending', 'failed') AND next_attempt_at <= now`,
 applies the ordering predicate, `ORDER BY (created_at, outbox_id) LIMIT n FOR UPDATE SKIP LOCKED`,
 and transitions claimed rows to `publishing` with `attempt_count + 1`. `markOutboxFailedTx` reads
 the attempt count: `>= maxAttempts` → `OutboxDead`, else `OutboxFailed` with `next_attempt_at = now +
-delay`.
+delay`. `requeueStuckOutbox maxAttempts olderThan now` reclaims stale `publishing` rows and returns
+`(requeued, deadLettered)`. `garbageCollectSent` prunes sent rows older than a retention window.
 
 <Callout type="info">
 **Deterministic claim order.** Both the claim order and the per-key head-of-line "is there an
@@ -250,10 +258,19 @@ CREATE INDEX IF NOT EXISTS keiro_outbox_pending_idx
 CREATE INDEX IF NOT EXISTS keiro_outbox_head_of_line_idx
   ON keiro_outbox (source, message_key, created_at)
   WHERE status NOT IN ('sent', 'dead') AND message_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS keiro_outbox_sent_gc_idx
+  ON keiro_outbox (published_at)
+  WHERE status = 'sent';
+
+CREATE INDEX IF NOT EXISTS keiro_outbox_source_order_idx
+  ON keiro_outbox (source, created_at, outbox_id)
+  WHERE status NOT IN ('sent', 'dead');
 ```
 
 The `UNIQUE (source, message_id)` constraint coalesces idempotent re-enqueues; the partial
-`keiro_outbox_head_of_line_idx` backs the per-key head-of-line predicate.
+`keiro_outbox_head_of_line_idx` backs the per-key head-of-line predicate. The source-order index
+supports `PerSourceStream`, including null keys, and the sent-GC index keeps retention pruning cheap.
 
 <Cards>
   <Card title="The outbox pattern" href="/docs/keiro/explanation/the-outbox-pattern" />

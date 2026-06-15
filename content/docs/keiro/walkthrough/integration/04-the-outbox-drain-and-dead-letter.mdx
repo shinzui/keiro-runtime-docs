@@ -154,7 +154,8 @@ policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
 ```haskell
 data OutboxPublishOptions = OutboxPublishOptions
   { batchSize :: !Int, maxAttempts :: !Int, backoff :: !BackoffSchedule
-  , orderingPolicy :: !OrderingPolicy, tracer :: !(Maybe Tracer) }
+  , orderingPolicy :: !OrderingPolicy, publishingTimeout :: !NominalDiffTime
+  , tracer :: !(Maybe Tracer) }
   deriving stock (Generic)
 
 data OutboxPublishSummary = OutboxPublishSummary
@@ -168,9 +169,11 @@ draining. The summary's invariant is `published + retried + dead + halted == cla
 `halted` is the one row named by `haltedOn` (populated only by `StopTheLine`).
 
 A crash anywhere in this drain — after the claim flipped a row to `publishing` but before the mark —
-is exactly how a row gets stranded in `publishing`; recover it with the [stranded-row
-runbook](/docs/keiro/how-to/choose-an-outbox-ordering-policy#recovering-stranded-publishing-rows)
-linked from [chapter
-03](/docs/keiro/walkthrough/integration/03-the-outbox-enqueue-and-claim).
+is recovered by the next `publishClaimedOutbox` pass after `publishingTimeout`: the row moves back to
+`failed` when it is still below the attempt ceiling, or to `dead` when it has exhausted attempts. See
+[chapter 03](/docs/keiro/walkthrough/integration/03-the-outbox-enqueue-and-claim) for the reclaim
+path and [Choose an outbox ordering
+policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy#recovering-stale-publishing-rows) for
+tuning.
 
 Next: [05 — Kafka mapping](/docs/keiro/walkthrough/integration/05-kafka-mapping).

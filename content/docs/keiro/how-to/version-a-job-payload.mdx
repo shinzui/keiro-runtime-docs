@@ -13,7 +13,7 @@ payload safely.
 ```haskell
 data JobCodec p = JobCodec
   { encodeJob :: p -> Value
-  , decodeJob :: Value -> Either Text p
+  , decodeJob :: Value -> Either JobDecodeError p
   }
 ```
 
@@ -42,7 +42,8 @@ reservationWorkJobCodec =
 Build the record directly when you need to pin a specific on-the-wire shape — for example to preserve
 bytes across a migration, or to use snake-case keys. `hospital-capacity` does this over its existing,
 test-covered JSON codecs so the wire format is unchanged from before the migration. `decodeJob`
-returns `Either Text p`; render your own decode error to `Text` for the dead-letter reason.
+returns `Either JobDecodeError p`; use `JobPayloadMalformed text` for poison payloads, or
+`JobPayloadFromFuture payloadVersion workerVersion` for a transient rolling-deploy mismatch.
 
 ### `keiroJobCodec` — versioned schema evolution
 
@@ -54,12 +55,14 @@ The opt-in upgrade. It gives job payloads the same evolution story event streams
 keiro's [`Codec`](/docs/keiro/reference/codec). On encode it produces a versioned envelope:
 
 ```json
-{ "v": 2, "data": { /* the current-version payload */ } }
+{ "v": 2, "t": "reservation-work", "data": { /* the current-version payload */ } }
 ```
 
-On decode it reads `v`, replays the codec's upcaster chain up to the current `schemaVersion` via
-`migrateToCurrent`, then runs the codec's current decoder. A migration fault surfaces as `Text` (from
-`show`-ing the `CodecError`).
+On decode it reads `v` and `t`, replays the codec's upcaster chain up to the current
+`schemaVersion` via `migrateToCurrent`, then runs the codec's current decoder. A future envelope
+version surfaces as `JobPayloadFromFuture` and is retried after the job policy's default retry delay;
+other migration or decode faults surface as `JobPayloadMalformed`. Legacy envelopes without `t` still
+decode for single-event codecs.
 
 ## Evolve a payload with `keiroJobCodec`
 
@@ -75,8 +78,11 @@ When a payload shape must change while old messages are still on the queue:
      ]
    ```
 
-3. **Redeploy.** New messages are written as `{ "v": 2, … }`; an in-flight `{ "v": 1, … }` is read,
-   run through the v1→v2 upcaster, then decoded as v2 — so the handler always sees the current shape.
+3. **Redeploy upgraded workers before upgraded producers.** New messages are written as
+   `{ "v": 2, "t": ..., "data": ... }`; an in-flight `{ "v": 1, … }` is read, run through the v1→v2
+   upcaster, then decoded as v2 — so the handler always sees the current shape. If an old worker sees
+   a v2 message during rollout, it returns `JobPayloadFromFuture` and retries instead of
+   dead-lettering immediately.
 
 This is exactly keiro's event [codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution)
 story, applied to transient job payloads.

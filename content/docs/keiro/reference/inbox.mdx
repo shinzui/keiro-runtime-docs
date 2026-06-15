@@ -1,6 +1,6 @@
 ---
 title: "Inbox"
-description: "Reference for Keiro.Inbox: runInboxTransaction, the dedupe policy/result/status types, garbageCollectCompleted, the Kafka decoder, and the keiro_inbox table."
+description: "Reference for Keiro.Inbox: runInboxTransaction, retrying poison-message accounting, the dedupe policy/result/status types, garbageCollectCompleted, the Kafka decoder, and the keiro_inbox table."
 ---
 
 The types and functions on this page live in `Keiro.Inbox` (which re-exports `Keiro.Inbox.Types`),
@@ -44,6 +44,31 @@ runInboxTransactionWithKey ::
   Eff es (InboxResult a)
 ```
 
+## `runInboxTransactionWithRetries`
+
+Opt-in poison-message accounting around the same inbox identity scheme.
+
+```haskell
+runInboxTransactionWithRetries ::
+  forall a es. (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics -> Int -> InboxDedupePolicy -> IntegrationEvent -> Maybe KafkaDeliveryRef ->
+  (IntegrationEvent -> Tx.Transaction a) ->
+  Eff es (Either InboxError (InboxResult a))
+
+runInboxTransactionWithRetriesKey ::
+  forall a es. (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics -> Int -> Text -> Text -> IntegrationEvent -> Maybe KafkaDeliveryRef ->
+  (IntegrationEvent -> Tx.Transaction a) ->
+  Eff es (InboxResult a)
+```
+
+The `Int` is the attempt ceiling. A synchronous handler exception rolls back the handler transaction,
+then records a failed attempt in a second transaction and returns `InboxHandlerFailed err attempts`.
+A failed row with `attempt_count < ceiling` is retried; a failed row at or above the ceiling returns
+`InboxPreviouslyFailed` without running the handler, letting the consumer commit its offset and leave
+the failed inbox row as the operator-visible dead-letter record. `Tx.condemn` keeps the original
+rollback semantics and is not counted as a handler exception by this wrapper.
+
 ## `InboxDedupePolicy`
 
 Which identity becomes the inbox primary key.
@@ -86,6 +111,7 @@ data InboxResult a
   | InboxDuplicate                -- a prior delivery already completed; handler NOT run
   | InboxInProgress               -- a prior attempt is in-flight (async paths only); transient
   | InboxPreviouslyFailed !(Maybe Text)  -- a prior attempt recorded a permanent failure
+  | InboxHandlerFailed !Text !Int -- retrying wrapper: handler raised; carries error and attempts
 ```
 
 ## `InboxError`
@@ -121,7 +147,8 @@ recommends 30 days). Failed rows are never GC'd.
 
 Count non-terminal inbox rows — those still `processing` (in flight) or `failed` (awaiting a retry).
 This is the source for the [`keiro.inbox.backlog`](/docs/keiro/reference/telemetry#metric-catalogue)
-gauge; `runInboxTransaction` records it each transaction.
+gauge; the inbox wrappers record it when metrics are enabled. The retrying wrapper also records
+`keiro.inbox.poisoned` when a handler failure reaches the configured attempt ceiling.
 
 ```haskell
 countInboxBacklog :: (Store :> es) => Eff es Int
@@ -194,11 +221,13 @@ CREATE TABLE IF NOT EXISTS keiro_inbox (
   completed_at TIMESTAMPTZ,
   failed_at TIMESTAMPTZ,
   last_error TEXT,
+  attempt_count BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (source, dedupe_key)
 );
 
 CREATE INDEX IF NOT EXISTS keiro_inbox_received_idx ON keiro_inbox (received_at);
 CREATE INDEX IF NOT EXISTS keiro_inbox_completed_idx ON keiro_inbox (completed_at) WHERE status = 'completed';
+CREATE INDEX IF NOT EXISTS keiro_inbox_backlog_idx ON keiro_inbox (status) WHERE status IN ('processing', 'failed');
 ```
 
 The `PRIMARY KEY (source, dedupe_key)` is what makes the `INSERT … ON CONFLICT DO NOTHING` dedupe

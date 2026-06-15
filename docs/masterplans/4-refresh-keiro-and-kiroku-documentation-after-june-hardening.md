@@ -34,7 +34,7 @@ The split keeps most child plans independently verifiable. EP-1 and EP-2 can pro
 | EP-1 | Refresh Kiroku write path schema and store API documentation | `docs/plans/29-refresh-kiroku-write-path-schema-and-store-api-documentation.md` | None | None | Complete |
 | EP-2 | Refresh Kiroku subscriptions adapter observability and metrics documentation | `docs/plans/30-refresh-kiroku-subscriptions-adapter-observability-and-metrics-documentation.md` | None | EP-1 | Complete |
 | EP-3 | Refresh Keiro command core read side and schema documentation | `docs/plans/31-refresh-keiro-command-core-read-side-and-schema-documentation.md` | None | EP-1 | Complete |
-| EP-4 | Refresh Keiro messaging workers and PGMQ documentation | `docs/plans/32-refresh-keiro-messaging-workers-and-pgmq-documentation.md` | None | EP-2 | Not Started |
+| EP-4 | Refresh Keiro messaging workers and PGMQ documentation | `docs/plans/32-refresh-keiro-messaging-workers-and-pgmq-documentation.md` | None | EP-2 | Complete |
 | EP-5 | Refresh Keiro durable workflow resume and lifecycle documentation | `docs/plans/33-refresh-keiro-durable-workflow-resume-and-lifecycle-documentation.md` | None | EP-3 | Not Started |
 | EP-6 | Reconcile cross library integration docs and source sync pointers | `docs/plans/34-reconcile-cross-library-integration-docs-and-source-sync-pointers.md` | EP-1, EP-2, EP-3, EP-4, EP-5 | None | Not Started |
 
@@ -75,8 +75,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] EP-2: Validate subscription docs against current source, adapter tests, metrics tests, and source pointer notes.
 - [x] EP-3: Audit Keiro command, codec, stream, snapshot, projection, read-model, test-support, and migration changes and update reference/how-to/walkthrough docs.
 - [x] EP-3: Validate Keiro command/read-side docs against current source and docs app checks.
-- [ ] EP-4: Audit Keiro inbox/outbox/timer/shard/process-manager/router/PGMQ changes and update messaging, worker, and background-job docs.
-- [ ] EP-4: Validate worker and PGMQ docs against current source and docs app checks.
+- [x] EP-4: Audit Keiro inbox/outbox/timer/shard/process-manager/router/PGMQ changes and update messaging, worker, and background-job docs.
+- [x] EP-4: Validate worker and PGMQ docs against current source and docs app checks.
 - [ ] EP-5: Audit Keiro durable workflow hardening, instance leasing, sleep/wake, child workflow, GC, and lifecycle changes and update workflow docs.
 - [ ] EP-5: Validate durable workflow docs against current source and docs app checks.
 - [ ] EP-6: Reconcile integration pages, landing/index pages, navigation, source-sync pointers, and cross-library terminology after EP-1 through EP-5.
@@ -100,6 +100,13 @@ and the milestone. This section provides an at-a-glance view of the entire initi
   decoding and upcasting are `EventType`-aware, command snapshot write failures are advisory and
   metric-counted after a successful append, async projections use centralized
   `kiroku.keiro_projection_dedup`, and migration drift is enforced by expected-schema fixtures.
+- EP-4 found that Keiro's messaging hardening changed multiple operational runbooks: outbox
+  publishing rows are auto-reclaimed before claims, inbox handler failures are counted toward poison
+  thresholds, shard readers are restarted through reconciliation after lease/reader errors, and
+  router/process-manager workers classify transient failures for retry while finalizing acks once.
+- EP-4 found that `keiro-pgmq` now documents a much broader queue API than older pages assumed,
+  including classified job decode errors, `RetryDefault`, tuning validation, producer headers,
+  tracing, batch enqueue, FIFO groups, queue provisioning, DLQ redrive/archive, and queue metrics.
 
 
 ## Decision Log
@@ -135,3 +142,9 @@ Compare the result against the original vision.
   `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, `git diff --check`, and a stale-claim
   scan for superseded strong-consistency, codec, migration-count, and projection-dedup wording.
   EP-6 still owns the final source-sync pointer and cross-library reconciliation.
+- EP-4 completed on 2026-06-15. It updated Keiro messaging worker, telemetry, background-job,
+  PGMQ, and adjacent walkthrough docs against `shinzui/keiro` commit
+  `f1d67a01b7457387a4861e7268d1c521ef82287d`; validation passed with `pnpm run typecheck`,
+  `pnpm run format:check`, `pnpm build`, `git diff --check`, and a stale-claim scan for superseded
+  outbox, codec, PGMQ, and process-manager/router delivery wording. EP-6 still owns the final
+  source-sync pointer and cross-library reconciliation.

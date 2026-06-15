@@ -136,7 +136,7 @@ on a multi-stream atomic commit.
 This is why the manager works correctly under **at-least-once** delivery, which is all a
 subscription substrate like shibuya promises.
 
-## The sharp edge: a failed dispatch wedges the worker
+## The sharp edge: deterministic dispatch failures halt the worker
 
 A dispatched command can come back three ways, captured in `PMCommandResult`:
 
@@ -144,15 +144,14 @@ A dispatched command can come back three ways, captured in `PMCommandResult`:
 data PMCommandResult target
   = PMCommandAppended  !(CommandResult target)  -- the dispatch appended events
   | PMCommandDuplicate !EventId                 -- idempotent replay; the id already existed
-  | PMCommandFailed    !CommandError            -- fatal: the worker retries the source event
+  | PMCommandFailed    !CommandError            -- worker classifies retry vs halt
 ```
 
-`PMCommandFailed` is **fatal by design**. When a process manager runs as a live subscription
-(`runProcessManagerWorker`), a reaction that returns `Left`, or that a higher-level loop treats as
-failed, finalizes `AckHalt (HaltFatal …)` — so the source event is **retried forever**. That is
-the correct behavior for a *transient* failure, but it is a trap for a *benign* rejection: if a
-target aggregate rejects a command simply because it is already in the right state, and that
-surfaces as `PMCommandFailed`, the worker wedges.
+`PMCommandFailed` is classified by the worker. Transient store/conflict failures finalize
+`AckRetry transientRetryDelay`; deterministic command errors finalize `AckHalt (HaltFatal …)`. The
+retry path is correct for a *transient* failure, but deterministic halts are a trap for a *benign*
+rejection: if a target aggregate rejects a command simply because it is already in the right state,
+and that surfaces as `PMCommandFailed`, the worker wedges.
 
 The fix is a modeling discipline, not a flag: **target aggregates should model benign rejections
 as total transitions** so they never produce a `CommandError` in the first place. The jitsurei

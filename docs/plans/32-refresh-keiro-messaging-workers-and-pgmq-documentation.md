@@ -27,16 +27,28 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Audit the Keiro messaging and `keiro-pgmq` commits from `9fa283b..HEAD`.
-- [ ] Update inbox, outbox, timer, shard, router, and process-manager worker docs for current delivery and crash-recovery behavior.
-- [ ] Update PGMQ reference/tutorial/how-to/cookbook docs for current queue, codec, retry, headers, FIFO, DLQ, metrics, and retention APIs.
-- [ ] Update integration docs or record cross-link needs for EP-6.
-- [ ] Run docs validation commands and record results.
+- [x] Audit the Keiro messaging and `keiro-pgmq` commits from `9fa283b..HEAD`.
+- [x] Update inbox, outbox, timer, shard, router, and process-manager worker docs for current delivery and crash-recovery behavior.
+- [x] Update PGMQ reference/tutorial/how-to/cookbook docs for current queue, codec, retry, headers, FIFO, DLQ, metrics, and retention APIs.
+- [x] Update integration docs or record cross-link needs for EP-6.
+- [x] Run docs validation commands and record results.
 
 
 ## Surprises & Discoveries
 
-(None yet.)
+- The outbox no longer needs a manual stranded-publishing runbook for ordinary worker crashes. Current
+  `publishClaimedOutbox` reclaims stale `Publishing` rows before claiming new work, and
+  `garbageCollectSent` handles sent-row pruning.
+- `keiro-pgmq` grew from a small typed job wrapper into a broader queue toolkit: `RetryDefault`,
+  classified `JobDecodeError`, `JobTuning`, producer headers, batch enqueue, trace propagation,
+  FIFO message groups, queue provisioning, DLQ inspection/redrive/archive, and queue metrics all
+  needed first-class documentation.
+- Router and process-manager workers now classify transient store/command failures for retry while
+  halting deterministic failures. Their ack handles are finalized exactly once, so older docs that
+  treated any `PMCommandFailed` as fatal were stale.
+- Sharded subscription workers survive lease and reader errors via `onShardError` reporting and
+  reconciliation, while the inbox retry wrapper separately records failed handler attempts and
+  poisoned messages.
 
 
 ## Decision Log
@@ -53,7 +65,17 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Completed on 2026-06-15 against `shinzui/keiro` commit
+`f1d67a01b7457387a4861e7268d1c521ef82287d`. The updated docs cover current inbox retry
+accounting, outbox stale-publishing reclaim and sent-row GC, sharded reader recovery,
+router/process-manager delivery classification, telemetry counters, and the expanded `keiro-pgmq`
+surface for codec errors, retry tuning, producer metadata, queue provisioning, FIFO ordering, DLQ
+operations, and metrics.
+
+Validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, `git diff
+--check`, and a focused stale-claim scan for superseded stranded-outbox, decode, queue-metric, and
+process-manager failure wording. EP-6 still owns final source-sync pointer updates and broad
+integration reconciliation.
 
 
 ## Context and Orientation

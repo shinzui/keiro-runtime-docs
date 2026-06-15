@@ -1,6 +1,6 @@
 ---
 title: "Background jobs (keiro-pgmq)"
-description: "Reference for keiro-pgmq: the typed Job, JobOutcome, RetryPolicy, the producers, the run shapes (runJobWorkers / runJobOnce), the JobCodec, and the QueueRef / JobRuntime plumbing."
+description: "Reference for keiro-pgmq: the typed Job, JobOutcome, RetryPolicy, JobTuning, producers, queue provisioning, FIFO groups, DLQ helpers, metrics, run shapes, JobCodec, and QueueRef / JobRuntime plumbing."
 ---
 
 <Callout type="info">
@@ -24,8 +24,10 @@ It is split into two layers:
 
 - **`Keiro.PGMQ.Runtime`** (layer 1, transport-agnostic): queue-name derivation (`QueueRef`) and the
   `Pgmq : Tracing : Error PgmqRuntimeError : IOE` effect-stack runner plus pool/tracer lifecycle.
-- **`Keiro.PGMQ.Job`** (layer 2, the ergonomics): the typed `Job`, the producers, the run shapes,
-  built on layer 1. `Keiro.PGMQ.Codec` holds the payload codecs both share.
+- **`Keiro.PGMQ.Job`** (layer 2, the ergonomics): the typed `Job`, retry and tuning validation,
+  producers, queue provisioning, FIFO groups, and the run shapes, built on layer 1.
+- **`Keiro.PGMQ.Dlq`** and **`Keiro.PGMQ.Metrics`**: operator helpers for dead-letter inspection,
+  redrive, retention, and queue depth/age metrics.
 
 <Callout type="warn">
 `keiro-pgmq` is for **case A — transient background jobs that are not domain events**. It is *not*
@@ -67,13 +69,15 @@ reservationWorkJob =
 data JobOutcome
   = Done            -- ^ processed successfully; delete the message
   | Retry !RetryDelay  -- ^ leave on the queue; redeliver after the delay
+  | RetryDefault    -- ^ redeliver after the policy's default retry delay
   | Dead !Text      -- ^ poison; route to the dead-letter queue with this reason
   deriving stock (Show)
 ```
 
 What a job handler decides. It never exposes shibuya/PGMQ wire types to the caller. `keiro-pgmq`
 translates it into a shibuya `AckDecision` internally: `Done → AckOk` (delete), `Retry d → AckRetry
-d` (redeliver), `Dead why → AckDeadLetter (PoisonPill why)` (DLQ).
+d` (redeliver), `RetryDefault → AckRetry jobPolicy.defaultRetryDelay`, and `Dead why →
+AckDeadLetter (PoisonPill why)` (DLQ).
 
 <Callout type="info">
 `JobOutcome` has a `Show` instance but **no `Eq`** — pattern-match it in tests rather than comparing
@@ -113,6 +117,18 @@ data RetryPolicy = RetryPolicy
 defaultRetryPolicy :: RetryPolicy
 ```
 
+Prefer `mkRetryPolicy` over the raw constructor for application configuration:
+
+```haskell
+data RetryPolicyConfigError = NonPositiveMaxRetries Int64 | NegativeRetryDelay RetryDelay
+
+mkRetryPolicy :: Int64 -> RetryDelay -> Bool -> Either RetryPolicyConfigError RetryPolicy
+```
+
+`maxRetries < 1` is rejected because PGMQ's `read_ct` is already 1 on first delivery; such a policy
+would dead-letter every message before the handler runs. Negative retry delays are rejected because
+they can create immediate redelivery storms.
+
 <Callout type="info">
 Both proving-ground consumers **override** `defaultRetryPolicy`. `hospital-capacity` uses
 `RetryPolicy { maxRetries = 3, defaultRetryDelay = RetryDelay 5, useDeadLetter = True }`; `rei`'s
@@ -127,12 +143,32 @@ jobs](/docs/keiro/how-to/dead-letter-and-retry-jobs).
 ```haskell
 enqueue          :: (Pgmq :> es, IOE :> es) => Job p -> p -> Eff es MessageId
 enqueueWithDelay :: (Pgmq :> es, IOE :> es) => Job p -> Int32 -> p -> Eff es MessageId
+enqueueWithHeaders :: (Pgmq :> es, IOE :> es) => Job p -> MessageHeaders -> p -> Eff es MessageId
+enqueueWithHeadersAndDelay :: (Pgmq :> es, IOE :> es) => Job p -> Int32 -> MessageHeaders -> p -> Eff es MessageId
+enqueueBatch :: (Pgmq :> es, IOE :> es) => Job p -> [p] -> Eff es [MessageId]
+enqueueBatchWithDelay :: (Pgmq :> es, IOE :> es) => Job p -> Int32 -> [p] -> Eff es [MessageId]
+enqueueBatchWithHeaders :: (Pgmq :> es, IOE :> es) => Job p -> [(MessageHeaders, p)] -> Eff es [MessageId]
+enqueueTraced :: (Pgmq :> es, IOE :> es) => TracerProvider -> Job p -> MessageHeaders -> p -> Eff es MessageId
+enqueueTracedWithDelay :: (Pgmq :> es, IOE :> es) => TracerProvider -> Job p -> Int32 -> MessageHeaders -> p -> Eff es MessageId
+enqueueToGroup :: (Pgmq :> es, IOE :> es) => Job p -> Text -> p -> Eff es MessageId
+enqueueToGroupWithDelay :: (Pgmq :> es, IOE :> es) => Job p -> Int32 -> Text -> p -> Eff es MessageId
 ```
 
 `enqueue` encodes `p` with the job's codec and sends it to the queue's `physicalName` for immediate
 delivery. `enqueueWithDelay` adds a visibility delay (in **seconds**, PGMQ's `Delay` is `Int32`)
 before first delivery — e.g. `enqueueWithDelay job 30 p` makes the message invisible for 30 s.
 `MessageId` is PGMQ's `newtype` over `Int64`.
+
+Headers are arbitrary JSON objects stored in PGMQ's `headers` column. The drain path exposes them in
+`JobContext.headers`; the supervised shibuya worker path does not surface arbitrary headers to the
+handler, though it can still use trace context internally. Batch helpers return one `MessageId` per
+payload in order and short-circuit empty input to `[]`.
+
+`enqueueTraced` injects the current OpenTelemetry trace context into headers using the supplied
+`TracerProvider` and additively merges those trace headers with `extraHeaders`; caller-supplied keys
+win. `enqueueToGroup` writes the reserved `x-pgmq-group` header for FIFO grouped delivery. Consume
+grouped jobs with ordered `JobTuning`; within one group messages are delivered in send order, while
+different groups can proceed in parallel.
 
 <Callout type="warn">
 **`enqueue` runs in its own PGMQ transaction — it is *not* atomic with a domain write.** If you need
@@ -146,18 +182,61 @@ your write, the way the [outbox](/docs/keiro/reference/outbox) does. `keiro-pgmq
 
 ```haskell
 ensureJobQueue :: (Pgmq :> es) => Job p -> Eff es ()
+ensureJobQueueWith :: (Pgmq :> es) => QueueProvision -> Job p -> Eff es ()
+ensureFifoIndex :: (Pgmq :> es) => Job p -> Eff es ()
+ensureOrderedJobQueue :: (Pgmq :> es) => Job p -> Eff es ()
 ```
 
 Idempotent: create the main queue, and the DLQ too when `jobPolicy.useDeadLetter` is `True`.
-`Pgmq.createQueue` is idempotent in PGMQ, so this is safe to call at every worker startup. If you
-already create your queues with SQL migrations, you can skip it (it is harmless to add later).
+`ensureJobQueue` is `ensureJobQueueWith standardProvision`. If you already create your queues with
+SQL migrations, you can skip it (it is harmless to add later).
+
+```haskell
+data QueueKind = StandardKind | UnloggedKind | PartitionedKind PartitionSpec
+data PartitionSpec = PartitionSpec { partitionInterval :: Text, retentionInterval :: Text }
+data QueueProvision = QueueProvision { provisionKind :: QueueKind, provisionFifoIndex :: Bool }
+
+standardProvision :: QueueProvision
+unloggedProvision :: QueueProvision
+partitionedProvision :: PartitionSpec -> QueueProvision
+withFifoIndexProvision :: QueueProvision -> QueueProvision
+queueProvisionConfigs :: QueueProvision -> Job p -> [Config.QueueConfig]
+```
+
+`UnloggedKind` trades crash durability for faster transient work; `PartitionedKind` requires a
+`pg_partman`-enabled server. `ensureOrderedJobQueue` creates the main queue, optional DLQ, and the
+FIFO GIN index used by grouped reads. The DLQ is always a standard queue with no FIFO index.
+
+## `JobTuning` and ordering
+
+```haskell
+data JobPolling = PollEvery NominalDiffTime | LongPoll Int32 Int32
+data JobOrdering = Unordered | FifoThroughput | FifoRoundRobin
+data JobTuning = JobTuning
+  { visibilityTimeout :: Int32, batchSize :: Int32, polling :: JobPolling, ordering :: JobOrdering }
+
+defaultJobTuning :: JobTuning
+mkJobTuning :: Int32 -> Int32 -> JobPolling -> Either JobTuningConfigError JobTuning
+withOrdering :: JobOrdering -> JobTuning -> JobTuning
+```
+
+`defaultJobTuning` is a 30 s visibility timeout, batch size 1, `PollEvery 1`, and unordered reads.
+`mkJobTuning` rejects non-positive visibility timeouts, batch sizes, and polling intervals. Use
+`withOrdering FifoThroughput` or `withOrdering FifoRoundRobin` with messages enqueued by
+`enqueueToGroup` to enable strict per-group delivery. `FifoThroughput` fills a batch from the oldest
+eligible group first; `FifoRoundRobin` interleaves eligible groups fairly.
 
 ## Consuming work
 
 ```haskell
 jobProcessor ::
-  (Pgmq :> es, IOE :> es, Tracing :> es) =>
+  (Pgmq :> es, Error PgmqRuntimeError :> es, IOE :> es, Tracing :> es) =>
   Job p -> (p -> Eff es JobOutcome) ->
+  Eff es (ProcessorId, QueueProcessor es)
+
+jobProcessorWithContext ::
+  (Pgmq :> es, Error PgmqRuntimeError :> es, IOE :> es, Tracing :> es) =>
+  JobTuning -> Job p -> (JobContext es -> p -> Eff es JobOutcome) ->
   Eff es (ProcessorId, QueueProcessor es)
 
 runJobWorkers ::
@@ -169,6 +248,10 @@ runJobWorkers ::
 runJobOnce ::
   (Pgmq :> es, IOE :> es, Tracing :> es) =>
   Int -> Job p -> (p -> Eff es JobOutcome) -> Eff es ()
+
+runJobOnceWithContext ::
+  (Pgmq :> es, IOE :> es, Tracing :> es) =>
+  JobTuning -> Int -> Job p -> (JobContext es -> p -> Eff es JobOutcome) -> Eff es Int
 ```
 
 - **`jobProcessor`** builds one shibuya `QueueProcessor` from a job and its handler: a `pgmqAdapter`
@@ -179,11 +262,21 @@ runJobOnce ::
   `SupervisionStrategy` and inbox size. It **returns the `AppHandle`** — it does not block; the
   caller decides whether to block on it (and can later `stopAppGracefully` it). `SupervisionStrategy`
   is `IgnoreFailures | StopAllOnFailure`.
+- **`jobProcessorWithContext`** accepts explicit `JobTuning` and gives the handler a `JobContext`
+  with `extendLease`, zero-based `attempt`, and path-dependent `headers`.
+- **`runJobOnceWithContext`** is the tuned, context-aware one-shot drain and returns the number of
+  messages disposed. `runJobOnce` uses `defaultJobTuning` and discards that count.
 - **`runJobOnce`** is the **one-shot drain** of up to `n` messages (the `hospital-capacity` cadence):
-  it builds the job's adapter, takes `n` from its source stream, runs the wrapped handler over each
-  (auto-acking via the returned `AckDecision`), then **stops**. It blocks until those `n` are drained.
+  it reads directly from PGMQ, runs the wrapped handler over available messages, acks each result,
+  then **stops**. It returns promptly when the queue is empty or `n` messages have been disposed.
 
 See [Choose a job run cadence](/docs/keiro/how-to/choose-a-job-run-cadence) for when to use which.
+
+Delivery is at-least-once. A handler must be idempotent because a worker crash, handler exception,
+or visibility-timeout expiry can redeliver the same message. Crash redelivery follows the active
+visibility timeout; the retry policy delay applies only to explicit `Retry` and `RetryDefault`
+outcomes. Messages whose read count exceeds `maxRetries` are dead-lettered before the handler sees
+them.
 
 ### What the wrapped handler does for you
 
@@ -200,7 +293,7 @@ adapter's message type is always `aeson`'s `Value` (raw JSON) for PGMQ.
 ```haskell
 data JobCodec p = JobCodec
   { encodeJob :: p -> Value
-  , decodeJob :: Value -> Either Text p
+  , decodeJob :: Value -> Either JobDecodeError p
   }
 ```
 
@@ -218,16 +311,44 @@ keiroJobCodec :: Codec p -> JobCodec p
 
 - **`aesonJobCodec`** — raw `aeson` encode/decode. The mechanical choice when your payload already
   has `ToJSON`/`FromJSON` instances.
-- **`keiroJobCodec`** — the versioned upgrade. It wraps payloads in a `{ "v": <schemaVersion>,
-  "data": <payload> }` envelope and, on decode, reads the version, replays the
-  [`Codec`](/docs/keiro/reference/codec)'s upcaster chain via `migrateToCurrent`, then runs the
-  codec's current decoder. This gives job payloads the same schema-evolution story event streams
-  have. Codec faults are surfaced as `Text` (via `show` of the `CodecError`).
+- **`keiroJobCodec`** — the versioned upgrade. It wraps payloads in a `{ "v": <schemaVersion>, "t":
+  <event-type>, "data": <payload> }` envelope and, on decode, reads the version and event type, replays
+  the [`Codec`](/docs/keiro/reference/codec)'s upcaster chain via `migrateToCurrent`, then runs the
+  codec's current decoder. Legacy envelopes without `"t"` still decode for single-event codecs.
+  Future-version envelopes return `JobPayloadFromFuture payloadVersion workerVersion`, which the job
+  runner retries with `defaultRetryDelay`; malformed payloads return `JobPayloadMalformed`.
 - **A literal `JobCodec { encodeJob, decodeJob }`** — when you want an exact, hand-written wire
   format (e.g. snake-case keys), build the record directly. `hospital-capacity` does this over its
   existing, test-covered JSON codecs so the on-the-wire bytes are unchanged.
 
 See [Version a job payload](/docs/keiro/how-to/version-a-job-payload).
+
+## DLQ helpers and queue metrics
+
+```haskell
+data DlqEntry p = DlqEntry
+  { dlqMessageId :: MessageId, reason :: Text, originalPayload :: Either JobDecodeError p
+  , originalMessageId :: Maybe Int64, originalEnqueuedAt :: Maybe UTCTime
+  , readCount :: Maybe Int64, rawBody :: Value }
+
+readDlq :: (Pgmq :> es, IOE :> es) => Job p -> Int32 -> Eff es [DlqEntry p]
+redriveDlq :: (Pgmq :> es, IOE :> es) => Job p -> Int -> Eff es Int
+purgeDlq :: (Pgmq :> es, IOE :> es) => Job p -> Eff es ()
+archiveDlq :: (Pgmq :> es, IOE :> es) => Job p -> Int -> Eff es Int
+archiveDlqEntry :: (Pgmq :> es, IOE :> es) => Job p -> MessageId -> Eff es Bool
+
+jobQueueMetrics :: (Pgmq :> es) => Job p -> Eff es QueueMetrics
+jobDlqMetrics :: (Pgmq :> es) => Job p -> Eff es QueueMetrics
+queueDepth :: (Pgmq :> es) => Job p -> Eff es Int64
+allJobMetrics :: (Pgmq :> es) => Eff es [QueueMetrics]
+```
+
+`readDlq` decodes shibuya's DLQ wrapper and preserves malformed wrappers as inspectable entries.
+`redriveDlq` sends the preserved original payload back to the main queue and deletes the DLQ row;
+redrive is at-least-once because a crash between those statements can leave the payload in both
+places. `archiveDlq` moves active DLQ rows into PGMQ's archive table `pgmq.a_<dlq>` for retention;
+`purgeDlq` deletes active DLQ rows permanently. Use `jobDlqMetrics.queueLength` for DLQ depth
+alerts.
 
 ## `QueueRef` and `queueRef`
 
@@ -251,7 +372,9 @@ name plus a matching `_dlq` name. It is **total** — it sanitizes rather than f
 2. replaces every character that is not `[a-z0-9_]` with `_`;
 3. collapses runs of `_` to one and trims leading/trailing `_`;
 4. guarantees a leading ASCII letter (prefixing `q` otherwise; empty input becomes `"q"`);
-5. trims to **43** characters so the `_dlq` suffix still fits under the 47-char ceiling.
+5. if the sanitized base is short enough and does not end in `_dlq`, uses it byte-for-byte;
+6. otherwise uses `<first 26 chars>_<16 hex chars>` where the suffix is FNV-1a-64 over the full
+   logical name, keeping the derived DLQ under the 47-character ceiling.
 
 ```haskell
 let q = queueRef "hospital_capacity.reservation_work"
@@ -263,6 +386,12 @@ let q = queueRef "hospital_capacity.reservation_work"
 If the sanitizer ever produced an invalid `QueueName` (it should not), `queueRef` fails loudly with
 `error` and a clear message — that is a programmer error, not a runtime input error. PGMQ stores the
 queue's rows in a table named `pgmq.q_<physicalName>`; the DLQ is `pgmq.q_<physicalName>_dlq`.
+</Callout>
+
+<Callout type="warn">
+Pre-existing deployments with logical names whose sanitized base exceeded 43 characters, or ended in
+`_dlq`, derive a different physical queue after the hashed-name hardening. Drain the old physical
+queue before upgrading or temporarily run a worker against the old name.
 </Callout>
 
 ## `JobRuntime` and the runners

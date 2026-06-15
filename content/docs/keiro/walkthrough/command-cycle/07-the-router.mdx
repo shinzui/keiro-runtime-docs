@@ -176,31 +176,30 @@ basis of the `eventAlreadyIn` pre-check and the `DuplicateEvent` fold.
 runRouterWorker options router Adapter{source = adapterSource} decodeMessage =
   Streamly.fold Fold.drain $ Streamly.mapM handleIngested adapterSource
   where
-    handleIngested Ingested{envelope = Envelope{payload = message}, ack = AckHandle finalizeAck} = do
+    handleIngested Ingested{envelope = env@Envelope{payload = message}, ack = AckHandle finalizeAck} = do
       decision <- case decodeMessage message of
-        Nothing -> pure (AckHalt (HaltFatal "router worker could not decode message"))
+        Nothing -> decideForPoison "router worker could not decode message" env
         Just (recorded, input) -> do
-          RouterResult results <- runRouterOnce options router recorded input
-          pure (ackDecisionFor results)
+          outcome <- tryError @StoreError (runRouterOnce options router recorded input)
+          pure (ackDecisionFor outcome)
       finalizeAck decision
       pure decision
 
-    ackDecisionFor results =
-      case [err | PMCommandFailed err <- results] of
-        (err : _) -> AckHalt (HaltFatal (Text.pack (show err)))
-        [] -> AckOk
+    ackDecisionFor outcome =
+      -- transient failures retry; deterministic failures halt; all appended/duplicate results ack OK
+      ...
 ```
 
 `runRouterWorker` runs the router as a live subscription, draining a shibuya `Adapter` and finalizing
-each message's `AckHandle` with a decision. The ack policy is strict: an undecodable message halts
-fatally (`AckHalt`); after dispatch, an all-`PMCommandAppended`/`PMCommandDuplicate` batch acks `AckOk`;
-and **any** `PMCommandFailed` halts so the source event is retried — which the deterministic ids make
-safe, because already-applied targets fold to `PMCommandDuplicate` on the retry.
+each message's `AckHandle` with a decision. The ack policy is strict but classified: an undecodable
+message follows `PoisonPolicy` (default halt); after dispatch, an
+all-`PMCommandAppended`/`PMCommandDuplicate` batch acks `AckOk`; transient failures retry after
+`transientRetryDelay`; deterministic failures halt.
 
 <Callout type="warn">
-Because any `PMCommandFailed` halts and retries the source event, a *benign* domain rejection (a target
-with no matching edge) would wedge the worker. Model such rejections as **total** transitions (an
-ε-complement self-loop) in the target transducer so they never become `PMCommandFailed`.
+Because a deterministic `PMCommandFailed` halts, a *benign* domain rejection (a target with no matching
+edge) would wedge the worker. Model such rejections as **total** transitions (an ε-complement
+self-loop) in the target transducer so they never become `PMCommandFailed`.
 </Callout>
 
 ## The five fields, filled in: `pagingRouter`

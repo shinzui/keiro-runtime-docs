@@ -115,10 +115,14 @@ runRouterWorker ::
 The worker decodes each message to `(RecordedEvent, input)` and finalizes the ingested message's
 `AckHandle`:
 
-- an **undecodable** message → `AckHalt (HaltFatal …)`;
+- an **undecodable** message → the configured `PoisonPolicy` from `WorkerOptions` (default
+  `AckHalt (HaltFatal …)`);
 - every dispatch `PMCommandAppended` / `PMCommandDuplicate` → `AckOk`;
-- any `PMCommandFailed` → `AckHalt (HaltFatal …)`, so the source event is retried (deterministic ids
-  make retry safe).
+- transient `PMCommandFailed` values → `AckRetry transientRetryDelay`;
+- deterministic `PMCommandFailed` values → `AckHalt (HaltFatal …)`.
+
+Use `runRouterWorkerWith` to override the poison policy, transient retry delay, or dispatch metrics.
+The worker invokes the adapter ack handle exactly once per ingested message.
 
 The worked example is `jitsurei` `pagingRouter` (`jitsurei/src/Jitsurei/Paging.hs`): for each
 `IncidentRaisedData` it `runQuery`s the on-call read model and dispatches one `SendPage` per

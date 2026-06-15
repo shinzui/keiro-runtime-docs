@@ -45,10 +45,10 @@ function, and marks it sent only **after the broker acknowledges**.
 ## At-least-once publish (and why that's fine)
 
 The worker marks a row `sent` only after the broker acks. If it crashes between produce and mark,
-the row stays claimable and is published **again** — at-least-once publish. That double-send is
-harmless precisely because the consuming [inbox](/docs/keiro/explanation/the-inbox-pattern)
-deduplicates on the stable `messageId`. The two patterns are designed as a pair: at-least-once
-publish + idempotent receive = exactly-once effect.
+the next publisher pass reclaims the stale `publishing` row and publishes it **again** —
+at-least-once publish. That double-send is harmless precisely because the consuming
+[inbox](/docs/keiro/explanation/the-inbox-pattern) deduplicates on the stable `messageId`. The two
+patterns are designed as a pair: at-least-once publish + idempotent receive = exactly-once effect.
 
 ## Ordering and head-of-line blocking
 
@@ -73,22 +73,17 @@ Each failed publish bumps `attempt_count` and sets `next_attempt_at = now + back
 for an operator to inspect — it never silently disappears, and it never blocks forever under
 `PerKeyHeadOfLine` (a `dead` row is terminal, so it stops blocking its key).
 
-<Callout type="warn">
-**Known gap — stale `publishing` rows are not reclaimed.** The claim query selects only `pending`
-and `failed` rows. A worker that crashes *between* claiming a row (which sets `publishing`) and
-marking it sent/failed strands the row in `publishing` forever — and under `PerKeyHeadOfLine` /
-`PerSourceStream` that stranded non-terminal row head-of-line-blocks its key. There is **no**
-automatic reclaim in keiro 0.1.0.0; recovery is a manual runbook step (reset the row to
-`pending`). See [Choose an outbox ordering
-policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy#recovering-stranded-publishing-rows).
-</Callout>
+Before each claim pass, `publishClaimedOutbox` reclaims stale `publishing` rows. Rows below the
+attempt ceiling move back to `failed`; rows at or above the ceiling move to `dead`. This closes the
+old crash-recovery gap where a mid-publish process death could block a key forever.
 
 ## Trade-offs
 
 The outbox adds a table, a publisher worker to schedule, and a small publish latency (a row is
 published on the next worker pass, not synchronously). In return it makes cross-service publishing
 *correct under crashes* with nothing but your existing Postgres — no distributed transaction, no
-two-phase commit. The one sharp edge to operate around is the stale-`publishing` gap above.
+two-phase commit. Tune the stale-publishing timeout conservatively so recovery is prompt without
+mistaking a slow broker call for a crashed publisher.
 
 <Cards>
   <Card title="Integration events" href="/docs/keiro/explanation/integration-events" />

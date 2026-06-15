@@ -1,6 +1,6 @@
 ---
 title: "03 — The outbox: enqueue and claim"
-description: "Reading how an outbox row gets in (the two enqueue surfaces, the producer mint, the prefixed-TypeID message id, ON CONFLICT) and how the worker claims it (the claim CTE, FOR UPDATE SKIP LOCKED, the four ordering predicates), plus the stale-publishing gap."
+description: "Reading how an outbox row gets in (the two enqueue surfaces, the producer mint, the prefixed-TypeID message id, ON CONFLICT), how the worker claims it, and how stale publishing rows are reclaimed."
 ---
 
 This chapter reads the outbox enqueue and claim paths in `keiro/src/Keiro/Outbox.hs`,
@@ -129,8 +129,8 @@ RETURNING <row columns>
 
 Three load-bearing facts:
 
-1. The candidate set is `status IN ('pending', 'failed')` — **`publishing` is not selected** (this
-   is the gap below).
+1. The candidate set is `status IN ('pending', 'failed')`; stale `publishing` rows are reclaimed by
+   `publishClaimedOutbox` before the claim pass.
 2. `FOR UPDATE SKIP LOCKED` lets many workers claim disjoint batches concurrently without blocking
    on each other.
 3. The claim atomically flips the claimed rows to `publishing` and bumps `attempt_count`, all in the
@@ -175,20 +175,18 @@ The four `OrderingPolicy` constructors splice a different predicate into the cla
 - `BestEffort` is `"TRUE"`: no blocking; failed rows do not hold up their key.
 
 Note both head-of-line predicates exclude only `('sent', 'dead')`, so **`publishing` counts as
-non-terminal** — a row mid-publish blocks its key. That is intended while a worker is healthy, but it
-sets up the gap below. For picking a policy, see [Choose an outbox ordering
-policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
+non-terminal** — a row mid-publish blocks its key. That is intended while a worker is healthy, and
+stale rows are reclaimed before the next claim pass. For picking a policy, see [Choose an outbox
+ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
 
-## The stale-`publishing` gap
+## Stale `publishing` recovery
 
-<Callout type="warn">
-Because the claim selects only `pending`/`failed` and the head-of-line predicates treat `publishing`
-as non-terminal, a worker that crashes **between** the claim (which set `status = 'publishing'`) and
-the later mark strands the row in `publishing` with **no automatic recovery** — and under
-`PerKeyHeadOfLine` / `PerSourceStream` that stranded row also head-of-line-blocks its key. This is
-the shipped behavior; recover it with the manual runbook in [Recovering stranded publishing
-rows](/docs/keiro/how-to/choose-an-outbox-ordering-policy#recovering-stranded-publishing-rows).
-</Callout>
+`publishClaimedOutbox` calls `requeueStuckOutbox` before claiming fresh work. A `publishing` row
+whose `updated_at` is older than `publishingTimeout` moves back to `failed` when it is still below
+`maxAttempts`, or to `dead` when it has exhausted attempts. This lets the next claim pass recover
+from a publisher crash without an operator resetting the row by hand. The trade-off is still
+at-least-once publish: if the broker ack happened but the process died before `markOutboxSent`, the
+reclaimed row can be published again.
 
 ## The `keiro_outbox` table
 

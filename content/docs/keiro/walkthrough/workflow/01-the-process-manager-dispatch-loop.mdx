@@ -291,32 +291,33 @@ runProcessManagerWorker options manager Adapter{source = adapterSource} decodeMe
   Streamly.fold Fold.drain $
     Streamly.mapM handleIngested adapterSource
   where
-    handleIngested Ingested{envelope = Envelope{payload = message}} =
-      case decodeMessage message of
-        Nothing -> pure (AckHalt (HaltFatal "process-manager worker could not decode message"))
+    handleIngested Ingested{envelope = env@Envelope{payload = message}, ack = AckHandle finalizeAck} = do
+      decision <- case decodeMessage message of
+        Nothing -> decideForPoison workerOptions "process-manager worker could not decode message" env
         Just (recorded, input) -> do
-          outcome <- runProcessManagerOnce options manager recorded input
-          pure $ case outcome of
-            Right _ -> AckOk
-            Left err -> AckHalt (HaltFatal (Text.pack (show err)))
+          outcome <- tryError @StoreError (runProcessManagerOnce options manager recorded input)
+          pure $ classify outcome
+      finalizeAck decision
+      pure decision
 ```
 
 The ack table:
 
 ```text
-decode failure (Nothing)      -> AckHalt (HaltFatal "...could not decode message")
-Left err from the reaction    -> AckHalt (HaltFatal (show err))
-Right _ (any commandResults)  -> AckOk
+decode failure (Nothing)      -> PoisonPolicy (default AckHalt)
+transient store/command error -> AckRetry transientRetryDelay
+deterministic command error   -> AckHalt (HaltFatal ...)
+success or duplicate ids      -> AckOk
 ```
 
 The subtle point: a **`PMCommandFailed` lives *inside* a `Right`'s `commandResults`**, not in the
-outer `Left`. So this worker, which acks on any `Right`, will **not** halt on a failed dispatch —
-it acks `AckOk` and moves on. The outer `Left` only fires when the *manager-state* append failed
-for a non-duplicate reason. The hazard is therefore for a **higher-level loop that inspects
-`commandResults`** and decides to retry on `PMCommandFailed`: such a loop would retry the source
-event forever. [Chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model) spells out
-that hazard and how to avoid it; the discipline is to
-[keep target commands total](/docs/keiro/how-to/keep-target-commands-total).
+outer `Left`. The worker now inspects those results: transient failures retry, deterministic failures
+halt, and duplicate deterministic ids count as successful idempotent replay. The outer `Left` only
+fires when the *manager-state* append failed for a non-duplicate reason. The hazard is therefore for
+a benign domain rejection that surfaces as a deterministic `PMCommandFailed`.
+[Chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model) spells out that hazard and
+how to avoid it; the discipline is to [keep target commands
+total](/docs/keiro/how-to/keep-target-commands-total).
 
 ## Next
 

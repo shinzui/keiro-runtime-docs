@@ -48,11 +48,12 @@ message into the `(RecordedEvent, input)` pair the manager reacts to.
 
 3. **Understand the ack semantics.** They are deliberately simple:
 
-   - decode returns `Nothing` → `AckHalt (HaltFatal "… could not decode message")`;
-   - `runProcessManagerOnce` returns `Left err` → `AckHalt (HaltFatal (show err))`;
-   - a `Right _` reaction → `AckOk`.
+   - decode returns `Nothing` → the configured `PoisonPolicy` (default `AckHalt`);
+   - transient store or command failures → `AckRetry transientRetryDelay`;
+   - deterministic command failures → `AckHalt (HaltFatal …)`;
+   - successful appends and duplicate deterministic ids → `AckOk`.
 
-   A halted message is **retried** by the substrate. Because every write the manager makes is keyed
+   A retried message is safe to replay. Because every write the manager makes is keyed
    by a [deterministic id](/docs/keiro/reference/process-manager#deterministiccommandid), that
    forced retry is safe: already-applied appends collapse to `PMStateDuplicate` /
    `PMCommandDuplicate` rather than duplicating events. (The same idempotency discipline is

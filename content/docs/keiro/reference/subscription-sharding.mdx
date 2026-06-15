@@ -100,9 +100,19 @@ data ShardedWorkerOptions = ShardedWorkerOptions
   , target        :: SubscriptionTarget  -- the category (or AllStreams) to shard
   , batchSize     :: Int32            -- events per DB fetch per bucket reader (default 100)
   , bufferSize    :: Natural          -- per-reader bounded-queue capacity (default 256)
+  , onShardError  :: Maybe (ShardWorkerError -> IO ())
   }
 
+data ShardWorkerError
+  = ShardSnapshotFailed Text | ShardAcquireFailed Text | ShardReaderDied Int Text | ShardEnsureFailed Text
+
+data ShardedWorkerConfigError
+  = InvalidShardCount Int | InvalidShardLeaseTtl NominalDiffTime
+  | InvalidShardRenewInterval NominalDiffTime | InvalidShardLeaseRenewInterval NominalDiffTime NominalDiffTime
+  | InvalidShardBatchSize Int32 | InvalidShardBufferSize Natural
+
 defaultShardedWorkerOptions :: SubscriptionTarget -> Int -> ShardedWorkerOptions
+mkShardedWorkerOptions :: ShardedWorkerOptions -> Either ShardedWorkerConfigError ShardedWorkerOptions
 
 reconcileShardsOnce :: KirokuStore -> ShardLease -> ShardedWorkerOptions
                     -> IORef (Map Int RunningReader) -> (RecordedEvent -> IO ()) -> IO (Set Int)
@@ -116,6 +126,7 @@ runShardedSubscriptionGroup :: KirokuStore -> SubscriptionName -> ShardedWorkerO
     renewInterval: { type: "NominalDiffTime", default: "10 s", description: "Gap between reconcile passes; well under leaseTtl so a live worker renews several times per TTL (~3 renews per 30 s). A single missed renewal does not lose ownership." },
     batchSize: { type: "Int32", default: "100", description: "Events per database fetch, per bucket reader." },
     bufferSize: { type: "Natural", default: "256", description: "Per-reader bounded-queue capacity — backpressure." },
+    onShardError: { type: "Maybe (ShardWorkerError -> IO ())", default: "Nothing", description: "Optional hook for lease, ensure, snapshot, and reader-thread errors." },
   }}
 />
 
@@ -135,6 +146,13 @@ runShardedSubscriptionGroup :: KirokuStore -> SubscriptionName -> ShardedWorkerO
 `reconcileShardsOnce` every `renewInterval` forever. On shutdown (the loop thread is killed) a `finally`
 stops every reader this worker holds; its leases then expire and a surviving worker re-claims its
 buckets (failover).
+
+`mkShardedWorkerOptions` rejects invalid pools before startup: shard count, TTL, renew interval,
+batch size, and buffer size must be positive, and `leaseTtl` must be greater than `renewInterval`.
+Reader failures no longer silently remove throughput: the worker removes the dead reader from its
+local map, calls `onShardError` when configured, and the next reconcile pass can restart it for any
+bucket the worker still owns. Lease snapshot/acquire failures are reported through the same hook and
+do not make the process exit.
 
 <Callout type="warn">
 **A sharded subscription delivers at-least-once.** A brief overlap is possible while a bucket changes

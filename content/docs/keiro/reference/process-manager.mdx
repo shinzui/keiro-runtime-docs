@@ -91,14 +91,14 @@ The outcome of one dispatched target command.
 data PMCommandResult target
   = PMCommandAppended  !(CommandResult target)  -- the dispatch appended events
   | PMCommandDuplicate !EventId                 -- idempotent replay; the id already existed
-  | PMCommandFailed    !CommandError            -- fatal: the worker retries the source event
+  | PMCommandFailed    !CommandError            -- worker classifies transient retry vs deterministic halt
 ```
 
 <Callout type="warn">
-`PMCommandFailed` is treated as **fatal**. In `runProcessManagerWorker` a reaction that returns
-`Left` finalizes `AckHalt (HaltFatal …)`, so the source event is **retried forever**. Model benign
-target rejections as **total** transitions so they never surface as `PMCommandFailed`. See [Keep
-target commands total](/docs/keiro/how-to/keep-target-commands-total).
+`PMCommandFailed` is not automatically fatal anymore. The worker retries transient store/conflict
+failures with `transientRetryDelay`, and halts deterministic command errors. Model benign target
+rejections as **total** transitions so they never surface as deterministic `PMCommandFailed`. See
+[Keep target commands total](/docs/keiro/how-to/keep-target-commands-total).
 </Callout>
 
 ## `PMStateResult`
@@ -182,10 +182,27 @@ runProcessManagerWorker ::
 ```
 
 Each message is decoded with the caller's `msg -> Maybe (RecordedEvent, input)`. A message that
-fails to decode, or a reaction that returns `Left`, finalizes `AckHalt (HaltFatal …)` so the source
-event is retried; a successful reaction acks `AckOk`. Deterministic write ids make the forced retry
-safe. See [Run a process manager as a
+fails to decode follows the worker's `PoisonPolicy` (default `PoisonHalt`). Successful appends and
+duplicate deterministic ids finalize `AckOk`; transient store and command failures finalize
+`AckRetry transientRetryDelay`; deterministic command errors finalize `AckHalt (HaltFatal …)`. The
+worker invokes the message's ack handle exactly once. See [Run a process manager as a
 subscription](/docs/keiro/how-to/run-a-process-manager-as-a-subscription).
+
+```haskell
+data PoisonPolicy es msg
+  = PoisonHalt | PoisonSkip (Envelope msg -> Eff es ()) | PoisonDeadLetter (Envelope msg -> Eff es ())
+
+data WorkerOptions es msg = WorkerOptions
+  { poisonPolicy :: PoisonPolicy es msg
+  , transientRetryDelay :: RetryDelay
+  , metrics :: Maybe KeiroMetrics
+  }
+
+defaultWorkerOptions :: WorkerOptions es msg
+```
+
+`defaultWorkerOptions` halts on poison messages, retries transient dispatch failures after
+`RetryDelay 5`, and records no metrics. The same options type is used by router workers.
 
 ## `deterministicCommandId`
 

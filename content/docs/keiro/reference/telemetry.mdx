@@ -195,16 +195,22 @@ data KeiroMetrics = KeiroMetrics
   , outboxPublished        :: Counter Int64
   , outboxRetried          :: Counter Int64
   , outboxDeadlettered     :: Counter Int64
+  , outboxReclaimed        :: Counter Int64
   , inboxProcessed         :: Counter Int64
   , inboxDuplicates        :: Counter Int64
   , inboxFailed            :: Counter Int64
+  , inboxPoisoned          :: Counter Int64
   , inboxBacklog           :: Gauge Int64
   , timerBacklog           :: Gauge Int64
   , timerFireLag           :: Histogram
   , timerAttempts          :: Histogram
   , timerStuck             :: Gauge Int64
+  , timerRequeued          :: Counter Int64
   , projectionLag          :: Gauge Int64
   , projectionWaitTimeouts :: Counter Int64
+  , dispatchFailed         :: Counter Int64
+  , dispatchDuplicates     :: Counter Int64
+  , dispatchPoison         :: Counter Int64
   , workflowStepsExecuted     :: Counter Int64
   , workflowStepsReplayed     :: Counter Int64
   , workflowResumed           :: Counter Int64
@@ -231,16 +237,22 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 | `keiro.outbox.published` | Counter | `{event}` | `recordOutboxPublished` | Outbox publisher, per-pass summary — rows successfully published. |
 | `keiro.outbox.retried` | Counter | `{event}` | `recordOutboxRetried` | Outbox publisher — publish attempts that failed and will retry. |
 | `keiro.outbox.deadlettered` | Counter | `{event}` | `recordOutboxDeadlettered` | Outbox publisher — rows parked in `dead` after exhausting retries. |
+| `keiro.outbox.reclaimed` | Counter | `{event}` | `recordOutboxReclaimed` | Outbox publisher — stale `publishing` rows reclaimed from a crashed or stalled publisher. |
 | `keiro.inbox.processed` | Counter | `{message}` | `recordInboxProcessed` | Inbox transaction — messages processed to completion. |
 | `keiro.inbox.duplicates` | Counter | `{message}` | `recordInboxDuplicates` | Inbox transaction — deliveries skipped as duplicates by `(source, dedupe_key)`. |
 | `keiro.inbox.failed` | Counter | `{message}` | `recordInboxFailed` | Inbox transaction — messages whose handler raised. |
+| `keiro.inbox.poisoned` | Counter | `{message}` | `recordInboxPoisoned` | Retrying inbox wrapper — handler failures that reached the configured attempt ceiling. |
 | `keiro.inbox.backlog` | Gauge | `{message}` | `recordInboxBacklog` | Inbox transaction — rows in `processing`/`failed` (non-terminal). |
 | `keiro.timer.backlog` | Gauge | `{timer}` | `recordTimerBacklog` | Timer worker, once per pass — `scheduled` timers already due. |
 | `keiro.timer.fire.lag` | Histogram | `ms` | `recordTimerFireLag` | Timer worker, per claimed timer — milliseconds between `fire_at` and the actual fire. |
 | `keiro.timer.attempts` | Histogram | `{attempt}` | `recordTimerAttempts` | Timer worker, per claimed timer — the post-claim attempt count. |
 | `keiro.timer.stuck` | Gauge | `{timer}` | `recordTimerStuck` | Timer worker, once per pass — timers stranded in `firing`. |
+| `keiro.timer.requeued` | Counter | `{timer}` | `recordTimerRequeued` | Timer worker — stale `firing` rows moved back to `scheduled`. |
 | `keiro.projection.lag` | Gauge | `{event}` | `recordProjectionLag` | `recordProjectionLag` (application-driven) — events between the log head and a projection's checkpoint. |
 | `keiro.projection.wait.timeouts` | Counter | `{timeout}` | `recordProjectionWaitTimeouts` | Read-model `waitFor` — calls that timed out before the projection caught up. |
+| `keiro.dispatch.failed` | Counter | `{command}` | `recordDispatchFailed` | Process-manager/router workers — dispatched commands or source reactions that failed. |
+| `keiro.dispatch.duplicates` | Counter | `{command}` | `recordDispatchDuplicate` | Process-manager/router workers — deterministic command ids skipped as duplicates. |
+| `keiro.dispatch.poison` | Counter | `{message}` | `recordDispatchPoison` | Process-manager/router workers — messages classified as poison by the decode seam. |
 
 The worker entry points thread the handle for you: the [timer worker](/docs/keiro/reference/timers#runtimerworker)
 records the backlog, stuck, fire-lag, and attempts instruments inside each pass; the
