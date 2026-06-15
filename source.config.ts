@@ -1,6 +1,14 @@
 import { defineConfig, defineDocs } from "fumadocs-mdx/config"
+import keiroGrammar from "shiki-keiro/grammar" with { type: "json" }
 
 import { rehypeMermaid } from "./src/lib/rehype-mermaid"
+
+const keiroLanguage = {
+  ...keiroGrammar,
+  name: "keiro",
+  scopeName: "source.keiro",
+  aliases: ["keiro-dsl"],
+}
 
 // Docs collection: every .mdx under content/docs/ becomes a page.
 // `includeProcessedMarkdown` keeps a plain-markdown copy of each page so the
@@ -26,8 +34,8 @@ export default defineConfig({
     rehypeCodeOptions: {
       themes: { light: "github-light", dark: "github-dark" },
       // `cabal` is not a bundled Shiki grammar in this version; omitted (Cabal
-      // snippets fall back to plain text). The four below are bundled.
-      langs: ["haskell", "nix", "bash", "json"],
+      // snippets fall back to plain text). `keiro` is provided by shiki-keiro.
+      langs: ["haskell", "nix", "bash", "json", keiroLanguage],
     },
     // Plan C: turn ```mermaid fences into <Mermaid> before any code highlighting
     // runs. The function form prepends rehypeMermaid to the default plugin array
