@@ -20,12 +20,35 @@ the affected pages, then bump the pointer below.
 ## Last reviewed commit
 
 ```text
-9fa283b6cfbf3734367f3bef4801001e6b19abfc  (9fa283b)
-2026-06-10 (StreamCategory compound-category convention: camelCase, supersedes '_')
-keiro 0.1.0.0 (development line; keiro-dsl is a new authoring package at version 0.1.0.0)
+f1d67a01b7457387a4861e7268d1c521ef82287d  (f1d67a0)
+2026-06-15T11:27:19-07:00
+docs(master-plan): close production readiness hardening
+keiro 0.1.0.0 development line; docs reviewed against the production-readiness hardening HEAD
 ```
 
-> **Note.** The `f8950f4..9fa283b` range is a **one-line convention change**: compound
+> **Note.** The `9fa283b..f1d67a0` range is the June production-readiness hardening refresh. It
+> changed the runtime surface across command execution, projections, messaging workers, PGMQ jobs,
+> durable workflows, schema, telemetry, and test support; this docs repo folded those source changes
+> into the keiro reference, how-to, tutorial, cookbook, walkthrough, integration, FAQ, and source-sync
+> pages.
+>
+> - **Command/core/read side:** strong-consistency waits now track the store head; the codec surface is
+>   `EventType`-aware and upcasting examples call out unknown-version handling; command retry and
+>   snapshot failures expose advisory-lock and migration/schema drift failures; async projections
+>   gained dedupe and expected-schema drift handling; test support grew wait helpers.
+> - **Messaging, workers, and PGMQ:** inbox poison/failure metrics, outbox stale `publishing` reclaim
+>   plus sent GC, timer stale-firing requeue, shard-reader survival hooks, process-manager/router
+>   transient-vs-deterministic acks, and `PoisonPolicy` were documented. `keiro-pgmq` now covers
+>   `RetryDefault`, classified decode errors, retry/tuning validation, header/batch/traced/group
+>   producers, queue provisioning/FIFO setup, DLQ read/redrive/archive/purge, metrics, and retention.
+> - **Workflows:** the docs now reflect `keiro_workflows` lifecycle rows, leases/backoff, `wake_after`,
+>   journal append serialization, random/journaled awakeable ids, atomic wake and child paths, child
+>   failure envelopes, active patch sets, and workflow GC.
+> - **Schema and telemetry:** the page set was updated for the new messaging crash-recovery,
+>   projection-dedupe, workflow-GC/wake-after migrations, and the expanded workflow/messaging
+>   instruments. This source-sync pointer is the final integration record for that range.
+>
+> **Note (prior range).** The `f8950f4..9fa283b` range is a **one-line convention change**: compound
 > aggregate/saga stream categories are now written in **camelCase** (e.g. `hospitalSurge`,
 > `incidentEscalation`) instead of snake_case with `_`. Rationale: reads better and avoids mixing the
 > join `_` with the `_` that TypeID id segments already carry. `:` stays reserved for the workflow
@@ -157,6 +180,11 @@ keiro 0.1.0.0 (development line; keiro-dsl is a new authoring package at version
 
 ### Previous pointers (for traceability)
 
+- `9fa283b6cfbf3734367f3bef4801001e6b19abfc` (`9fa283b`, 2026-06-10, keiro 0.1.0.0) — the baseline
+  before the June production-readiness hardening. The `9fa283b..f1d67a0` range updated command,
+  projection/read-side, messaging workers, `keiro-pgmq`, durable workflows, schema, telemetry, and
+  test-support behavior; this documentation refresh reconciled those source changes across the keiro
+  and integration docs.
 - `f8950f46511f2e9505d8bb5aed9731e3e1d09f03` (`f8950f4`, 2026-06-10, keiro 0.1.0.0) — the baseline
   before the camelCase convention change. The `f8950f4..9fa283b` range only restyled the **compound
   stream category** convention from snake_case (`hospital_surge`) to camelCase (`hospitalSurge`) in the
@@ -214,8 +242,8 @@ keiro 0.1.0.0 (development line; keiro-dsl is a new authoring package at version
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline f8950f4..HEAD
-   git -C "$KEIRO" diff --stat f8950f4..HEAD
+   git -C "$KEIRO" log --oneline f1d67a0..HEAD
+   git -C "$KEIRO" diff --stat f1d67a0..HEAD
    ```
    keiro also keeps its own `docs/`, `CHANGELOG.md`, and `docs/plans|masterplans` entries — the
    prose diff there is the fastest way to understand intent before touching the source. Note that

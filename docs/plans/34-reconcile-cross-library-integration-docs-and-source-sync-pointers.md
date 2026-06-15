@@ -27,17 +27,26 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Confirm EP-1 through EP-5 are complete or read their Outcomes & Retrospective sections for source-pointer text and deferred integration edits.
-- [ ] Reconcile integration pages for Keiro with Kiroku, PGMQ, Shibuya, and Keiki cross-links.
-- [ ] Reconcile Kiroku and Keiro landing/index/FAQ pages and section `meta.json` files.
-- [ ] Update `docs/kiroku-source-sync.md` to the current Kiroku `HEAD` with previous pointer history.
-- [ ] Update `docs/keiro-source-sync.md` to the current Keiro `HEAD` with previous pointer history.
-- [ ] Run whole-site validation, including link validation, and record results.
+- [x] Confirm EP-1 through EP-5 are complete or read their Outcomes & Retrospective sections for source-pointer text and deferred integration edits.
+- [x] Reconcile integration pages for Keiro with Kiroku, PGMQ, Shibuya, and Keiki cross-links.
+- [x] Reconcile Kiroku and Keiro landing/index/FAQ pages and section `meta.json` files.
+- [x] Update `docs/kiroku-source-sync.md` to the current Kiroku `HEAD` with previous pointer history.
+- [x] Update `docs/keiro-source-sync.md` to the current Keiro `HEAD` with previous pointer history.
+- [x] Run whole-site validation, including link validation, and record results.
 
 
 ## Surprises & Discoveries
 
-(None yet.)
+- EP-1 through EP-5 had already validated their domain-specific page sets and recorded source-pin
+  summaries, so EP-6 could focus on bridge pages and final pointers.
+- `content/docs/integrations/keiro-with-kiroku.mdx` was still a placeholder, so the final pass needed
+  to add the actual Keiro/Kiroku persistence and subscription boundary rather than only adjust links.
+- The Kiroku landing page still implied publisher fan-out for all subscriptions and consumer groups;
+  current Kiroku behavior only fan-outs plain `$all` subscribers and uses `NOTIFY` as a wake/catch-up
+  boundary for category subscriptions and consumer groups.
+- The PGMQ integration page lagged behind the expanded `keiro-pgmq` API surface: `RetryDefault`,
+  classified decode errors, tuning, headers, batch sends, traced sends, FIFO groups, provisioning,
+  DLQ helpers, metrics, and retention.
 
 
 ## Decision Log
@@ -55,6 +64,24 @@ Summarize outcomes, gaps, and lessons learned at major milestones or at completi
 Compare the result against the original purpose.
 
 (To be filled during and after implementation.)
+
+EP-6 reconciled the integration story after EP-1 through EP-5. The integrations landing page no
+longer calls current pages outlines, `keiro-with-kiroku` now explains the persistence,
+transaction/source-consistency, stream/category, subscription, and worker boundary, and
+`keiro-with-pgmq` now matches the current job/tuning/producer/DLQ surface. The Kiroku landing page
+now distinguishes live `$all` fan-out from category/group catch-up behavior.
+
+Source-sync pointers were bumped to the final upstream commits:
+
+- Kiroku: `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a` (`2026-06-14T19:50:51-07:00`,
+  `feat(kiroku-store): add eventExistsInStream point lookup`)
+- Keiro: `f1d67a01b7457387a4861e7268d1c521ef82287d` (`2026-06-15T11:27:19-07:00`,
+  `docs(master-plan): close production readiness hardening`)
+
+Final validation passed with `pnpm run check` on 2026-06-15. That command ran typecheck, lint,
+format check, production build, internal doc-link checks, and linkinator; `oxlint` reported only
+pre-existing warnings in `src/routes/docs/{$}[.]md.ts`, `src/routes/docs/$.tsx`, and
+`src/lib/rehype-mermaid.ts`.
 
 
 ## Context and Orientation

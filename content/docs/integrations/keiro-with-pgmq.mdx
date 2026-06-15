@@ -52,7 +52,10 @@ Before `keiro-pgmq`, every app wired the middle three boxes by hand: derive a PG
 build a `PgmqAdapterConfig`, write a producer over `sendMessage`, and write a handler of type
 `Ingested es Value -> Eff es AckDecision` that decodes JSON and maps failures to acks. `keiro-pgmq`
 absorbs all of that behind a [`Job`](/docs/keiro/reference/pgmq-jobs#job) declaration and a plain
-`p -> Eff es JobOutcome` handler.
+`p -> Eff es JobOutcome` handler. Newer queue needs stay in that layer too: producer helpers cover
+headers, batch sends, traced sends, and FIFO message groups; queue provisioning covers standard,
+unlogged, partitioned, and ordered/FIFO-indexed queues; operator helpers cover DLQ read/redrive,
+archive/purge, queue metrics, and retention.
 
 ## The two-layer boundary
 
@@ -68,6 +71,8 @@ The package is split into two layers, on purpose:
   shapes ([`runJobWorkers`](/docs/keiro/how-to/choose-a-job-run-cadence) /
   [`runJobOnce`](/docs/keiro/how-to/choose-a-job-run-cadence)), built on layer 1.
   `Keiro.PGMQ.Codec` holds the [payload codecs](/docs/keiro/reference/pgmq-jobs#jobcodec) both share.
+  `Keiro.PGMQ.Dlq` and `Keiro.PGMQ.Metrics` add the operator surface without changing the job
+  handler shape.
 
 That boundary is not cosmetic — it is what keeps the [deferred case B](#the-deferred-design-case-b)
 cheap.
@@ -76,16 +81,22 @@ cheap.
 
 `keiro-pgmq` sits directly on top of the [shibuya ⇄ pgmq adapter](/docs/integrations/shibuya-pgmq-adapter):
 `jobProcessor` calls `pgmqAdapter` with a `PgmqAdapterConfig` it derives from the job's
-[`RetryPolicy`](/docs/keiro/reference/pgmq-jobs#retrypolicy) — `maxRetries` from the policy, and
-`deadLetterConfig = directDeadLetter dlqName True` when the policy enables a DLQ. The adapter's
-message type is always `aeson`'s `Value` (raw JSON); `keiro-pgmq` wraps the handler so it decodes that
-`Value` with the job's codec (dead-lettering an undecodable one as `InvalidPayload`), runs your typed
-handler, and maps the returned `JobOutcome` back to the adapter's `AckDecision`
-(`Done → AckOk`, `Retry → AckRetry`, `Dead → AckDeadLetter`).
+[`RetryPolicy`](/docs/keiro/reference/pgmq-jobs#retrypolicy) and
+[`JobTuning`](/docs/keiro/reference/pgmq-jobs#jobtuning-and-ordering) — max deliveries, visibility
+timeout, batch size, polling mode, ordered-read strategy, and DLQ routing when the policy enables it.
+The adapter's message type is always `aeson`'s `Value` (raw JSON); `keiro-pgmq` wraps the handler so
+it decodes that `Value` with the job's codec, runs your typed handler, and maps the returned
+`JobOutcome` back to the adapter's `AckDecision` (`Done → AckOk`, `Retry d → AckRetry d`,
+`RetryDefault → AckRetry jobPolicy.defaultRetryDelay`, `Dead why → AckDeadLetter`).
+
+Codec errors are classified before your handler runs. A malformed payload becomes
+`JobPayloadMalformed` and is dead-lettered; a `keiroJobCodec` payload from a future schema version
+becomes `JobPayloadFromFuture` and retries with the policy's default delay so rolling deploys can
+finish.
 
 **You generally do not use the adapter directly in a keiro app** — reach for `keiro-pgmq` and let it
-own the config and the decode/ack boilerplate. Drop to the adapter only when you need a knob the `Job`
-abstraction does not expose (custom polling, FIFO read strategy, prefetch).
+own the config and the decode/ack boilerplate. Drop to the adapter only when you need a lower-level
+transport shape the `Job` abstraction intentionally hides.
 
 ## Its relationship to the outbox (beside it)
 
@@ -98,8 +109,9 @@ event](/docs/keiro/explanation/integration-events) — publish it transactionall
 internalizing:
 
 - A job queue has **no dedupe table** and **no transactional-publication guarantee**. `enqueue` runs
-  in its own PGMQ transaction, so it is *not* atomic with a domain write — when you need exactly-once
-  enqueue tied to a row, send via raw SQL in the same transaction (see [Enqueue a job
+  in its own PGMQ transaction, so it is *not* atomic with a domain write. Use the header/traced/batch
+  producers when a normal job send is enough; when you need exactly-once enqueue tied to a row, send
+  via raw SQL in the same transaction (see [Enqueue a job
   transactionally](/docs/keiro/cookbook/transactional-job-enqueue)).
 - Jobs, the outbox/inbox, and process managers/workflows are three different tools:
   jobs are the *worker*, the outbox/inbox are the *messaging*, and process managers and durable
@@ -121,8 +133,10 @@ each exercising a different slice of the API:
 
 - **`rei`** — four queues (git sync, reminders, reflections, agent work) run **continuously** under
   one supervisor with `runJobWorkers`, using `aesonJobCodec` and a shared no-DLQ policy.
-- **`hospital-capacity`** — one reservation-work queue **drained one-shot** with `runJobOnce` on an
-  external cadence, using a literal `JobCodec` (to preserve its exact wire format) and a DLQ policy.
+- **`hospital-capacity`** — one reservation-work queue **drained one-shot** directly from PGMQ with
+  `runJobOnce` on an external cadence, using a literal `JobCodec` (to preserve its exact wire format)
+  and a DLQ policy. The context-aware drain returns how many messages it disposed, which is useful for
+  scheduled workers and tests.
 
 Both shrank their queue modules to a `Job` declaration plus a domain handler, and both dropped their
 direct `shibuya-pgmq-adapter` dependency.

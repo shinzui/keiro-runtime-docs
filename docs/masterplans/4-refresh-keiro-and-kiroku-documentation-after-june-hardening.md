@@ -36,7 +36,7 @@ The split keeps most child plans independently verifiable. EP-1 and EP-2 can pro
 | EP-3 | Refresh Keiro command core read side and schema documentation | `docs/plans/31-refresh-keiro-command-core-read-side-and-schema-documentation.md` | None | EP-1 | Complete |
 | EP-4 | Refresh Keiro messaging workers and PGMQ documentation | `docs/plans/32-refresh-keiro-messaging-workers-and-pgmq-documentation.md` | None | EP-2 | Complete |
 | EP-5 | Refresh Keiro durable workflow resume and lifecycle documentation | `docs/plans/33-refresh-keiro-durable-workflow-resume-and-lifecycle-documentation.md` | None | EP-3 | Complete |
-| EP-6 | Reconcile cross library integration docs and source sync pointers | `docs/plans/34-reconcile-cross-library-integration-docs-and-source-sync-pointers.md` | EP-1, EP-2, EP-3, EP-4, EP-5 | None | Not Started |
+| EP-6 | Reconcile cross library integration docs and source sync pointers | `docs/plans/34-reconcile-cross-library-integration-docs-and-source-sync-pointers.md` | EP-1, EP-2, EP-3, EP-4, EP-5 | None | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -79,8 +79,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] EP-4: Validate worker and PGMQ docs against current source and docs app checks.
 - [x] EP-5: Audit Keiro durable workflow hardening, instance leasing, sleep/wake, child workflow, GC, and lifecycle changes and update workflow docs.
 - [x] EP-5: Validate durable workflow docs against current source and docs app checks.
-- [ ] EP-6: Reconcile integration pages, landing/index pages, navigation, source-sync pointers, and cross-library terminology after EP-1 through EP-5.
-- [ ] EP-6: Run whole-site validation and record final source pins.
+- [x] EP-6: Reconcile integration pages, landing/index pages, navigation, source-sync pointers, and cross-library terminology after EP-1 through EP-5.
+- [x] EP-6: Run whole-site validation and record final source pins.
 
 
 ## Surprises & Discoveries
@@ -113,6 +113,9 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - EP-5 found that awakeable ids are now journaled random ids for new workflows, with
   `deterministicAwakeableId` retained only as a legacy generation-0 adoption helper; patch decisions
   are likewise based on a recorded active patch set rather than a `startedInFlight` heuristic.
+- EP-6 found that the cross-library docs still had three final drifts after the domain pages were
+  refreshed: `keiro-with-kiroku` was a placeholder, `keiro-with-pgmq` described the older narrow job
+  surface, and the Kiroku landing page still overstated subscription publisher fan-out.
 
 
 ## Decision Log
@@ -161,3 +164,10 @@ Compare the result against the original vision.
   deterministic-awakeable, advisory-lock, step-row-discovery, step at-most-once, and patch
   classification wording. EP-6 still owns the final source-sync pointer and cross-library
   reconciliation.
+- EP-6 reconciled the integration pages and final source-sync pointers on 2026-06-15. It updated the
+  integrations landing page, `keiro-with-kiroku`, `keiro-with-pgmq`, the shibuya PGMQ adapter bridge,
+  the Kiroku landing page, and both source-sync pointer ledgers. The final pins are Kiroku
+  `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a` and Keiro
+  `f1d67a01b7457387a4861e7268d1c521ef82287d`. Whole-site validation passed with
+  `pnpm run check`; `oxlint` reported only pre-existing warnings in `src/routes/docs/{$}[.]md.ts`,
+  `src/routes/docs/$.tsx`, and `src/lib/rehype-mermaid.ts`.

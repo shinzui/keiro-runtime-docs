@@ -25,9 +25,10 @@ overwriting current state; you rebuild state by replaying the log. kiroku is the
 ## How it fits together
 
 A write appends events to a named stream; the same transaction also writes each event to the
-global `$all` log, which gives a strictly increasing `GlobalPosition`. A `NOTIFY` wakes the in-process
-publisher, which fans new events out to subscriptions and consumer groups that fold them into
-your read models.
+global `$all` log, which gives a strictly increasing `GlobalPosition`. A `NOTIFY` wakes the
+in-process publisher. Plain `$all` subscribers can receive live fan-out; category subscriptions and
+consumer groups use the wake-up as a catch-up boundary and read ordered batches from PostgreSQL and
+their checkpoints.
 
 ```mermaid
 flowchart LR
@@ -41,7 +42,7 @@ flowchart LR
   App -->|"appendToStream name ExpectedVersion [EventData]"| Store
   Store -->|"source-stream row + $all row (stream_id 0)"| AllLog
   Store -->|"pg_notify schema.events"| Notifier
-  Notifier --> Sub
+  Notifier -->|"wake + catch up"| Sub
   Sub -->|"RecordedEvent -> IO SubscriptionResult"| Proj
 ```
 

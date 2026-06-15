@@ -11,18 +11,34 @@ the pinned commit to `HEAD`, update the affected pages, then bump the pointer be
   `mori registry show shinzui/kiroku --full` (prefer this over the hard-coded path, which
   can move).
 - **Path at last sync:** `/Users/shinzui/Keikaku/bokuno/kiroku-project/kiroku`
-- Relevant packages: `kiroku-store` (core store + subscription FSM), `kiroku-otel`
-  (optional OpenTelemetry sister package).
+- Relevant packages: `kiroku-store` (core store + subscription FSM), `shibuya-kiroku-adapter`
+  (worker adapter); the source tree also carries the metrics, CLI, and OpenTelemetry packages
+  documented below.
 
 ## Last reviewed commit
 
 ```
-0a39598a4a9614528316f6c9c63842cc1d55d313  (0a39598)
-2026-06-01 11:07:54 -0700
-docs(kiroku-metrics): user guide and self-verifying runnable example
+4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a  (4312aa8)
+2026-06-14T19:50:51-07:00
+feat(kiroku-store): add eventExistsInStream point lookup
 ```
 
-> **Note.** Released versions at this pin: `kiroku-store` **0.2.0.0**, `kiroku-store-migrations`
+> **Note.** The `0a39598..4312aa8` range is the June hardening refresh. It updated the store write
+> path, stream/category validation, subscriptions, adapter behavior, observability, and operator
+> docs; this documentation repo folded those changes into the Kiroku reference, how-to, walkthrough,
+> integration, FAQ, and source-sync pages.
+>
+> - **Store/write path:** stream/category constructors, oversize stream-name rejection, typed
+>   append/link failures, empty-batch rejection, backward-read fixes, `eventExistsInStream`,
+>   transaction duplicate surfacing, pipelined multi-stream append, and migration/schema hygiene were
+>   incorporated.
+> - **Subscriptions and adapters:** `SubscriptionTarget`, `EventTypeFilter`, `OverflowPolicy`,
+>   `SubscriptionResult`, consumer groups, dead-letter behavior, `PauseAndResume`, `queueCapacity`,
+>   synchronous handler exception retries, websocket replay/read failures, metrics websocket replay
+>   fixes, OpenTelemetry/metrics/CLI docs, and shibuya-kiroku-adapter lossless overflow behavior were
+>   reconciled.
+>
+> **Note (prior range).** Released versions at this pin: `kiroku-store` **0.2.0.0**, `kiroku-store-migrations`
 > **0.1.1.0**, `kiroku-otel` **0.2.0.0**, `kiroku-cli` **0.1.0.0** (new), `kiroku-metrics` **0.1.0.0**
 > (new), `shibuya-kiroku-adapter` **0.2.0.0**. The `98f46b3..0a39598` range added two **new
 > packages** — `kiroku-metrics` (`reference/metrics.mdx`, `how-to/serve-metrics-and-health.mdx`) and
@@ -34,6 +50,10 @@ docs(kiroku-metrics): user guide and self-verifying runnable example
 
 ### Previous pointers (for traceability)
 
+- `0a39598a4a9614528316f6c9c63842cc1d55d313` (`0a39598`, 2026-06-01, released versions) — the
+  baseline before the June hardening refresh. The `0a39598..4312aa8` range updated the store write
+  path, validation, subscription/consumer-group behavior, shibuya adapter behavior, observability,
+  metrics, CLI, and websocket error handling.
 - `98f46b368e9d4e73d05e849703bbbe6cec3aeaff` (`98f46b3`, 2026-05-31, pre-release) — baseline before
   the metrics/CLI packages and the OTel-1.0/Shibuya-0.6 upgrade. The `98f46b3..0a39598` range added
   `kiroku-metrics` and `kiroku-cli`, bumped the release versions above, and upgraded the
@@ -52,8 +72,8 @@ docs(kiroku-metrics): user guide and self-verifying runnable example
 1. List what changed since the pointer:
    ```sh
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 98f46b3..HEAD
-   git -C "$KIROKU" diff --stat 98f46b3..HEAD
+   git -C "$KIROKU" log --oneline 4312aa8..HEAD
+   git -C "$KIROKU" diff --stat 4312aa8..HEAD
    ```
    Kiroku also keeps its own `docs/`, `CHANGELOG.md` files, and `docs/plans|masterplans`
    entries — the prose diff there is the fastest way to understand intent before touching

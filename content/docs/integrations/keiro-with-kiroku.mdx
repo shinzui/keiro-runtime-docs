@@ -7,7 +7,57 @@ keiro (経路, the event-sourcing framework) persists its events and workflow st
 through kiroku (記録, the append-only PostgreSQL event store). This page documents
 how to wire keiro to kiroku.
 
-<Callout type="info">
-  Documentation in progress. This page will cover store configuration, stream naming, and the
-  persistence contract between keiro and kiroku.
-</Callout>
+## What keiro stores in kiroku
+
+keiro writes every aggregate, process-manager, router, outbox/inbox, timer, projection, and workflow
+fact through Kiroku's PostgreSQL-backed store. Kiroku owns the append contract: stream names,
+`ExpectedVersion`, duplicate event ids, global positions, transactions, and subscription delivery.
+Keiro layers typed domain APIs and worker run loops over that store.
+
+| Keiro surface | Kiroku responsibility |
+| --- | --- |
+| `runCommand` | Reads a stream, appends emitted events with optimistic concurrency, and retries conflict-safe commands. |
+| Event streams and snapshots | Store stream events plus optional keiro snapshot rows keyed by stream id/version. |
+| Process managers and routers | Consume Kiroku subscriptions and dispatch deterministic target commands. |
+| Inbox/outbox | Use keiro tables in Kiroku's schema and transactions to make integration-message consume/publish paths replay-safe. |
+| Durable workflows | Journal workflow steps into `wf:<name>-<id>` streams and maintain workflow lifecycle tables beside them. |
+
+## Stream naming and categories
+
+Use Keiro's typed stream/category helpers rather than hand-building Kiroku stream names. The current
+safe path is `category` / `entityStream` / `streamName` from the Keiro stream surface, backed by
+Kiroku's `CategoryName` and `StreamName` validation. `mkWorkflowName` and `mkWorkflowId` play the same
+role for workflow journals: use the validated constructors when creating new workflow identities.
+
+For details, read [EventStream and Stream](/docs/keiro/reference/event-stream-and-stream) and
+[Kiroku core types](/docs/kiroku/reference/core-types).
+
+## Transactions and source consistency
+
+Keiro command transactions are ordinary Kiroku transactions. The important rule is that the local
+side effect you need to be atomic with an event append must happen in the same store transaction:
+read-model updates can run with a command append, outbox rows can be inserted with domain events, and
+transactional job enqueueing must use the inline SQL pattern described in the Keiro cookbook rather
+than a separate PGMQ send.
+
+Kiroku now exposes point lookups such as `eventExistsInStream`, stricter stream-name validation,
+typed append/link failures, and pipelined multi-stream append. Keiro's current command/read-side docs
+use those semantics directly.
+
+## Subscriptions and workers
+
+Kiroku owns subscription checkpoints, retry/dead-letter behavior, consumer groups, filtering, and
+trace context. Keiro's process-manager/router workers consume those subscriptions and classify their
+own dispatch results: transient store/command failures retry, deterministic command failures halt,
+and duplicate target command ids are treated as idempotent success.
+
+For shibuya supervision over Kiroku subscriptions, use the
+[shibuya ⇄ kiroku adapter](/docs/integrations/shibuya-kiroku-adapter). For Keiro sharded category
+subscriptions, use [Subscription sharding](/docs/keiro/reference/subscription-sharding).
+
+<Cards>
+  <Card title="Kiroku Store effect" href="/docs/kiroku/reference/store-effect" />
+  <Card title="Keiro command reference" href="/docs/keiro/reference/command" />
+  <Card title="Process manager workers" href="/docs/keiro/reference/process-manager" />
+  <Card title="Durable workflows" href="/docs/keiro/reference/durable-workflows" />
+</Cards>
