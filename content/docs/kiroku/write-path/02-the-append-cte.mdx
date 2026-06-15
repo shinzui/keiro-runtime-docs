@@ -1,6 +1,6 @@
 ---
 title: "02 — The append CTE: one statement, atomic, optimistic"
-description: "Reading SQL.hs: the single CTE that checks the expected version, inserts events, and dual-writes the $all sequence — atomically and gap-free — plus how it stays correct under concurrency."
+description: "Reading SQL.hs: the single CTE that checks the expected version, inserts events, and dual-writes the $all sequence atomically, plus how it stays correct under concurrency."
 ---
 
 <Callout type="info">
@@ -96,7 +96,7 @@ That empty result is how a conflict travels back to Haskell: no exception, no pa
 `WrongExpectedVersion`. The same shape gives each precondition its semantics — `NoStream` against an
 existing stream, `StreamExists` against a missing one — all surface as the same clean "zero rows."
 
-## Property 3 — `$all` is dual-written, gap-free, in batch order
+## Property 3 — `$all` is dual-written, strictly ordered, in batch order
 
 kiroku keeps a single global sequence (`$all`, the seeded `stream_id = 0` row) so subscriptions and
 `readAllForward` have one totally-ordered spine ([The $all stream and global
@@ -106,14 +106,15 @@ same statement_ as the per-stream write:
 - (4) bumps the `$all` counter by the batch size, returning `initial_global_version` (the value
   _before_ the bump).
 - (5) inserts one `$all` junction row per event at `initial_global_version + idx`, where `idx` is the
-  1-based `WITH ORDINALITY` index — so positions are **contiguous** (`+1, +2, …`) and assigned in
+  1-based `WITH ORDINALITY` index, so the current implementation assigns positions in contiguous
   batch order.
 
 Because `all_update` carries the same `EXISTS (SELECT 1 FROM stream_update)` guard, a **rejected
-append never touches `$all`**. That is why the global position is **gap-free**: positions are computed
-as `initial + idx` inside a statement that either fully commits or writes nothing, so a failed append
-consumes no positions (unlike a sequence/`nextval`, which would leave holes). The per-stream version is
-assigned the same way (`initial_version + idx`), one-indexed within the stream.
+append never touches `$all`**. The public contract is narrower than the implementation detail:
+`GlobalPosition` is a strictly increasing, totally ordered cursor. Treat it as opaque and never assume
+positions are dense; if Kiroku later moves to a sequence-style allocator, the same read and
+subscription APIs can keep working with gaps. The per-stream version is assigned as
+`initial_version + idx`, one-indexed within the stream.
 
 ## Property 4 — order is fixed by `ORDER BY idx`
 

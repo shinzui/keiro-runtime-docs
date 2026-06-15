@@ -4,6 +4,7 @@ slug: refresh-keiro-and-kiroku-documentation-after-june-hardening
 title: "Refresh keiro and kiroku documentation after June hardening"
 kind: master-plan
 created_at: 2026-06-15T19:07:48Z
+intention: intention_01kv6bpntyeh98ta4k2famkdm9
 ---
 
 # Refresh keiro and kiroku documentation after June hardening
@@ -30,7 +31,7 @@ The split keeps most child plans independently verifiable. EP-1 and EP-2 can pro
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| EP-1 | Refresh Kiroku write path schema and store API documentation | `docs/plans/29-refresh-kiroku-write-path-schema-and-store-api-documentation.md` | None | None | Not Started |
+| EP-1 | Refresh Kiroku write path schema and store API documentation | `docs/plans/29-refresh-kiroku-write-path-schema-and-store-api-documentation.md` | None | None | Complete |
 | EP-2 | Refresh Kiroku subscriptions adapter observability and metrics documentation | `docs/plans/30-refresh-kiroku-subscriptions-adapter-observability-and-metrics-documentation.md` | None | EP-1 | Not Started |
 | EP-3 | Refresh Keiro command core read side and schema documentation | `docs/plans/31-refresh-keiro-command-core-read-side-and-schema-documentation.md` | None | EP-1 | Not Started |
 | EP-4 | Refresh Keiro messaging workers and PGMQ documentation | `docs/plans/32-refresh-keiro-messaging-workers-and-pgmq-documentation.md` | None | EP-2 | Not Started |
@@ -68,8 +69,8 @@ The `keiro-pgmq` queue semantics are shared by EP-4 and EP-6. EP-4 owns the refe
 Track milestone-level progress across all child plans. Each entry names the child plan
 and the milestone. This section provides an at-a-glance view of the entire initiative.
 
-- [ ] EP-1: Audit the Kiroku `0a39598..HEAD` write/read/schema range and update store API, schema, write-path, and migration docs.
-- [ ] EP-1: Validate Kiroku write-path docs against current source exports, tests, and source pointer notes.
+- [x] EP-1: Audit the Kiroku `0a39598..HEAD` write/read/schema range and update store API, schema, write-path, and migration docs.
+- [x] EP-1: Validate Kiroku write-path docs against current source exports, tests, and source pointer notes.
 - [ ] EP-2: Audit Kiroku subscription, Shibuya adapter, OpenTelemetry, metrics, and CLI changes and update the affected docs.
 - [ ] EP-2: Validate subscription docs against current source, adapter tests, metrics tests, and source pointer notes.
 - [ ] EP-3: Audit Keiro command, codec, stream, snapshot, projection, read-model, test-support, and migration changes and update reference/how-to/walkthrough docs.
@@ -88,6 +89,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - Creating child ExecPlans in parallel exposed that `agents/skills/exec-plan/init-plan.ts` is not concurrency-safe for numbering; the duplicate skeletons were deleted immediately and recreated sequentially.
 - The current `keiro` range is much larger than a small drift update: `git -C /Users/shinzui/Keikaku/bokuno/keiro diff --stat 9fa283b..HEAD` reports 502 files changed, including production hardening, new migrations, workflow instance leasing, and extended `keiro-pgmq`.
 - The current `kiroku` range is also larger than a pointer bump: `git -C /Users/shinzui/Keikaku/bokuno/kiroku-project/kiroku diff --stat 0a39598..HEAD` reports 94 files changed, including breaking store and adapter changes, append pipelining, schema hygiene, and metrics websocket replay fixes.
+- EP-1 found that the docs overstated `GlobalPosition` as gap-free/dense API behavior. Current `Kiroku.Store.Types` documents it as an opaque strictly increasing cursor, so EP-1 narrowed Kiroku overview, reference, write-path, and one adjacent subscription-walkthrough sentence to avoid contradicting the source.
 
 
 ## Decision Log
@@ -112,3 +114,5 @@ Summarize outcomes, gaps, and lessons learned at major milestones or at completi
 Compare the result against the original vision.
 
 (To be filled during and after implementation.)
+
+- EP-1 completed on 2026-06-15. It updated Kiroku store API, write-path, category, migration, and adjacent global-order docs against `shinzui/kiroku` commit `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a`; validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, and `git diff --check`. EP-6 still owns the final `docs/kiroku-source-sync.md` pointer update.

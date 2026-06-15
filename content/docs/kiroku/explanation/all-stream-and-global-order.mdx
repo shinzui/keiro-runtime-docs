@@ -1,11 +1,11 @@
 ---
 title: "The $all log and global order"
-description: "How one junction table gives every event a gap-free global position without copying payloads."
+description: "How one junction table gives every event a global cursor without copying payloads."
 ---
 
 Every event kiroku stores lands in two places at once: its **source stream** and the global
-**`$all` log**. That second placement is what gives the whole store a single, gap-free order —
-and it is done without copying a single byte of payload.
+**`$all` log**. That second placement is what gives the whole store a single global order — and it
+is done without copying a single byte of payload.
 
 ## One event, several stream rows
 
@@ -22,7 +22,7 @@ The schema separates the event _body_ from its _placement_:
 ```mermaid
 flowchart TD
   E["events row: event_id, data, metadata, …"]
-  S1["stream_events: stream_id = orders-1, stream_version = 0"]
+  S1["stream_events: stream_id = orders-1, stream_version = source version"]
   S0["stream_events: stream_id = 0 ($all), stream_version = GlobalPosition"]
   Cur["Subscription cursor: reads $all by GlobalPosition"]
 
@@ -31,18 +31,17 @@ flowchart TD
   S0 --> Cur
 ```
 
-## The $all row's version _is_ the GlobalPosition
+## The $all row's version _is_ the current GlobalPosition source
 
 Here is the key identity: **the `stream_version` of an event's `$all` (stream_id 0) junction row
-is its `GlobalPosition`.** Because both junction rows are written in the **same transaction** as
-the append, and because that transaction allocates the next `$all` version atomically, the
-global order is **gap-free**: positions are `1, 2, 3, …` with no holes, under all four
-`ExpectedVersion` paths.
+is its `GlobalPosition` in the current implementation.** Both junction rows are written in the
+**same transaction** as the append, and the `$all` position is allocated atomically with the source
+stream version.
 
-Gap-freeness is not cosmetic. A subscription resumes by remembering "I have processed up to
-`GlobalPosition` _N_" and asking for everything after _N_. If the global counter could skip
-values, a subscriber could never be sure whether a missing position was a gap or an event it had
-not yet seen. Contiguity makes the cursor unambiguous.
+The API contract is intentionally smaller than "every integer exists." A `GlobalPosition` is an
+opaque, strictly increasing cursor. A subscription resumes by remembering "I have processed up to
+`GlobalPosition` _N_" and asking for everything after _N_; it should never infer anything from _N + 1_
+or assume positions are dense.
 
 <Callout type="info">
   This is also why `$all`, categories, and links cost almost nothing: they are extra `stream_events`
@@ -61,5 +60,5 @@ start). A subscription with target `AllStreams` is, in effect, a managed, resuma
 
 Writing two-plus junction rows per event is slightly more write work than a single insert, and
 the `$all` log serialises global ordering through one counter. In exchange you get a totally
-ordered, gap-free, replayable history of the entire store — the property every projection and
-subscription depends on.
+ordered, replayable history of the entire store — the property every projection and subscription
+depends on.

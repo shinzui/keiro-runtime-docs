@@ -4,6 +4,7 @@ slug: refresh-kiroku-subscriptions-adapter-observability-and-metrics-documentati
 title: "Refresh Kiroku subscriptions adapter observability and metrics documentation"
 kind: exec-plan
 created_at: 2026-06-15T19:08:21Z
+intention: intention_01kv6bpntyeh98ta4k2famkdm9
 master_plan: "docs/masterplans/4-refresh-keiro-and-kiroku-documentation-after-june-hardening.md"
 ---
 

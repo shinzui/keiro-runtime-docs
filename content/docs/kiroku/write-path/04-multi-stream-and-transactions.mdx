@@ -20,23 +20,18 @@ appends, or an append plus the caller's own SQL, become one atomic unit.
 ## Multi-stream: many appends, all-or-nothing
 
 `appendMultiStream` writes to several streams so that **either every per-stream append commits or none
-does**. Since it spans multiple statements, it does need a real transaction. The interpreter builds the
-transaction body like this:
+does**. Since it spans multiple statements, it does need a real transaction. Current Kiroku sends the
+transaction as a `hasql` pipeline: `BEGIN`, deterministic pre-lock, all per-stream append statements,
+then `COMMIT` or `ROLLBACK`. The shape is equivalent to this body:
 
 ```haskell
--- src/Kiroku/Store/Effect.hs — the AppendMultiStream branch (trimmed)
-let txn = do
-      -- (1) pre-lock every named stream in deterministic stream_id order
-      Tx.statement names SQL.lockStreamsForMultiStmt
-      -- (2) run the per-stream append CTE for each op, collecting Maybe results
-      results <- mapM (\(StreamName n, expected, prepared) ->
-                         appendDispatchTx expected (buildAppendParams n now prepared)) preparedOps
-      -- (3) if ANY append hit a precondition conflict (Nothing), roll the whole thing back
-      case any isNothing results of
-        True  -> Tx.condemn >> pure results
-        False -> pure results
-result <- liftIO $ Pool.use (store ^. #pool) $
-            TxSessions.transaction TxSessions.ReadCommitted TxSessions.Write txn
+-- src/Kiroku/Store/Effect.hs — runAppendMultiStreamPipeline (trimmed)
+runAppendMultiStreamPipeline names now preparedOps =
+  Session.pipeline $
+    Pipeline.statement () multiAppendBeginStmt
+      *> Pipeline.statement names SQL.lockStreamsForMultiStmt
+      *> traverse appendPrepared preparedOps
+  -- commit if every result is Just; otherwise rollback
 ```
 
 Three mechanisms make this correct:
@@ -58,16 +53,20 @@ Three mechanisms make this correct:
    02, just issued via `Tx.statement` instead of `Session.statement` so it joins the open transaction.
    A precondition conflict still surfaces as the CTE returning zero rows → `Nothing`.
 
-3. **`Tx.condemn` enforces all-or-nothing.** If _any_ append returned `Nothing`, the body calls
-   `Tx.condemn`, which marks the transaction for rollback at commit. The successful appends in the same
-   transaction are discarded with it — there is no partial multi-stream commit. After the transaction,
-   the interpreter walks the `(op, result)` pairs and attributes the failure to the specific stream
-   that conflicted (via `emptyResultError`), so the caller learns _which_ stream broke its precondition.
+3. **Rollback enforces all-or-nothing.** If _any_ append returned `Nothing`, the interpreter sends
+   `ROLLBACK` instead of `COMMIT`. The successful appends in the same transaction are discarded with it
+   — there is no partial multi-stream commit. After the transaction, the interpreter walks the
+   `(op, result)` pairs and attributes the failure to the specific stream that conflicted (via
+   `emptyResultError`), so the caller learns _which_ stream broke its precondition.
 
 PostgreSQL exceptions (rather than empty results) are attributed by `attributeMultiStreamError`, which
 parses the server detail for the offending stream name when it can and otherwise falls back to the
 first op — the same `mapUsageError` classification from [part 03](/docs/kiroku/write-path/03-outcomes-and-errors)
 underneath.
+
+Two validation checks happen before that transaction opens. An empty operation list is a no-op that
+returns `[]` without a round trip. Any invalid stream name or per-stream empty event list rejects the
+whole call up front with `ReservedStreamName`, `StreamNameTooLong`, or `EmptyAppendBatch`.
 
 ## Transactional append: composing with the caller's own SQL
 
@@ -79,7 +78,8 @@ recorded. That is exactly the [keiro projection](/docs/integrations/keiro-with-k
 ```haskell
 -- src/Kiroku/Store/Transaction.hs — runTransactionAppendingWith (trimmed)
 runTransactionAppendingWith ctor sn@(StreamName name) expected events k
-  | name == "$all" = pure (Left (ReservedStreamName sn))   -- reject before opening any transaction
+  | Left err <- validateStreamName sn = pure (Left err)    -- reject before opening any transaction
+  | null events = pure (Left (EmptyAppendBatch sn))        -- reject before opening any transaction
   | otherwise = do
       prepared <- prepareEventsIO events    -- (A) generate UUIDv7s OUTSIDE the transaction
       now      <- liftIO getCurrentTime      -- (A) capture time OUTSIDE the transaction
@@ -91,8 +91,10 @@ runTransactionAppendingWith ctor sn@(StreamName name) expected events k
       send (ctor body)
 ```
 
-The design turns on three points:
+The design turns on four points:
 
+- **Up-front validation protects the transaction.** `$all`, oversized stream names, and empty event
+  lists all return `Left StoreError` before a `BEGIN` is opened and before the continuation can run.
 - **(A) Preparation happens outside the transaction.** `Tx.Transaction` has no `MonadIO` instance — you
   cannot generate a UUID or read the clock inside it. So ids and the timestamp are produced first, in
   `IO`, and only the pure SQL goes in the body. This also makes the body **retry-safe**: when the
@@ -129,7 +131,7 @@ itself.
 
 Five files, one idea: an append is a `Store` effect ([01](/docs/kiroku/write-path/01-the-store-effect-and-append-api))
 whose interpreter packs events into a **single CTE** that checks the version, writes the events, and
-dual-writes the `$all` sequence atomically and gap-free ([02](/docs/kiroku/write-path/02-the-append-cte));
+dual-writes the `$all` sequence atomically ([02](/docs/kiroku/write-path/02-the-append-cte));
 the statement's empty-result-or-`SQLSTATE` outcome is classified into a typed `StoreError`
 ([03](/docs/kiroku/write-path/03-outcomes-and-errors)); and those same building blocks compose into
 deadlock-free multi-stream and atomic append-plus-projection transactions (this part). The optimistic

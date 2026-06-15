@@ -27,6 +27,10 @@ case result of
   Right (Just r) -> pure r                                             -- success: the AppendResult
 ```
 
+Before this branch runs, the interpreter has already rejected invalid stream names and empty batches:
+`$all` becomes `ReservedStreamName`, names over 512 UTF-8 bytes become `StreamNameTooLong`, and `[]`
+becomes `EmptyAppendBatch`. Those are caller errors caught before PostgreSQL work.
+
 The middle branch is the subtle one and the reason the CTE was designed the way it was. A precondition
 failure is **not** a database error — the statement ran fine, it just matched zero rows ([part 02's
 optimistic check](/docs/kiroku/write-path/02-the-append-cte)). So there is nothing to parse from the
@@ -70,13 +74,15 @@ StatementError → ServerError`) to the `SQLSTATE` code, then maps by code and, 
 
 ```haskell
 -- src/Kiroku/Store/Error.hs (the decision, condensed)
--- 23505 (unique_violation) + "events_pkey"            -> DuplicateEvent (parse the id from the detail)
--- 23505 (unique_violation) + "ix_streams_stream_name" -> StreamAlreadyExists
--- 23505 (unique_violation) + (other constraint)       -> WrongExpectedVersion
--- 23503 (foreign_key_violation)                        -> StreamNotFound
--- (any other server code)                              -> UnexpectedServerError code message
--- AcquisitionTimeoutUsageError                          -> PoolAcquisitionTimeout
--- ConnectionUsageError                                  -> ConnectionLost
+-- 23505 (unique_violation) + "events_pkey"                -> DuplicateEvent (parse the id from the detail)
+-- 23505 (unique_violation) + "stream_events_pkey" in link -> EventAlreadyLinked
+-- 23505 (unique_violation) + "ix_streams_stream_name"     -> StreamAlreadyExists
+-- 23505 (unique_violation) + (other constraint)           -> WrongExpectedVersion
+-- 23503 (foreign_key_violation)                           -> StreamNotFound
+-- 23502 (not-null violation) in link                      -> LinkSourceEventMissing
+-- (any other server code)                                 -> UnexpectedServerError code message
+-- AcquisitionTimeoutUsageError                            -> PoolAcquisitionTimeout
+-- ConnectionUsageError                                    -> ConnectionLost
 ```
 
 Two things worth noting. First, the classification keys off literal constraint names (`events_pkey`,

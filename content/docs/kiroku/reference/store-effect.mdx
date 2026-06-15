@@ -21,6 +21,7 @@ data Store :: Effect where
   ReadCategoryForward :: CategoryName -> GlobalPosition -> Int32 -> Store m (Vector RecordedEvent)
   GetStream           :: StreamName -> Store m (Maybe StreamInfo)
   LookupStreamId      :: StreamName -> Store m (Maybe StreamId)
+  EventExistsInStream :: StreamName -> EventId -> Store m Bool
   LookupStreamNames   :: [StreamId] -> Store m (Map StreamId StreamName)
   LinkToStream        :: StreamName -> [EventId] -> Store m LinkResult
   FindEvents          :: EventFilter -> Store m (Vector RecordedEvent)
@@ -45,10 +46,16 @@ appendToStream    :: (HasCallStack, Store :> es) => StreamName -> ExpectedVersio
 appendMultiStream :: (HasCallStack, Store :> es) => [(StreamName, ExpectedVersion, [EventData])] -> Eff es [AppendResult]
 ```
 
-`appendToStream` appends a batch to one stream under an `ExpectedVersion` guard; all-or-nothing
-per call, read-your-own-writes on the same handle. `appendMultiStream` appends to several streams
-in one transaction, pre-locking streams in `stream_id` order so it is deadlock-free. Appending to
-`$all` is rejected (`ReservedStreamName`); an empty event list is a caller mistake.
+`appendToStream` appends a non-empty batch to one stream under an `ExpectedVersion` guard;
+all-or-nothing per call, read-your-own-writes on the same handle. It rejects `$all` with
+`ReservedStreamName`, names longer than 512 UTF-8 bytes with `StreamNameTooLong`, and `[]` with
+`EmptyAppendBatch` before database work. On transient serialization failures the interpreter retries
+the single statement once with the same prepared event ids.
+
+`appendMultiStream` appends to several streams in one transaction, pre-locking streams in
+`stream_id` order so overlapping calls do not deadlock. An empty operation list returns `[]` without
+a round trip. If any per-stream event list is empty, or any target stream name is invalid, the whole
+call is rejected before the transaction opens. The result list mirrors input order.
 
 ## Read
 
@@ -73,10 +80,15 @@ getStream         :: (Store :> es) => StreamName -> Eff es (Maybe StreamInfo)
 lookupStreamId    :: (Store :> es) => StreamName -> Eff es (Maybe StreamId)
 lookupStreamNames :: (Store :> es) => [StreamId] -> Eff es (Map StreamId StreamName)
 lookupStreamName  :: (Store :> es) => StreamId   -> Eff es (Maybe StreamName)
+eventExistsInStream :: (Store :> es) => StreamName -> EventId -> Eff es Bool
 ```
 
-`getStream` returns `StreamInfo` (id, name, version, timestamps) or `Nothing` if absent/deleted.
-`lookupStreamNames` is the **batch** inverse used by fan-in reads (see ADR 0001).
+`getStream` returns `StreamInfo` (id, name, version, timestamps) for live and soft-deleted streams,
+or `Nothing` if the stream never existed or was hard-deleted. `lookupStreamNames` is the **batch**
+inverse used by fan-in reads (see ADR 0001).
+`eventExistsInStream` is the point lookup for idempotency checks: it returns `True` only when the
+event id is linked into the supplied live stream, and `False` for another stream, a missing event, a
+missing stream, or a soft-deleted stream.
 
 ## Link
 
@@ -120,8 +132,9 @@ RunTransactionNoRetry :: Tx.Transaction a -> Store m a   -- exactly-once body, n
 ```
 
 Run an explicit `hasql` transaction through the store's pool — for example to append events _and_
-update an inline projection table atomically. `RunTransaction` retries on serialization failure;
-`RunTransactionNoRetry` runs the body exactly once.
+update an inline projection table atomically. `RunTransaction` retries the body on serialization
+failure; `RunTransactionNoRetry` runs it exactly once. Connection and server failures are mapped to
+typed `StoreError` constructors where the store can recognise them.
 
 ## Interpreters
 

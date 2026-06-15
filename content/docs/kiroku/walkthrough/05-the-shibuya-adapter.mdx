@@ -332,8 +332,8 @@ reordering on top of it.
 
 kiroku's ordering is not best-effort; it is anchored in the schema. The global stream `$all` is
 literally a stream (`stream_id = 0`), and **its `stream_version` _is_ the global position** — a
-gapless, strictly monotonic sequence assigned at append time. Every event an `AllStreams` subscription
-sees is read from that one ordered spine:
+strictly increasing cursor assigned at append time. Every event an `AllStreams` subscription sees is
+read from that one ordered spine:
 
 ```sql
 -- kiroku-store/src/Kiroku/Store/SQL.hs — readAllForwardSQL
@@ -360,12 +360,12 @@ traced:
   past the event on `DeadLetter`) — it never rewinds.
 - A `Retry` **redelivers the same event in place** and blocks the batch there until it resolves, so a
   retry can never let a later event overtake an earlier one.
-- The catch-up→live handoff cannot create a gap or a rewind: catch-up runs until the cursor reaches
+- The catch-up→live handoff cannot miss an eligible event or rewind: catch-up runs until the cursor reaches
   the publisher's position, and the `AllStreams` live path drops anything `≤ cursor` (the `> c`
-  filter), so the seam is exactly contiguous.
+  filter), so the seam is exactly ordered.
 
 So _before_ shibuya is even involved, the contract is: **the handler is offered events in strictly
-ascending global position, with no gaps and no reordering, even across retries and the live handoff.**
+ascending global position, with no reordering, even across retries and the live handoff.**
 
 ### Layer 2 — the bridge and shibuya do not undo it
 

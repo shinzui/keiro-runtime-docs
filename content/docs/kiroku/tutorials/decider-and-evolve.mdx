@@ -77,10 +77,10 @@ handle :: KirokuStore -> StreamName -> OrderCmd -> IO (Either StoreError ())
 handle store name cmd = runStoreIO store $ do
   recorded <- readStreamForward name (StreamVersion 0) 1000
   let current  = foldl' evolve NoOrder (map decodeEvent (Vector.toList recorded))
-      -- the stream's current version is (count - 1); empty stream => NoStream below
+      -- the stream's current version is the number of events read; empty stream => NoStream below
       expected = if Vector.null recorded
                    then NoStream
-                   else ExactVersion (StreamVersion (fromIntegral (Vector.length recorded) - 1))
+                   else ExactVersion (StreamVersion (fromIntegral (Vector.length recorded)))
   case decide cmd current of
     Left _err    -> pure ()                                  -- rejected command: no events
     Right events -> () <$ appendToStream name expected (map encodeEvent events)
@@ -108,7 +108,7 @@ decodeEvent r = decodePayload (r ^. #eventType) (r ^. #payload)   -- your Aeson 
 ## Why `ExactVersion`
 
 `ExactVersion currentVersion` is what makes this safe under concurrency. Two handlers that both
-read version 4 will both try to append "expecting version 4". The database lets exactly one
+read a stream currently at version 4 will both try to append "expecting version 4". The database lets exactly one
 win; the loser gets `WrongExpectedVersion` and must restart the loop against the now-current
 state. That is optimistic concurrency doing its job — no locks, no lost updates. See
 [Optimistic concurrency](/docs/kiroku/explanation/optimistic-concurrency) for the full mapping

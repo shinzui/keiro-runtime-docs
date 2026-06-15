@@ -15,9 +15,20 @@ newtype StreamId       = StreamId Int64        -- DB surrogate id (rarely used b
 newtype EventId        = EventId UUID          -- UUIDv7 by default
 newtype EventType      = EventType Text        -- free-form discriminator, e.g. "OrderPlaced"
 newtype StreamVersion  = StreamVersion Int64   -- per-stream; starts at 0, +1 per event
-newtype GlobalPosition = GlobalPosition Int64  -- gap-free $all counter; the subscription cursor
+newtype GlobalPosition = GlobalPosition Int64  -- opaque, strictly increasing $all cursor
 newtype CategoryName   = CategoryName Text     -- a StreamName's prefix before the first '-'
 ```
+
+`categoryName :: StreamName -> CategoryName` returns the text before the first `-`. A name without a
+hyphen is its own category. `streamNameInCategory :: CategoryName -> Text -> StreamName` builds the
+usual `category-id` shape and is the preferred constructor when you already have a category value.
+It is intentionally permissive; application validation belongs at your boundary. The store itself
+rejects only reserved `$all` targets and stream names longer than 512 UTF-8 bytes.
+
+Treat `GlobalPosition` as an opaque cursor. The value is strictly increasing and totally ordered, so
+it is safe for `$all`, category, and subscription checkpoints. Do not derive the next position with
+arithmetic or assume every integer is present; build cursors from `GlobalPosition 0` or from values
+returned by the store.
 
 ## `EventData` (append input)
 
@@ -108,11 +119,15 @@ The error type interpreters fail with (`runStoreIO` returns `Either StoreError`)
 
 | Constructor                                                        | Meaning                                                                            |
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| `WrongExpectedVersion !StreamName !ExpectedVersion !StreamVersion` | An `ExactVersion` expectation did not match; carries the actual version.           |
+| `WrongExpectedVersion !StreamName !ExpectedVersion !StreamVersion` | An `ExactVersion` expectation did not match; version field is currently a `0` placeholder. |
+| `EmptyAppendBatch !StreamName`                                     | An append call supplied an empty event list for a stream.                          |
 | `StreamNotFound !StreamName`                                       | The stream does not exist (or is soft-deleted).                                    |
 | `ReservedStreamName !StreamName`                                   | Target is store-internal (`$all`) and cannot be appended to.                       |
+| `StreamNameTooLong !StreamName !Int`                               | Stream name exceeds the 512-byte UTF-8 limit enforced before SQL.                  |
 | `StreamAlreadyExists !StreamName`                                  | `NoStream` expectation against an existing stream (or a conflicting link target).  |
 | `DuplicateEvent !(Maybe EventId)`                                  | A caller-supplied `eventId` collided with a committed event.                       |
+| `EventAlreadyLinked !StreamName !(Maybe EventId)`                  | A link call tried to link an event already present in the target stream.           |
+| `LinkSourceEventMissing !StreamName`                               | A link call referenced an event id that does not exist.                            |
 | `PoolAcquisitionTimeout`                                           | The pool timed out acquiring a connection; usually retryable.                      |
 | `ConnectionLost !Text`                                             | A network/session error tore down the connection mid-operation; usually retryable. |
 | `UnexpectedServerError !Text !Text`                                | A PostgreSQL `SQLSTATE` outside the recognised set (code, message); investigate.   |

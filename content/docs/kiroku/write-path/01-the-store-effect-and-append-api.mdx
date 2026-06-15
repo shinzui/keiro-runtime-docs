@@ -12,7 +12,8 @@ description: "Reading Append.hs and Effect.hs: the Store GADT, the four Expected
 `kiroku-store/src/Kiroku/Store/Append.hs` (the public surface) and the append branches of
 `Kiroku/Store/Effect.hs` (the interpreter). The goal of this part is to get from a caller's
 `appendToStream name expected events` down to the four parameters the SQL layer wants — and to see
-where the only two pieces of pre-SQL logic live: **id generation** and **parameter packing**.
+where the pre-SQL logic lives: stream-name validation, empty-batch rejection, **id generation**, and
+**parameter packing**.
 
 ## The public API is a thin `send`
 
@@ -63,7 +64,10 @@ a different SQL statement:
 ```haskell
 -- src/Kiroku/Store/Effect.hs — the AppendToStream branch (trimmed)
 AppendToStream (StreamName name) expected events -> do
-  rejectReservedApplicationStream name           -- $all is the global read stream; never an append target
+  rejectInvalidApplicationStream name            -- rejects $all and names over 512 UTF-8 bytes
+  case events of
+    [] -> throwError (EmptyAppendBatch (StreamName name))
+    _  -> pure ()
   events'  <- liftIO $ enrichEvents (store ^. #storeSettings) events  -- the append-path hook
   now      <- liftIO getCurrentTime              -- one timestamp for the whole batch
   prepared <- prepareEvents events'              -- generate UUIDv7s for ids the caller omitted
@@ -82,16 +86,23 @@ AppendToStream (StreamName name) expected events -> do
 Four things happen here, in order, and only the first three are this part's subject (the `case result`
 classification is [part 03](/docs/kiroku/write-path/03-outcomes-and-errors)):
 
-1. **Reject `$all`.** The seeded `stream_id = 0` row is the global read stream. Appending to it as an
-   application stream is a category error, rejected up front with `ReservedStreamName`.
-2. **Enrich.** The optional `enrichEvent` hook (from `StoreSettings`) runs once per event in `IO`
+1. **Reject invalid stream names.** The seeded `$all` row is the global read stream and is rejected
+   with `ReservedStreamName`. Names longer than 512 UTF-8 bytes are rejected with
+   `StreamNameTooLong`, matching the database check constraint.
+2. **Reject empty batches.** Passing `[]` is a programming mistake. The interpreter throws
+   `EmptyAppendBatch` before touching the pool, so it does not create an empty stream, take the `$all`
+   lock, or fire notifications.
+3. **Enrich.** The optional `enrichEvent` hook (from `StoreSettings`) runs once per event in `IO`
    before anything is packed — this is where trace-context or tenant-id injection lives. When unset it
    is a no-op with no traversal.
-3. **Prepare ids and capture time.** See below.
-4. **Dispatch and run as a single statement.** Note `Session.statement` (not a transaction): a
+4. **Prepare ids and capture time.** See below.
+5. **Dispatch and run as a single statement.** Note `Session.statement` (not a transaction): a
    single-statement append runs in autocommit on a pooled connection. The atomicity comes from the
    statement being one CTE, not from a Haskell-level `BEGIN`/`COMMIT` — that is [part
    02](/docs/kiroku/write-path/02-the-append-cte)'s whole story.
+
+If PostgreSQL reports a transient serialization conflict, the interpreter retries this one
+statement once. Event ids were prepared before the first attempt, so the retry is idempotent.
 
 ## Id generation is the idempotency seam
 

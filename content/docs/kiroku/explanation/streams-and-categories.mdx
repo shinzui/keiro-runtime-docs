@@ -18,6 +18,11 @@ newtype CategoryName  = CategoryName Text      -- "orders"
 newtype StreamVersion = StreamVersion Int64    -- per-stream, starts at 0
 ```
 
+Application stream names are permissive text values, but two store-level guards always apply:
+`$all` is reserved for the global read stream, and a name may not exceed 512 UTF-8 bytes. The Haskell
+interpreter checks both before SQL and the schema also enforces the byte limit, so raw SQL writers
+cannot bypass it.
+
 ## Categories are the prefix before the first `-`
 
 A **category** is the prefix of a stream name up to its first hyphen. `"orders-1"`,
@@ -38,6 +43,17 @@ category with `SubscriptionTarget`'s `Category` constructor.
   group over the `orders` category partitions those streams across workers while keeping each
   individual order's events in order.
 </Callout>
+
+The public helpers mirror the same rule:
+
+```haskell
+categoryName :: StreamName -> CategoryName
+streamNameInCategory :: CategoryName -> Text -> StreamName
+```
+
+`categoryName (StreamName "orders-1")` is `CategoryName "orders"`, and a name without a dash is its
+own category. `streamNameInCategory (CategoryName "orders") "1"` builds `StreamName "orders-1"`; for
+dash-free categories, `categoryName (streamNameInCategory cat segment) == cat`.
 
 ## Stream names are resolved by lookup (ADR 0001)
 

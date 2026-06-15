@@ -4,6 +4,7 @@ slug: refresh-kiroku-write-path-schema-and-store-api-documentation
 title: "Refresh Kiroku write path schema and store API documentation"
 kind: exec-plan
 created_at: 2026-06-15T19:08:17Z
+intention: intention_01kv6bpntyeh98ta4k2famkdm9
 master_plan: "docs/masterplans/4-refresh-keiro-and-kiroku-documentation-after-june-hardening.md"
 ---
 
@@ -26,17 +27,20 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Re-read the current `shinzui/kiroku` source range and summarize source facts from `0a39598..HEAD`.
-- [ ] Update Kiroku core type and store effect reference pages for current append/read/category/error APIs.
-- [ ] Update write-path walkthrough pages for pipelined multi-stream append, empty-batch rejection, duplicate-event surfacing, and backward-read behavior.
-- [ ] Update schema and migration docs for the June 11 migration files and dedicated `kiroku` schema behavior.
-- [ ] Update `docs/kiroku-source-sync.md` notes only if EP-6 has not already claimed the final pointer edit; otherwise record the required pointer text in this plan's retrospective.
-- [ ] Run docs validation commands and record results.
+- [x] Re-read the current `shinzui/kiroku` source range and summarize source facts from `0a39598..HEAD`. Completed 2026-06-15.
+- [x] Update Kiroku core type and store effect reference pages for current append/read/category/error APIs. Completed 2026-06-15.
+- [x] Update write-path walkthrough pages for pipelined multi-stream append, empty-batch rejection, duplicate-event surfacing, and backward-read behavior. Completed 2026-06-15.
+- [x] Update schema and migration docs for the June 11 migration files and dedicated `kiroku` schema behavior. Completed 2026-06-15.
+- [x] Update `docs/kiroku-source-sync.md` notes only if EP-6 has not already claimed the final pointer edit; otherwise record the required pointer text in this plan's retrospective. Completed 2026-06-15 by recording the EP-6 handoff text below and leaving the pointer file unchanged.
+- [x] Run docs validation commands and record results. Completed 2026-06-15.
 
 
 ## Surprises & Discoveries
 
-(None yet.)
+- `Kiroku.Store.Types.GlobalPosition` now explicitly says the API contract is strictly increasing and totally ordered, not dense or gap-free. Several docs pages still described gap-freeness as the public contract, so the EP-1 edit also narrowed adjacent overview/explanation/walkthrough wording that would otherwise contradict the reference page.
+- Kiroku stream versions are one-indexed for stored events: `StreamVersion 0` is the exclusive cursor before the first event, and the first successful append returns `AppendResult.streamVersion = StreamVersion 1`. The getting-started and decider examples had older zero-based wording and were updated with evidence from `kiroku-store/test/Main.hs`.
+- `appendMultiStream` no longer uses the older `TxSessions.transaction`/`Tx.condemn` shape shown in the docs. The current interpreter uses a `Hasql.Pipeline` sequence of `BEGIN`, deterministic pre-lock, per-stream append statements, and `COMMIT` or `ROLLBACK`.
+- EP-6 owns the final `docs/kiroku-source-sync.md` pointer edit by MasterPlan integration policy, so this plan did not change that file.
 
 
 ## Decision Log
@@ -53,7 +57,30 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+EP-1 updated Kiroku write/read/schema documentation against `shinzui/kiroku` `HEAD`:
+
+```text
+4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a
+2026-06-14 19:50:51 -0700
+feat(kiroku-store): add eventExistsInStream point lookup
+```
+
+The edited docs now cover `categoryName`, `streamNameInCategory`, `eventExistsInStream`, `EmptyAppendBatch`, `StreamNameTooLong`, typed link failures, one-shot serialization retry, pipelined multi-stream append, one-indexed stream versions, opaque strictly increasing `GlobalPosition`, and the June 11 migration files for notification trigger guarding, dead-letter indexing, index/fillfactor hygiene, and stream-name length checks.
+
+EP-6 should update `docs/kiroku-source-sync.md` with this pointer summary:
+
+```text
+The `0a39598..4312aa8` range refreshed Kiroku's write/read/schema surface after June hardening: category helpers, opaque strictly increasing GlobalPosition wording, empty append-batch rejection, 512-byte stream-name validation and schema check, typed link and append errors, `eventExistsInStream`, duplicate-event surfacing from transactional appends, pipelined all-or-nothing `appendMultiStream`, corrected backward-read pagination, dedicated `kiroku` schema migration guidance, and June 11 notification/dead-letter/index/fillfactor migrations.
+```
+
+Validation completed on 2026-06-15:
+
+```text
+pnpm run typecheck     PASS
+pnpm run format:check  PASS
+pnpm build             PASS
+git diff --check       PASS
+```
 
 
 ## Context and Orientation
@@ -152,3 +179,7 @@ Use `mori` to resolve `shinzui/kiroku`; do not hard-code the source path without
 The interfaces to document are the current Kiroku store public modules: `Kiroku.Store`, `Kiroku.Store.Types`, `Kiroku.Store.Append`, `Kiroku.Store.Read`, `Kiroku.Store.Error`, `Kiroku.Store.Transaction`, and `Kiroku.Store.Effect`. The concrete functions and types that must be represented are `appendToStream`, `appendMultiStream`, `readStreamForward`, `readStreamBackward`, `readAllForward`, `readAllBackward`, `readCategory`, `eventExistsInStream`, `StreamName`, `CategoryName`, `categoryName`, `streamNameInCategory`, `ExpectedVersion`, `AppendResult`, `StoreError`, `AppendConflict`, `runTransactionAppending`, and `runTransactionAppendingNoRetry`.
 
 The schema dependency is `kiroku-store-migrations`, especially `/Users/shinzui/Keikaku/bokuno/kiroku-project/kiroku/kiroku-store-migrations/README.md` and the SQL files under `/Users/shinzui/Keikaku/bokuno/kiroku-project/kiroku/kiroku-store-migrations/sql-migrations/`.
+
+## Revision Notes
+
+- 2026-06-15: Implemented EP-1, recorded current `shinzui/kiroku` source evidence and validation, and left the final source-sync pointer update to EP-6 per the MasterPlan integration point.
