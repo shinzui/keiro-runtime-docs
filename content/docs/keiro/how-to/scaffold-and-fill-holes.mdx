@@ -16,26 +16,51 @@ keiro-dsl scaffold service.keiro --out gen/
 find gen -name '*.hs' | sort
 ```
 
-You get:
+`scaffold` **validates the spec first** and refuses to write a single module if any diagnostic is an
+error — so you can never scaffold an invalid spec. On success you get:
 
 - **`-- @generated` modules** (`Domain`, `Codec`, `EventStream`, `Projection`, the process/timer/
   contract wiring, a `Harness`). These are **overwritten unconditionally** on every scaffold.
 - **Create-if-absent hole modules** (`Holes.hs`, `ProcessHoles.hs`). Re-scaffolding **never** clobbers
   a filled hole module — so the Nth scaffold is as safe as the first.
+- **A `keiro-dsl-manifest.<context>.txt`** — a Cabal-pasteable `other-modules:` block (every module,
+  dotted) and a `build-depends:` block implied by the node kinds. Paste both into the consuming stanza
+  instead of hand-transcribing module paths.
+
+### Read the report
+
+`scaffold` prints a report to stderr naming what it did and confirming the firewall held:
+
+```text
+scaffold: service.keiro -> gen/ (module-root=(none), layout=prefixed)
+  generated  Generated.HospitalCapacity.Reservation.Domain   (overwritten)
+  hole       HospitalCapacity.Reservation.Holes              (created)
+  …
+firewall: OK (5 generated modules scanned, 0 forbidden operators)
+harness:  run `cabal test <your-component>` over Generated.HospitalCapacity.Reservation.Harness
+manifest: gen/keiro-dsl-manifest.hospital-capacity.txt
+```
+
+### Collocate with your domain code (optional)
+
+By default the generated layer lands in a parallel `Generated.*` tree. To place it next to your
+domain code instead, pass a namespace prefix and/or the collocated layout (or set `module`/`layout`
+clauses in the spec):
+
+```bash
+keiro-dsl scaffold service.keiro --out src --module-root Acme --collocate
+# -> src/Acme/<Ctx>/<Node>/Generated/*.hs   (module Acme.<Ctx>.<Node>.Generated.*)
+#    src/Acme/<Ctx>/<Node>/Holes.hs         (module Acme.<Ctx>.<Node>.Holes)
+```
 
 ## The two rules
 
 <Callout type="warn">
 **Never edit a `-- @generated` line.** If a generated module is wrong, the spec is wrong — change the
-`.keiro` and re-scaffold. **No generated module contains a keiki symbolic operator** (the firewall);
-verify it:
-
-```bash
-grep -RnE './=|\.==|\.\|\||(^| )lit |B\.slot|B\.requireGuard' gen/Generated \
-  && echo BREACH || echo "firewall OK"
-```
-
-A breach is a scaffolder bug, not something to fix in place.
+`.keiro` and re-scaffold. **No generated module contains a keiki symbolic operator** (the firewall).
+`scaffold` checks this itself and exits non-zero on a breach (`firewall: OK …` in the report when it
+holds), so there is no manual `grep` to run. A breach is a scaffolder bug, not something to fix in
+place.
 </Callout>
 
 ## Fill the holes

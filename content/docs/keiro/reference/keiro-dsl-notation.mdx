@@ -31,6 +31,31 @@ rule lifeCriticalOverride : PatientAcuity -> Bool
 - `enum` lists constructors with their wire spelling (`Ctor=wire-spelling`).
 - `rule` names a typed predicate/function with example rows (`ex …`) used by the harness.
 
+## Module placement (optional)
+
+Two optional clauses may follow `context <name>` to control where the emitted modules land. Both are
+optional and a spec that omits them scaffolds exactly as before.
+
+```keiro-dsl
+context hospital-capacity
+module Acme.Services        # optional namespace prefix for every emitted module
+layout collocated          # optional placement style: `prefixed` (default) or `collocated`
+```
+
+- `module <Dotted.Prefix>` prepends a PascalCase namespace prefix (e.g. `Acme` or `Acme.Services`) to
+  every generated and hole module.
+- `layout` selects the placement **style**:
+  - `prefixed` (the default) keeps today's layout — the generated layer goes under
+    `Generated.<Ctx>.<Node>.*` and holes under `<Ctx>.<Node>.*`, a parallel `Generated.*` tree.
+  - `collocated` places the generated layer as a **leaf under the domain** —
+    `<Ctx>.<Node>.Generated.*` — so it sits next to your hand-written domain code; holes stay at
+    `<Ctx>.<Node>.*`.
+
+With `module Acme` + `layout collocated`, the generated modules become `Acme.<Ctx>.<Node>.Generated.*`
+and holes `Acme.<Ctx>.<Node>.*`. The same placement is also available per-invocation via the
+`--module-root`/`--collocate` CLI flags (see [The CLI](#the-cli)), which override the spec clauses.
+Precedence is **CLI flag > spec clause > built-in default**.
+
 ## `aggregate` (+ evolution)
 
 ```keiro-dsl
@@ -217,30 +242,51 @@ operation shapes are `command on <Agg> …`, `query <ReadModel> …`, `signal <l
 
 ## The CLI
 
-Run from the keiro repo root. The tool is `keiro-dsl` (`cabal run keiro-dsl --`).
+Run from the keiro repo root. The tool is `keiro-dsl` (`cabal run keiro-dsl --`). A thin wrapper at
+`keiro-dsl/bin/keiro-dsl` lets you drop the `cabal run -v0 keiro-dsl --` prefix — put `keiro-dsl/bin`
+on your `PATH` and run `keiro-dsl <subcommand>` from anywhere.
 
 ```bash
+keiro-dsl new      <kind>                      # print a minimal valid skeleton for a node kind
 keiro-dsl parse    <file.keiro>                # parse + pretty-print it back (proves it's a real spec)
-keiro-dsl check    <file.keiro>                # validate; print diagnostics; exit non-zero on any error
-keiro-dsl scaffold <file.keiro> --out DIR      # emit @generated modules + create-if-absent holes
+keiro-dsl check    <file.keiro> [--emit]       # validate; --emit pretty-prints the spec on success
+keiro-dsl scaffold <file.keiro> --out DIR \    # validate, then emit @generated modules + holes + manifest
+  [--module-root Acme] [--collocate]           # optional module placement (overrides the spec clauses)
 keiro-dsl diff     --since <git-ref> <file.keiro>   # classify changes ADDITIVE/BREAKING since a ref
 ```
 
 <TypeTable
   type={{
+    new: { type: "KIND", description: "Prints a minimal, guaranteed-valid .keiro skeleton to stdout for one of: aggregate, process, contract, intake, emit, publisher, workqueue, dispatch, workflow, operation. Unknown kinds error with the valid list. Each skeleton itself passes check (a test enforces it)." },
     parse: { type: "FILE", description: "Parses the spec and prints it pretty-printed back. parse . pretty == id is a property. A parse error is line-numbered; exits non-zero." },
-    check: { type: "FILE", description: "Runs validateSpec. Prints each Diagnostic (line-numbered). Prints OK and exits 0 only if no diagnostic has Error severity; warnings pass." },
-    scaffold: { type: "FILE --out DIR", description: "Emits the modules. Generated modules are overwritten unconditionally; HoleStub modules (Holes.hs / ProcessHoles.hs) are written only if absent." },
+    check: { type: "FILE [--emit]", description: "Runs validateSpec. Prints each Diagnostic (line-numbered). Prints OK and exits 0 only if no diagnostic has Error severity; warnings pass. With --emit, pretty-prints the parsed spec to stdout instead of OK (folds parse + check)." },
+    scaffold: { type: "FILE --out DIR [--module-root PREFIX] [--collocate]", description: "Validates first (refuses to emit an invalid spec), then emits the modules, a keiro-dsl-manifest.<context>.txt, and a stderr report. Generated modules are overwritten unconditionally; HoleStub modules (Holes.hs / ProcessHoles.hs) are written only if absent. Self-checks the firewall and exits non-zero on a breach. --module-root prefixes the namespace; --collocate places the generated layer under <Ctx>.<Node>.Generated." },
     diff: { type: "--since GIT-REF FILE", description: "Parses the spec at <ref> (via git show) and on disk, diffs them, prints each change as ADDITIVE/BREAKING, and exits non-zero if any change is breaking." },
   }}
 />
 
 <Callout type="info">
-Exit codes are the gate: `check` and `diff` are meant to run in CI. A non-zero `check` names the rule
-and line — fix the **spec**, not the generated code. A non-zero `diff` means an on-disk event payload
-could now fail to decode — add a versioned event + `upcast from v(N-1) = HOLE`, or a `deprecated
-event`, until it reports `ADDITIVE`. Use `/dev/stdin` as `FILE` to read a spec from stdin.
+Exit codes are the gate: `check`, `scaffold`, and `diff` are meant to run in CI. A non-zero `check`
+names the rule and line — fix the **spec**, not the generated code. `scaffold` validates the spec
+first and exits non-zero **without writing modules** if any diagnostic is an error, and exits non-zero
+on a firewall breach. A non-zero `diff` means an on-disk event payload could now fail to decode — add a
+versioned event + `upcast from v(N-1) = HOLE`, or a `deprecated event`, until it reports `ADDITIVE`.
+Use `/dev/stdin` as `FILE` to read a spec from stdin (e.g. `keiro-dsl new aggregate | keiro-dsl check
+/dev/stdin`).
 </Callout>
+
+### What `scaffold` emits beyond the modules
+
+Every `scaffold` run also writes a **manifest** and prints a **report**:
+
+- **`keiro-dsl-manifest.<context>.txt`** (in `--out`) — a Cabal-pasteable `other-modules:` block
+  listing every generated and hole module (dotted), plus a `build-depends:` block derived from the
+  node kinds present. Paste both into the consuming test/library stanza instead of hand-transcribing
+  the module paths.
+- A **stderr report** — every module written with its disposition (`overwritten` / `created` /
+  `skipped: already present`), the firewall verdict (`firewall: OK (N generated modules scanned, 0
+  forbidden operators)`), the harness component(s) to run, and the manifest path. A firewall breach
+  is printed and the process exits non-zero, so the old manual `grep` is no longer needed.
 
 ## See also
 

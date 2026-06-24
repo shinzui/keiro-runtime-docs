@@ -32,16 +32,20 @@ the spec before any Haskell is written if one is missing or stated the unsafe wa
 
 ## What you do with a `.keiro` file
 
-A developer (or a coding agent planning a feature) runs a five-step loop:
+A developer (or a coding agent planning a feature) runs a five-step loop (optionally bootstrapping
+from `keiro-dsl new <kind>`, which prints a minimal valid skeleton for any node kind):
 
 1. **Write** a service spec in terse notation covering keiro's full node surface: `aggregate`,
    `process` + `timer`, `contract`/`intake`/`emit`/`publisher`, `workqueue`/`dispatch`, `workflow`,
    and `operation`.
 2. **`keiro-dsl check`** the spec — rejecting any missing required decision *before any Haskell
-   exists*.
+   exists* (add `--emit` to pretty-print the parsed spec on success).
 3. **`keiro-dsl scaffold`** the spec — emitting the symbol-free deterministic layer into
    `-- @generated` modules, precisely-typed **holes** in hand-owned modules, and a verification
-   **harness**.
+   **harness**. It validates the spec first (never emits an invalid one), self-checks the firewall,
+   prints a report of what it wrote, and emits a Cabal-pasteable build manifest. Module placement is
+   configurable (`--module-root`/`--collocate`, or `module`/`layout` spec clauses) so the generated
+   layer can sit next to your domain code.
 4. **Fill** the transducer body and the holes (by hand or with a coding agent) against the generated
    signatures, then run the harness to confirm behavior matches the spec.
 5. **`keiro-dsl diff --since <ref>`** to classify each later spec change as safe (additive) or
@@ -64,8 +68,9 @@ This is enforced as a tested invariant — the **firewall**:
 <Callout type="info">
 **No `-- @generated` line ever contains a keiki symbolic operator.** The symbolic operators (`./=`,
 `.==`, `.||`, `lit`, `B.slot`, `B.requireGuard`) appear *only* in the hand-owned hole modules you
-write. If one shows up in a generated module, that is a scaffolder bug — not something to "fix" in
-place.
+write. `scaffold` checks this on its own output and exits non-zero on a breach (reporting `firewall:
+OK …` when it holds), so it is a tested invariant on every run — a breach is a scaffolder bug, not
+something to "fix" in place.
 </Callout>
 
 The firewall is what makes the whole design tractable: the generated layer is pure boilerplate that is
