@@ -1,0 +1,143 @@
+---
+title: "Place generated modules and wire them into Cabal"
+description: "Choose where keiro-dsl scaffolds modules — a parallel Generated.* tree or collocated next to your domain code (--module-root / --collocate, or the module/layout spec clauses) — and paste the emitted manifest's other-modules/build-depends into your .cabal stanza."
+---
+
+By default `keiro-dsl scaffold` writes the generated layer into a parallel `Generated.*` tree rooted
+at `--out`. This guide shows the two things teams usually want instead: **collocating** the generated
+modules next to their hand-written domain code, and **wiring** the result into a Cabal stanza from the
+emitted manifest instead of hand-transcribing module paths. For the grammar and full CLI see the
+[notation reference](/docs/keiro/reference/keiro-dsl-notation); for the scaffold/fill workflow see
+[Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes).
+
+## Choose where the modules land
+
+Placement has two knobs — a **namespace prefix** and a **layout style** — set either on the command
+line (per invocation) or in the spec (the standing default). The default, with no flags or clauses,
+is unchanged: a parallel `Generated.*` tree.
+
+```bash
+# Default (prefixed): a parallel Generated.* tree
+keiro-dsl scaffold reservation.keiro --out src
+# src/Generated/HospitalCapacity/Reservation/Domain.hs   (module Generated.HospitalCapacity.Reservation.Domain)
+# src/HospitalCapacity/Reservation/Holes.hs              (module HospitalCapacity.Reservation.Holes)
+
+# Collocated under a namespace root: generated layer sits beside the domain code
+keiro-dsl scaffold reservation.keiro --out src --module-root Acme --collocate
+# src/Acme/HospitalCapacity/Reservation/Generated/Domain.hs  (module Acme.HospitalCapacity.Reservation.Generated.Domain)
+# src/Acme/HospitalCapacity/Reservation/Holes.hs             (module Acme.HospitalCapacity.Reservation.Holes)
+```
+
+- `--module-root <Prefix>` prepends a PascalCase namespace (e.g. `Acme` or `Acme.Services`) to every
+  emitted module.
+- `--collocate` switches the layout from **prefixed** (generated layer at `Generated.<Ctx>.<Node>.*`)
+  to **collocated** (generated layer at `<Ctx>.<Node>.Generated.*`, a leaf under the domain). Either
+  way, holes stay at `<Ctx>.<Node>.*` so your filled code keeps a stable home.
+
+`<Ctx>` is the spec's `context` name in PascalCase (`hospital-capacity` → `HospitalCapacity`);
+`<Node>` is the aggregate/process/etc. name. The namespace **is** the on-disk path under `--out`.
+
+### Make it the spec's standing default
+
+A team's layout usually belongs in the `.keiro` file so every checkout scaffolds the same way. Add
+the optional `module`/`layout` clauses right after `context`:
+
+```keiro-dsl
+context hospital-capacity
+module Acme.Services        # namespace prefix for every emitted module
+layout collocated          # `prefixed` (default) or `collocated`
+```
+
+The CLI flags still override the spec per invocation — useful when the same spec is scaffolded into
+different repos. Precedence is **CLI flag > spec clause > built-in default**.
+
+<Callout type="info">
+Re-running `scaffold` into an existing tree is safe regardless of placement: `-- @generated` modules
+are overwritten and filled hole modules (`Holes.hs` / `ProcessHoles.hs`) are never clobbered. Changing
+placement just changes the output paths — scaffold into a fresh `--out` (or delete the old tree) when
+you switch, so stale modules under the previous namespace don't linger.
+</Callout>
+
+## Wire the modules into Cabal from the manifest
+
+Every `scaffold` run writes `keiro-dsl-manifest.<context>.txt` into `--out`. It contains two
+paste-ready blocks: the `other-modules` (every generated and hole module, dotted) and the
+`build-depends` implied by the node kinds in the spec.
+
+```bash
+keiro-dsl scaffold reservation.keiro --out src --module-root Acme --collocate
+cat src/keiro-dsl-manifest.hospital-capacity.txt
+```
+
+```text
+-- keiro-dsl build manifest for reservation.keiro
+-- Paste the two blocks below into the consuming Cabal stanza.
+-- The generated layer is overwritten on every scaffold; hole modules are
+-- create-if-absent (filled by hand).
+
+other-modules:
+    Acme.HospitalCapacity.Reservation.Generated.Codec
+    Acme.HospitalCapacity.Reservation.Generated.Domain
+    Acme.HospitalCapacity.Reservation.Generated.EventStream
+    Acme.HospitalCapacity.Reservation.Generated.Harness
+    Acme.HospitalCapacity.Reservation.Generated.Projection
+    Acme.HospitalCapacity.Reservation.Holes
+
+build-depends:
+    , aeson
+    , base
+    , keiki
+    , keiro
+    , text
+```
+
+Paste both blocks into the library or test-suite stanza that compiles the modules (matching its
+`hs-source-dirs` to your `--out`):
+
+```cabal
+library
+  hs-source-dirs:  src
+  other-modules:
+    Acme.HospitalCapacity.Reservation.Generated.Codec
+    Acme.HospitalCapacity.Reservation.Generated.Domain
+    Acme.HospitalCapacity.Reservation.Generated.EventStream
+    Acme.HospitalCapacity.Reservation.Generated.Harness
+    Acme.HospitalCapacity.Reservation.Generated.Projection
+    Acme.HospitalCapacity.Reservation.Holes
+  build-depends:
+    , aeson
+    , base
+    , keiki
+    , keiro
+    , text
+```
+
+<Callout type="info">
+The manifest is a **paste aid**, not an automated `.cabal` edit — editing a consumer's build file in
+place is out of scope by design. The `build-depends` set is the union implied by the node kinds
+present (e.g. an aggregate pulls `aeson, keiki, keiro, text`; a process adds `time, uuid`); a project
+on the runtime-only path can trim it. The manifest is regenerated (overwritten) on every scaffold, so
+re-run and re-paste when you add a node.
+</Callout>
+
+## Confirm placement landed
+
+The stderr report names every module written and where the manifest went, so you can eyeball the
+namespaces without spelunking the tree:
+
+```text
+scaffold: reservation.keiro -> src (module-root=Acme, layout=collocated)
+  generated  Acme.HospitalCapacity.Reservation.Generated.Domain   (overwritten)
+  hole       Acme.HospitalCapacity.Reservation.Holes              (created)
+  …
+firewall: OK (5 generated modules scanned, 0 forbidden operators)
+manifest: src/keiro-dsl-manifest.hospital-capacity.txt
+```
+
+## Related
+
+- [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) — the scaffold/fill workflow.
+- [keiro-dsl notation and CLI](/docs/keiro/reference/keiro-dsl-notation) — the `module`/`layout`
+  clauses and every CLI flag.
+- [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — the full
+  write → check → scaffold → fill → harness → diff loop.
