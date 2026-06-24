@@ -1,0 +1,31 @@
+---
+title: "Configure graceful shutdown"
+description: "Stop adapter ingestion, drain in-flight messages, and align process shutdown timeouts."
+---
+
+Use `stopAppGracefully` when the process receives a shutdown signal:
+
+```haskell
+let shutdown = ShutdownConfig { drainTimeout = 45 }
+drained <- stopAppGracefully shutdown appHandle
+unless drained (logWarn "forced shutdown before all processors drained")
+```
+
+The sequence is:
+
+```text
+1. call adapter.shutdown for every processor
+2. wait for in-flight work to finish, up to drainTimeout
+3. stop the master and supervised processors
+4. return True if every processor drained, False on timeout
+```
+
+Size your container or service shutdown window longer than `drainTimeout`, otherwise the platform may
+kill the process before shibuya finishes draining:
+
+```yaml
+terminationGracePeriodSeconds: 60
+```
+
+Choose `drainTimeout` from your longest normal handler execution time plus a margin. If handlers may
+exceed their backend visibility timeout, use `ingested.lease` when the adapter supplies one.

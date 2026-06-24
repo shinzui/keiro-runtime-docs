@@ -1,0 +1,26 @@
+---
+title: "Production supervision"
+description: "How processor state, readiness, stuck detection, and graceful shutdown fit together in production."
+---
+
+Production shibuya applications are usually long-running `runApp` processes with one or more named
+processors. `runApp` starts a `Master`, registers every processor, and supervises child processor
+loops. The `AppHandle` returned by `runApp` is both the control handle and the metrics-server input.
+
+Processor state is intentionally small:
+
+`Idle` means no message is currently being handled. `Processing` carries current in-flight count,
+maximum concurrency, and last activity time. `Failed` carries an error or halt reason and timestamp.
+`Stopped` is a terminal stopped state.
+
+Readiness treats `Failed` and stuck `Processing` as unsafe. A processor is stuck when the current
+time minus `lastActivity` exceeds `stuckThreshold`. Because this check is snapshot-based, choose a
+threshold longer than your longest legitimate handler run.
+
+Graceful shutdown starts at adapters. `stopAppGracefully` calls every adapter's `shutdown` so new
+messages stop entering the stream, waits for in-flight messages to drain up to `drainTimeout`, then
+stops the master. If the drain finishes, it returns `True`; if timeout forces stop, it returns
+`False`.
+
+The operational rule is simple: readiness controls whether new traffic should arrive; graceful
+shutdown controls whether already-started message work gets a chance to finish.

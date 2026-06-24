@@ -1,0 +1,41 @@
+---
+title: "Debug worker behavior"
+description: "Use metrics, health, logs, and traces to inspect failed, stuck, or retrying processors."
+---
+
+Start with readiness:
+
+```bash
+curl -s http://127.0.0.1:9090/health/ready | jq
+```
+
+If `ready` is false, inspect the processor summary:
+
+```bash
+curl -s http://127.0.0.1:9090/health | jq '.status.processors'
+```
+
+`failed > 0` means at least one processor is in `Failed`. Fetch the full metrics map:
+
+```bash
+curl -s http://127.0.0.1:9090/metrics | jq
+```
+
+Look for:
+
+```json
+{
+  "state": { "status": "failed", "error": "..." },
+  "stats": { "received": 10, "processed": 7, "failed": 3 }
+}
+```
+
+`stuck > 0` means a processor has stayed in `Processing` longer than `stuckThreshold`. Increase the
+threshold if the handler legitimately runs that long; otherwise inspect logs and downstream
+dependencies.
+
+For repeated transient failures, compare `received`, `processed`, and `failed`, then search traces
+for spans whose `shibuya.ack.decision` is `ack_retry` or `ack_dead_letter`.
+
+If all processors are healthy but no work is happening, check the adapter backend: empty queue,
+paused subscription, Kafka consumer assignment, pgmq visibility timeout, or network access.

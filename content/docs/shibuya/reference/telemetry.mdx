@@ -1,0 +1,106 @@
+---
+title: "Telemetry"
+description: "OpenTelemetry tracing effect runners, span helpers, W3C trace propagation, and shibuya semantic names."
+---
+
+`Shibuya.Telemetry` re-exports the tracing configuration, effect, propagation helpers, and semantic
+constants used by the runner and adapters. `runApp` requires `Tracing :> es`; callers choose
+`runTracing tracer` or `runTracingNoop`.
+
+## Configuration
+
+```haskell
+data TracingConfig = TracingConfig
+  { enabled :: Bool
+  , serviceName :: Text
+  , serviceVersion :: Maybe Text
+  }
+
+defaultTracingConfig :: TracingConfig
+```
+
+`defaultTracingConfig` disables tracing and uses service name `"shibuya"`. The source notes that
+most exporter configuration belongs to the `hs-opentelemetry` SDK and its `OTEL_*` environment
+variables, not to shibuya.
+
+## Effect runners and span helpers
+
+```haskell
+runTracing :: (IOE :> es) => Tracer -> Eff (Tracing : es) a -> Eff es a
+
+runTracingNoop :: (IOE :> es) => Eff (Tracing : es) a -> Eff es a
+
+withSpan ::
+  (Tracing :> es, IOE :> es) =>
+  Text ->
+  SpanArguments ->
+  Eff es a ->
+  Eff es a
+
+withSpan' ::
+  (Tracing :> es, IOE :> es) =>
+  Text ->
+  SpanArguments ->
+  (Span -> Eff es a) ->
+  Eff es a
+```
+
+`runTracingNoop` keeps the same effect stack and short-circuits span operations. Use `withSpan'`
+when the action needs to add attributes, events, exceptions, or status to the span handle.
+
+## Per-message span semantics
+
+The runner opens one `Consumer` span per processed message. The name is:
+
+```haskell
+processSpanName destination = destination <> " process"
+```
+
+For processor id `"orders"`, the span name is `"orders process"`.
+
+Framework defaults include:
+
+```text
+messaging.system = "shibuya"
+messaging.destination.name = <ProcessorId>
+messaging.operation.type = "process"
+messaging.message.id = <Envelope.messageId>
+shibuya.partition = <Envelope.partition, when present>
+shibuya.inflight.count = <current in-flight count>
+shibuya.inflight.max = <max concurrency>
+shibuya.ack.decision = ack_ok | ack_retry | ack_dead_letter | ack_halt
+```
+
+Adapter-supplied `Envelope.attributes` are merged over the framework defaults, so adapters can set
+broker-specific values such as Kafka partition attributes.
+
+Events are `shibuya.handler.started`, `shibuya.handler.completed`, and
+`shibuya.ack.decision`. `AckOk` and `AckRetry` set span status `Ok`; `AckDeadLetter`, `AckHalt`,
+and handler exceptions set an error status.
+
+## Propagation helpers
+
+```haskell
+extractTraceContext :: TraceHeaders -> Maybe SpanContext
+
+injectTraceContext :: Span -> IO TraceHeaders
+
+currentTraceHeaders ::
+  (Tracing :> es, IOE :> es) =>
+  Eff es (Maybe TraceHeaders)
+```
+
+`TraceHeaders` is `[(ByteString, ByteString)]`. Extraction reads W3C `traceparent` and optional
+`tracestate` headers. `currentTraceHeaders` returns `Nothing` when tracing is disabled or no span is
+active.
+
+## Span argument helpers
+
+```haskell
+consumerSpanArgs :: SpanArguments
+internalSpanArgs :: SpanArguments
+mkEvent :: Text -> [(Text, Attribute)] -> NewEvent
+```
+
+Use `internalSpanArgs` for custom spans inside handlers. The runner uses `consumerSpanArgs` for the
+message-processing span.

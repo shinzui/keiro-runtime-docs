@@ -1,0 +1,23 @@
+---
+title: "Trace a handler"
+description: "Add a child span under shibuya's per-message consumer span."
+---
+
+```haskell
+import Shibuya.Telemetry.Effect
+import Shibuya.Telemetry.Semantic (internalSpanArgs)
+
+handleOrder :: (Tracing :> es, IOE :> es) => Handler es Order
+handleOrder ingested =
+  withSpan' "validate-order" internalSpanArgs $ \span -> do
+    addAttribute span "order.id" ingested.envelope.payload.orderId
+    result <- liftIO (validateOrder ingested.envelope.payload)
+    case result of
+      Valid -> pure AckOk
+      Invalid reason -> do
+        addAttribute span "order.invalid_reason" reason
+        pure (AckDeadLetter (InvalidPayload reason))
+```
+
+The parent span is the runner's `"orders process"` consumer span. Use domain-specific attribute keys
+for handler-local details; shibuya already records message id, processor id, and ack decision.

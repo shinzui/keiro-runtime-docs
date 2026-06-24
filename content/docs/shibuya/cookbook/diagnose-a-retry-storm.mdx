@@ -1,0 +1,24 @@
+---
+title: "Diagnose a retry storm"
+description: "Find repeated retries using shibuya metrics, traces, and backend queue state."
+---
+
+1. Check failure counters:
+
+   ```bash
+   curl -s http://127.0.0.1:9090/metrics | jq '.orders.stats'
+   ```
+
+2. Search traces for `shibuya.ack.decision = "ack_retry"` and group by `messaging.message.id`.
+
+3. Check whether the adapter reports `Envelope.attempt`; pgmq-backed queues should grow attempt
+   from the backend read count, while adapters that cannot track redelivery leave it `Nothing`.
+
+4. Verify the retry policy:
+
+   ```haskell
+   defaultBackoffPolicy { maxDelay = 300, jitter = FullJitter }
+   ```
+
+5. If the same payload always retries, change the handler to return `AckDeadLetter` for permanent
+   failures. Reserve `AckRetry` for conditions that can become true later.

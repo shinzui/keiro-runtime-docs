@@ -68,7 +68,7 @@ edits for EP-5.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | EP-1 | Author shibuya foundation core and walkthrough docs | `docs/plans/35-author-shibuya-foundation-core-and-walkthrough-docs.md` | None | None | Complete |
-| EP-2 | Document shibuya metrics operations and recipes | `docs/plans/36-document-shibuya-metrics-operations-and-recipes.md` | EP-1 | None | Not Started |
+| EP-2 | Document shibuya metrics operations and recipes | `docs/plans/36-document-shibuya-metrics-operations-and-recipes.md` | EP-1 | None | Complete |
 | EP-3 | Author pgmq hs queue substrate documentation | `docs/plans/37-author-pgmq-hs-queue-substrate-documentation.md` | None | EP-1 | Not Started |
 | EP-4 | Document shibuya adapters across pgmq kiroku kafka and message db | `docs/plans/38-document-shibuya-adapters-across-pgmq-kiroku-kafka-and-message-db.md` | EP-1 | EP-3 | Not Started |
 | EP-5 | Reconcile shibuya pgmq integrations navigation and source sync | `docs/plans/39-reconcile-shibuya-pgmq-integrations-navigation-and-source-sync.md` | EP-1, EP-2, EP-3, EP-4 | None | Not Started |
@@ -144,9 +144,9 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] EP-1: Audit shibuya core source, upstream user docs, and current `content/docs/shibuya/` stubs.
 - [x] EP-1: Author shibuya tutorial, explanation, reference, how-to, and source walkthrough pages.
 - [x] EP-1: Validate the shibuya core docs with typecheck, build, link checks, and stale-stub scans.
-- [ ] EP-2: Audit shibuya metrics, telemetry, health, JSON, Prometheus, WebSocket, and operations docs.
-- [ ] EP-2: Author shibuya operations, metrics, recipes, FAQ, and telemetry pages.
-- [ ] EP-2: Validate operational docs and cross-links against EP-1 terminology.
+- [x] EP-2: Audit shibuya metrics, telemetry, health, JSON, Prometheus, WebSocket, and operations docs.
+- [x] EP-2: Author shibuya operations, metrics, recipes, FAQ, and telemetry pages.
+- [x] EP-2: Validate operational docs and cross-links against EP-1 terminology.
 - [ ] EP-3: Audit pgmq-hs source, bundled pgmq docs, and current pgmq stubs.
 - [ ] EP-3: Author pgmq-hs reference, how-to, explanation, cookbook, and source-sync updates.
 - [ ] EP-3: Validate pgmq pages and queue-substrate cross-links.
@@ -178,6 +178,9 @@ interactions between child plans. Provide concise evidence.
   the upstream git log still reported `3f276ee190e563fddb0bc81e01d62a96a1b31715`
   (`chore(release): 0.7.1.0`). The remaining shibuya FAQ and cookbook stub strings are expected
   because EP-2 owns operations, FAQ, and recipes.
+- EP-2 found a stale upstream Jaeger note that expected operation name `"shibuya.process.message"`;
+  current source uses `processSpanName destination = destination <> " process"`, so the docs now
+  teach span names such as `"orders process"`.
 
 
 ## Decision Log
@@ -211,3 +214,6 @@ Compare the result against the original vision.
 - EP-1 completed on 2026-06-24. The shibuya core documentation now defines the canonical adapter,
   envelope, ingested message, handler, ack decision, retry, dead-letter, halt, policy, backpressure,
   runner, supervision, and stream-helper vocabulary that EP-2 and EP-4 consume.
+- EP-2 completed on 2026-06-24. The shibuya operations documentation now covers metrics endpoints,
+  health/readiness semantics, Prometheus, WebSocket updates, OpenTelemetry propagation and spans,
+  graceful shutdown, debugging, cookbook recipes, and FAQ answers.

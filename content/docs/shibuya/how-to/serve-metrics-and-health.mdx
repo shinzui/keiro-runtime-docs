@@ -1,0 +1,52 @@
+---
+title: "Serve metrics and health"
+description: "Expose shibuya JSON metrics and health probes from a running AppHandle."
+---
+
+Start the metrics server after `runApp` returns an `AppHandle`. The server needs the `Master`, which
+you get with `getAppMaster`.
+
+```haskell
+import Control.Exception (bracket)
+import Effectful (runEff)
+import Shibuya.App
+import Shibuya.Metrics
+import Shibuya.Telemetry.Effect (runTracingNoop)
+
+main :: IO ()
+main = runEff . runTracingNoop $ do
+  result <- runApp IgnoreFailures 100 processors
+  case result of
+    Left err -> liftIO (print err)
+    Right appHandle ->
+      liftIO $
+        withMetricsServer defaultConfig (getAppMaster appHandle) $ \server -> do
+          putStrLn ("metrics on port " <> show server.serverPort)
+          runEff (runTracingNoop (waitApp appHandle))
+```
+
+For readiness checks that include external dependencies, use `startMetricsServerWithDeps`:
+
+```haskell
+let databaseCheck =
+      pure DependencyStatus
+        { name = "postgres"
+        , healthy = True
+        , latencyMs = Just 3
+        , errorMsg = Nothing
+        }
+
+server <- startMetricsServerWithDeps defaultConfig master [databaseCheck]
+```
+
+Verify:
+
+```bash
+curl -s http://127.0.0.1:9090/metrics | jq
+curl -s http://127.0.0.1:9090/health/live | jq
+curl -s http://127.0.0.1:9090/health/ready | jq
+curl -s http://127.0.0.1:9090/health | jq
+```
+
+`/health/live` only proves the master can answer before timeout. `/health/ready` also checks failed
+processors, stuck processors, and dependency checks.

@@ -1,18 +1,62 @@
 ---
 title: shibuya FAQ
-description: Answers to frequently asked questions about shibuya.
+description: Answers to frequently asked questions about shibuya workers, metrics, health, tracing, retries, and shutdown.
 ---
-
-Short answers to common questions about shibuya.
-
-<Callout type="info">
-  Documentation for shibuya is in progress. Questions and answers will land here as the shibuya
-  content set is written.
-</Callout>
 
 <Accordions>
   <Accordion title="Where do I start with shibuya?">
-    Begin with the [Getting Started](/docs/getting-started) overview while the shibuya tutorials are
-    being written.
+    Start with [Your first worker](/docs/shibuya/tutorials/your-first-worker), then read
+    [The processing model](/docs/shibuya/explanation/processing-model). The tutorial shows
+    `Adapter`, `Handler`, `QueueProcessor`, and `runApp`; the explanation shows how those pieces
+    divide responsibility.
+  </Accordion>
+
+  <Accordion title="What is the difference between liveness and readiness?">
+    Liveness checks whether the `Master` answers before `livenessTimeoutMicros`. Readiness checks
+    failed processors, stuck processors, and dependency checks. Use `/health/live` to restart a dead
+    process and `/health/ready` to decide whether traffic should reach this worker.
+  </Accordion>
+
+  <Accordion title="Why is my processor not ready while it is still running?">
+    Readiness can be false if a processor is failed, if a processor has been `Processing` longer
+    than `stuckThreshold`, or if a dependency check reports unhealthy. Inspect `/health` for both
+    the readiness summary and the full metrics map.
+  </Accordion>
+
+  <Accordion title="Which Prometheus metrics exist?">
+    The current Prometheus endpoint emits received, processed, dropped, failed, processor state, and
+    in-flight count. See [Metrics](/docs/shibuya/reference/metrics#prometheus-names) for exact names.
+  </Accordion>
+
+  <Accordion title="Does shibuya expose a stuck-processor Prometheus series?">
+    No. Stuck detection is computed by the health endpoint from `Processing` last-activity time and
+    `stuckThreshold`. Alert on `/health/ready` or add an application-specific exporter if you need a
+    Prometheus timestamp.
+  </Accordion>
+
+  <Accordion title="What does AckRetry count as in metrics?">
+    The runner increments `processed` for `AckOk` and `AckRetry`. It increments `failed` for
+    `AckDeadLetter` and handler exceptions. `AckHalt` marks the processor failed with the halt
+    reason.
+  </Accordion>
+
+  <Accordion title="What span name should I search for?">
+    Search for `"<processor> process"`, such as `"orders process"`. The processor id comes from the
+    `ProcessorId` you pass to `runApp`.
+  </Accordion>
+
+  <Accordion title="How do I turn tracing off in tests?">
+    Keep the same effect stack and wrap the app in `runTracingNoop`. Span operations become no-ops,
+    but code that requires `Tracing :> es` still runs.
+  </Accordion>
+
+  <Accordion title="How do I propagate trace context when my handler produces another message?">
+    Call `currentTraceHeaders` inside the handler and attach the returned W3C headers to the
+    outgoing message. It returns `Nothing` when tracing is disabled or no span is active.
+  </Accordion>
+
+  <Accordion title="What happens during graceful shutdown?">
+    `stopAppGracefully` calls every adapter's `shutdown`, waits for in-flight messages to drain up
+    to `drainTimeout`, stops the master, and returns whether the drain completed cleanly.
   </Accordion>
 </Accordions>

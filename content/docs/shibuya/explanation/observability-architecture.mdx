@@ -1,0 +1,29 @@
+---
+title: "Observability architecture"
+description: "How shibuya exposes worker state through metrics snapshots, health probes, WebSocket updates, and OpenTelemetry spans."
+---
+
+shibuya observes the runner, not the backend. A backend adapter can contribute message metadata and
+trace attributes, but the common operational surface comes from the `Master` and processor metrics
+TVars.
+
+Each processor updates a `ProcessorMetrics` value as it receives, processes, fails, or halts
+messages. The `Master` holds a map from `ProcessorId` to those metrics TVars. The metrics server
+reads that map through `getAllMetricsIO` and `getProcessorMetricsIO`.
+
+This means every HTTP and WebSocket surface sees the same source of truth:
+
+```text
+processor loop -> ProcessorMetrics TVar -> Master -> metrics server
+```
+
+Health is derived from that same snapshot. Liveness only proves the master can answer. Readiness
+adds interpretation: failed processors, processors stuck in `Processing` beyond the configured
+threshold, and unhealthy dependencies make readiness false.
+
+Tracing is separate. The runner creates one OpenTelemetry `Consumer` span for each handler call.
+The span is parented from `Envelope.traceContext`, labeled by framework defaults plus
+`Envelope.attributes`, and completed according to the returned `AckDecision`.
+
+Together, metrics answer "what are the processors doing now?" while traces answer "what happened to
+this message?"

@@ -1,0 +1,52 @@
+---
+title: "Stream WebSocket metrics"
+description: "Subscribe to live processor metrics over the shibuya metrics WebSocket."
+---
+
+Enable WebSocket metrics and connect to `/ws`:
+
+```haskell
+let config =
+      defaultConfig
+        { enableWebSocket = True
+        , wsPushIntervalUs = 250_000
+        , wsMaxConnections = 50
+        }
+```
+
+On connect, the server sends a `snapshot` for all processors. Send `ping` to keep an application-level
+heartbeat:
+
+```json
+{ "type": "ping" }
+```
+
+Subscribe to all processors:
+
+```json
+{ "type": "subscribe_all" }
+```
+
+Subscribe to selected processors:
+
+```json
+{ "type": "subscribe", "processors": ["orders", "payments"] }
+```
+
+Unsubscribe:
+
+```json
+{ "type": "unsubscribe", "processors": ["orders"] }
+```
+
+Server messages look like:
+
+```json
+{ "type": "snapshot", "metrics": {} }
+{ "type": "update", "processor": "orders", "metrics": {} }
+{ "type": "pong" }
+{ "type": "goodbye" }
+```
+
+The server only sends `update` frames for processors whose metrics changed since the last push.
+Connections beyond `wsMaxConnections` are rejected.

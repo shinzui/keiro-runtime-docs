@@ -1,0 +1,50 @@
+---
+title: "Scrape Prometheus metrics"
+description: "Expose and query shibuya's Prometheus text endpoint."
+---
+
+Prometheus output is enabled by default:
+
+```haskell
+let config = defaultConfig { enablePrometheus = True, port = 9090 }
+withMetricsServer config (getAppMaster appHandle) useServer
+```
+
+Verify the text exposition:
+
+```bash
+curl -s http://127.0.0.1:9090/metrics/prometheus
+```
+
+The endpoint emits six processor-labeled series:
+
+```text
+shibuya_messages_received_total{processor="orders"} 10.0
+shibuya_messages_processed_total{processor="orders"} 9.0
+shibuya_messages_dropped_total{processor="orders"} 0.0
+shibuya_messages_failed_total{processor="orders"} 1.0
+shibuya_processor_state{processor="orders"} 1.0
+shibuya_processor_in_flight{processor="orders"} 0.0
+```
+
+Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: shibuya-workers
+    metrics_path: /metrics/prometheus
+    static_configs:
+      - targets:
+          - shibuya-worker.default.svc.cluster.local:9090
+```
+
+Useful queries:
+
+```text
+rate(shibuya_messages_failed_total[5m])
+sum by (processor) (shibuya_processor_in_flight)
+shibuya_processor_state == 3
+```
+
+`shibuya_processor_state == 3` means failed. Stuck detection is computed by the health endpoint from
+`lastActivity`; it is not currently emitted as a Prometheus timestamp series.

@@ -1,0 +1,62 @@
+---
+title: "Enable OpenTelemetry"
+description: "Run shibuya with a real Tracer, keep no-op tracing for local runs, and propagate W3C trace headers."
+---
+
+`runApp` requires the `Tracing` effect. Use `runTracingNoop` when you do not want spans, and
+`runTracing tracer` when you have initialized an OpenTelemetry tracer.
+
+```haskell
+import Control.Exception (bracket)
+import OpenTelemetry.Attributes (emptyAttributes)
+import OpenTelemetry.Trace qualified as OTelSdk
+import OpenTelemetry.Trace.Core qualified as OTel
+import Shibuya.Telemetry.Effect (runTracing, runTracingNoop)
+
+main :: IO ()
+main =
+  bracket
+    OTelSdk.initializeTracerProvider
+    (\provider -> OTel.shutdownTracerProvider provider (Just 5_000_000))
+    $ \provider -> do
+      let tracer =
+            OTel.makeTracer
+              provider
+              ( OTel.InstrumentationLibrary
+                  { OTel.libraryName = "my-worker"
+                  , OTel.libraryVersion = ""
+                  , OTel.librarySchemaUrl = ""
+                  , OTel.libraryAttributes = emptyAttributes
+                  }
+              )
+              OTel.tracerOptions
+      runEff $ runTracing tracer app
+```
+
+For local no-op execution:
+
+```haskell
+main = runEff $ runTracingNoop app
+```
+
+Set SDK environment variables for your exporter. A local Jaeger all-in-one with OTLP HTTP listens
+on port `4318`:
+
+```bash
+export OTEL_SERVICE_NAME=my-shibuya-worker
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_TRACES_SAMPLER=always_on
+```
+
+The per-message span is named `"<processor> process"`, for example `"orders process"`. It is a
+`Consumer` span, receives W3C parent context from `Envelope.traceContext`, and records
+`shibuya.ack.decision`.
+
+When a handler produces another message, propagate the current trace:
+
+```haskell
+headers <- currentTraceHeaders
+produceMessage payload (fromMaybe [] headers)
+```
+
+`currentTraceHeaders` returns `Nothing` when tracing is disabled or there is no active span.

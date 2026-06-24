@@ -33,13 +33,13 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Read EP-1's completed pages and confirm canonical shibuya terminology.
-- [ ] Audit shibuya metrics, telemetry, operations docs, source modules, and tests through mori.
-- [ ] Author metrics and telemetry reference pages.
-- [ ] Author operational how-to pages for health, Prometheus, WebSocket, tracing, shutdown, and
+- [x] Read EP-1's completed pages and confirm canonical shibuya terminology. Completed 2026-06-24T18:36:46Z.
+- [x] Audit shibuya metrics, telemetry, operations docs, source modules, and tests through mori. Completed 2026-06-24T18:36:46Z.
+- [x] Author metrics and telemetry reference pages. Completed 2026-06-24T18:36:46Z.
+- [x] Author operational how-to pages for health, Prometheus, WebSocket, tracing, shutdown, and
   debugging worker behavior.
-- [ ] Author cookbook recipes and replace `content/docs/shibuya/faq.mdx` with real answers.
-- [ ] Validate with docs checks and cross-link scans against EP-1.
+- [x] Author cookbook recipes and replace `content/docs/shibuya/faq.mdx` with real answers. Completed 2026-06-24T18:36:46Z.
+- [x] Validate with docs checks and cross-link scans against EP-1. Completed 2026-06-24T18:36:46Z.
 
 
 ## Surprises & Discoveries
@@ -47,7 +47,17 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- `mori registry show shinzui/shibuya --full` and the upstream git log still resolve shibuya to
+  `/Users/shinzui/Keikaku/bokuno/shibuya-project/shibuya` at
+  `3f276ee190e563fddb0bc81e01d62a96a1b31715` (`chore(release): 0.7.1.0`), so no source-drift
+  changes were needed.
+- The upstream `docs/JAEGER_LOCAL_TESTING.md` still mentions operation name
+  `"shibuya.process.message"`, but current `Shibuya.Telemetry.Semantic.processSpanName` returns
+  `destination <> " process"`. The docs authored here use the current source behavior, e.g.
+  `"orders process"`.
+- `pnpm build` rejected a `promql` code fence because the configured Shiki language set does not
+  include PromQL. The fence was changed to `text`, preserving an explicit language tag while using a
+  supported highlighter.
 
 
 ## Decision Log
@@ -73,6 +83,38 @@ Summarize outcomes, gaps, and lessons learned at major milestones or at completi
 Compare the result against the original purpose.
 
 (To be filled during and after implementation.)
+
+EP-2 completed on 2026-06-24. The shibuya operations layer now includes source-checked metrics and
+telemetry reference pages; explanation pages for observability architecture and production
+supervision; how-to guides for metrics/health, Prometheus, WebSocket, OpenTelemetry, graceful
+shutdown, and debugging worker behavior; cookbook recipes for health, processor metrics, alerts,
+handler tracing, retry storms, and local Jaeger; and a real FAQ.
+
+Validation evidence:
+
+```text
+$ pnpm run typecheck
+$ fumadocs-mdx && tsc --noEmit
+[MDX] generated files in 1.84191600000003ms
+```
+
+```text
+$ node scripts/check-doc-links.mjs
+✓ doc links OK — checked 423 files, no broken internal links.
+```
+
+```text
+$ rg -n "Documentation in progress|TODO|coming soon|Documentation for shibuya is in progress|Pages in this section are coming soon" content/docs/shibuya
+```
+
+The stale-stub scan printed no matches.
+
+```text
+$ pnpm build
+...
+✓ built in 1.57s
+ℹ Generated .output/nitro.json
+```
 
 
 ## Context and Orientation

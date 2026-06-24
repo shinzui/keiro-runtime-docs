@@ -1,0 +1,182 @@
+---
+title: "Metrics"
+description: "The shibuya-metrics package: server config, JSON and health endpoints, Prometheus names, WebSocket protocol, and health-check types."
+---
+
+`shibuya-metrics` is the HTTP observability package for `shibuya-core`. It serves the live
+`MetricsMap` that the runner master already owns: processor state, stream counters, in-flight count,
+and start time. It does not create metrics itself; processors update their own TVars and the
+`Master` exposes snapshots.
+
+<Callout type="info">
+  Package `shibuya-metrics` v0.7.1.0 exposes `Shibuya.Metrics`, `Config`, `Health`, `JSON`,
+  `Prometheus`, `Server`, `Types`, and `WebSocket`. The server binds Warp to host `"*"` on
+  `config.port`; put auth, TLS, and public exposure policy in your deployment layer.
+</Callout>
+
+## Metrics values
+
+`Shibuya.Runner.Metrics` defines the shape surfaced by every endpoint:
+
+```haskell
+newtype ProcessorId = ProcessorId { unProcessorId :: Text }
+
+data ProcessorState
+  = Idle
+  | Processing InFlightInfo UTCTime
+  | Failed Text UTCTime
+  | Stopped
+
+data InFlightInfo = InFlightInfo
+  { inFlight :: Int
+  , maxConcurrency :: Int
+  }
+
+data StreamStats = StreamStats
+  { received :: Int
+  , dropped :: Int
+  , processed :: Int
+  , failed :: Int
+  }
+
+data ProcessorMetrics = ProcessorMetrics
+  { state :: ProcessorState
+  , stats :: StreamStats
+  , startedAt :: UTCTime
+  }
+
+type MetricsMap = Map ProcessorId ProcessorMetrics
+```
+
+`received` increments when the ingester sends a message into the bounded inbox. `processed`
+increments for `AckOk` and `AckRetry`. `failed` increments for `AckDeadLetter` and handler
+exceptions. `AckHalt` marks the processor failed with the halt reason; it does not increment
+`processed`.
+
+## Server config
+
+```haskell
+data MetricsServerConfig = MetricsServerConfig
+  { port :: Int
+  , enableJSON :: Bool
+  , enablePrometheus :: Bool
+  , enableWebSocket :: Bool
+  , wsPushIntervalUs :: Int
+  , wsMaxConnections :: Int
+  , livenessTimeoutMicros :: Int
+  , stuckThreshold :: NominalDiffTime
+  }
+
+defaultConfig :: MetricsServerConfig
+```
+
+Defaults are port `9090`, JSON enabled, Prometheus enabled, WebSocket enabled, push interval
+`100_000` microseconds, max connections `100`, liveness timeout `1_000_000` microseconds, and stuck
+threshold `60` seconds.
+
+## Server lifecycle
+
+```haskell
+startMetricsServer :: MetricsServerConfig -> Master -> IO MetricsServer
+
+startMetricsServerWithDeps ::
+  MetricsServerConfig ->
+  Master ->
+  [DependencyCheck] ->
+  IO MetricsServer
+
+withMetricsServer ::
+  MetricsServerConfig ->
+  Master ->
+  (MetricsServer -> IO a) ->
+  IO a
+
+stopMetricsServer :: MetricsServer -> IO ()
+```
+
+Use `getAppMaster` from `Shibuya.App` to obtain the `Master` from an `AppHandle`.
+
+## HTTP endpoints
+
+| Path | Status | Body |
+|---|---:|---|
+| `/metrics` | 200 | all processor metrics as a JSON `MetricsMap` |
+| `/metrics/<processor>` | 200 / 404 | one processor's `ProcessorMetrics`, or `{"error":"Processor not found","processor":...}` |
+| `/health/live` | 200 / 503 | `{"alive":true}` when the master answers before timeout |
+| `/health/ready` | 200 / 503 | readiness summary with processor and dependency status |
+| `/health` | 200 / 503 | detailed readiness plus the full `MetricsMap` |
+| `/metrics/prometheus` | 200 | Prometheus text exposition |
+| `/ws` | 101 | WebSocket metrics stream |
+
+`enableJSON` gates `/metrics` and `/health`. `enablePrometheus` gates `/metrics/prometheus`.
+`enableWebSocket` gates upgrades on `/ws`.
+
+## Health types
+
+```haskell
+data ReadinessStatus = ReadinessStatus
+  { ready :: Bool
+  , processors :: ProcessorHealth
+  , dependencies :: [DependencyStatus]
+  }
+
+data ProcessorHealth = ProcessorHealth
+  { total :: Int
+  , healthy :: Int
+  , failed :: Int
+  , stuck :: Int
+  }
+
+data DependencyStatus = DependencyStatus
+  { name :: Text
+  , healthy :: Bool
+  , latencyMs :: Maybe Int
+  , errorMsg :: Maybe Text
+  }
+
+type DependencyCheck = IO DependencyStatus
+```
+
+Readiness is true only when every dependency is healthy, no processor is failed, and no processor is
+stuck. A processor is stuck when it remains in `Processing` longer than `stuckThreshold`.
+
+## Prometheus names
+
+`/metrics/prometheus` emits these series, all labeled with `processor="<ProcessorId>"`:
+
+```text
+shibuya_messages_received_total
+shibuya_messages_processed_total
+shibuya_messages_dropped_total
+shibuya_messages_failed_total
+shibuya_processor_state
+shibuya_processor_in_flight
+```
+
+`shibuya_processor_state` is an integer gauge: `1` idle, `2` processing, `3` failed, `4` stopped.
+
+## WebSocket protocol
+
+The WebSocket endpoint is `/ws`. New connections receive an initial `snapshot`, then changed
+processors are pushed every `wsPushIntervalUs`.
+
+Client messages:
+
+```json
+{ "type": "subscribe_all" }
+{ "type": "subscribe", "processors": ["orders", "payments"] }
+{ "type": "unsubscribe", "processors": ["orders"] }
+{ "type": "ping" }
+```
+
+Server messages:
+
+```json
+{ "type": "snapshot", "metrics": {} }
+{ "type": "update", "processor": "orders", "metrics": {} }
+{ "type": "pong" }
+{ "type": "goodbye" }
+```
+
+Invalid client messages are ignored. A connection beyond `wsMaxConnections` is rejected with "Too
+many connections".
