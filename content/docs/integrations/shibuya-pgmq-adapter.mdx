@@ -1,18 +1,177 @@
 ---
 title: shibuya ⇄ pgmq adapter
-description: Consume a pgmq message queue through shibuya's supervised pipelines — leasing, retries, and an optional dead-letter queue.
+description: Consume a pgmq queue through shibuya's supervised processors with visibility-timeout leases, retry visibility changes, DLQ routing, FIFO reads, topic helpers, and trace propagation.
 ---
 
-This adapter lets [shibuya](/docs/shibuya) consume a [pgmq](/docs/pgmq) message
-queue, exactly parallel to the [shibuya ⇄ kiroku adapter](/docs/integrations/shibuya-kiroku-adapter).
-It leases messages with a visibility timeout, handles retries, supports an optional
-dead-letter queue (DLQ), and emits OpenTelemetry traces. It is built on
-`pgmq-hs` and exposes `Shibuya.Adapter.Pgmq` (plus `.Config` and `.Convert`).
+`shibuya-pgmq-adapter` turns a [pgmq](/docs/pgmq) queue into a shibuya
+`Adapter es Value`. PGMQ owns the physical queue tables, visibility timeout,
+archive table, topic routing tables, FIFO group indexes, and JSONB message
+payload. shibuya owns handler execution, runner policy, ack finalization,
+metrics, tracing, and shutdown.
 
 <Callout type="info">
-  **Building a keiro app?** You usually don't wire this adapter by hand. keiro ships
-  [`keiro-pgmq`](/docs/keiro/explanation/background-jobs-with-pgmq) — a typed `Job` layer over this
-  adapter that absorbs the queue-name derivation, the `PgmqAdapterConfig`, and the
-  decode-and-ack boilerplate. Declare a `Job` and write a `p -> Eff es JobOutcome` handler; see the
-  [background-jobs reference](/docs/keiro/reference/pgmq-jobs).
+  **Building a keiro app?** You usually do not wire this adapter directly.
+  [`keiro-pgmq`](/docs/integrations/keiro-with-pgmq) wraps it in a typed `Job`
+  layer that derives queue names, constructs `PgmqAdapterConfig`, decodes the
+  JSON payload, and maps `JobOutcome` back to shibuya ack decisions.
 </Callout>
+
+## Runtime shape
+
+The public constructor is `pgmqAdapter` from `Shibuya.Adapter.Pgmq`:
+
+```haskell
+pgmqAdapter ::
+  ( Pgmq :> es
+  , Error PgmqRuntimeError :> es
+  , IOE :> es
+  , Tracing :> es
+  ) =>
+  PgmqAdapterConfig ->
+  Eff es (Adapter es Value)
+```
+
+The adapter name is `pgmq:<queueName>`. The source polls PGMQ, converts each
+leased `Message Value` into a shibuya `Envelope Value`, and attaches an
+`AckHandle` that performs the matching PGMQ operation. `shutdown` stops the
+source; leased messages that were not acked reappear naturally after their
+visibility timeout expires.
+
+Use the adapter directly when you want the raw PGMQ payload and queue semantics.
+Use `keiro-pgmq` when the queue is a typed keiro background-job queue.
+
+## Configuration
+
+Start with `defaultPgmqAdapterConfig` and override the fields that match your
+queue:
+
+```haskell
+import Shibuya.Adapter.Pgmq
+
+cfg =
+  defaultPgmqAdapterConfig (QueueName "reservation_work")
+    { batchSize = 25
+    , visibilityTimeout = 60
+    , maxRetries = 5
+    , deadLetterConfig =
+        Just (directDeadLetter (QueueName "reservation_work_dlq"))
+    }
+```
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `queueName` | required | Physical PGMQ queue to read. |
+| `visibilityTimeout` | `30` seconds | Lease duration assigned by each read. |
+| `batchSize` | `1` | Maximum messages requested per poll. |
+| `polling` | `StandardPolling` | Standard sleep-after-empty polling or PGMQ long polling. |
+| `pollRetry` | 5 attempts, 100 ms to 5 s backoff | Retries transient read failures before surfacing `PgmqRuntimeError`. |
+| `deadLetterConfig` | `Nothing` | Optional direct queue or topic route for `AckDeadLetter`. |
+| `maxRetries` | `3` | Maximum PGMQ read count before the adapter auto-dead-letters. |
+| `fifoConfig` | `Nothing` | Enables grouped FIFO read strategies. |
+| `prefetchConfig` | `Nothing` | Adds a bounded prefetch buffer in front of the processor. |
+
+When prefetch is enabled, size the buffer against the lease: `bufferSize *
+batchSize * averageProcessingTime` should stay below `visibilityTimeout`, or a
+message can become visible again before the handler acks it.
+
+## Ack Mapping
+
+PGMQ's lease model maps cleanly onto shibuya's four ack decisions:
+
+| shibuya decision | PGMQ operation |
+| --- | --- |
+| `AckOk` | `deleteMessage`; the leased row leaves the live queue. |
+| `AckRetry delay` | `changeVisibilityTimeout` using the requested retry delay. |
+| `AckDeadLetter reason` without DLQ config | `archiveMessage`; the row moves to PGMQ's archive table. |
+| `AckDeadLetter reason` with DLQ config | Write a DLQ payload to a direct queue or topic route, then `deleteMessage` the original. |
+| `AckHalt` | Extend visibility to one hour and stop the processor. |
+
+Before a handler runs, the adapter compares PGMQ's `readCount` with
+`maxRetries`. If the count is already too high, it applies
+`AckDeadLetter MaxRetriesExceeded` itself and does not deliver that message to
+the handler. The count is PGMQ's broker-side delivery count, so it survives
+process restarts.
+
+## Dead Letters
+
+`DeadLetterConfig` has two target forms:
+
+```haskell
+directDeadLetter :: QueueName -> DeadLetterConfig
+topicDeadLetter  :: RoutingKey -> DeadLetterConfig
+```
+
+`DirectQueue` writes directly to a named PGMQ queue. `TopicRoute` publishes
+through the adapter's topic-routing helper so bindings decide which queues see
+the dead-letter payload. With `includeMetadata = True`, the DLQ payload includes
+the original message id, original enqueue and read timestamps, read count,
+headers, payload, and the shibuya dead-letter reason.
+
+Trace propagation is deliberate. The DLQ write uses the current consumer span as
+the outgoing trace context, while the original upstream `traceparent` and
+`tracestate` are preserved under `x-shibuya-upstream-traceparent` and
+`x-shibuya-upstream-tracestate` headers.
+
+## FIFO and Topic Helpers
+
+When `fifoConfig` is present, the adapter reads grouped messages instead of the
+plain PGMQ queue stream. `ThroughputOptimized` lets busy groups dominate.
+`RoundRobin` rotates across groups for fairer processing. In both cases, the
+message payload remains raw JSON `Value`; FIFO only changes how the adapter
+chooses leased rows.
+
+The package also exposes helpers for topic bindings:
+
+```haskell
+bindQueueTopics
+unbindQueueTopics
+listQueueTopicBindings
+testTopicRouting
+```
+
+These helpers are adapter-side conveniences over pgmq-hs topic routing. They do
+not change shibuya's processor contract; they make it easier to route normal
+messages or DLQ messages through PGMQ topics.
+
+## Envelope Mapping
+
+The adapter preserves the PGMQ cursor and lease context:
+
+| PGMQ source | Shibuya envelope |
+| --- | --- |
+| `MessageId` | `messageId` as text. |
+| PGMQ message id integer | `cursor = CursorInt ...`. |
+| `x-pgmq-group` header | `partition`. |
+| `enqueuedAt` | `enqueuedAt`. |
+| `traceparent` / `tracestate` headers | `traceContext`. |
+| `readCount - 1` | zero-based `attempt`. |
+| JSON body | `payload`. |
+
+`headers` is intentionally `Nothing`. PGMQ stores headers as JSONB, which is
+useful for routing and metadata but is not an ordered broker header stream.
+Trace context and the FIFO group header are lifted into dedicated envelope
+fields; the raw payload stays as the handler's `Value`.
+
+## Operational Notes
+
+- The adapter is at-least-once. A handler must be idempotent because crashes,
+  retry visibility changes, and lease expiry can redeliver the same message.
+- `AckRetry` changes broker visibility; it does not allocate an in-process retry
+  buffer.
+- `AckHalt` is a stop signal, not a pause. The one-hour visibility extension is
+  only a guardrail for operator intervention.
+- Standard polling is simpler for steady workloads. Long polling reduces idle
+  query churn when the queue is mostly empty.
+- PGMQ queue provisioning, archive reads, purges, metrics, and schema migration
+  are documented in the [pgmq reference](/docs/pgmq/reference/hasql-api), the
+  [queue lifecycle guide](/docs/pgmq/how-to/create-send-read-finish), and the
+  [startup configuration guide](/docs/pgmq/how-to/configure-queues-at-startup).
+
+## Related
+
+<Cards>
+  <Card title="Adapter comparison" href="/docs/integrations/shibuya-adapters" description="Compare pgmq, kiroku, Kafka, and Message DB adapter responsibilities." />
+  <Card title="pgmq queue substrate" href="/docs/pgmq" description="Queue operations, visibility timeouts, topics, FIFO, observability, and migrations." />
+  <Card title="shibuya ack decisions" href="/docs/shibuya/reference/adapters-handlers-and-ack" description="The core adapter, handler, and ack types this package implements." />
+  <Card title="keiro ⇄ pgmq jobs" href="/docs/integrations/keiro-with-pgmq" description="The typed job layer most keiro applications use instead of raw adapter wiring." />
+</Cards>

@@ -34,12 +34,12 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Resolve adapter source locations with mori and audit current source/docs.
-- [ ] Author or update the shibuya-pgmq adapter integration guide and related shibuya/pgmq links.
-- [ ] Reconcile the shibuya-kiroku adapter guide with current kiroku adapter source.
-- [ ] Add shibuya-kafka and shibuya-message-db adapter integration pages if absent.
-- [ ] Add adapter comparison/reference/how-to pages and walkthroughs where appropriate.
-- [ ] Validate source claims, navigation, links, and stale stub removal.
+- [x] Resolve adapter source locations with mori and audit current source/docs.
+- [x] Author or update the shibuya-pgmq adapter integration guide and related shibuya/pgmq links.
+- [x] Reconcile the shibuya-kiroku adapter guide with current kiroku adapter source.
+- [x] Add shibuya-kafka and shibuya-message-db adapter integration pages if absent.
+- [x] Add adapter comparison/reference/how-to pages and walkthroughs where appropriate.
+- [x] Validate source claims, navigation, links, and stale stub removal.
 
 
 ## Surprises & Discoveries
@@ -47,7 +47,16 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- The adapter source heads still match the plan baseline: `shibuya-pgmq-adapter` at `71a7b82`,
+  `kiroku` at `9a52aa6`, `shibuya-kafka-adapter` at `424a4c2`, and
+  `shibuya-message-db-adapter` at `4307255`.
+- `shibuya-message-db-adapter.cabal` still describes some checkpoint/retry/DLQ/partitioning work
+  as future or stubbed, but current source and `docs/user/` implement durable contiguous-prefix
+  checkpoints, bounded in-process retries, deterministic DLQ writes, and static consumer groups.
+  The docs were written from source modules and user guides rather than the stale cabal summary.
+- The Kafka adapter intentionally does not publish retry or dead-letter records. `AckRetry` and
+  `AckDeadLetter` store offsets, while `AckHalt` pauses the partition and leaves the offset
+  uncommitted.
 
 
 ## Decision Log
@@ -70,7 +79,30 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Completed on 2026-06-24.
+
+The integrations section now has source-checked pages for all four first-party shibuya adapters:
+`shibuya-pgmq-adapter`, `shibuya-kiroku-adapter`, `shibuya-kafka-adapter`, and
+`shibuya-message-db-adapter`. A shared `shibuya-adapters` comparison page explains source type,
+payload shape, progress ownership, ack mapping, retry and DLQ behavior, ordering, envelope fields,
+and adapter choice. The integrations landing page and `meta.json` include all adapter pages, and
+the shibuya adapter reference links back to the comparison page.
+
+The PGMQ adapter stub was replaced with a full guide covering `PgmqAdapterConfig`, visibility
+leases, polling, max retries, DLQ routing, FIFO reads, topic helpers, envelope mapping, and
+operational notes. `docs/shibuya-pgmq-adapter-source-sync.md` now pins the content-authored page to
+upstream commit `71a7b82` and records the old `8e6f6e9` bootstrap pointer as historical.
+
+Kafka and Message DB do not yet have dedicated source-sync pointer files. This plan records their
+reviewed upstream commits in its Context and Surprises sections; EP-5 owns the final pointer
+strategy across integrations.
+
+Validation passed:
+
+- `pnpm run typecheck`
+- `pnpm build`
+- `node scripts/check-doc-links.mjs`
+- `rg -n "Documentation in progress|TODO|coming soon" content/docs/integrations content/docs/shibuya`
 
 
 ## Context and Orientation

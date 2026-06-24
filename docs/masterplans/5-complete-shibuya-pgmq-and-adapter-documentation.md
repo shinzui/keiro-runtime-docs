@@ -70,7 +70,7 @@ edits for EP-5.
 | EP-1 | Author shibuya foundation core and walkthrough docs | `docs/plans/35-author-shibuya-foundation-core-and-walkthrough-docs.md` | None | None | Complete |
 | EP-2 | Document shibuya metrics operations and recipes | `docs/plans/36-document-shibuya-metrics-operations-and-recipes.md` | EP-1 | None | Complete |
 | EP-3 | Author pgmq hs queue substrate documentation | `docs/plans/37-author-pgmq-hs-queue-substrate-documentation.md` | None | EP-1 | Complete |
-| EP-4 | Document shibuya adapters across pgmq kiroku kafka and message db | `docs/plans/38-document-shibuya-adapters-across-pgmq-kiroku-kafka-and-message-db.md` | EP-1 | EP-3 | Not Started |
+| EP-4 | Document shibuya adapters across pgmq kiroku kafka and message db | `docs/plans/38-document-shibuya-adapters-across-pgmq-kiroku-kafka-and-message-db.md` | EP-1 | EP-3 | Complete |
 | EP-5 | Reconcile shibuya pgmq integrations navigation and source sync | `docs/plans/39-reconcile-shibuya-pgmq-integrations-navigation-and-source-sync.md` | EP-1, EP-2, EP-3, EP-4 | None | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -150,9 +150,9 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] EP-3: Audit pgmq-hs source, bundled pgmq docs, and current pgmq stubs.
 - [x] EP-3: Author pgmq-hs reference, how-to, explanation, cookbook, and source-sync updates.
 - [x] EP-3: Validate pgmq pages and queue-substrate cross-links.
-- [ ] EP-4: Audit shibuya-pgmq, shibuya-kiroku, shibuya-kafka, and shibuya-message-db adapter sources.
-- [ ] EP-4: Author adapter comparison, integration pages, how-tos, and adapter source walkthroughs.
-- [ ] EP-4: Validate adapter docs against current source modules and examples.
+- [x] EP-4: Audit shibuya-pgmq, shibuya-kiroku, shibuya-kafka, and shibuya-message-db adapter sources.
+- [x] EP-4: Author adapter comparison, integration pages, how-tos, and adapter source walkthroughs.
+- [x] EP-4: Validate adapter docs against current source modules and examples.
 - [ ] EP-5: Reconcile shibuya, pgmq, integrations, landing pages, and source-sync pointers.
 - [ ] EP-5: Run whole-site validation and record final upstream pins.
 
@@ -189,6 +189,13 @@ interactions between child plans. Provide concise evidence.
 - EP-3 found that `ReadMessage` still carries a `conditional :: Maybe Value` field while the
   current statement implementation calls pgmq's three-argument `read($1,$2,$3)` form. The docs list
   the field but do not promise active conditional filtering through `readMessage`.
+- EP-4 confirmed no source drift for the adapter pins recorded in the child plan:
+  `shibuya-pgmq-adapter` `71a7b82`, `kiroku` `9a52aa6`, `shibuya-kafka-adapter` `424a4c2`, and
+  `shibuya-message-db-adapter` `4307255`.
+- EP-4 found the Message DB adapter package description lagging behind implementation: the cabal
+  metadata still frames checkpoint/retry/DLQ/partitioning work as future or stubbed, while current
+  source and user docs implement contiguous-prefix checkpoints, bounded retries, deterministic DLQ
+  writes, and static consumer groups.
 
 
 ## Decision Log
@@ -229,3 +236,8 @@ Compare the result against the original vision.
   split, validated core types, Hasql operations, Effectful interpreters and tracing, declarative
   queue configuration, schema migrations, visibility semantics, FIFO grouped reads, topic routing,
   notifications, queue metrics, common how-tos, and cookbook snippets.
+- EP-4 completed on 2026-06-24. The integrations section now includes a shared shibuya adapter
+  comparison plus source-checked PGMQ, Kiroku, Kafka, and Message DB adapter pages. The PGMQ adapter
+  source-sync pointer was promoted from bootstrap stub to content-authored status at upstream
+  `71a7b82`. Validation passed with `pnpm run typecheck`, `pnpm build`,
+  `node scripts/check-doc-links.mjs`, and the stale-stub scan over integrations and shibuya docs.

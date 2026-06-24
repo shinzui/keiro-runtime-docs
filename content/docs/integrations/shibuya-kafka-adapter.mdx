@@ -1,0 +1,110 @@
+---
+title: shibuya ⇄ Kafka adapter
+description: Consume Kafka topics through shibuya processors with partition-aware envelopes, ordered headers, explicit offset storage, and honest retry and DLQ boundaries.
+---
+
+`shibuya-kafka-adapter` turns a Kafka consumer session into a shibuya
+`Adapter es (Maybe ByteString)`. Kafka owns topics, partitions, offsets, record
+headers, and broker delivery. shibuya owns handler execution and ack decisions.
+The adapter maps those ack decisions to local offset bookkeeping and commits
+stored offsets during shutdown.
+
+## Runtime Shape
+
+The constructor is `kafkaAdapter` from `Shibuya.Adapter.Kafka`:
+
+```haskell
+kafkaAdapter ::
+  ( KafkaConsumer :> es
+  , Error KafkaError :> es
+  , IOE :> es
+  ) =>
+  KafkaAdapterConfig ->
+  Eff es (Adapter es (Maybe ByteString))
+```
+
+The adapter runs inside the `KafkaConsumer` effect supplied by the caller's
+consumer properties. `KafkaAdapterConfig` supplies the topic list, poll timeout,
+batch size, and offset reset behavior:
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `topics` | required | Topics subscribed by this adapter. |
+| `pollTimeout` | `Timeout 1000` | Kafka poll timeout in milliseconds. |
+| `batchSize` | `100` | Maximum records handled from a poll cycle. |
+| `offsetReset` | `Earliest` | Reset policy used when no committed offset exists. |
+
+The adapter name is `kafka:<topics>`. The adapter's `shutdown` action marks the
+source as stopped and commits all offsets accumulated by successful finalization.
+Call `shutdown` while the `KafkaConsumer` effect is still in scope.
+
+## Ack Mapping
+
+Kafka cannot make a consumed record invisible and then re-show it after a delay.
+The adapter therefore maps ack decisions to offset behavior:
+
+| shibuya decision | Kafka adapter behavior |
+| --- | --- |
+| `AckOk` | Store this record's offset for a later commit. |
+| `AckRetry delay` | Store the offset; retry topics or handler-level retry state are application concerns. |
+| `AckDeadLetter reason` | Store the offset; the adapter does not publish a DLQ record. |
+| `AckHalt` | Pause the record's partition and do not store the offset. |
+
+`AckRetry` and `AckDeadLetter` both move the offset forward. That is intentional:
+once Kafka has delivered a record in this consumer session, the adapter cannot
+un-read it. If your service needs delayed retries or durable DLQs, publish to
+retry/DLQ topics from the handler before returning the ack decision, and make
+that side effect idempotent.
+
+`AckHalt` is the only decision that deliberately withholds the offset. The
+partition is paused for the current session. On a new consumer session, the
+uncommitted record can be delivered again.
+
+## Envelope Mapping
+
+The adapter preserves Kafka's partition and header identity:
+
+| Kafka record | Shibuya envelope |
+| --- | --- |
+| Topic, partition, offset | `messageId = "<topic>-<partition>-<offset>"`. |
+| Offset | `cursor = CursorInt offset`. |
+| Partition | `partition`. |
+| Timestamp | `enqueuedAt`. |
+| `traceparent` / `tracestate` headers | `traceContext`. |
+| Kafka headers | `headers = Just [...]`, preserving order and duplicate keys. |
+| Record value | `payload = Maybe ByteString`. |
+
+Envelope attributes include `messaging.system = kafka`, destination partition,
+and message offset. `attempt` is `Nothing`; Kafka does not expose a native
+delivery attempt counter to the adapter.
+
+## Errors and Shutdown
+
+The source polls in batches and skips non-fatal poll outcomes. Fatal Kafka
+errors are thrown through `Error KafkaError`, so normal shibuya supervision can
+decide whether the processor should stop or restart.
+
+Offset commits happen through the adapter's stored-offset ledger. A crash before
+commit can replay records whose handlers already ran. Treat handlers as
+at-least-once and idempotent even when they return `AckOk`.
+
+## Examples
+
+The `shibuya-kafka-adapter-jitsurei` package includes runnable examples for the
+main shapes:
+
+- `BasicConsumer` for a single-topic consumer.
+- `MultiTopic` for topic fan-in.
+- `OffsetManagement` for commit behavior.
+- `MultiPartition` for partition-aware processing.
+- `FatalErrorDemo` for fatal error surfacing.
+- OpenTelemetry examples for trace/header propagation.
+
+## Related
+
+<Cards>
+  <Card title="Adapter comparison" href="/docs/integrations/shibuya-adapters" description="Compare Kafka with pgmq, Kiroku, and Message DB adapters." />
+  <Card title="shibuya adapter contract" href="/docs/shibuya/explanation/adapter-contract" description="The core contract Kafka implements." />
+  <Card title="Write a handler" href="/docs/shibuya/how-to/write-a-handler" description="Handler structure and explicit ack decisions." />
+  <Card title="Enable OpenTelemetry" href="/docs/shibuya/how-to/enable-opentelemetry" description="Trace context and spans around processors." />
+</Cards>

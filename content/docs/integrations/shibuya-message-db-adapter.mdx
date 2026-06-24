@@ -1,0 +1,173 @@
+---
+title: shibuya ⇄ Message DB adapter
+description: Consume Message DB category streams through shibuya processors with durable contiguous-prefix checkpoints, in-process retries, deterministic DLQ writes, and static consumer groups.
+---
+
+`shibuya-message-db-adapter` turns a Message DB category stream into a shibuya
+`Adapter es MessageDb.Message`. Message DB owns the append-only event store and
+category query. The adapter owns the consumer checkpoint, in-flight ledger,
+retry buffer, dead-letter behavior, and optional static partitioning.
+
+Use this adapter when Message DB is the source of truth and you want shibuya's
+processor model over a category stream.
+
+## Runtime Shape
+
+The constructor is `messageDbAdapter` from `Shibuya.Adapter.MessageDb`:
+
+```haskell
+messageDbAdapter ::
+  ( MessageDb :> es
+  , CheckpointStore :> es
+  , Concurrent :> es
+  , IOE :> es
+  , Error SessionError :> es
+  ) =>
+  MessageDbAdapterConfig ->
+  Eff es (Adapter es MessageDb.Message)
+```
+
+`MessageDb` reads category messages. `CheckpointStore` persists the last durable
+global position for the subscription. `Concurrent` runs the background
+checkpoint persister and retry fiber.
+
+The adapter name is `message-db:<category>`.
+
+## Configuration
+
+Start with `defaultConfig category subscriptionName`:
+
+```haskell
+import Shibuya.Adapter.MessageDb
+
+cfg =
+  (defaultConfig (CategoryStream "orders") "orders-projection")
+    { batchSize = BatchSize 200
+    , dlqStrategy = DlqWriteToStream "orders-projection-dlq"
+    , maxRetryBufferSize = MaxRetryBufferSize 5000
+    }
+```
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `category` | required | Message DB category passed to `get_category_messages`. |
+| `subscriptionName` | required | Checkpoint row identity for this logical consumer. |
+| `batchSize` | `100` | Messages requested per poll. |
+| `pollInterval` | `0.5` seconds | Sleep after an empty poll. |
+| `drainTimeout` | `10` seconds | Time `shutdown` waits for in-flight handlers. |
+| `checkpointInterval` | `1` second | Background checkpoint flush interval. |
+| `dlqStrategy` | `DlqSkipAndLog` | Dead-letter handling. |
+| `maxRetryBufferSize` | `1000` | Maximum delayed retries held in memory. |
+| `consumerGroup` | `Nothing` | Optional static hash partition membership. |
+
+Invalid consumer-group settings fail at adapter construction:
+`groupSize >= 1` and `0 <= member < groupSize`.
+
+## Checkpoint Model
+
+Message DB is an event store, not a queue. The adapter adds at-least-once
+consumer progress with an in-memory ledger keyed by `globalPosition` and a
+durable checkpoint row keyed by `subscriptionName`.
+
+On startup the adapter reads the stored checkpoint and begins polling from
+`checkpoint + 1`. During steady state, a background persister periodically asks
+the ledger for the longest contiguous prefix of completed positions and stores
+that tail. If positions 100, 101, 103, and 104 have completed but 102 is still
+running or retrying, the checkpoint stays at 101. A crash then replays 102, 103,
+and 104.
+
+`shutdown` flips a shared stop signal, waits up to `drainTimeout` for in-flight
+messages, flushes one final contiguous checkpoint, and gives the persister one
+extra interval to exit.
+
+## Ack Mapping
+
+| shibuya decision | Message DB adapter behavior |
+| --- | --- |
+| `AckOk` | Mark the global position complete in the ledger. |
+| `AckRetry delay` | Schedule the same message in the bounded in-process retry buffer. |
+| `AckDeadLetter reason` | Apply `DlqStrategy`, then mark the position complete. |
+| `AckHalt` | Stop the source and leave the position uncheckpointed. |
+
+Retries are in-process only. The retry fiber waits until the requested
+`RetryDelay`, re-emits the same `MessageDb.Message`, and keeps the checkpoint
+pinned until the message later completes or dead-letters. If the retry buffer is
+full, the adapter downgrades the decision to
+`AckDeadLetter MaxRetriesExceeded`.
+
+If the process dies while retries are buffered, the retry buffer is lost but the
+checkpoint has not advanced past those positions. On restart, Message DB polling
+redelivers them from the durable checkpoint.
+
+## Dead Letters
+
+Message DB has no native dead-letter queue, so the adapter implements two
+strategies:
+
+| Strategy | Behavior |
+| --- | --- |
+| `DlqSkipAndLog` | Log the reason and advance. The original event remains in Message DB. |
+| `DlqWriteToStream stream` | Write a `$DeadLetter` message to the target stream, then advance. |
+
+The write-to-stream strategy derives the DLQ `messageId` deterministically from
+the original message id using UUIDv5. If the process crashes after the DLQ write
+but before the checkpoint advances, replay produces the same id; Message DB's
+unique constraint rejects the duplicate, and the adapter treats that duplicate
+as success.
+
+DLQ metadata includes correlation, causation, original stream, dead-letter
+reason, and the timestamp when the DLQ write was attempted.
+
+## Envelope Mapping
+
+| Message DB field | Shibuya envelope field |
+| --- | --- |
+| Message UUID | `messageId`. |
+| `globalPosition` | `cursor = CursorInt ...`. |
+| Consumer-group label | `partition`, when `consumerGroup` is configured. |
+| `time` | `enqueuedAt`. |
+| metadata `traceparent` / `tracestate` | `traceContext`. |
+| Raw `Message` | `payload`. |
+
+`headers` is `Nothing`, `attempt` is `Nothing`, and `attributes` is empty. The
+raw `MessageDb.Message` payload keeps the stream name, type, data, and metadata
+available to handlers.
+
+## Consumer Groups
+
+Consumer groups are static and configuration-driven:
+
+```haskell
+ConsumerGroupConfig
+  { groupSize = 3
+  , member = 0
+  }
+```
+
+Routing is `murmur3_64(category_name) mod groupSize`. Each member polls the same
+category and filters messages locally. Messages owned by other members are
+recorded as completed in that member's ledger so its checkpoint can cross them.
+Each member writes checkpoints under a partitioned subscription name:
+`<subscriptionName>-<member>-of-<groupSize>`.
+
+There is no rebalance protocol. Changing `groupSize` reshuffles ownership and
+can replay messages until every member catches up under the new partitioning.
+
+## Examples
+
+The `shibuya-message-db-adapter-jitsurei` package includes:
+
+- `BasicConsumer` for basic adapter wiring.
+- `RetryDemo` for delayed retries.
+- `DeadLetterDemo` for `DlqWriteToStream`.
+- `CheckpointRestart` for restart and checkpoint behavior.
+- `MultiPartition` for static consumer groups.
+
+## Related
+
+<Cards>
+  <Card title="Adapter comparison" href="/docs/integrations/shibuya-adapters" description="Compare Message DB with pgmq, Kiroku, and Kafka adapters." />
+  <Card title="shibuya adapter contract" href="/docs/shibuya/explanation/adapter-contract" description="The core contract this package implements." />
+  <Card title="Ack, retry, dead letters" href="/docs/shibuya/explanation/ack-retry-dead-letter" description="The shibuya decision vocabulary used by the adapter." />
+  <Card title="Graceful shutdown" href="/docs/shibuya/how-to/configure-graceful-shutdown" description="How shibuya applications coordinate adapter shutdown." />
+</Cards>

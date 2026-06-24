@@ -1,0 +1,101 @@
+---
+title: shibuya adapter comparison
+description: Compare the first-party shibuya adapters for pgmq, kiroku, Kafka, and Message DB by source model, envelope mapping, ack behavior, retries, dead letters, ordering, and intended use.
+---
+
+shibuya keeps its core runner small: an adapter yields `Ingested` messages, a
+handler returns an `AckDecision`, and the adapter finalizes that decision against
+its own backend. The first-party adapters all implement that contract, but they
+delegate durability to different systems.
+
+Use this page to choose the right adapter and to understand where source-specific
+behavior begins.
+
+## At a Glance
+
+| Adapter | Source model | Payload | Progress owner | Best fit |
+| --- | --- | --- | --- | --- |
+| [pgmq](/docs/integrations/shibuya-pgmq-adapter) | PostgreSQL queue table with visibility leases. | Raw JSON `Value`. | PGMQ lease, delete, archive, and read count. | Background jobs and Postgres-native work queues. |
+| [kiroku](/docs/integrations/shibuya-kiroku-adapter) | Kiroku subscription over an event log. | `RecordedEvent`. | Kiroku subscription checkpoint and retry/DLQ tables. | Event-store subscriptions with durable ordering and filters. |
+| [Kafka](/docs/integrations/shibuya-kafka-adapter) | Kafka consumer polling topics and partitions. | `Maybe ByteString`. | Kafka committed offsets stored by the adapter session. | Broker streams, topic fan-in, partition-aware consumers. |
+| [Message DB](/docs/integrations/shibuya-message-db-adapter) | message-db category polling through Postgres. | Raw `MessageDb.Message`. | Adapter checkpoint store plus contiguous-prefix ledger. | Message DB event streams and category subscriptions. |
+
+## Ack Comparison
+
+| Decision | pgmq | kiroku | Kafka | Message DB |
+| --- | --- | --- | --- | --- |
+| `AckOk` | Delete the leased row. | Continue and checkpoint. | Store the offset for later commit. | Mark complete; contiguous checkpoint can advance. |
+| `AckRetry` | Change message visibility by the retry delay. | Return Kiroku `Retry delay`. | Store the offset because Kafka cannot un-read a record. | Buffer in-process for delayed redelivery; overflow becomes `MaxRetriesExceeded`. |
+| `AckDeadLetter` | Archive or write a DLQ copy, then remove original. | Write to Kiroku dead letters and checkpoint. | Store the offset; Kafka DLQ publishing is not implemented in the adapter. | Skip-and-log or write deterministic copy to a DLQ stream, then advance. |
+| `AckHalt` | Extend visibility and stop. | Cancel the subscription; event replays on restart. | Pause the partition without storing the offset. | Stop source and leave the position uncheckpointed. |
+
+The important split is broker-owned retry versus adapter-owned retry. PGMQ and
+Kiroku have native redelivery semantics. Kafka offsets are one-way, so retry is
+a handler/application concern. Message DB has no queue primitive, so the adapter
+implements a bounded in-memory retry buffer and relies on checkpoint replay
+after process failure.
+
+## Ordering and Concurrency
+
+PGMQ provides queue ordering only to the degree the selected read mode supports
+it. Plain reads optimize throughput. FIFO reads use message groups and can be
+tuned for throughput or round-robin fairness. Visibility timeouts mean a slow
+handler can cause redelivery, so lease sizing and idempotency matter.
+
+Kiroku delivers through ack-coupled subscriptions. A worker does not advance its
+durable checkpoint until shibuya finalizes the event. Consumer groups route
+originating streams to members and require serial member execution so per-stream
+order is preserved.
+
+Kafka preserves order per partition. The adapter stores offsets per
+topic-partition and commits them on shutdown. `AckHalt` pauses a partition and
+keeps the offset uncommitted so restart can redeliver.
+
+Message DB polls a category by global position and advances the stored
+checkpoint only across a gap-free prefix of completed positions. Out-of-order
+handler completion is allowed, but any unresolved or retrying position pins the
+checkpoint before it. Consumer groups are static hash partitions; every member
+polls and filters the category.
+
+## Envelope Differences
+
+| Field | pgmq | kiroku | Kafka | Message DB |
+| --- | --- | --- | --- | --- |
+| `messageId` | PGMQ message id text. | Kiroku event id. | `<topic>-<partition>-<offset>`. | Message DB UUID. |
+| `cursor` | PGMQ integer id. | Kiroku global position. | Kafka offset. | Message DB global position. |
+| `partition` | Optional FIFO group header. | Optional consumer-group member. | Kafka partition id. | Optional static group label. |
+| `traceContext` | From PGMQ headers. | From event metadata. | From Kafka headers. | From message metadata. |
+| `headers` | `Nothing`; JSONB headers are not exposed as an ordered header stream. | `Nothing`; metadata remains on payload. | Ordered Kafka headers, including duplicate keys. | `Nothing`; metadata remains on payload. |
+| `attempt` | PGMQ `readCount - 1`. | Kiroku redelivery counter. | `Nothing`. | `Nothing`. |
+
+## Choosing
+
+Choose `shibuya-pgmq-adapter` when the work is a job queue and PostgreSQL is
+already in the deployment. It gives you visibility leases, DLQ routing, FIFO
+groups, and topic helpers without running a separate broker.
+
+Choose `shibuya-kiroku-adapter` when the source of truth is Kiroku and you want
+Kiroku's subscription model, checkpoints, filters, retries, and dead-letter
+tables to remain authoritative.
+
+Choose `shibuya-kafka-adapter` when topics and partitions are the source
+contract. It is the lowest-level adapter in this set: it exposes Kafka headers
+and offsets clearly, but application code must own retry topics, DLQ publishing,
+and idempotency beyond offset commits.
+
+Choose `shibuya-message-db-adapter` when the source is Message DB's
+append-only event store and you want a shibuya processor over category streams.
+It adds the checkpoint, retry, DLQ, and static partitioning machinery Message DB
+does not provide natively.
+
+## Core Contract
+
+All adapter pages assume the same shibuya vocabulary. Read these first if the
+terms are unfamiliar:
+
+<Cards>
+  <Card title="Adapter contract" href="/docs/shibuya/explanation/adapter-contract" description="What shibuya expects an adapter to provide." />
+  <Card title="Adapters, handlers, and ack" href="/docs/shibuya/reference/adapters-handlers-and-ack" description="The concrete core types every adapter implements." />
+  <Card title="Ack, retry, and dead letters" href="/docs/shibuya/explanation/ack-retry-dead-letter" description="How handler decisions flow back to source-specific finalization." />
+  <Card title="Ordering and backpressure" href="/docs/shibuya/explanation/ordering-concurrency-backpressure" description="How runner policy interacts with adapter delivery." />
+</Cards>
