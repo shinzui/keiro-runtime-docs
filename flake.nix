@@ -3,9 +3,8 @@
 
   inputs.nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
   inputs.flake-utils.url = "github:numtide/flake-utils";
-  inputs.pragmatapro.url = "path:/Users/shinzui/Keikaku/bokuno/fonts";
 
-  outputs = { self, nixpkgs, flake-utils, pragmatapro }:
+  outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -13,8 +12,6 @@
       {
         checks = {
         };
-
-        packages.pragmatapro-fonts = pragmatapro.packages.${system}.pragmataPro;
 
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
@@ -26,8 +23,8 @@
             pkgs.typescript
             # The link-check gate (Plan F / #6) is provided by the `linkinator` npm
             # devDependency, on PATH after `pnpm install` — not a nixpkgs package — so
-            # the dev shell needs no extra entry for it. The PragmataPro font input is
-            # the `pragmatapro` flake input above (exposed as packages.pragmatapro-fonts).
+            # the dev shell needs no extra entry for it. Licensed PragmataPro users can
+            # opt in locally; see docs/optional-commercial-fonts.md.
           ];
 
           shellHook = ''

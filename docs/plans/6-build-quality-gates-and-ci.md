@@ -107,7 +107,7 @@ surprised:)
   static HTML a crawler can read. Record below which routes were actually prerendered (look at
   the `pages` array in `vite.config.ts` plus whatever `crawlLinks` reached) and therefore
   what the link checker did and did not cover.
-- The font flake at `/Users/shinzui/Keikaku/bokuno/fonts` has a known casing typo in its
+- The font flake at `/absolute/path/to/fonts` has a known casing typo in its
   default attribute name and a version mismatch (built `result/` reports `0.9` while the
   flake declares `0.901`). Handle the input defensively (see Milestone 5); record the exact
   attribute name you had to use here once observed.
@@ -151,7 +151,7 @@ Observed during implementation (2026-05-30):
   full `rm -rf node_modules pnpm-lock.yaml && pnpm install` regenerated a correct lockfile.
   Lesson: do not hand-revert the lockfile; let pnpm own it.
 - **Nix-flake CI is non-viable as-is.** `flake.nix` has `inputs.pragmatapro.url =
-  "path:/Users/shinzui/Keikaku/bokuno/fonts"` — a **local filesystem path** absent on a GitHub
+  "path:/absolute/path/to/fonts"` — a **local filesystem path** absent on a GitHub
   runner, so `nix develop` cannot evaluate the flake in CI. The pnpm/Node-22 fallback is used
   instead. The build still works on a runner because `scripts/copy-fonts.mjs` tolerates a missing
   font package (warns, exits 0; code blocks fall back to system monospace).
@@ -241,7 +241,7 @@ Record every decision made while working on the plan.
   Date: 2026-05-30
 
 - Decision (implementation): **Shipped the pnpm/Node-22 fallback CI, not the Nix-flake variant.**
-  Rationale: `flake.nix`'s `pragmatapro` input is `path:/Users/shinzui/Keikaku/bokuno/fonts`, a
+  Rationale: `flake.nix`'s `pragmatapro` input is `path:/absolute/path/to/fonts`, a
   local filesystem path that does not exist on a GitHub runner, so `nix develop` cannot evaluate
   the flake in CI. The fallback works because `scripts/copy-fonts.mjs` tolerates a missing font
   package (the build degrades to system monospace, exits 0). oxlint/oxfmt are pinned via
@@ -672,15 +672,15 @@ milestone MERGES the additions below into the existing flake. Here is the full i
   # The font flake has a known default-attr casing quirk and a version-string mismatch
   # (built result reports 0.9 while the flake declares 0.901). We consume it defensively:
   # do not assume `packages.<system>.default`; reference the package by its actual attr
-  # name once `nix flake show path:/Users/shinzui/Keikaku/bokuno/fonts` reveals it.
-  inputs.pragmatapro.url = "path:/Users/shinzui/Keikaku/bokuno/fonts";
+  # name once `nix flake show path:/absolute/path/to/fonts` reveals it.
+  inputs.pragmatapro.url = "path:/absolute/path/to/fonts";
 
   outputs = { self, nixpkgs, flake-utils, pragmatapro }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
         # Defensive selection of the font package: try the conventional attrs in order.
-        # Adjust this list after inspecting `nix flake show path:/Users/shinzui/Keikaku/bokuno/fonts`.
+        # Adjust this list after inspecting `nix flake show path:/absolute/path/to/fonts`.
         fontPkg =
           let p = pragmatapro.packages.${system} or { };
           in p.default or (p.pragmatapro or (p.PragmataPro or null));
@@ -732,7 +732,7 @@ Notes:
 Run and verify:
 
 ```bash
-nix flake show path:/Users/shinzui/Keikaku/bokuno/fonts
+nix flake show path:/absolute/path/to/fonts
 nix develop --command bash -c 'node --version && pnpm --version && oxlint --version && oxfmt --version'
 ```
 
@@ -967,7 +967,7 @@ Expected (link check, abbreviated):
 Step 6 — extend `flake.nix` (Milestone 5), then verify the shell:
 
 ```bash
-nix flake show path:/Users/shinzui/Keikaku/bokuno/fonts
+nix flake show path:/absolute/path/to/fonts
 nix develop --command bash -c 'node --version && pnpm --version && oxlint --version && oxfmt --version'
 ```
 
@@ -1074,7 +1074,7 @@ nix develop --command pnpm install --frozen-lockfile
 
 Editing `flake.nix` updates `flake.lock`; if the font input fails to resolve, comment out the
 `pragmatapro` input and the `fontPkg` line, commit, and revisit after running
-`nix flake show path:/Users/shinzui/Keikaku/bokuno/fonts` to learn the real attribute name.
+`nix flake show path:/absolute/path/to/fonts` to learn the real attribute name.
 The dev shell still provides Node/pnpm/oxlint/oxfmt without the font, so gates remain
 runnable. The CI workflow is additive; deleting `.github/workflows/ci.yml` fully reverts CI.
 If the Nix-based CI is too slow or flaky, switch to the documented pnpm/Node-22 fallback

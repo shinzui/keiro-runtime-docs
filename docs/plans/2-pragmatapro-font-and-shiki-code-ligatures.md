@@ -89,20 +89,20 @@ around defensively in this plan (so they are noted here up front rather than dis
 painfully later):
 
 - **Casing typo in the fonts flake's `default` output.** In
-  `/Users/shinzui/Keikaku/bokuno/fonts/flake.nix`, the package is declared as
+  `/absolute/path/to/fonts/flake.nix`, the package is declared as
   `pragmataPro` (capital P) but `default = self.packages.${system}.pragmatapro;`
   references the all-lowercase name. Evaluating `.#default` therefore fails. This plan
   always references the package by its working attribute path
   `packages.${system}.pragmataPro` (capital P), never `.#default`.
 
 - **Version string mismatch (declared `0.901`, shipped filenames say `09`).** The
-  derivation in `/Users/shinzui/Keikaku/bokuno/fonts/pragmataPro.nix` sets
+  derivation in `/absolute/path/to/fonts/pragmataPro.nix` sets
   `version = "0.901"`, but the actual installed OTF filenames use the token `09`
   (e.g. `PragmataPro_Mono_R_liga_09.otf`). This plan never hard-codes a version into a
   path; the copy step globs for `*_Mono_*_liga_*.otf` so it survives a version bump.
 
 - **The licensed zip is vendored, not `requireFile`-gated.** Direct inspection of
-  `/Users/shinzui/Keikaku/bokuno/fonts/pragmataPro.nix` on 2026-05-30 shows
+  `/absolute/path/to/fonts/pragmataPro.nix` on 2026-05-30 shows
   `src = ./fonts-archive/PragmataPro-${version}.zip;` and `{ pkgs, ... }` wiring (NOT
   `callPackage` + `requireFile`). Consequence: the package builds without any manual
   `nix-store --add-fixed` step on any machine that has the fonts flake checked out with
@@ -128,7 +128,7 @@ painfully later):
 Found during implementation (2026-05-30):
 
 - **The nix-built OTF filenames use the token `0901`, not `09`.** Building the package via
-  the flake input (`nix build path:/Users/shinzui/Keikaku/bokuno/fonts#pragmataPro`)
+  the flake input (`nix build path:/absolute/path/to/fonts#pragmataPro`)
   produced `PragmataPro_Mono_R_liga_0901.otf` etc., whereas the fonts repo's stale
   `result/` symlink had `..._09.otf`. Rather than hard-code either token in the
   `@font-face` URLs, `scripts/copy-fonts.mjs` now **renames** each face to a stable,
@@ -167,7 +167,7 @@ Record every decision made while working on the plan.
   (PragmataPro on code blocks with ligatures) and only changes the mechanics.
   Date: 2026-05-30
 
-- Decision: Consume the existing Nix font package at `/Users/shinzui/Keikaku/bokuno/fonts`
+- Decision: Consume the existing Nix font package at `/absolute/path/to/fonts`
   as a flake input rather than committing font binaries to this repo.
   Rationale: PragmataPro is a paid, licensed (unfree) font; checking the binaries into
   the docs repo risks redistributing them. The Nix package wraps a zip vendored inside
@@ -390,7 +390,7 @@ extends Shiki's `CodeOptionsThemes` (providing `themes: { light, dark }`) and ac
 (notation highlight/diff/focus); because we do **not** pass `transformers`, those
 defaults are preserved.
 
-### The font package at `/Users/shinzui/Keikaku/bokuno/fonts`
+### The font package at `/absolute/path/to/fonts`
 
 This is a separate Nix flake whose job is to package PragmataPro. Its
 `flake.nix` (quoted verbatim from disk on 2026-05-30) is:
@@ -480,7 +480,7 @@ Important: the licensed source archive is **vendored inside the fonts flake** at
 `fonts-archive/PragmataPro-0.901.zip` (`src = ./fonts-archive/PragmataPro-${version}.zip;`).
 It is NOT fetched with `requireFile` and does NOT need to be added to the Nix store by
 hand. This means the package builds successfully on any machine that has a clone of
-`/Users/shinzui/Keikaku/bokuno/fonts` (with its `fonts-archive/` zip present). If you are
+`/absolute/path/to/fonts` (with its `fonts-archive/` zip present). If you are
 on a machine where that flake/zip is absent, the build will fail and the copy step in
 this plan falls back gracefully (see Idempotence and Recovery).
 
@@ -488,7 +488,7 @@ Two things to internalize:
 
 - The derivation installs **every** `.otf` it finds into
   `$out/share/fonts/opentype/`. The build output (verified on this machine on 2026-05-30
-  via the `result` symlink in `/Users/shinzui/Keikaku/bokuno/fonts`) contains these eight
+  via the `result` symlink in `/absolute/path/to/fonts`) contains these eight
   Mono OTFs (each ~2.8 MB), plus proportional variants we do not use and macOS `._`
   AppleDouble stubs we ignore:
 
@@ -525,7 +525,7 @@ The work proceeds in four milestones. Each is independently verifiable.
 
 ### Milestone 1 — Make the font OTFs available to the app
 
-Scope: add `/Users/shinzui/Keikaku/bokuno/fonts` as a flake input named `pragmatapro`,
+Scope: add `/absolute/path/to/fonts` as a flake input named `pragmatapro`,
 and add a `copy-fonts` mechanism that copies the four `_Mono_*_liga_*.otf` files into
 `public/fonts/` before dev and before build. At the end, `public/fonts/` contains
 `PragmataPro_Mono_R_liga_09.otf` and its B/I/Z siblings, and `pnpm dev`/`pnpm build`
@@ -619,7 +619,7 @@ as separate `inputs.*` attributes and uses `flake-utils.lib.eachDefaultSystem`. 
 font flake as an input:
 
 ```nix
-inputs.pragmatapro.url = "path:/Users/shinzui/Keikaku/bokuno/fonts";
+inputs.pragmatapro.url = "path:/absolute/path/to/fonts";
 ```
 
 Add `pragmatapro` to the `outputs` lambda argument list so it is in scope, and expose a
@@ -628,7 +628,7 @@ package output that points at the capital-P attribute. Apply this diff:
 ```diff
    inputs.nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
    inputs.flake-utils.url = "github:numtide/flake-utils";
-+  inputs.pragmatapro.url = "path:/Users/shinzui/Keikaku/bokuno/fonts";
++  inputs.pragmatapro.url = "path:/absolute/path/to/fonts";
 
 -  outputs = { self, nixpkgs, flake-utils }:
 +  outputs = { self, nixpkgs, flake-utils, pragmatapro }:
@@ -659,7 +659,7 @@ On older Nix (pre-2.19) the equivalent is `nix flake lock --update-input pragmat
 Either way the result is the same.
 
 Expected: `flake.lock` gains a `pragmatapro` node pointing at the `path:` source
-(`/Users/shinzui/Keikaku/bokuno/fonts`). If `nix` is not on this machine, you may skip
+(`/absolute/path/to/fonts`). If `nix` is not on this machine, you may skip
 the flake wiring entirely and rely on the fallback path in Step 2 (the copy script also
 locates the OTFs via the fonts repo's own `result` symlink if someone has already run
 `nix build` there). The flake wiring is the clean path; the fallback keeps a novice
@@ -686,7 +686,7 @@ import { join } from "node:path";
 
 const repoRoot = process.cwd();
 const targetDir = join(repoRoot, "public", "fonts");
-const FONTS_FLAKE = "/Users/shinzui/Keikaku/bokuno/fonts";
+const FONTS_FLAKE = "/absolute/path/to/fonts";
 const LIGA_GLOB = /_Mono_.*_liga_.*\.otf$/;
 
 function resolveFontDir() {
@@ -1050,7 +1050,7 @@ the CSS `@font-face` approach used here does NOT break the build: the browser si
 fails to load the missing OTF and the `font-family` fallback chain
 (`ui-monospace, SFMono-Regular, Menlo, monospace`) provides a readable system monospace
 (without ligatures). Nothing in `src/styles/app.css` needs to be commented out. Once the
-font is available (a clone of `/Users/shinzui/Keikaku/bokuno/fonts` with its vendored
+font is available (a clone of `/absolute/path/to/fonts` with its vendored
 `fonts-archive/PragmataPro-0.901.zip` is present, so `nix build .#pragmataPro` succeeds),
 re-run `pnpm run copy-fonts`, reload the page, and ligatures return. Document the
 temporary fallback in Surprises & Discoveries if you hit it.
@@ -1089,7 +1089,7 @@ stack the scaffold already provides:
   `16.9.3` bundles Shiki `4.1.0`, whose grammar set includes the five langs we pin.
 
 External (non-npm) dependency: the Nix flake at
-`/Users/shinzui/Keikaku/bokuno/fonts`, consumed as a flake input named `pragmatapro` and
+`/absolute/path/to/fonts`, consumed as a flake input named `pragmatapro` and
 referenced by its capital-P package attribute `pragmataPro` (its
 `share/fonts/opentype/` output directory supplies the four
 `PragmataPro_Mono_*_liga_*.otf` files).
@@ -1112,7 +1112,7 @@ surrounding code):
 
 - 2026-05-30: Initial full draft of this plan (then assuming a Next.js app) fleshed out
   from the skeleton, the canonical brief, the reference docs report, and direct
-  inspection of `/Users/shinzui/Keikaku/bokuno/fonts` and Plan A's published seams.
+  inspection of `/absolute/path/to/fonts` and Plan A's published seams.
 
 - 2026-05-30: **Pivot rewrite — Next.js → TanStack Start (static SPA).** The project
   pivoted from Next.js to TanStack Start (Vite), and the scaffold (Plan A /

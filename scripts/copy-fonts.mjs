@@ -16,7 +16,8 @@ import { join } from "node:path"
 
 const repoRoot = process.cwd()
 const targetDir = join(repoRoot, "public", "fonts")
-const FONTS_FLAKE = "/Users/shinzui/Keikaku/bokuno/fonts"
+const FONT_ATTR = process.env.PRAGMATAPRO_ATTR || "pragmataPro"
+const REGISTRY_FLAKE = "pragmatapro"
 // Match the ligature Mono OTFs and capture the style letter. The version token
 // (e.g. `09` or `0901`) varies between font releases, so we never hard-code it:
 // we glob it here and rename to a stable, version-independent filename below so
@@ -24,26 +25,56 @@ const FONTS_FLAKE = "/Users/shinzui/Keikaku/bokuno/fonts"
 const LIGA_GLOB = /_Mono_([RBIZ])_liga_.*\.otf$/
 const STYLE_NAMES = { R: "Regular", B: "Bold", I: "Italic", Z: "BoldItalic" }
 
-function resolveFontDir() {
-  // 1) Preferred: ask Nix to build the capital-P package attribute (never #default).
+function existingFontDir(path) {
+  try {
+    const real = realpathSync(path)
+    const nested = join(real, "share", "fonts", "opentype")
+    if (existsSync(nested)) return nested
+    if (existsSync(real)) return real
+  } catch {
+    // fall through
+  }
+  return null
+}
+
+function buildFontFlake(ref) {
   try {
     const out = execFileSync(
       "nix",
-      ["build", "--no-link", "--print-out-paths", `path:${FONTS_FLAKE}#pragmataPro`],
-      { encoding: "utf8" },
+      ["build", "--no-link", "--print-out-paths", `${ref}#${FONT_ATTR}`],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     ).trim()
-    const dir = join(out, "share", "fonts", "opentype")
-    if (existsSync(dir)) return dir
+    return existingFontDir(out)
   } catch {
-    // fall through
+    return null
   }
-  // 2) Fallback: the fonts repo's own `result` symlink, if someone already built it.
-  try {
-    const dir = join(realpathSync(join(FONTS_FLAKE, "result")), "share", "fonts", "opentype")
-    if (existsSync(dir)) return dir
-  } catch {
-    // fall through
+}
+
+function resolveFontDir() {
+  // 1) Direct directory override. Accept either the font directory itself or a
+  // package output containing share/fonts/opentype.
+  if (process.env.PRAGMATAPRO_FONT_DIR) {
+    const dir = existingFontDir(process.env.PRAGMATAPRO_FONT_DIR)
+    if (dir) return dir
+    console.warn(
+      `[copy-fonts] PRAGMATAPRO_FONT_DIR does not exist: ${process.env.PRAGMATAPRO_FONT_DIR}`,
+    )
   }
+
+  // 2) Per-repo or per-shell flake override, e.g. path:/Users/me/fonts.
+  if (process.env.PRAGMATAPRO_FLAKE) {
+    const dir = buildFontFlake(process.env.PRAGMATAPRO_FLAKE)
+    if (dir) return dir
+    console.warn(
+      `[copy-fonts] Could not build ${process.env.PRAGMATAPRO_FLAKE}#${FONT_ATTR}; trying registry alias.`,
+    )
+  }
+
+  // 3) Team default: a local registry alias. Public users will not have this,
+  // so failure is expected and falls back to system monospace.
+  const dir = buildFontFlake(REGISTRY_FLAKE)
+  if (dir) return dir
+
   return null
 }
 
@@ -51,7 +82,9 @@ const sourceDir = resolveFontDir()
 if (!sourceDir) {
   console.warn(
     "[copy-fonts] PragmataPro package not available on this machine; " +
-      "code blocks will use the system monospace fallback (no ligatures).",
+      "code blocks will use the system monospace fallback (no ligatures). " +
+      "Licensed users can set PRAGMATAPRO_FLAKE, PRAGMATAPRO_FONT_DIR, or a local " +
+      "`pragmatapro` Nix registry alias.",
   )
   process.exit(0)
 }

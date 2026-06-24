@@ -17,8 +17,9 @@ The libraries it documents:
 
 ## Getting started
 
-Requires **Node 22** and **pnpm**. (A Nix dev shell is provided; it also supplies `oxlint`/`oxfmt` and
-the PragmataPro font used for code-block ligatures.)
+Requires **Node 22** and **pnpm**. A Nix dev shell is provided; it also supplies `oxlint`/`oxfmt`.
+Licensed PragmataPro users can opt in to local code-block ligatures through an environment variable
+or Nix registry alias; see [`docs/optional-commercial-fonts.md`](docs/optional-commercial-fonts.md).
 
 ```bash
 pnpm install        # postinstall runs `fumadocs-mdx`, generating the .source/ collection
