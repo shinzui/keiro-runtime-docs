@@ -63,9 +63,8 @@ chore(release): 0.8.0.0
 ## Previous pointers
 
 - `8e6f6e93e729bac129d7a9f2f8917f40fa4d6d9c` (`8e6f6e9`), 2026-06-05:
-  bootstrap baseline. The integration page was still a stub with a
-  "Documentation in progress" callout and no source-backed behavior
-  transcribed.
+  bootstrap baseline. The integration page had only placeholder prose and no
+  source-backed behavior transcribed.
 
 ## Update procedure
 

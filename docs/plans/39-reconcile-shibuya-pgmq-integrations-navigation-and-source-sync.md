@@ -30,15 +30,15 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Read the completed EP-1 through EP-4 plans and their Outcomes & Retrospective sections.
-- [ ] Reconcile `content/docs/shibuya/`, `content/docs/pgmq/`, and `content/docs/integrations/`
+- [x] Read the completed EP-1 through EP-4 plans and their Outcomes & Retrospective sections.
+- [x] Reconcile `content/docs/shibuya/`, `content/docs/pgmq/`, and `content/docs/integrations/`
   navigation and landing pages.
-- [ ] Update source-sync pointers for shibuya, pgmq-hs, shibuya-pgmq-adapter, and any newly
+- [x] Update source-sync pointers for shibuya, pgmq-hs, shibuya-pgmq-adapter, and any newly
   documented adapter repos.
-- [ ] Update top-level and getting-started cross-links if new shibuya/pgmq/adapter pages need to be
+- [x] Update top-level and getting-started cross-links if new shibuya/pgmq/adapter pages need to be
   discoverable from the runtime family pages.
-- [ ] Run whole-site validation and stale-claim scans.
-- [ ] Update the MasterPlan Progress, Surprises & Discoveries, and Outcomes & Retrospective.
+- [x] Run whole-site validation and stale-claim scans.
+- [x] Update the MasterPlan Progress, Surprises & Discoveries, and Outcomes & Retrospective.
 
 
 ## Surprises & Discoveries
@@ -46,7 +46,13 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- The general `docs/kiroku-source-sync.md` pointer tracks the broader Kiroku docs tree and is still
+  pinned to `4312aa8`, but EP-4 rechecked the shibuya-kiroku adapter integration page against
+  Kiroku `9a52aa6`. A new adapter-specific `docs/shibuya-kiroku-adapter-source-sync.md` avoids
+  overstating that the whole Kiroku section was re-reviewed.
+- Broad stale-claim scans over `content/docs/shibuya`, `content/docs/pgmq`,
+  `content/docs/integrations`, and `docs/*source-sync.md` found no remaining placeholder language
+  after the source-sync historical note in `docs/shibuya-pgmq-adapter-source-sync.md` was reworded.
 
 
 ## Decision Log
@@ -69,6 +75,38 @@ Summarize outcomes, gaps, and lessons learned at major milestones or at completi
 Compare the result against the original purpose.
 
 (To be filled during and after implementation.)
+
+Completed on 2026-06-24.
+
+The final reconciliation pass added top-level discoverability for integrations, linked shibuya's
+landing page and the getting-started chooser to the adapter comparison, confirmed `meta.json`
+coverage for `content/docs/shibuya`, `content/docs/pgmq`, and `content/docs/integrations`, and
+created dedicated source-sync pointers for shibuya, shibuya-kiroku-adapter,
+shibuya-kafka-adapter, and shibuya-message-db-adapter. Existing pgmq-hs and shibuya-pgmq-adapter
+pointers were already at content-authored status; the PGMQ adapter pointer's historical placeholder
+note was reworded so stale-claim scans do not trip on archived wording.
+
+Final reviewed source pins:
+
+- shibuya: `3f276ee190e563fddb0bc81e01d62a96a1b31715` (`3f276ee`)
+- pgmq-hs: `973c1076f469448818de5d2044a483296be2c02e` (`973c107`)
+- shibuya-pgmq-adapter: `71a7b82223449d84c395b64e480c9cfe4ff274f1` (`71a7b82`)
+- shibuya-kiroku-adapter inside Kiroku: `9a52aa62380c28b0ec36eeb9b517f49e40900fd8` (`9a52aa6`)
+- shibuya-kafka-adapter: `424a4c25d96333f9cf8aa13eaae3b306bbb775c5` (`424a4c2`)
+- shibuya-message-db-adapter: `43072558a58d9613cce46c3624157d6fc3e5b6b0` (`4307255`)
+
+Validation passed:
+
+- `pnpm run typecheck`
+- `pnpm run lint` (exit 0 with existing warnings in `src/routes/docs/*` and
+  `src/lib/rehype-mermaid.ts`)
+- `pnpm run format:check`
+- `pnpm build`
+- `node scripts/check-doc-links.mjs`
+- stale-claim scan over `content/docs/shibuya`, `content/docs/pgmq`, `content/docs/integrations`,
+  and `docs/*source-sync.md`
+- a meta coverage script checking every shibuya, pgmq, and integrations MDX page appears exactly
+  once in its nearest `meta.json`
 
 
 ## Context and Orientation

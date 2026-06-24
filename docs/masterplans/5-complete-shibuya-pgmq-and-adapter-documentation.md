@@ -71,7 +71,7 @@ edits for EP-5.
 | EP-2 | Document shibuya metrics operations and recipes | `docs/plans/36-document-shibuya-metrics-operations-and-recipes.md` | EP-1 | None | Complete |
 | EP-3 | Author pgmq hs queue substrate documentation | `docs/plans/37-author-pgmq-hs-queue-substrate-documentation.md` | None | EP-1 | Complete |
 | EP-4 | Document shibuya adapters across pgmq kiroku kafka and message db | `docs/plans/38-document-shibuya-adapters-across-pgmq-kiroku-kafka-and-message-db.md` | EP-1 | EP-3 | Complete |
-| EP-5 | Reconcile shibuya pgmq integrations navigation and source sync | `docs/plans/39-reconcile-shibuya-pgmq-integrations-navigation-and-source-sync.md` | EP-1, EP-2, EP-3, EP-4 | None | Not Started |
+| EP-5 | Reconcile shibuya pgmq integrations navigation and source sync | `docs/plans/39-reconcile-shibuya-pgmq-integrations-navigation-and-source-sync.md` | EP-1, EP-2, EP-3, EP-4 | None | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -153,8 +153,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] EP-4: Audit shibuya-pgmq, shibuya-kiroku, shibuya-kafka, and shibuya-message-db adapter sources.
 - [x] EP-4: Author adapter comparison, integration pages, how-tos, and adapter source walkthroughs.
 - [x] EP-4: Validate adapter docs against current source modules and examples.
-- [ ] EP-5: Reconcile shibuya, pgmq, integrations, landing pages, and source-sync pointers.
-- [ ] EP-5: Run whole-site validation and record final upstream pins.
+- [x] EP-5: Reconcile shibuya, pgmq, integrations, landing pages, and source-sync pointers.
+- [x] EP-5: Run whole-site validation and record final upstream pins.
 
 
 ## Surprises & Discoveries
@@ -196,6 +196,13 @@ interactions between child plans. Provide concise evidence.
   metadata still frames checkpoint/retry/DLQ/partitioning work as future or stubbed, while current
   source and user docs implement contiguous-prefix checkpoints, bounded retries, deterministic DLQ
   writes, and static consumer groups.
+- EP-5 created adapter-specific source-sync pointers for Kiroku, Kafka, and Message DB adapters
+  instead of overloading the broader `docs/kiroku-source-sync.md`. This keeps the Kiroku adapter
+  page pinned to `9a52aa6` without claiming the full Kiroku documentation tree was re-reviewed at
+  that commit.
+- EP-5 confirmed all shibuya, pgmq, and integrations MDX pages are represented exactly once in
+  their nearest `meta.json`, and stale-claim scans across those docs plus source-sync pointers are
+  clean.
 
 
 ## Decision Log
@@ -241,3 +248,16 @@ Compare the result against the original vision.
   source-sync pointer was promoted from bootstrap stub to content-authored status at upstream
   `71a7b82`. Validation passed with `pnpm run typecheck`, `pnpm build`,
   `node scripts/check-doc-links.mjs`, and the stale-stub scan over integrations and shibuya docs.
+- EP-5 completed on 2026-06-24. Final reconciliation added source-sync pointers for shibuya,
+  shibuya-kiroku-adapter, shibuya-kafka-adapter, and shibuya-message-db-adapter; confirmed pgmq-hs
+  and shibuya-pgmq-adapter pointers are content-authored; exposed integrations from the top-level
+  and getting-started discovery paths; and verified sidebar coverage for shibuya, pgmq, and
+  integrations. Final source pins are shibuya `3f276ee`, pgmq-hs `973c107`,
+  shibuya-pgmq-adapter `71a7b82`, shibuya-kiroku-adapter/Kiroku `9a52aa6`,
+  shibuya-kafka-adapter `424a4c2`, and shibuya-message-db-adapter `4307255`. Final validation
+  passed with `pnpm run typecheck`, `pnpm run lint`, `pnpm run format:check`, `pnpm build`,
+  `node scripts/check-doc-links.mjs`, stale-claim scans, and meta coverage checks.
+
+The master plan is complete. `/docs/shibuya`, `/docs/pgmq`, and `/docs/integrations` now read as a
+source-checked documentation set for shibuya core and operations, pgmq-hs as the PostgreSQL queue
+substrate, and the first-party shibuya adapter family.
