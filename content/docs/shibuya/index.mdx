@@ -1,27 +1,63 @@
 ---
 title: shibuya
-description: A supervised, Broadway-style queue-processing framework with backpressure and batching.
+description: A supervised queue-processing framework with adapters, explicit ack decisions, backpressure, metrics, and Effectful integration.
 ---
 
-shibuya (渋谷, the Tokyo district) is a supervised queue-processing framework — Broadway-style concurrent
-message and job pipelines with backpressure, batching, and rate limiting. It
-reliably consumes message queues on behalf of the keiro runtime.
+shibuya (渋谷) is the runtime layer that keeps queue work moving. It runs one or more named
+processors, each processor reads from an **adapter**, hands each **ingested** message to a
+`Handler`, and finalizes the backend message with the handler's explicit `AckDecision`.
 
-shibuya reads each backend through an **adapter**: the
-[shibuya ⇄ kiroku adapter](/docs/integrations/shibuya-kiroku-adapter) pulls from the
-kiroku event store, and the [shibuya ⇄ pgmq adapter](/docs/integrations/shibuya-pgmq-adapter)
-consumes a [pgmq](/docs/pgmq) message queue.
+The core package, `shibuya-core`, deliberately separates intent from mechanics. Handlers return
+`AckOk`, `AckRetry`, `AckDeadLetter`, or `AckHalt`; adapters own how those decisions become broker
+commits, visibility changes, dead-letter writes, or shutdowns. The runner owns the bounded inbox,
+supervision, ordering policy, concurrency policy, graceful shutdown, and trace spans around handler
+execution.
 
-<Callout type="info">
-  Documentation for shibuya is in progress. Because shibuya's existing docs are auto-generated API
-  reference, its skeleton emphasizes the Reference section. Written content arrives in a later plan.
-</Callout>
+Use shibuya directly for background workers and queue consumers, or through adapters that connect it
+to the rest of the runtime family:
+[shibuya ⇄ kiroku](/docs/integrations/shibuya-kiroku-adapter) for event-store subscriptions,
+[shibuya ⇄ pgmq](/docs/integrations/shibuya-pgmq-adapter) for PostgreSQL queues, and the Kafka and
+Message DB adapters documented in the integration section.
+
+## The processing shape
+
+```mermaid
+flowchart LR
+  Backend["queue, log, or store"] --> Adapter["Adapter.source"]
+  Adapter --> Ingested["Ingested: envelope + ack + lease"]
+  Ingested --> Inbox["bounded inbox"]
+  Inbox --> Handler["Handler es msg"]
+  Handler --> Decision{"AckDecision"}
+  Decision --> Ack["AckHandle.finalize"]
+  Ack --> Backend
+```
+
+The `Envelope` carries `messageId`, optional cursor, partition, enqueue time, trace context,
+headers, delivery attempt, adapter-supplied trace attributes, and the payload. The `Ingested` value
+adds the backend-provided `AckHandle` and an optional `Lease` for queues with visibility timeouts.
+
+## Where to start
 
 <Cards>
-  <Card title="Reference" href="/docs/shibuya/reference" />
-  <Card title="Tutorials" href="/docs/shibuya/tutorials" />
-  <Card title="How-To Guides" href="/docs/shibuya/how-to" />
-  <Card title="Explanation" href="/docs/shibuya/explanation" />
-  <Card title="Cookbook" href="/docs/shibuya/cookbook" />
-  <Card title="Code Walkthrough" href="/docs/shibuya/walkthrough" />
+  <Card title="Tutorials" href="/docs/shibuya/tutorials" description="Build a first worker, return each ack decision, and test with the mock adapter." />
+  <Card title="How-To Guides" href="/docs/shibuya/how-to" description="Choose runner policy, write handlers, retry with backoff, handle dead letters, and test adapters." />
+  <Card title="Reference" href="/docs/shibuya/reference" description="Exact API facts for envelopes, adapters, handlers, policies, runners, retry helpers, and stream utilities." />
+  <Card title="Explanation" href="/docs/shibuya/explanation" description="Why shibuya splits adapters, handlers, ack decisions, backpressure, ordering, and concurrency." />
+  <Card title="Cookbook" href="/docs/shibuya/cookbook" description="Short operational recipes. Metrics and production recipes are expanded in the operations plan." />
+  <Card title="Code Walkthrough" href="/docs/shibuya/walkthrough" description="An ordered tour through the real shibuya-core source." />
 </Cards>
+
+## Core vocabulary
+
+An **adapter** is a backend bridge. It exposes a Streamly stream of `Ingested es msg` values and a
+`shutdown` action. It does not run handlers.
+
+An **envelope** is the normalized message container inside `Ingested`. It is where adapter metadata
+becomes portable across pgmq, Kafka, kiroku, Message DB, or a test adapter.
+
+An **ack decision** is the handler's semantic outcome. `AckOk` means success, `AckRetry delay` means
+try again later, `AckDeadLetter reason` means stop retrying this message, and `AckHalt reason` means
+stop the processor because continuing would be unsafe.
+
+A **runner** is the supervised machinery that reads from adapters into bounded inboxes, applies
+ordering and concurrency policy, invokes handlers, finalizes ack decisions, and exposes metrics.

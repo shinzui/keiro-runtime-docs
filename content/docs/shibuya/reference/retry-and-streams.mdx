@@ -1,0 +1,65 @@
+---
+title: "Retry and stream helpers"
+description: "Exponential backoff policy, handler retry convenience, and small Streamly utilities for adapters."
+---
+
+## Retry policy
+
+```haskell
+data Jitter
+  = NoJitter
+  | FullJitter
+  | EqualJitter
+
+data BackoffPolicy = BackoffPolicy
+  { base :: NominalDiffTime
+  , factor :: Double
+  , maxDelay :: NominalDiffTime
+  , jitter :: Jitter
+  }
+
+defaultBackoffPolicy :: BackoffPolicy
+```
+
+`defaultBackoffPolicy` uses a one-second base, factor `2.0`, five-minute cap, and full jitter.
+
+```haskell
+exponentialBackoffPure ::
+  BackoffPolicy ->
+  Attempt ->
+  Double ->
+  RetryDelay
+
+exponentialBackoff ::
+  (IOE :> es) =>
+  BackoffPolicy ->
+  Attempt ->
+  Eff es RetryDelay
+
+retryWithBackoff ::
+  (IOE :> es) =>
+  BackoffPolicy ->
+  Envelope msg ->
+  Eff es AckDecision
+```
+
+`exponentialBackoffPure` accepts the jitter sample explicitly, so tests can assert exact delays.
+`retryWithBackoff` reads `envelope.attempt` and treats `Nothing` as `Attempt 0`.
+
+## Stream helpers
+
+```haskell
+pollingStream ::
+  (IOE :> es) =>
+  Int ->
+  Eff es (Maybe msg) ->
+  Stream (Eff es) msg
+
+batchStream :: (Monad m) => Int -> Stream m msg -> Stream m [msg]
+
+filterStream :: (Monad m) => (msg -> Bool) -> Stream m msg -> Stream m msg
+```
+
+`pollingStream` sleeps for the given microsecond interval whenever the poll action returns
+`Nothing`. `batchStream` groups messages into lists of at most the requested size. `filterStream`
+delegates to Streamly filtering.

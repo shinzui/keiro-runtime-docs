@@ -1,0 +1,46 @@
+---
+title: "02 — Adapter to bounded inbox"
+description: "How Adapter.source becomes backpressure through runIngesterWithMetrics."
+---
+
+`Shibuya.Adapter` defines the backend boundary:
+
+```haskell
+data Adapter es msg = Adapter
+  { adapterName :: Text
+  , source :: Stream (Eff es) (Ingested es msg)
+  , shutdown :: Eff es ()
+  }
+```
+
+The runner never asks the backend for messages directly. It consumes `source`.
+
+In `Shibuya.Runner.Supervised.runIngesterAndProcessor`, the runner creates a bounded NQE inbox:
+
+```haskell
+inbox <- liftIO $ newBoundedInbox inboxSize
+```
+
+Then it starts the ingester in an async thread and processes from the inbox in the main processor
+thread. `runIngesterWithMetrics` is the bridge:
+
+```haskell
+runIngesterWithMetrics metricsVar source inbox = do
+  let mailbox = inboxToMailbox inbox
+  Stream.fold Fold.drain $
+    Stream.mapM
+      ( \msg -> do
+          liftIO $ atomically $ modifyTVar' metricsVar $ \m ->
+            m {stats = incReceived m.stats}
+          liftIO $ send msg mailbox
+          pure msg
+      )
+      source
+```
+
+`send` blocks when the bounded mailbox is full. That is shibuya's backpressure point: a fast adapter
+cannot outrun slow handlers indefinitely.
+
+The processor reads the inbox through `inboxToStream`. That function atomically chooses between a
+new message and a completed, empty stream, avoiding a race where the processor could block forever
+after the source ended.

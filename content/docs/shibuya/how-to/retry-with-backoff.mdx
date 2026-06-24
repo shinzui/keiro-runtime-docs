@@ -1,0 +1,39 @@
+---
+title: "Retry with backoff"
+description: "Return AckRetry from default or custom exponential backoff policy."
+---
+
+Use `retryWithBackoff` for the common transient-failure path:
+
+```haskell
+handleWebhook :: (IOE :> es) => Handler es WebhookJob
+handleWebhook ingested = do
+  result <- liftIO (sendWebhook ingested.envelope.payload)
+  case result of
+    Right () -> pure AckOk
+    Left TemporaryHttpFailure ->
+      retryWithBackoff defaultBackoffPolicy ingested.envelope
+    Left BadRequest ->
+      pure (AckDeadLetter (PoisonPill "remote rejected the payload"))
+```
+
+Customize the policy with record update:
+
+```haskell
+slowBackoff :: BackoffPolicy
+slowBackoff =
+  defaultBackoffPolicy
+    { base = 5
+    , maxDelay = 900
+    , jitter = EqualJitter
+    }
+```
+
+For tests, keep randomness out:
+
+```haskell
+exponentialBackoffPure slowBackoff (Attempt 2) 0.5
+```
+
+Adapters that track redelivery should set `envelope.attempt`; adapters that cannot track it should
+set `Nothing`, which `retryWithBackoff` treats as `Attempt 0`.

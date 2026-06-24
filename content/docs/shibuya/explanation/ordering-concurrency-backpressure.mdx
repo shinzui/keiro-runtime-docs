@@ -1,0 +1,39 @@
+---
+title: "Ordering, concurrency, and backpressure"
+description: "How ordering guarantees constrain the runner's concurrency mode and how bounded inboxes prevent unbounded memory growth."
+---
+
+shibuya separates the ordering guarantee from the execution strategy.
+
+`Ordering` describes the guarantee the source requires:
+
+```haskell
+data Ordering
+  = StrictInOrder
+  | PartitionedInOrder
+  | Unordered
+```
+
+`Concurrency` describes how the runner invokes handlers:
+
+```haskell
+data Concurrency
+  = Serial
+  | Ahead Int
+  | Async Int
+```
+
+`StrictInOrder` must use `Serial`. The source is a single ordered stream, so running handlers ahead
+of one another could commit or dead-letter later messages before earlier messages are settled.
+`validatePolicy` rejects `StrictInOrder` with `Ahead` or `Async`.
+
+`PartitionedInOrder` is for backends that preserve order inside a partition but allow different
+partitions to move independently. The core policy type records this guarantee; adapter-specific
+plans describe how each adapter maps backend partitions to processors.
+
+`Unordered` means messages can be processed independently. It can run with `Serial`, `Ahead n`, or
+`Async n`.
+
+Backpressure is independent of those policies. `runSupervised` creates a bounded NQE inbox of the
+configured size. The ingester reads from `Adapter.source` and blocks when the inbox is full, so a
+fast backend stream cannot grow memory without bound while handlers are slow.

@@ -1,0 +1,69 @@
+---
+title: "Test with the mock adapter"
+description: "Use listAdapter and trackingAckHandle to run handlers against finite messages."
+---
+
+`Shibuya.Adapter.Mock` is the test adapter in `shibuya-core`. It provides a finite list-backed
+adapter and an ack handle that records every decision.
+
+## Create tracked ingested messages
+
+The helper `newTrackingAck` allocates an in-memory decision log. `trackingAckHandle` turns a
+`MessageId` into an `AckHandle` that appends `(MessageId, AckDecision)` to that log.
+
+```haskell
+mkTestMessage ::
+  (IOE :> es) =>
+  TrackingAck ->
+  MessageId ->
+  msg ->
+  Eff es (Ingested es msg)
+mkTestMessage tracking msgId payload =
+  pure
+    Ingested
+      { envelope =
+          Envelope
+            { messageId = msgId
+            , cursor = Nothing
+            , partition = Nothing
+            , enqueuedAt = Nothing
+            , traceContext = Nothing
+            , headers = Nothing
+            , attempt = Just (Attempt 0)
+            , attributes = mempty
+            , payload = payload
+            }
+      , ack = trackingAckHandle tracking msgId
+      , lease = Nothing
+      }
+```
+
+## Feed a finite adapter
+
+`listAdapter` wraps a list of `Ingested` values in an `Adapter` whose stream ends after the list is
+drained.
+
+```haskell
+runOneBatch :: Eff '[Tracing, IOE] [(MessageId, AckDecision)]
+runOneBatch = do
+  tracking <- newTrackingAck
+  msg1 <- mkTestMessage tracking (MessageId "one") (OrderJob "o-1" 1200)
+  msg2 <- mkTestMessage tracking (MessageId "two") (OrderJob "o-2" 0)
+
+  _processor <-
+    runWithMetrics
+      10
+      (ProcessorId "orders-test")
+      (listAdapter [msg1, msg2])
+      handleOrder
+
+  getTrackedDecisions tracking
+```
+
+`runWithMetrics` is useful in tests because it blocks until the finite stream is exhausted and the
+inbox is drained. `runApp` is the multi-processor application entry point.
+
+## Assert decisions, not backend effects
+
+The mock adapter verifies your handler contract at the shibuya boundary. Assert that the expected
+message id received the expected `AckDecision`; leave broker-specific effects to adapter tests.

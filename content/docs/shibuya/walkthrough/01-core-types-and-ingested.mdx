@@ -1,0 +1,59 @@
+---
+title: "01 — Core types and Ingested"
+description: "The value that moves through shibuya: Envelope plus AckHandle plus optional Lease."
+---
+
+`Shibuya.Core.Types` is deliberately boring: identity, position, attempt count, headers, trace
+headers, and payload.
+
+```haskell
+data Envelope msg = Envelope
+  { messageId :: MessageId
+  , cursor :: Maybe Cursor
+  , partition :: Maybe Text
+  , enqueuedAt :: Maybe UTCTime
+  , traceContext :: Maybe TraceHeaders
+  , headers :: Maybe Headers
+  , attempt :: Maybe Attempt
+  , attributes :: HashMap Text Attribute
+  , payload :: msg
+  }
+```
+
+The non-obvious fields are the portability fields. `attempt` lets retry helpers grow the delay
+without knowing the backend. `headers` preserves raw broker headers without assuming UTF-8. The
+`attributes` map lets adapters add broker-specific OpenTelemetry keys before the runner emits the
+processing span.
+
+`Shibuya.Core.Ingested` wraps that envelope with the two mechanical capabilities a backend can
+provide:
+
+```haskell
+data Ingested es msg = Ingested
+  { envelope :: Envelope msg
+  , ack :: AckHandle es
+  , lease :: Maybe (Lease es)
+  }
+```
+
+`AckHandle` is one function:
+
+```haskell
+newtype AckHandle es = AckHandle
+  { finalize :: AckDecision -> Eff es ()
+  }
+```
+
+The handler returns a decision. The runner calls `finalize`. The adapter implements what finalizing
+means for the backend.
+
+`Lease` is optional:
+
+```haskell
+data Lease es = Lease
+  { leaseId :: Text
+  , leaseExtend :: NominalDiffTime -> Eff es ()
+  }
+```
+
+Queues with visibility timeouts can expose it. Logs and brokers without this concept leave it out.

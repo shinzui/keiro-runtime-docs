@@ -1,0 +1,28 @@
+---
+title: "Write a handler"
+description: "Use Ingested metadata, perform domain work, and return a single AckDecision."
+---
+
+Define your handler as a function from `Ingested es msg` to `Eff es AckDecision`.
+
+```haskell
+handleOrder :: (IOE :> es) => Handler es OrderJob
+handleOrder ingested = do
+  let envelope = ingested.envelope
+      job = envelope.payload
+      MessageId msgId = envelope.messageId
+
+  liftIO (putStrLn ("processing " <> Text.unpack msgId))
+  outcome <- liftIO (processOrder job)
+
+  pure $ case outcome of
+    Processed -> AckOk
+    DecodeFailed reason -> AckDeadLetter (InvalidPayload reason)
+    TemporaryFailure -> AckRetry (RetryDelay 30)
+```
+
+Read `envelope.partition` or `envelope.cursor` when the handler needs routing or ordering metadata.
+Read `envelope.headers` when broker headers are part of the protocol. Use `ingested.lease` only when
+long work may exceed the backend visibility timeout.
+
+Return exactly one decision. The runner is responsible for calling `ingested.ack.finalize`.

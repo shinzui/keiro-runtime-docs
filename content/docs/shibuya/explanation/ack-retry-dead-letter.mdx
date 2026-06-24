@@ -1,0 +1,33 @@
+---
+title: "Ack, retry, dead letter, and halt"
+description: "Why handlers return semantic outcomes instead of manipulating backend offsets or queue rows."
+---
+
+`AckDecision` is shibuya's central boundary between application meaning and backend mechanics. A
+handler returns one of four constructors:
+
+```haskell
+data AckDecision
+  = AckOk
+  | AckRetry RetryDelay
+  | AckDeadLetter DeadLetterReason
+  | AckHalt HaltReason
+```
+
+`AckOk` means the work succeeded. The adapter can delete a pgmq row, archive it, commit a Kafka
+offset, or advance a subscription cursor.
+
+`AckRetry` means the work should run again after the given delay. Retry is a semantic request; the
+adapter chooses how closely its backend can honor the delay.
+
+`AckDeadLetter` means the message should not be retried. The reason distinguishes a poison pill,
+invalid payload, and exceeded retry limit. This lets dashboards and operator runbooks group failures
+without parsing exception text.
+
+`AckHalt` means continuing the processor is unsafe. `HaltOrderedStream` is specifically for ordered
+sources where skipping a failed message would corrupt downstream state. `HaltFatal` is the general
+unrecoverable stop.
+
+The runner treats handler exceptions as failures too. In `processOne`, exceptions are recorded on
+the trace span and converted into a `HandlerException` result for metrics. Normal handler decisions
+are finalized through `AckHandle.finalize`.

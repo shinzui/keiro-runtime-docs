@@ -1,0 +1,32 @@
+---
+title: "Test with the mock adapter"
+description: "Build finite source streams and inspect ack decisions without a real queue backend."
+---
+
+Use `Shibuya.Adapter.Mock` when the behavior under test is your handler or core runner wiring.
+
+1. Create `TrackingAck` with `newTrackingAck`.
+2. Build `Ingested` values whose `ack` is `trackingAckHandle tracking msgId`.
+3. Feed them through `listAdapter`.
+4. Run the finite adapter with `runWithMetrics`.
+5. Assert `getTrackedDecisions`.
+
+```haskell
+testHandler :: Eff '[Tracing, IOE] [(MessageId, AckDecision)]
+testHandler = do
+  tracking <- newTrackingAck
+  message <- mkTestMessage tracking (MessageId "bad") BadPayload
+
+  _ <-
+    runWithMetrics
+      1
+      (ProcessorId "handler-test")
+      (listAdapter [message])
+      handlerUnderTest
+
+  getTrackedDecisions tracking
+```
+
+This style tests the shibuya contract: for a given envelope, the handler eventually emits the
+expected decision. It does not test backend commits, deletes, archives, or offset commits; those
+belong in adapter tests.

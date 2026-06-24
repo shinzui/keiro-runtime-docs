@@ -1,0 +1,79 @@
+---
+title: "Policy and runner entry points"
+description: "Ordering, concurrency, validation, and the supervised runner APIs."
+---
+
+## Ordering and concurrency
+
+```haskell
+data Ordering
+  = StrictInOrder
+  | PartitionedInOrder
+  | Unordered
+
+data Concurrency
+  = Serial
+  | Ahead Int
+  | Async Int
+
+validatePolicy :: Ordering -> Concurrency -> Either PolicyError ()
+```
+
+`validatePolicy` rejects `StrictInOrder` with `Ahead _` or `Async _`. Other combinations are
+accepted by `shibuya-core`.
+
+## QueueProcessor
+
+```haskell
+data QueueProcessor es where
+  QueueProcessor ::
+    { adapter :: Adapter es msg
+    , handler :: Handler es msg
+    , ordering :: Ordering
+    , concurrency :: Concurrency
+    } ->
+    QueueProcessor es
+
+mkProcessor :: Adapter es msg -> Handler es msg -> QueueProcessor es
+```
+
+`mkProcessor` uses `Unordered` and `Serial`.
+
+## Supervised runner
+
+```haskell
+runSupervised ::
+  (IOE :> es, Tracing :> es) =>
+  Master ->
+  Natural ->
+  ProcessorId ->
+  Concurrency ->
+  Adapter es msg ->
+  Handler es msg ->
+  Eff es SupervisedProcessor
+
+runWithMetrics ::
+  (IOE :> es, Tracing :> es) =>
+  Natural ->
+  ProcessorId ->
+  Adapter es msg ->
+  Handler es msg ->
+  Eff es SupervisedProcessor
+```
+
+`runSupervised` registers the processor under a `Master` and returns immediately. `runWithMetrics`
+is standalone and blocks until a finite stream and inbox are drained.
+
+## Application runner
+
+```haskell
+runApp ::
+  (IOE :> es, Tracing :> es) =>
+  SupervisionStrategy ->
+  Int ->
+  [(ProcessorId, QueueProcessor es)] ->
+  Eff es (Either AppError (AppHandle es))
+```
+
+The `Int` is the bounded inbox size. `runApp` validates every processor policy, starts the master,
+spawns each processor, and returns an `AppHandle`.

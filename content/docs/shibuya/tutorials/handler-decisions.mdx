@@ -1,0 +1,67 @@
+---
+title: "Return handler decisions"
+description: "Map domain outcomes to AckOk, AckRetry, AckDeadLetter, and AckHalt."
+---
+
+Handlers do not commit offsets or delete rows directly. They return an `AckDecision`, and the runner
+passes that decision to the adapter's `AckHandle`.
+
+## Start with domain outcomes
+
+Keep your domain function independent from shibuya when possible:
+
+```haskell
+data ChargeResult
+  = Charged
+  | GatewayUnavailable
+  | BadCard Text
+  | UnsafeToContinue Text
+```
+
+Then map those outcomes to shibuya decisions at the handler boundary:
+
+```haskell
+handleCharge :: (IOE :> es) => Handler es ChargeJob
+handleCharge ingested = do
+  result <- liftIO (chargeCard ingested.envelope.payload)
+  case result of
+    Charged ->
+      pure AckOk
+
+    GatewayUnavailable ->
+      retryWithBackoff defaultBackoffPolicy ingested.envelope
+
+    BadCard reason ->
+      pure (AckDeadLetter (InvalidPayload reason))
+
+    UnsafeToContinue reason ->
+      pure (AckHalt (HaltFatal reason))
+```
+
+## Use each decision for one meaning
+
+`AckOk` is success. The message should not be delivered again.
+
+`AckRetry (RetryDelay delay)` means the message should be made visible later. Backends that do not
+support scheduled retry may approximate this with their own retry mechanism, but the handler intent
+is still explicit.
+
+`AckDeadLetter reason` means the message is permanently unprocessable. Use `PoisonPill` for a valid
+payload that will never succeed, `InvalidPayload` for decode or validation failures, and
+`MaxRetriesExceeded` when retry policy has run out of attempts.
+
+`AckHalt reason` means the processor should stop. Use `HaltOrderedStream` when continuing could
+break an ordering guarantee and `HaltFatal` for unrecoverable failures.
+
+## Decide retry delay from attempt
+
+Adapters that can track redelivery set `envelope.attempt`. `retryWithBackoff` reads it, treats
+`Nothing` as `Attempt 0`, computes an exponential backoff delay, and returns `AckRetry`.
+
+```haskell
+retryTransient :: (IOE :> es) => Handler es msg
+retryTransient ingested =
+  retryWithBackoff defaultBackoffPolicy ingested.envelope
+```
+
+For deterministic tests, use `exponentialBackoffPure` with an explicit jitter sample.

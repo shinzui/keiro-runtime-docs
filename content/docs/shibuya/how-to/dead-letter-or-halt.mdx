@@ -1,0 +1,28 @@
+---
+title: "Dead-letter or halt"
+description: "Choose AckDeadLetter for one bad message and AckHalt when continuing the processor is unsafe."
+---
+
+Use `AckDeadLetter` when this message should leave normal processing but later messages can
+continue.
+
+```haskell
+case decodePayload raw of
+  Left err ->
+    pure (AckDeadLetter (InvalidPayload (Text.pack err)))
+  Right payload ->
+    process payload
+```
+
+Use `PoisonPill` when the payload is syntactically valid but impossible for the domain to accept.
+Use `MaxRetriesExceeded` when your handler or adapter-side policy decides the retry budget is spent.
+
+Use `AckHalt` when processing later messages could cause harm. Ordered streams are the clearest
+case: if message 42 cannot be applied, applying message 43 may corrupt a projection.
+
+```haskell
+pure (AckHalt (HaltOrderedStream "projection cursor cannot skip failed event"))
+```
+
+In the runner, `AckHalt` records a failed processor state and sets a halt flag so the stream stops
+draining. The supervised child catches `ProcessorHalt` as an intentional stop.

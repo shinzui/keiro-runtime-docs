@@ -1,0 +1,38 @@
+---
+title: "04 — Supervision and shutdown"
+description: "How runApp starts processors, the Master tracks metrics, and graceful shutdown drains work."
+---
+
+`Shibuya.App.runApp` is the application entry point:
+
+```haskell
+runApp ::
+  (IOE :> es, Tracing :> es) =>
+  SupervisionStrategy ->
+  Int ->
+  [(ProcessorId, QueueProcessor es)] ->
+  Eff es (Either AppError (AppHandle es))
+```
+
+It validates every `QueueProcessor` policy first. If validation passes, it starts a `Master`, spawns
+each processor with `runSupervised`, and returns an `AppHandle`.
+
+The `Master` in `Shibuya.Runner.Master` owns two things: the NQE supervisor and a TVar map from
+`ProcessorId` to each processor's metrics TVar. Processor metrics are registered on start and
+unregistered when the supervised child exits.
+
+`runSupervised` creates the metrics TVar and done TVar, registers with the master, then adds the
+processor body as a supervised child. It catches `ProcessorHalt` so a handler's intentional halt is
+not treated as an unexpected exception by that child.
+
+Graceful shutdown is in `stopAppGracefully`:
+
+```text
+1. call every adapter.shutdown
+2. wait for in-flight processors to drain, up to drainTimeout
+3. stop the master, cancelling remaining children
+4. return whether the drain completed before timeout
+```
+
+`waitApp` is different. It blocks until every processor's `done` TVar is true. Use `waitApp` for
+finite streams or top-level programs that should run until external shutdown code calls `stopApp`.

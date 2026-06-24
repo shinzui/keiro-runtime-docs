@@ -1,0 +1,76 @@
+---
+title: "Core values and envelopes"
+description: "The stable message identity, cursor, attempt, envelope, ingested message, lease, and ack-handle types."
+---
+
+These types live in `Shibuya.Core.Types`, `Shibuya.Core.Ingested`, `Shibuya.Core.Lease`, and
+`Shibuya.Core.AckHandle`. `Shibuya.Core` re-exports them for application code.
+
+## Message identity and position
+
+```haskell
+newtype MessageId = MessageId { unMessageId :: Text }
+
+data Cursor
+  = CursorInt Int
+  | CursorText Text
+
+newtype Attempt = Attempt { unAttempt :: Word }
+```
+
+`MessageId` is the stable id used for idempotency and observability. `Cursor` is optional position
+or offset metadata. `Attempt` is zero-indexed: `Attempt 0` is the first delivery, `Attempt 1` is the
+first retry.
+
+## Headers and trace context
+
+```haskell
+type Headers = [(ByteString, ByteString)]
+type TraceHeaders = [(ByteString, ByteString)]
+```
+
+`Headers` preserves broker order and duplicate keys. `TraceHeaders` is the W3C trace-context subset
+the framework can use to re-establish a parent span.
+
+## Envelope
+
+```haskell
+data Envelope msg = Envelope
+  { messageId :: MessageId
+  , cursor :: Maybe Cursor
+  , partition :: Maybe Text
+  , enqueuedAt :: Maybe UTCTime
+  , traceContext :: Maybe TraceHeaders
+  , headers :: Maybe Headers
+  , attempt :: Maybe Attempt
+  , attributes :: HashMap Text Attribute
+  , payload :: msg
+  }
+```
+
+`headers = Nothing` means the adapter does not surface headers. `headers = Just []` means the
+adapter does surface headers and this message carried none. `attributes` is for adapter-supplied
+OpenTelemetry attributes; runner defaults are applied first and adapter attributes override keys of
+the same name.
+
+## Ingested, lease, and ack handle
+
+```haskell
+data Ingested es msg = Ingested
+  { envelope :: Envelope msg
+  , ack :: AckHandle es
+  , lease :: Maybe (Lease es)
+  }
+
+data Lease es = Lease
+  { leaseId :: Text
+  , leaseExtend :: NominalDiffTime -> Eff es ()
+  }
+
+newtype AckHandle es = AckHandle
+  { finalize :: AckDecision -> Eff es ()
+  }
+```
+
+Handlers receive `Ingested`. The runner calls `finalize` after the handler returns. Long-running
+handlers may use `leaseExtend` only when the adapter supplied a lease.

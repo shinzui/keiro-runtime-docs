@@ -1,0 +1,59 @@
+---
+title: "App supervision"
+description: "The application-level supervision strategy, shutdown configuration, app handle, and structured errors."
+---
+
+## Supervision strategy
+
+```haskell
+data SupervisionStrategy
+  = IgnoreFailures
+  | StopAllOnFailure
+```
+
+`IgnoreFailures` keeps other processors running if one child exits. `StopAllOnFailure` maps to an
+NQE strategy that stops all processors when one fails.
+
+## Shutdown configuration
+
+```haskell
+data ShutdownConfig = ShutdownConfig
+  { drainTimeout :: NominalDiffTime
+  }
+
+defaultShutdownConfig :: ShutdownConfig
+```
+
+The default drain timeout is 30 seconds.
+
+## App handle operations
+
+```haskell
+getAppMetrics :: (IOE :> es) => AppHandle es -> Eff es MetricsMap
+
+stopApp :: (IOE :> es) => AppHandle es -> Eff es ()
+
+stopAppGracefully ::
+  (IOE :> es) =>
+  ShutdownConfig ->
+  AppHandle es ->
+  Eff es Bool
+
+waitApp :: (IOE :> es) => AppHandle es -> Eff es ()
+```
+
+`stopApp` uses `defaultShutdownConfig`. `stopAppGracefully` first calls every adapter's `shutdown`,
+then waits for in-flight messages to drain, then stops the master. It returns `True` when all
+processors drained before timeout.
+
+## Structured errors
+
+```haskell
+data AppError
+  = AppPolicyError PolicyError
+  | AppHandlerError HandlerError
+  | AppRuntimeError RuntimeError
+```
+
+Policy errors are produced before processors start. Runtime errors cover supervisor and inbox
+failures. Handler exceptions are represented as `HandlerException Text`.

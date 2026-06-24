@@ -1,0 +1,73 @@
+---
+title: "Adapters, handlers, and ack decisions"
+description: "The boundary types that connect backend streams, application handlers, and backend finalization."
+---
+
+## Adapter
+
+```haskell
+data Adapter es msg = Adapter
+  { adapterName :: Text
+  , source :: Stream (Eff es) (Ingested es msg)
+  , shutdown :: Eff es ()
+  }
+```
+
+`source` yields leased messages. `shutdown` stops polling and releases backend resources during
+graceful stop. `adapterName` is for logging and observability.
+
+## Handler
+
+```haskell
+type Handler es msg = Ingested es msg -> Eff es AckDecision
+```
+
+The handler returns intent only. It does not receive a commit function separately because the
+`AckHandle` is carried in `Ingested` for the runner to finalize exactly once.
+
+## Ack decisions
+
+```haskell
+newtype RetryDelay = RetryDelay { unRetryDelay :: NominalDiffTime }
+
+data DeadLetterReason
+  = PoisonPill Text
+  | InvalidPayload Text
+  | MaxRetriesExceeded
+
+data HaltReason
+  = HaltOrderedStream Text
+  | HaltFatal Text
+
+data AckDecision
+  = AckOk
+  | AckRetry RetryDelay
+  | AckDeadLetter DeadLetterReason
+  | AckHalt HaltReason
+```
+
+`AckRetry` carries an absolute delay duration, not a retry count. `AckDeadLetter` records why this
+message should leave normal processing. `AckHalt` stops processor execution.
+
+## Mock adapter helpers
+
+```haskell
+listAdapter :: (IOE :> es) => [Ingested es msg] -> Adapter es msg
+
+data TrackingAck = TrackingAck
+
+newTrackingAck :: (IOE :> es) => Eff es TrackingAck
+
+trackingAckHandle ::
+  (IOE :> es) =>
+  TrackingAck ->
+  MessageId ->
+  AckHandle es
+
+getTrackedDecisions ::
+  (IOE :> es) =>
+  TrackingAck ->
+  Eff es [(MessageId, AckDecision)]
+```
+
+Use these helpers to test handlers and runner behavior without a real queue backend.

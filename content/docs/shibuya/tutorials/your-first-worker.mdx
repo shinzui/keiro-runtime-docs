@@ -1,0 +1,96 @@
+---
+title: "Your first worker"
+description: "Build the smallest shibuya processor shape: an adapter, a handler, a QueueProcessor, and runApp."
+---
+
+This tutorial builds the same shape used by `shibuya-example/app/Main.hs`: create an adapter that
+emits `Ingested` messages, write a `Handler`, wrap both in a `QueueProcessor`, and start it with
+`runApp`.
+
+## Define the payload and handler
+
+A handler receives the whole `Ingested` value, not only the payload. Read the payload from
+`ingested.envelope.payload` and return an `AckDecision`.
+
+```haskell
+import Effectful (Eff, IOE, liftIO, (:>))
+import Shibuya.Core
+
+data OrderJob = OrderJob
+  { orderId :: Text
+  , cents :: Int
+  }
+
+handleOrder :: (IOE :> es) => Handler es OrderJob
+handleOrder ingested = do
+  let job = ingested.envelope.payload
+  liftIO (print job)
+  pure AckOk
+```
+
+`AckOk` says the message was handled successfully. The adapter decides what this means for the
+backend: delete, archive, commit an offset, acknowledge a subscription cursor, or another
+backend-specific action.
+
+## Supply an adapter
+
+Application code usually imports an adapter package, such as the pgmq, kiroku, Kafka, or Message DB
+adapter. The core contract is always this record:
+
+```haskell
+data Adapter es msg = Adapter
+  { adapterName :: Text
+  , source :: Stream (Eff es) (Ingested es msg)
+  , shutdown :: Eff es ()
+  }
+```
+
+For a first read-through, treat `source` as the queue stream and `shutdown` as the action the runner
+calls during graceful shutdown. Each item already contains an `AckHandle`, so the runner can
+finalize the handler's decision without knowing the backend.
+
+## Run the processor
+
+`QueueProcessor` pairs one adapter with one handler and a runner policy. `Unordered` plus `Serial`
+is the most conservative starting point.
+
+```haskell
+ordersProcessor :: Adapter es OrderJob -> QueueProcessor es
+ordersProcessor ordersAdapter =
+  QueueProcessor
+    { adapter = ordersAdapter
+    , handler = handleOrder
+    , ordering = Unordered
+    , concurrency = Serial
+    }
+```
+
+Start processors with `runApp`. The first argument controls supervisor behavior, the second is the
+bounded inbox size used for backpressure, and the list names every processor.
+
+```haskell
+main :: IO ()
+main = runEff . runTracingNoop $ do
+  result <-
+    runApp
+      IgnoreFailures
+      100
+      [(ProcessorId "orders", ordersProcessor myAdapter)]
+
+  case result of
+    Left err -> liftIO (print err)
+    Right appHandle -> waitApp appHandle
+```
+
+`waitApp` blocks until all processors finish. For infinite queues, production programs usually keep
+the application running until a signal handler calls `stopApp` or `stopAppGracefully`.
+
+## What to check
+
+After the worker starts, each processor should move through this sequence:
+
+1. The adapter's `source` yields `Ingested` messages.
+2. The bounded inbox receives them, applying backpressure if handlers fall behind.
+3. The handler returns an `AckDecision`.
+4. The runner calls `ingested.ack.finalize decision` exactly once.
+5. The processor metrics count received, processed, failed, and in-flight work.

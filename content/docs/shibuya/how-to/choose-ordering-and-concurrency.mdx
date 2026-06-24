@@ -1,0 +1,34 @@
+---
+title: "Choose ordering and concurrency"
+description: "Match a backend's ordering guarantee to shibuya's runner concurrency."
+---
+
+Start by naming the strongest ordering guarantee your handler needs.
+
+Use `StrictInOrder` with `Serial` when each message depends on every previous message being settled
+first. Event-store subscriptions that update a single projection cursor are the usual example.
+
+```haskell
+QueueProcessor adapter handler StrictInOrder Serial
+```
+
+Use `PartitionedInOrder` when order matters inside a partition but independent partitions can move
+separately. Kafka-style streams often fall here, though the adapter's own documentation should
+describe how partitions are mapped.
+
+```haskell
+QueueProcessor adapter handler PartitionedInOrder (Async 8)
+```
+
+Use `Unordered` when each message is independent. Background jobs and idempotent notifications are
+good candidates.
+
+```haskell
+QueueProcessor adapter handler Unordered (Async 16)
+```
+
+Before starting an app, `runApp` calls `validatePolicy` for every processor. If you combine
+`StrictInOrder` with `Ahead _` or `Async _`, startup returns `Left (AppPolicyError ...)`.
+
+Pick the inbox size separately. The `runApp` inbox size controls how many messages may sit between
+the adapter stream and handlers before ingestion blocks.

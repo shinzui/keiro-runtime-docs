@@ -1,0 +1,32 @@
+---
+title: "The processing model"
+description: "How shibuya moves one backend message through adapter ingestion, handler execution, finalization, and metrics."
+---
+
+shibuya is a processor framework, not a queue. It gives every backend the same internal shape so the
+runner can supervise work without knowing how pgmq, Kafka, kiroku, or Message DB acknowledge
+messages.
+
+The shape is:
+
+```text
+Adapter.source -> Ingested -> bounded inbox -> Handler -> AckDecision -> AckHandle.finalize
+```
+
+The adapter converts backend messages into `Ingested es msg`. `Ingested` has three fields:
+`envelope`, `ack`, and `lease`.
+
+`envelope` is the normalized metadata plus payload. It carries a stable `MessageId`, optional
+`Cursor`, optional partition key, enqueue time, trace context, raw broker headers, optional
+zero-indexed `Attempt`, OpenTelemetry attributes supplied by the adapter, and `payload`.
+
+`ack` is the backend's mechanical finalizer. The runner calls `finalize` after the handler returns.
+Application handlers do not call it directly.
+
+`lease` is optional temporary ownership. Queues with visibility timeouts can expose a `Lease` whose
+`leaseExtend` action pushes the deadline forward for long-running work. Backends without visibility
+leases set it to `Nothing`.
+
+The runner adds mechanics around that value: bounded inboxes for backpressure, Streamly traversal
+for serial or parallel execution, NQE supervision for child processors, metrics stored in TVars, and
+OpenTelemetry spans around each handler invocation.
