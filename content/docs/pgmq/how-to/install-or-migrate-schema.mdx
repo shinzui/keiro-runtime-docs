@@ -1,0 +1,79 @@
+---
+title: "Install or migrate the schema"
+description: "Use pgmq-migration to install or upgrade pgmq 1.11.0 without the PostgreSQL extension."
+---
+
+Use `pgmq-migration` when your PostgreSQL deployment cannot install the pgmq
+extension, or when you want migrations owned by your Haskell deployment.
+
+## Goal
+
+Run the vendored pgmq 1.11.0 schema migrations against a database, then use
+`pgmq-hasql` or `pgmq-effectful` against that same database.
+
+## Fresh database
+
+```haskell
+import Hasql.Connection qualified as Connection
+import Hasql.Session qualified as Session
+import Pgmq.Migration (migrate)
+
+installPgmq :: Connection.Settings -> IO ()
+installPgmq settings = do
+  acquired <- Connection.acquire settings
+  case acquired of
+    Left err -> print err
+    Right conn -> do
+      result <- Session.run migrate conn
+      case result of
+        Right (Right ()) -> putStrLn "pgmq schema installed"
+        Right (Left migrationErr) -> print migrationErr
+        Left sessionErr -> print sessionErr
+```
+
+`migrate` applies the full current schema. Re-running it is safe because
+`hasql-migration` tracks applied commands.
+
+## Existing database
+
+```haskell
+import Hasql.Connection qualified as Connection
+import Hasql.Session qualified as Session
+import Pgmq.Migration (upgrade)
+
+upgradePgmq :: Connection.Settings -> IO ()
+upgradePgmq settings = do
+  acquired <- Connection.acquire settings
+  case acquired of
+    Left err -> print err
+    Right conn -> do
+      result <- Session.run upgrade conn
+      case result of
+        Right (Right ()) -> putStrLn "pgmq schema upgraded"
+        Right (Left migrationErr) -> print migrationErr
+        Left sessionErr -> print sessionErr
+```
+
+Prefer `upgrade` when the database may already have pgmq-migration state. It is
+also safe on a fresh database.
+
+## Validate
+
+```haskell
+import Pgmq.Migration (getMigrations, validate, version)
+
+checkPgmq :: Session.Session ()
+checkPgmq = do
+  errors <- validate
+  applied <- getMigrations
+  pure ()
+```
+
+`version` reports the vendored schema version. At the reviewed source commit,
+that value is pgmq `1.11.0`.
+
+## Next
+
+Once the schema exists, create application queues with
+[queue configuration](/docs/pgmq/how-to/configure-queues-at-startup) or direct
+[queue creation](/docs/pgmq/how-to/create-send-read-finish).

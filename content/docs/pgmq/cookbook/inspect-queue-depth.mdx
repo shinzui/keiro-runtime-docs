@@ -1,0 +1,31 @@
+---
+title: "Inspect queue depth"
+description: "Read pgmq queue metrics and distinguish total depth from visible depth."
+---
+
+```haskell
+import Hasql.Pool qualified as Pool
+import Pgmq
+
+printDepth :: Pool.Pool -> QueueName -> IO ()
+printDepth pool queue = do
+  result <- Pool.use pool (queueMetrics queue)
+  case result of
+    Left err -> print err
+    Right metrics -> do
+      putStrLn ("total: " <> show metrics.queueLength)
+      putStrLn ("visible: " <> show metrics.queueVisibleLength)
+      putStrLn ("oldest age seconds: " <> show metrics.oldestMsgAgeSec)
+```
+
+`queueLength` includes leased messages that are invisible until their visibility
+timeout expires. `queueVisibleLength` counts messages that can be read now.
+
+For all queues:
+
+```haskell
+printAllDepths :: Pool.Pool -> IO ()
+printAllDepths pool = do
+  result <- Pool.use pool allQueueMetrics
+  print result
+```

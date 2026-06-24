@@ -32,13 +32,16 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Resolve and audit current pgmq-hs source and upstream docs with mori.
-- [ ] Replace pgmq section stubs with a real overview and section indexes.
-- [ ] Author pgmq-hs reference pages for core types, hasql operations, Effectful, config, and
+- [x] Resolve and audit current pgmq-hs source and upstream docs with mori. (Completed 2026-06-24;
+  reviewed `shinzui/pgmq-hs` at `973c1076f469448818de5d2044a483296be2c02e`.)
+- [x] Replace pgmq section stubs with a real overview and section indexes. (Completed 2026-06-24.)
+- [x] Author pgmq-hs reference pages for core types, hasql operations, Effectful, config, and
   migration.
-- [ ] Author how-to, explanation, and cookbook pages for common queue substrate workflows.
-- [ ] Update pgmq `meta.json` files and `docs/pgmq-hs-source-sync.md`.
-- [ ] Validate typecheck, build, link check, and stale-stub scan.
+- [x] Author how-to, explanation, and cookbook pages for common queue substrate workflows.
+- [x] Update pgmq `meta.json` files and `docs/pgmq-hs-source-sync.md`.
+- [x] Validate typecheck, build, link check, and stale-stub scan. (Completed 2026-06-24:
+  `pnpm run typecheck`, `pnpm build`, `node scripts/check-doc-links.mjs`, and stale-stub `rg`
+  scan all passed.)
 
 
 ## Surprises & Discoveries
@@ -46,7 +49,21 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- `mori registry show shinzui/pgmq-hs --full` and the pgmq-hs git log still resolve the plan's
+  expected commit `973c1076f469448818de5d2044a483296be2c02e` (`973c107`, 2026-06-03,
+  `build(nix): migrate flake to flake-parts on the haskell-nix-dev base flake`), so no source drift
+  range needed reconciliation before authoring.
+- `Pgmq.Hasql.Sessions` exports FIFO grouped reads (`readGrouped`, `readGroupedWithPoll`,
+  `readGroupedRoundRobin`, `readGroupedRoundRobinWithPoll`) and FIFO index helpers, but the
+  top-level `Pgmq` module does not re-export those names at this commit. The docs import
+  `Pgmq.Hasql.Sessions` directly for FIFO Hasql examples.
+- `Pgmq.Effectful.Effect` exports FIFO grouped reads, but the umbrella `Pgmq.Effectful` module does
+  not re-export those FIFO helper names at this commit. The Effectful reference now directs readers
+  to import `Pgmq.Effectful.Effect` for FIFO reads.
+- `ReadMessage` has a `conditional :: Maybe Value` field, but the current `Pgmq.Hasql.Statements.Message`
+  implementation uses pgmq's three-argument `read($1,$2,$3)` call and comments that the four-argument
+  conditional form fails with `NULL`. The docs avoid promising conditional filtering through
+  `readMessage`.
 
 
 ## Decision Log
@@ -63,6 +80,16 @@ Record every decision made while working on the plan.
   operations into shibuya envelopes and ack decisions and is owned by
   `docs/plans/38-document-shibuya-adapters-across-pgmq-kiroku-kafka-and-message-db.md`.
   Date: 2026-06-24
+- Decision: Document FIFO grouped reads as session/effect-specific imports instead of top-level
+  `Pgmq` imports.
+  Rationale: The source exports FIFO helpers from `Pgmq.Hasql.Sessions` and
+  `Pgmq.Effectful.Effect`, but not from the umbrella modules users are most likely to import.
+  Date: 2026-06-24
+- Decision: Mention `ReadMessage.conditional` as a record field but avoid teaching it as active
+  filtering through `readMessage`.
+  Rationale: The statement implementation currently calls pgmq's three-argument read form and the
+  source comment says the four-argument form with `NULL` conditional does not match rows.
+  Date: 2026-06-24
 
 
 ## Outcomes & Retrospective
@@ -70,7 +97,24 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Completed on 2026-06-24. The `content/docs/pgmq/` tree now contains source-checked overview,
+Reference, How-To, Explanation, and Cookbook pages for pgmq-hs at
+`973c1076f469448818de5d2044a483296be2c02e`. The docs cover core types, Hasql sessions, Effectful
+interpreters, queue configuration, migrations, visibility timeout, archive/delete, FIFO grouped
+reads, topic routing, notifications, queue metrics, and the boundary between pgmq-hs and shibuya.
+The source-sync pointer no longer describes the section as skeleton-only.
+
+Validation passed with:
+
+```bash
+pnpm run typecheck
+pnpm build
+node scripts/check-doc-links.mjs
+rg -n "Documentation for pgmq is in progress|Documentation in progress|Pages in this section are coming soon|TODO|coming soon" content/docs/pgmq docs/pgmq-hs-source-sync.md
+```
+
+The final `rg` command intentionally returned exit code 1 with no matches, which is success for the
+stale-stub scan.
 
 
 ## Context and Orientation

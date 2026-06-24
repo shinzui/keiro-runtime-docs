@@ -1,0 +1,30 @@
+---
+title: "Route with topics"
+description: "Bind topic patterns, test routing, and publish by routing key."
+---
+
+```haskell
+import Data.Aeson (object, (.=))
+import Pgmq
+
+setupTopics :: QueueName -> QueueName -> Session ()
+setupTopics allOrders failedOrders = do
+  let Right allPattern = parseTopicPattern "orders.#"
+      Right failedPattern = parseTopicPattern "orders.*.failed"
+  bindTopic BindTopic { topicPattern = allPattern, queueName = allOrders }
+  bindTopic BindTopic { topicPattern = failedPattern, queueName = failedOrders }
+
+publishOrderCreated :: Session Int32
+publishOrderCreated = do
+  let Right key = parseRoutingKey "orders.created"
+      body = MessageBody (object ["order_id" .= (42 :: Int)])
+  sendTopic SendTopic { routingKey = key, messageBody = body, delay = Nothing }
+
+previewOrderFailed :: Session [RoutingMatch]
+previewOrderFailed = do
+  let Right key = parseRoutingKey "orders.payment.failed"
+  testRouting key
+```
+
+`sendTopic` returns the number of destination queues. Batch topic sends return
+the individual queue/message pairs.

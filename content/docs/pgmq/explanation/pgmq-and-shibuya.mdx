@@ -1,0 +1,51 @@
+---
+title: "pgmq and shibuya"
+description: "Where the queue substrate ends and the worker runtime begins."
+---
+
+pgmq-hs and shibuya solve adjacent problems. pgmq-hs talks to PostgreSQL and
+exposes queue operations. shibuya runs supervised processors that consume a
+queue-like stream, call handlers, and translate handler outcomes into ack,
+retry, dead-letter, or halt decisions.
+
+## pgmq-hs owns queue mechanics
+
+pgmq-hs owns these concerns:
+
+- queue names, message ids, JSON bodies, and headers
+- queue creation and storage variants
+- send, read, archive, delete, pop, and visibility-timeout changes
+- topic routing, FIFO grouped reads, and insert notifications
+- queue metrics and binding inspection
+- Effectful interpreters and pgmq-specific tracing
+- pgmq schema migration and queue topology reconciliation
+
+It does not prescribe an application handler shape. A direct pgmq-hs consumer is
+responsible for its own loop, retry policy, poison-message policy, shutdown, and
+metrics.
+
+## shibuya owns worker semantics
+
+shibuya owns these concerns:
+
+- adapters that turn an upstream source into `Ingested` messages
+- handlers that return `AckDecision`
+- policy for ordering, concurrency, backpressure, and supervision
+- runtime metrics, health, WebSocket updates, and worker traces
+- graceful shutdown and stuck-processor detection
+
+The shibuya pgmq adapter bridges these layers. It reads messages from pgmq and
+turns them into shibuya envelopes. Handler decisions then become pgmq lifecycle
+operations: successful work deletes or archives, retries change visibility, and
+dead-letter decisions move the payload to the adapter's dead-letter path.
+
+## keiro-pgmq is one level higher
+
+`keiro-pgmq` builds typed background jobs on top of shibuya and pgmq. It hides
+raw pgmq message records from job handlers and exposes domain-oriented `Job`,
+`JobOutcome`, retry policy, queue provisioning, FIFO helpers, and dead-letter
+helpers.
+
+Use pgmq-hs directly for low-level queue integration. Use shibuya when you need
+a supervised worker runtime. Use keiro-pgmq when the queue is a typed keiro
+background-job queue.

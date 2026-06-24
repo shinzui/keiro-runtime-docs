@@ -1,0 +1,130 @@
+---
+title: "Core types"
+description: "The validated queue, message, routing, topic, and notification types from Pgmq.Types."
+---
+
+`pgmq-core` exposes one public module: `Pgmq.Types`. Other pgmq-hs packages reuse
+these values, so import them directly when you need validated names or message
+records without depending on a database client.
+
+## Message values
+
+```haskell
+newtype MessageBody = MessageBody { unMessageBody :: Value }
+newtype MessageHeaders = MessageHeaders { unMessageHeaders :: Value }
+newtype MessageId = MessageId { unMessageId :: Int64 }
+```
+
+`MessageBody` wraps the JSON payload stored in pgmq's `msg` column.
+`MessageHeaders` wraps arbitrary JSON metadata stored in the `headers` column.
+Headers are where FIFO group keys and trace-propagation fields live. `MessageId`
+is a pgmq row id represented as `Int64`.
+
+```haskell
+data Message = Message
+  { messageId :: !MessageId
+  , visibilityTime :: !UTCTime
+  , enqueuedAt :: !UTCTime
+  , lastReadAt :: !(Maybe UTCTime)
+  , readCount :: !Int64
+  , body :: !MessageBody
+  , headers :: !(Maybe Value)
+  }
+```
+
+`visibilityTime` is when the message can next be read. `readCount` is pgmq's
+delivery counter. It increments when a message is leased, so retry and
+dead-letter decisions should use it as an attempt signal rather than as proof
+that the handler actually ran.
+
+## Queue values
+
+```haskell
+data Queue = Queue
+  { name :: !QueueName
+  , createdAt :: !UTCTime
+  , isPartitioned :: !Bool
+  , isUnlogged :: !Bool
+  }
+
+newtype QueueName = QueueName Text
+parseQueueName :: Text -> Either PgmqError QueueName
+queueNameToText :: QueueName -> Text
+```
+
+`parseQueueName` accepts only ASCII alphanumeric characters and `_`, and limits
+the name so derived PostgreSQL identifiers remain within PostgreSQL's 63-byte
+identifier limit. The effective queue-name limit in this source is 47
+characters because pgmq creates an `archived_at_idx_`-prefixed identifier.
+
+<Callout type="warn">
+  Do not construct `QueueName` with unchecked text outside this package. Use
+  `parseQueueName` at configuration boundaries and store the validated value.
+</Callout>
+
+## Topic routing values
+
+```haskell
+newtype RoutingKey = RoutingKey Text
+parseRoutingKey :: Text -> Either PgmqError RoutingKey
+routingKeyToText :: RoutingKey -> Text
+
+newtype TopicPattern = TopicPattern Text
+parseTopicPattern :: Text -> Either PgmqError TopicPattern
+topicPatternToText :: TopicPattern -> Text
+```
+
+Routing keys are dot-separated text up to 255 characters. `parseRoutingKey`
+allows ASCII alphanumeric characters, `.`, `-`, and `_`; it rejects empty values
+and wildcards. Topic patterns are also capped at 255 characters and may contain
+the pgmq topic wildcards `*` and `#`.
+
+```haskell
+data TopicBinding = TopicBinding
+  { bindingPattern :: !TopicPattern
+  , bindingQueueName :: !Text
+  , bindingBoundAt :: !UTCTime
+  , bindingCompiledRegex :: !Text
+  }
+
+data RoutingMatch = RoutingMatch
+  { matchPattern :: !TopicPattern
+  , matchQueueName :: !Text
+  , matchCompiledRegex :: !Text
+  }
+
+data TopicSendResult = TopicSendResult
+  { sentToQueue :: !Text
+  , sentMessageId :: !MessageId
+  }
+```
+
+`TopicBinding` is returned by binding-list queries. `RoutingMatch` is returned
+by dry-run routing tests. `TopicSendResult` is returned by batch topic sends and
+identifies the queue/message pairs that received each routed message.
+
+## Notification values
+
+```haskell
+data NotifyInsertThrottle = NotifyInsertThrottle
+  { throttleQueueName :: !Text
+  , throttleIntervalMs :: !Int32
+  , throttleLastNotifiedAt :: !UTCTime
+  }
+```
+
+`NotifyInsertThrottle` reports the throttle state for `LISTEN/NOTIFY` insert
+notifications. pgmq sends notifications on channel `pgmq_<queue_name>`.
+
+## Parse errors
+
+```haskell
+data PgmqError
+  = InvalidQueueName Text
+  | InvalidRoutingKey Text
+  | InvalidTopicPattern Text
+```
+
+These errors are local validation failures from `Pgmq.Types`, not database
+runtime failures. Effectful database failures are represented separately by
+`PgmqRuntimeError`.

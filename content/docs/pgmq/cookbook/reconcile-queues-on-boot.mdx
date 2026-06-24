@@ -1,0 +1,33 @@
+---
+title: "Reconcile queues on boot"
+description: "Declare queues with pgmq-config and log the reconciliation report."
+---
+
+```haskell
+import Data.Function ((&))
+import Hasql.Pool qualified as Pool
+import Pgmq.Config
+import Pgmq.Types
+
+desiredQueues :: [QueueConfig]
+desiredQueues =
+  let Right jobs = parseQueueName "jobs"
+      Right events = parseQueueName "order_events"
+      Right orders = parseTopicPattern "orders.#"
+   in [ standardQueue jobs
+          & withNotifyInsert (Just 1000)
+          & withFifoIndex
+      , standardQueue events
+          & withTopicBinding orders
+      ]
+
+bootQueues :: Pool.Pool -> IO ()
+bootQueues pool = do
+  result <- Pool.use pool (ensureQueuesReport desiredQueues)
+  case result of
+    Left err -> print err
+    Right actions -> traverse_ print actions
+```
+
+The second run should mostly report skipped objects, except FIFO index creation
+is applied whenever requested because pgmq's index function is idempotent.

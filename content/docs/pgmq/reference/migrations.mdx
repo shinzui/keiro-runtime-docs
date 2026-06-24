@@ -1,0 +1,74 @@
+---
+title: "Migrations"
+description: "Schema installation and upgrade helpers from pgmq-migration."
+---
+
+`pgmq-migration` installs the pgmq schema into PostgreSQL without requiring the
+pgmq extension. This is useful when the database user cannot install extensions,
+or when the deployment wants application-controlled schema migration.
+
+## Public module
+
+```haskell
+module Pgmq.Migration
+  ( migrate
+  , upgrade
+  , validate
+  , getMigrations
+  , version
+  , migrations
+  , upgradeMigrations
+  , MigrationCommand
+  , MigrationError (..)
+  , SchemaMigration (..)
+  )
+```
+
+The reviewed source vendors pgmq schema version `1.11.0`.
+
+## Fresh install
+
+```haskell
+migrate :: Session (Either MigrationError ())
+```
+
+`migrate` applies the full pgmq 1.11.0 schema command set. It is idempotent:
+`hasql-migration` records applied migrations in `schema_migrations` and skips
+commands that already ran.
+
+## Upgrade
+
+```haskell
+upgrade :: Session (Either MigrationError ())
+```
+
+`upgrade` applies the incremental migration command set. The source includes
+the v1.10.0 to v1.10.1 and v1.10.1 to v1.11.0 deltas, preceded by migration
+table initialization. The upstream migration comments note that old
+hand-written migration names may differ from the vendored migration names; the
+vendored commands use guards such as `CREATE OR REPLACE FUNCTION` and `IF NOT
+EXISTS` where upstream made them safe to re-run.
+
+Use `upgrade` when you are not sure whether the database is fresh or already
+managed by `pgmq-migration`.
+
+## Validation and inspection
+
+```haskell
+validate :: Session [MigrationError]
+getMigrations :: Session [SchemaMigration]
+```
+
+`validate` checks that previously applied migrations still match the expected
+commands. `getMigrations` returns the rows known to `hasql-migration`.
+
+## Transaction behavior
+
+Each migration command runs through `Pgmq.Migration.Sessions` in a serializable
+write transaction. The migration layer captures the current PostgreSQL
+`search_path` and runs the command with that path inside the transaction.
+
+<Callout type="info">
+  `pgmq-migration` is for installing the pgmq schema. `pgmq-config` is for
+  creating application queues and queue features after the schema exists.
+</Callout>

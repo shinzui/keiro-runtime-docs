@@ -1,0 +1,41 @@
+---
+title: "Use FIFO groups"
+description: "Send grouped messages and consume them with grouped reads."
+---
+
+```haskell
+import Data.Aeson (object, (.=))
+import Pgmq
+import Pgmq.Hasql.Sessions qualified as Sessions
+import Pgmq.Hasql.Statements.Types (ReadGrouped (..))
+
+sendForOrder :: QueueName -> Text -> MessageBody -> Session MessageId
+sendForOrder queue orderId body =
+  sendMessageWithHeaders
+    SendMessageWithHeaders
+      { queueName = queue
+      , messageBody = body
+      , messageHeaders = MessageHeaders (object ["x-pgmq-group" .= orderId])
+      , delay = Nothing
+      }
+
+readOrderGroups :: QueueName -> Session (Vector Message)
+readOrderGroups queue =
+  Sessions.readGroupedRoundRobin
+    ReadGrouped
+      { queueName = queue
+      , visibilityTimeout = 30
+      , qty = 20
+      }
+```
+
+Create the FIFO index once before traffic:
+
+```haskell
+prepare :: QueueName -> Session ()
+prepare = Sessions.createFifoIndex
+```
+
+Use round-robin reads for fairness across groups. Use `Sessions.readGrouped`
+when batching as much as possible from the oldest group is better for the
+workload.

@@ -1,0 +1,47 @@
+---
+title: "Build a worker read loop"
+description: "Lease messages, process them, archive success, and change visibility for retry."
+---
+
+```haskell
+import Control.Monad (forM_)
+import Data.Vector qualified as Vector
+import Hasql.Pool qualified as Pool
+import Pgmq
+
+runOnce :: Pool.Pool -> QueueName -> IO ()
+runOnce pool queue = do
+  result <-
+    Pool.use pool $
+      readMessage
+        ReadMessage
+          { queueName = queue
+          , delay = 30
+          , batchSize = Just 10
+          , conditional = Nothing
+          }
+  case result of
+    Left err -> print err
+    Right messages ->
+      forM_ messages $ \message -> do
+        handled <- handleMessage message
+        let query = MessageQuery { queueName = queue, messageId = message.messageId }
+        case handled of
+          True -> void $ Pool.use pool (archiveMessage query)
+          False ->
+            void $
+              Pool.use pool $
+                changeVisibilityTimeout
+                  VisibilityTimeoutQuery
+                    { queueName = queue
+                    , messageId = message.messageId
+                    , visibilityTimeoutOffset = 60
+                    }
+
+handleMessage :: Message -> IO Bool
+handleMessage _ = pure True
+```
+
+Archive on success when you want history. Delete on success when retention is
+not useful. For repeated failures, dead-lettering is usually owned by a higher
+worker layer such as shibuya or keiro-pgmq.

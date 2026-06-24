@@ -1,0 +1,32 @@
+---
+title: "Handle transient errors"
+description: "Classify pgmq-effectful runtime errors before retrying."
+---
+
+```haskell
+import Effectful (runEff)
+import Effectful.Error.Static (runError)
+import Hasql.Pool qualified as Pool
+import Pgmq.Effectful
+
+runWithRetryDecision ::
+  Pool.Pool ->
+  Eff '[Pgmq, Error PgmqRuntimeError, IOE] a ->
+  IO ()
+runWithRetryDecision pool program = do
+  result <-
+    runEff
+      . runError @PgmqRuntimeError
+      . runPgmq pool
+      $ program
+  case result of
+    Right _ -> pure ()
+    Left err
+      | isTransient err -> putStrLn "retry this operation"
+      | otherwise -> putStrLn ("permanent pgmq failure: " <> show err)
+```
+
+`isTransient` is conservative: pool acquisition timeouts, network connection
+errors, unknown libpq connection errors, and session connection drops are
+retryable. Authentication, compatibility, statement, missing-type, and driver
+errors are not.

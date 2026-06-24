@@ -1,0 +1,91 @@
+---
+title: "Enable OpenTelemetry"
+description: "Run pgmq-effectful with traced interpreters and propagate trace context through message headers."
+---
+
+Use `pgmq-effectful` when you want queue operations in an `effectful` stack and
+OpenTelemetry spans around database calls.
+
+## Run with the traced interpreter
+
+```haskell
+import Effectful (runEff)
+import Effectful.Error.Static (runError)
+import Hasql.Pool qualified as Pool
+import OpenTelemetry.Trace.Core qualified as OTel
+import Pgmq.Effectful
+
+runPgmqProgram :: Pool.Pool -> OTel.Tracer -> Eff '[Pgmq, Error PgmqRuntimeError, IOE] a -> IO (Either PgmqRuntimeError a)
+runPgmqProgram pool tracer program =
+  runEff
+    . runError @PgmqRuntimeError
+    . runPgmqTraced pool tracer
+    $ program
+```
+
+The traced interpreter creates producer spans for send operations, consumer
+spans for read and `pop`, and internal spans for queue lifecycle, visibility,
+topic, notify, and metrics operations.
+
+## Choose semantic-convention mode
+
+By default, pgmq-effectful preserves older OpenTelemetry v1.24-style attribute
+names. To emit stable messaging and database attributes, set:
+
+```bash
+export OTEL_SEMCONV_STABILITY_OPT_IN=messaging,database
+```
+
+During migration, emit both old and stable names:
+
+```bash
+export OTEL_SEMCONV_STABILITY_OPT_IN=messaging/dup,database/dup
+```
+
+## Propagate trace context
+
+```haskell
+import Data.Aeson (object, (.=))
+import OpenTelemetry.Trace.Core qualified as OTel
+import Pgmq.Effectful
+
+publishTraced ::
+  (Pgmq :> es, IOE :> es) =>
+  OTel.TracerProvider ->
+  QueueName ->
+  Eff es MessageId
+publishTraced provider queue =
+  sendMessageTraced
+    provider
+    queue
+    (MessageBody (object ["kind" .= ("welcome-email" :: String)]))
+    Nothing
+```
+
+`sendMessageTraced` reads the current thread-local context, uses the provider's
+configured propagator, and writes propagated fields into pgmq message headers.
+Caller-supplied headers win when a key collides.
+
+## Extract parent context while reading
+
+```haskell
+consumeWithParents ::
+  (Pgmq :> es, IOE :> es) =>
+  OTel.TracerProvider ->
+  QueueName ->
+  Eff es (Vector MessageWithContext)
+consumeWithParents provider queue =
+  readMessageWithContext
+    provider
+    ReadMessage
+      { queueName = queue
+      , delay = 30
+      , batchSize = Just 10
+      , conditional = Nothing
+      }
+```
+
+Each `MessageWithContext` is `(Message, Context)`. Start your own application
+`process` span from that context around handler work. The pgmq interpreter
+intentionally traces receive, archive, delete, and visibility operations; it
+does not claim the application-level processing span.

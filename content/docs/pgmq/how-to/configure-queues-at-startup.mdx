@@ -1,0 +1,83 @@
+---
+title: "Configure queues at startup"
+description: "Declare queue topology with pgmq-config and reconcile it on every boot."
+---
+
+Use `pgmq-config` when queue creation belongs to application startup instead of
+separate SQL migrations. The reconciler is additive and idempotent.
+
+## Declare topology
+
+```haskell
+import Data.Function ((&))
+import Pgmq.Config
+import Pgmq.Types (parseQueueName, parseTopicPattern)
+
+queueConfig :: [QueueConfig]
+queueConfig =
+  let Right orders = parseQueueName "order_events"
+      Right tasks = parseQueueName "background_tasks"
+      Right orderPattern = parseTopicPattern "orders.*"
+   in [ standardQueue orders
+          & withNotifyInsert (Just 1000)
+          & withFifoIndex
+          & withTopicBinding orderPattern
+      , unloggedQueue tasks
+      ]
+```
+
+`standardQueue` creates a durable queue. `unloggedQueue` trades crash durability
+for speed. `partitionedQueue` takes a `PartitionConfig` with pgmq partition and
+retention intervals.
+
+## Reconcile with a pool
+
+```haskell
+import Hasql.Pool qualified as Pool
+import Pgmq.Config (ensureQueuesWithPool)
+
+configureQueues :: Pool.Pool -> IO ()
+configureQueues pool = do
+  result <- ensureQueuesWithPool pool queueConfig
+  case result of
+    Left err -> print err
+    Right () -> putStrLn "queues ready"
+```
+
+Run this after the pgmq schema is installed and before workers start.
+
+## Log what changed
+
+```haskell
+import Hasql.Pool qualified as Pool
+import Pgmq.Config (ensureQueuesReport)
+
+configureQueuesWithReport :: Pool.Pool -> IO ()
+configureQueuesWithReport pool = do
+  result <- Pool.use pool (ensureQueuesReport queueConfig)
+  case result of
+    Left err -> print err
+    Right actions -> traverse_ print actions
+```
+
+`ReconcileAction` includes both changes (`CreatedQueue`, `EnabledNotify`,
+`CreatedFifoIndex`, `BoundTopic`) and no-op confirmations (`SkippedQueue`,
+`SkippedNotify`, `SkippedTopicBinding`).
+
+## Use the Effectful wrapper
+
+```haskell
+import Pgmq.Config.Effectful (ensureQueuesEff)
+
+boot :: (Pgmq :> es) => Eff es ()
+boot = ensureQueuesEff queueConfig
+```
+
+Use `ensureQueuesEff` when the rest of the application already runs through the
+`Pgmq` effect. If that effect is interpreted with `runPgmqTraced`, startup
+reconciliation is traced like other pgmq operations.
+
+<Callout type="warn">
+  `pgmq-config` does not remove queues or bindings that are no longer declared.
+  Use explicit migrations or operator actions for destructive topology changes.
+</Callout>

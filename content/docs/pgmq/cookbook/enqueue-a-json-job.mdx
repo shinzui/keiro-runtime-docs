@@ -1,0 +1,32 @@
+---
+title: "Enqueue a JSON job"
+description: "Send one JSON payload to a pgmq queue and get its MessageId."
+---
+
+```haskell
+import Data.Aeson (object, (.=))
+import Hasql.Pool qualified as Pool
+import Pgmq
+
+enqueueEmail :: Pool.Pool -> IO (Either Pool.UsageError MessageId)
+enqueueEmail pool = do
+  let Right queue = parseQueueName "email_jobs"
+      body =
+        MessageBody
+          ( object
+              [ "kind" .= ("welcome" :: String)
+              , "user_id" .= (123 :: Int)
+              ]
+          )
+      command =
+        SendMessage
+          { queueName = queue
+          , messageBody = body
+          , delay = Nothing
+          }
+  Pool.use pool (sendMessage command)
+```
+
+Use `delay = Just seconds` when the job should become visible later. Use
+`sendMessageWithHeaders` when you need trace context, FIFO grouping, or other
+metadata in pgmq's `headers` column.

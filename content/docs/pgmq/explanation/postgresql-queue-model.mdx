@@ -1,0 +1,79 @@
+---
+title: "PostgreSQL queue model"
+description: "How pgmq uses PostgreSQL tables, JSON payloads, visibility timestamps, archive tables, metrics, and notifications."
+---
+
+pgmq keeps queue state in PostgreSQL. A queue is not a broker outside the
+database; it is a set of database objects that hold JSON payloads, message
+headers, visibility timestamps, read counts, and archive history.
+
+## Why that matters
+
+Putting the queue in PostgreSQL makes deployment simple for systems that already
+depend on PostgreSQL. Application code can use one operational data store for
+durable event storage, projections, and background work. It also means queue
+operations inherit database characteristics: transactions, connection-pool
+pressure, schema management, and PostgreSQL observability.
+
+The tradeoff is that pgmq is not a general broker cluster. It does not provide
+exactly-once handler execution, Kafka-style partition assignment, or an
+external broker's retention model. It provides durable queue tables and explicit
+message lifecycle operations.
+
+## Message lifecycle
+
+A producer inserts a JSON message. A consumer reads visible rows with a
+visibility timeout. pgmq sets those rows invisible until the timeout expires.
+The consumer then archives, deletes, changes the visibility timeout, or lets the
+timeout expire so the message is retried.
+
+This lifecycle is visible in `Pgmq.Types.Message`:
+
+```haskell
+data Message = Message
+  { messageId :: !MessageId
+  , visibilityTime :: !UTCTime
+  , enqueuedAt :: !UTCTime
+  , lastReadAt :: !(Maybe UTCTime)
+  , readCount :: !Int64
+  , body :: !MessageBody
+  , headers :: !(Maybe Value)
+  }
+```
+
+`body` is application JSON. `headers` are JSON metadata. pgmq-hs uses headers
+for FIFO group keys and trace propagation, but the field can also hold
+application metadata.
+
+## Queue variants
+
+Standard queues use PostgreSQL write-ahead logging and survive crashes like
+ordinary durable tables. Unlogged queues skip write-ahead logging for speed and
+can lose data on a crash or unclean shutdown. Partitioned queues use pgmq's
+partitioned storage path for high-throughput or retention-sensitive workloads.
+
+`pgmq-config` can create all three:
+
+```haskell
+standardQueue :: QueueName -> QueueConfig
+unloggedQueue :: QueueName -> QueueConfig
+partitionedQueue :: QueueName -> PartitionConfig -> QueueConfig
+```
+
+## Observability from the queue
+
+pgmq exposes queue lists, queue metrics, all-queue metrics, topic bindings, and
+notification throttle state. pgmq-hs maps these to `listQueues`,
+`queueMetrics`, `allQueueMetrics`, `listTopicBindings`, and
+`listNotifyInsertThrottles`.
+
+The most operationally useful metric distinction is total queue length versus
+visible queue length. Total length includes leased messages. Visible length is
+what another reader can get now.
+
+## Notifications are a wake-up signal
+
+`enableNotifyInsert` configures PostgreSQL `LISTEN/NOTIFY` on inserts. This is
+a wake-up signal for workers that would otherwise poll. It is not a separate
+delivery channel: workers still read messages from the queue table and should
+handle missed notifications by polling or rechecking queue state.

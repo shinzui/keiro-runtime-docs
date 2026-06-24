@@ -1,0 +1,94 @@
+---
+title: "Use FIFO and topics"
+description: "Add FIFO group headers and topic routing with pgmq-hs."
+---
+
+FIFO and topic routing are independent pgmq features. FIFO uses message headers
+to preserve order within a group. Topics route one publish call to every queue
+whose binding pattern matches a routing key.
+
+## Add FIFO groups
+
+FIFO grouping uses the reserved `x-pgmq-group` header.
+
+```haskell
+import Data.Aeson (object, (.=))
+import Pgmq
+
+sendGrouped :: QueueName -> MessageBody -> SendMessageWithHeaders
+sendGrouped queue body =
+  SendMessageWithHeaders
+    { queueName = queue
+    , messageBody = body
+    , messageHeaders = MessageHeaders (object ["x-pgmq-group" .= ("order-123" :: String)])
+    , delay = Nothing
+    }
+```
+
+Create the FIFO index before relying on grouped reads in production:
+
+```haskell
+import Pgmq.Hasql.Sessions qualified as Sessions
+
+prepareFifo :: QueueName -> Session ()
+prepareFifo queue = Sessions.createFifoIndex queue
+```
+
+## Read FIFO groups
+
+At the reviewed commit, FIFO reads are exported from `Pgmq.Hasql.Sessions` and
+`Pgmq.Effectful.Effect`, not from the top-level `Pgmq` module.
+
+```haskell
+import Pgmq.Hasql.Sessions qualified as Sessions
+import Pgmq.Hasql.Statements.Types (ReadGrouped (..))
+
+readFairly :: QueueName -> Session (Vector Message)
+readFairly queue =
+  Sessions.readGroupedRoundRobin
+    ReadGrouped
+      { queueName = queue
+      , visibilityTimeout = 30
+      , qty = 10
+      }
+```
+
+Use `readGroupedRoundRobin` for fair interleaving across groups. Use
+`readGrouped` when filling a batch from the earliest eligible group is more
+important than cross-group fairness.
+
+## Bind topic patterns
+
+```haskell
+import Pgmq
+
+bindOrders :: QueueName -> Session ()
+bindOrders queue = do
+  let Right pattern = parseTopicPattern "orders.*"
+  bindTopic BindTopic { topicPattern = pattern, queueName = queue }
+```
+
+`*` matches one segment. `#` matches zero or more segments. A queue may have
+multiple bindings, and a pattern may be bound to multiple queues.
+
+## Test and send routing keys
+
+```haskell
+sendCreatedOrder :: MessageBody -> Session Int32
+sendCreatedOrder body = do
+  let Right key = parseRoutingKey "orders.created"
+  sendTopic SendTopic { routingKey = key, messageBody = body, delay = Nothing }
+```
+
+`sendTopic` returns the number of queues that received the message. Use
+`testRouting` to inspect matches without sending:
+
+```haskell
+previewCreatedOrder :: Session [RoutingMatch]
+previewCreatedOrder = do
+  let Right key = parseRoutingKey "orders.created"
+  testRouting key
+```
+
+For batch topic sends, use `batchSendTopic` or a header/timestamp variant; those
+return `TopicSendResult` rows with destination queue and message id.

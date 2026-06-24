@@ -1,0 +1,59 @@
+---
+title: "Visibility and delivery"
+description: "Leases, retries, read counts, archive/delete semantics, pop, and idempotent handlers."
+---
+
+pgmq's core delivery tool is the visibility timeout. A read does not remove a
+message. It leases the message by moving its `visibilityTime` into the future.
+During that window, other readers do not see it.
+
+## Lease, then finish
+
+The normal worker shape is:
+
+1. Read one or more messages with a visibility timeout.
+2. Do application work.
+3. Archive or delete each successfully handled message.
+4. Change the visibility timeout for a planned retry, or do nothing and let the
+   timeout expire.
+
+`archiveMessage` preserves the row in pgmq's archive table. `deleteMessage`
+removes it. `changeVisibilityTimeout` and `setVisibilityTimeoutAt` update when
+the message can next be read.
+
+## Redelivery is expected
+
+If a worker crashes after doing side effects but before archiving or deleting
+the message, pgmq will show the message again after the timeout. If a worker
+takes longer than the timeout, another worker can receive the same message while
+the first worker is still running.
+
+That is why handlers should be idempotent. Store a processed-message id, use
+natural idempotency keys in the downstream system, or design the handler so a
+repeat has the same final effect.
+
+## Read count is a delivery counter
+
+`Message.readCount` increments when pgmq leases the message. It is useful for
+retry limits, but it is not proof that application handling succeeded or even
+started. A consumer may crash immediately after the read.
+
+## Archive and delete are separate choices
+
+Archive when operators need history, forensic inspection, or a way to audit
+completed work. Delete when the payload is low value after handling or should
+not be retained. Both operations are explicit, and both require the queue name
+and message id.
+
+## Pop is different
+
+`pop` is an atomic read-and-delete operation. It is appropriate when losing the
+row immediately is acceptable, or when the handler writes its own durable record
+before doing riskier work. It is not the usual shape for supervised background
+work, because there is no lease to expire for automatic retry.
+
+## Delivery guarantee
+
+pgmq gives at-least-once delivery for the read/archive-delete pattern. It does
+not give exactly-once handler execution. Deduplication and idempotency belong in
+the application layer or in the higher-level runtime using pgmq.

@@ -69,7 +69,7 @@ edits for EP-5.
 |---|-------|------|-----------|-----------|--------|
 | EP-1 | Author shibuya foundation core and walkthrough docs | `docs/plans/35-author-shibuya-foundation-core-and-walkthrough-docs.md` | None | None | Complete |
 | EP-2 | Document shibuya metrics operations and recipes | `docs/plans/36-document-shibuya-metrics-operations-and-recipes.md` | EP-1 | None | Complete |
-| EP-3 | Author pgmq hs queue substrate documentation | `docs/plans/37-author-pgmq-hs-queue-substrate-documentation.md` | None | EP-1 | Not Started |
+| EP-3 | Author pgmq hs queue substrate documentation | `docs/plans/37-author-pgmq-hs-queue-substrate-documentation.md` | None | EP-1 | Complete |
 | EP-4 | Document shibuya adapters across pgmq kiroku kafka and message db | `docs/plans/38-document-shibuya-adapters-across-pgmq-kiroku-kafka-and-message-db.md` | EP-1 | EP-3 | Not Started |
 | EP-5 | Reconcile shibuya pgmq integrations navigation and source sync | `docs/plans/39-reconcile-shibuya-pgmq-integrations-navigation-and-source-sync.md` | EP-1, EP-2, EP-3, EP-4 | None | Not Started |
 
@@ -147,9 +147,9 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] EP-2: Audit shibuya metrics, telemetry, health, JSON, Prometheus, WebSocket, and operations docs.
 - [x] EP-2: Author shibuya operations, metrics, recipes, FAQ, and telemetry pages.
 - [x] EP-2: Validate operational docs and cross-links against EP-1 terminology.
-- [ ] EP-3: Audit pgmq-hs source, bundled pgmq docs, and current pgmq stubs.
-- [ ] EP-3: Author pgmq-hs reference, how-to, explanation, cookbook, and source-sync updates.
-- [ ] EP-3: Validate pgmq pages and queue-substrate cross-links.
+- [x] EP-3: Audit pgmq-hs source, bundled pgmq docs, and current pgmq stubs.
+- [x] EP-3: Author pgmq-hs reference, how-to, explanation, cookbook, and source-sync updates.
+- [x] EP-3: Validate pgmq pages and queue-substrate cross-links.
 - [ ] EP-4: Audit shibuya-pgmq, shibuya-kiroku, shibuya-kafka, and shibuya-message-db adapter sources.
 - [ ] EP-4: Author adapter comparison, integration pages, how-tos, and adapter source walkthroughs.
 - [ ] EP-4: Validate adapter docs against current source modules and examples.
@@ -181,6 +181,14 @@ interactions between child plans. Provide concise evidence.
 - EP-2 found a stale upstream Jaeger note that expected operation name `"shibuya.process.message"`;
   current source uses `processSpanName destination = destination <> " process"`, so the docs now
   teach span names such as `"orders process"`.
+- EP-3 confirmed pgmq-hs source is still at the planned commit
+  `973c1076f469448818de5d2044a483296be2c02e` (`973c107`, 2026-06-03). FIFO grouped read helpers
+  are exported from `Pgmq.Hasql.Sessions` and `Pgmq.Effectful.Effect`, but not from the umbrella
+  `Pgmq` / `Pgmq.Effectful` modules at that commit, so the pgmq docs teach direct imports for FIFO
+  examples.
+- EP-3 found that `ReadMessage` still carries a `conditional :: Maybe Value` field while the
+  current statement implementation calls pgmq's three-argument `read($1,$2,$3)` form. The docs list
+  the field but do not promise active conditional filtering through `readMessage`.
 
 
 ## Decision Log
@@ -217,3 +225,7 @@ Compare the result against the original vision.
 - EP-2 completed on 2026-06-24. The shibuya operations documentation now covers metrics endpoints,
   health/readiness semantics, Prometheus, WebSocket updates, OpenTelemetry propagation and spans,
   graceful shutdown, debugging, cookbook recipes, and FAQ answers.
+- EP-3 completed on 2026-06-24. The pgmq-hs documentation now covers the queue substrate's package
+  split, validated core types, Hasql operations, Effectful interpreters and tracing, declarative
+  queue configuration, schema migrations, visibility semantics, FIFO grouped reads, topic routing,
+  notifications, queue metrics, common how-tos, and cookbook snippets.

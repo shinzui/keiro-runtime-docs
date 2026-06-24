@@ -1,0 +1,98 @@
+---
+title: "Queue configuration"
+description: "Declarative queue topology and idempotent startup reconciliation from pgmq-config."
+---
+
+`pgmq-config` lets an application declare desired queue topology as Haskell
+values and reconcile it on boot. Reconciliation is additive: it creates missing
+objects and leaves unrelated queues alone.
+
+## Queue configuration values
+
+```haskell
+data QueueConfig = QueueConfig
+  { queueName :: !QueueName
+  , queueType :: !QueueType
+  , notifyInsert :: !(Maybe NotifyConfig)
+  , fifoIndex :: !Bool
+  , topicBindings :: ![TopicPattern]
+  }
+
+data QueueType
+  = StandardQueue
+  | UnloggedQueue
+  | PartitionedQueue !PartitionConfig
+
+data PartitionConfig = PartitionConfig
+  { partitionInterval :: !Text
+  , retentionInterval :: !Text
+  }
+
+data NotifyConfig = NotifyConfig
+  { throttleMs :: !(Maybe Int32)
+  }
+```
+
+Use the smart constructors rather than filling every field by hand:
+
+```haskell
+standardQueue :: QueueName -> QueueConfig
+unloggedQueue :: QueueName -> QueueConfig
+partitionedQueue :: QueueName -> PartitionConfig -> QueueConfig
+
+withNotifyInsert :: Maybe Int32 -> QueueConfig -> QueueConfig
+withFifoIndex :: QueueConfig -> QueueConfig
+withTopicBinding :: TopicPattern -> QueueConfig -> QueueConfig
+```
+
+`withNotifyInsert Nothing` uses pgmq's default notify throttle. `withFifoIndex`
+adds the GIN index used by grouped FIFO reads. `withTopicBinding` appends a
+topic pattern to the queue's bindings.
+
+## Reconciliation
+
+```haskell
+ensureQueues :: [QueueConfig] -> Session ()
+ensureQueuesWithPool :: Pool -> [QueueConfig] -> IO (Either UsageError ())
+ensureQueuesReport :: [QueueConfig] -> Session [ReconcileAction]
+```
+
+`ensureQueuesReport` first reads `listQueues`, `listTopicBindings`, and
+`listNotifyInsertThrottles`, then applies only missing queue creations,
+notification setup, and topic bindings. FIFO index creation is always applied
+when `fifoIndex` is `True` because the underlying pgmq function is idempotent.
+
+```haskell
+data ReconcileAction
+  = CreatedQueue QueueName QueueType
+  | EnabledNotify QueueName (Maybe Int32)
+  | CreatedFifoIndex QueueName
+  | BoundTopic QueueName TopicPattern
+  | SkippedQueue QueueName
+  | SkippedNotify QueueName
+  | SkippedFifoIndex QueueName
+  | SkippedTopicBinding QueueName TopicPattern
+```
+
+The skipped constructors are useful in startup logs. They show the desired
+topology was already present instead of hiding all no-op work.
+
+## Effectful integration
+
+When the cabal `effectful` flag is enabled, which is the default,
+`pgmq-config` also exposes:
+
+```haskell
+ensureQueuesEff :: (Pgmq :> es) => [QueueConfig] -> Eff es ()
+ensureQueuesReportEff :: (Pgmq :> es) => [QueueConfig] -> Eff es [ReconcileAction]
+```
+
+These functions use the same `Pgmq` effect as the rest of the application, so
+queue reconciliation runs through whichever interpreter you install, including
+`runPgmqTraced`.
+
+<Callout type="warn">
+  Reconciliation does not delete queues, remove topic bindings, disable notify,
+  or change an existing queue from standard to unlogged or partitioned. Treat it
+  as an additive boot-time ensure step, not a destructive migration engine.
+</Callout>

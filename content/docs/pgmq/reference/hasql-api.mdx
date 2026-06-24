@@ -1,0 +1,204 @@
+---
+title: "Hasql API"
+description: "Direct Hasql sessions for pgmq queue management, message lifecycle, visibility, FIFO, topics, notifications, and observability."
+---
+
+`pgmq-hasql` is the direct database client. The umbrella module `Pgmq`
+re-exports the common session functions and record types. `Pgmq.Hasql.Sessions`
+also exposes lower-level FIFO grouped read helpers that are not re-exported from
+`Pgmq` at commit `973c1076f469448818de5d2044a483296be2c02e`.
+
+## Queue management
+
+```haskell
+createQueue :: QueueName -> Session ()
+dropQueue :: QueueName -> Session Bool
+createPartitionedQueue :: CreatePartitionedQueue -> Session ()
+createUnloggedQueue :: QueueName -> Session ()
+detachArchive :: QueueName -> Session () -- deprecated no-op
+
+enableNotifyInsert :: EnableNotifyInsert -> Session ()
+disableNotifyInsert :: QueueName -> Session ()
+```
+
+`createQueue` creates a standard durable queue. `createUnloggedQueue` creates a
+queue that skips PostgreSQL write-ahead logging, trading crash durability for
+write speed. `createPartitionedQueue` takes:
+
+```haskell
+data CreatePartitionedQueue = CreatePartitionedQueue
+  { queueName :: !QueueName
+  , partitionInterval :: !Text
+  , retentionInterval :: !Text
+  }
+```
+
+`enableNotifyInsert` configures pgmq insert notifications:
+
+```haskell
+data EnableNotifyInsert = EnableNotifyInsert
+  { queueName :: !QueueName
+  , throttleIntervalMs :: !(Maybe Int32)
+  }
+```
+
+`Nothing` uses pgmq's default throttle interval of 250 ms.
+
+## Sending messages
+
+```haskell
+sendMessage :: SendMessage -> Session MessageId
+sendMessageForLater :: SendMessageForLater -> Session MessageId
+batchSendMessage :: BatchSendMessage -> Session [MessageId]
+batchSendMessageForLater :: BatchSendMessageForLater -> Session [MessageId]
+
+sendMessageWithHeaders :: SendMessageWithHeaders -> Session MessageId
+sendMessageWithHeadersForLater :: SendMessageWithHeadersForLater -> Session MessageId
+batchSendMessageWithHeaders :: BatchSendMessageWithHeaders -> Session [MessageId]
+batchSendMessageWithHeadersForLater :: BatchSendMessageWithHeadersForLater -> Session [MessageId]
+```
+
+Immediate sends use an optional delay in seconds:
+
+```haskell
+data SendMessage = SendMessage
+  { queueName :: !QueueName
+  , messageBody :: !MessageBody
+  , delay :: !(Maybe Int32)
+  }
+```
+
+Scheduled sends use an absolute timestamp:
+
+```haskell
+data SendMessageForLater = SendMessageForLater
+  { queueName :: !QueueName
+  , messageBody :: !MessageBody
+  , scheduledAt :: !UTCTime
+  }
+```
+
+The `WithHeaders` variants add `messageHeaders :: MessageHeaders`. Batch header
+variants carry a header list parallel to the body list.
+
+## Reading and finishing messages
+
+```haskell
+readMessage :: ReadMessage -> Session (Vector Message)
+readWithPoll :: ReadWithPollMessage -> Session (Vector Message)
+pop :: PopMessage -> Session (Vector Message)
+
+archiveMessage :: MessageQuery -> Session Bool
+batchArchiveMessages :: BatchMessageQuery -> Session [MessageId]
+deleteMessage :: MessageQuery -> Session Bool
+batchDeleteMessages :: BatchMessageQuery -> Session [MessageId]
+deleteAllMessagesFromQueue :: QueueName -> Session Int64
+```
+
+`readMessage` leases visible messages for a visibility timeout:
+
+```haskell
+data ReadMessage = ReadMessage
+  { queueName :: !QueueName
+  , delay :: !Int32
+  , batchSize :: !(Maybe Int32)
+  , conditional :: !(Maybe Value)
+  }
+```
+
+At this commit the statement implementation uses pgmq's three-argument
+`read(queue, vt, qty)` form, so the Haskell `conditional` field is not applied
+by `readMessage`. Use a narrower statement if you need JSONB conditional
+filtering.
+
+`archiveMessage` moves a message to pgmq's archive table. `deleteMessage`
+removes it. `pop` atomically reads and deletes messages, which is useful for
+work that does not need a separate processing window.
+
+## Visibility timeout changes
+
+```haskell
+changeVisibilityTimeout :: VisibilityTimeoutQuery -> Session Message
+batchChangeVisibilityTimeout :: BatchVisibilityTimeoutQuery -> Session (Vector Message)
+setVisibilityTimeoutAt :: VisibilityTimeoutAtQuery -> Session Message
+batchSetVisibilityTimeoutAt :: BatchVisibilityTimeoutAtQuery -> Session (Vector Message)
+```
+
+Offset-based updates make the message visible at now plus `visibilityTimeoutOffset` seconds:
+
+```haskell
+data VisibilityTimeoutQuery = VisibilityTimeoutQuery
+  { queueName :: !QueueName
+  , messageId :: !MessageId
+  , visibilityTimeoutOffset :: !Int32
+  }
+```
+
+Timestamp-based updates use an absolute `UTCTime` and require pgmq 1.10.0+.
+
+## FIFO grouped reads
+
+```haskell
+readGrouped :: ReadGrouped -> Session (Vector Message)
+readGroupedWithPoll :: ReadGroupedWithPoll -> Session (Vector Message)
+readGroupedRoundRobin :: ReadGrouped -> Session (Vector Message)
+readGroupedRoundRobinWithPoll :: ReadGroupedWithPoll -> Session (Vector Message)
+createFifoIndex :: QueueName -> Session ()
+createFifoIndexesAll :: Session ()
+```
+
+These functions are exported from `Pgmq.Hasql.Sessions`, not from the top-level
+`Pgmq` module in this reviewed source. FIFO grouping uses the reserved
+`x-pgmq-group` header. `readGrouped` fills a batch from the earliest eligible
+group first; `readGroupedRoundRobin` interleaves groups for fairness.
+
+## Topic routing
+
+```haskell
+bindTopic :: BindTopic -> Session ()
+unbindTopic :: UnbindTopic -> Session Bool
+validateRoutingKey :: RoutingKey -> Session Bool
+validateTopicPattern :: TopicPattern -> Session Bool
+testRouting :: RoutingKey -> Session [RoutingMatch]
+listTopicBindings :: Session [TopicBinding]
+listTopicBindingsForQueue :: QueueName -> Session [TopicBinding]
+```
+
+Topic sending is separate from queue sending:
+
+```haskell
+sendTopic :: SendTopic -> Session Int32
+sendTopicWithHeaders :: SendTopicWithHeaders -> Session Int32
+batchSendTopic :: BatchSendTopic -> Session [TopicSendResult]
+batchSendTopicForLater :: BatchSendTopicForLater -> Session [TopicSendResult]
+batchSendTopicWithHeaders :: BatchSendTopicWithHeaders -> Session [TopicSendResult]
+batchSendTopicWithHeadersForLater :: BatchSendTopicWithHeadersForLater -> Session [TopicSendResult]
+```
+
+Single topic sends return the number of queues matched. Batch topic sends return
+one `TopicSendResult` per delivered queue/message pair.
+
+## Observability
+
+```haskell
+listQueues :: Session [Queue]
+queueMetrics :: QueueName -> Session QueueMetrics
+allQueueMetrics :: Session [QueueMetrics]
+listNotifyInsertThrottles :: Session [NotifyInsertThrottle]
+updateNotifyInsert :: UpdateNotifyInsert -> Session ()
+```
+
+```haskell
+data QueueMetrics = QueueMetrics
+  { queueName :: !Text
+  , queueLength :: !Int64
+  , newestMsgAgeSec :: !(Maybe Int32)
+  , oldestMsgAgeSec :: !(Maybe Int32)
+  , totalMessages :: !Int64
+  , scrapeTime :: !UTCTime
+  , queueVisibleLength :: !Int64
+  }
+```
+
+`queueLength` is total queue depth. `queueVisibleLength` is the count available
+for reading now.

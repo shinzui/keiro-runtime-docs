@@ -1,0 +1,142 @@
+---
+title: "Effectful API"
+description: "The Pgmq dynamic effect, interpreters, runtime errors, and OpenTelemetry helpers from pgmq-effectful."
+---
+
+`pgmq-effectful` lifts pgmq-hasql sessions into an `effectful` dynamic effect.
+Application code calls smart constructors under a `Pgmq :> es` constraint, and
+an interpreter supplies the `hasql-pool` backend.
+
+## Effect and operations
+
+```haskell
+data Pgmq :: Effect
+type instance DispatchOf Pgmq = Dynamic
+```
+
+The public smart constructors mirror the Hasql sessions: queue creation, notify
+configuration, FIFO index creation, send/read/archive/delete, visibility-timeout
+changes, FIFO grouped reads, topic binding and topic sends, notification
+throttle inspection, `listQueues`, and queue metrics.
+
+<Callout type="info">
+  `Pgmq.Effectful.Effect` exposes FIFO read helpers (`readGrouped`,
+  `readGroupedRoundRobin`, and polling variants). The umbrella
+  `Pgmq.Effectful` module at this commit does not re-export those FIFO helper
+  names, so import `Pgmq.Effectful.Effect` when you need them.
+</Callout>
+
+## Plain interpreter
+
+```haskell
+runPgmq ::
+  (IOE :> es, Error PgmqRuntimeError :> es) =>
+  Pool ->
+  Eff (Pgmq : es) a ->
+  Eff es a
+```
+
+`runPgmq` executes each operation with `Hasql.Pool.use`. Runtime failures are
+thrown through `Error PgmqRuntimeError`.
+
+```haskell
+data PgmqRuntimeError
+  = PgmqAcquisitionTimeout
+  | PgmqConnectionError HasqlErrors.ConnectionError
+  | PgmqSessionError HasqlErrors.SessionError
+
+fromUsageError :: UsageError -> PgmqRuntimeError
+isTransient :: PgmqRuntimeError -> Bool
+```
+
+`isTransient` returns `True` for pool acquisition timeouts, networking
+connection errors, uncategorized libpq connection errors, and session-level
+connection drops. Authentication failures, compatibility errors, statement
+errors, missing types, and driver errors are treated as permanent.
+
+## Traced interpreter
+
+```haskell
+data TracingConfig = TracingConfig
+  { tracer :: !OTel.Tracer
+  , recordExceptions :: !Bool
+  , includeMessageBodies :: !Bool
+  }
+
+defaultTracingConfig :: OTel.Tracer -> TracingConfig
+
+runPgmqTraced ::
+  (IOE :> es, Error PgmqRuntimeError :> es) =>
+  Pool ->
+  OTel.Tracer ->
+  Eff (Pgmq : es) a ->
+  Eff es a
+
+runPgmqTracedWith ::
+  (IOE :> es, Error PgmqRuntimeError :> es) =>
+  Pool ->
+  TracingConfig ->
+  Eff (Pgmq : es) a ->
+  Eff es a
+```
+
+`runPgmqTraced` wraps every operation in an OpenTelemetry span. Send and topic
+send operations are producer spans. Read, polling read, FIFO read, and `pop`
+operations are consumer spans. Lifecycle and observability calls are internal
+spans.
+
+Span names use the OpenTelemetry v1.24-style form for compatibility:
+`publish <destination>` for sends, `receive <destination>` for reads, and
+`pgmq.<operation> <destination>` for lifecycle work. Operations without a queue
+destination use only the operation name, such as `pgmq.list_queues`.
+
+The traced interpreter emits old semantic-convention attributes by default and
+uses `OTEL_SEMCONV_STABILITY_OPT_IN` to opt into stable or duplicate
+messaging/database attributes:
+
+```text
+OTEL_SEMCONV_STABILITY_OPT_IN=messaging,database
+OTEL_SEMCONV_STABILITY_OPT_IN=messaging/dup,database/dup
+```
+
+## Trace context helpers
+
+```haskell
+type TraceHeaders = RequestHeaders
+
+injectTraceContext :: TracerProvider -> Context -> m TraceHeaders
+extractTraceContext :: TracerProvider -> TraceHeaders -> Context -> m Context
+traceHeadersToJson :: TraceHeaders -> Value
+jsonToTraceHeaders :: Value -> TraceHeaders
+mergeTraceHeaders :: TraceHeaders -> Maybe Value -> Value
+```
+
+Propagation uses the tracer provider's configured propagator. With the W3C
+propagator this writes `traceparent` and `tracestate`; with B3 or Datadog it
+writes that propagator's fields. `mergeTraceHeaders` is additive: existing user
+headers win when a key already exists.
+
+## Higher-level traced operations
+
+```haskell
+sendMessageTraced ::
+  (Pgmq :> es, IOE :> es) =>
+  TracerProvider ->
+  QueueName ->
+  MessageBody ->
+  Maybe Value ->
+  Eff es MessageId
+
+type MessageWithContext = (Message, Context)
+
+readMessageWithContext ::
+  (Pgmq :> es, IOE :> es) =>
+  TracerProvider ->
+  ReadMessage ->
+  Eff es (Vector MessageWithContext)
+```
+
+`sendMessageTraced` injects the current thread-local trace context into pgmq
+headers and sends with `sendMessageWithHeaders`. `readMessageWithContext`
+extracts a parent context from each returned message so the consumer can start
+its own application-level process span.

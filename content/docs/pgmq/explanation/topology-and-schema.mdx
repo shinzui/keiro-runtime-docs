@@ -1,0 +1,69 @@
+---
+title: "Topology and schema"
+description: "Standard, unlogged, partitioned, FIFO, topic, configuration, and migration choices."
+---
+
+There are two different layers of setup in pgmq-hs: installing the pgmq schema
+and creating application queue topology.
+
+## Schema installation
+
+The schema is the database implementation of pgmq itself: functions such as
+`pgmq.send`, `pgmq.read`, `pgmq.archive`, topic routing functions, and the
+tables those functions manage. You can get that schema by installing the pgmq
+PostgreSQL extension, or by running `pgmq-migration`.
+
+`pgmq-migration` vendors the pgmq 1.11.0 schema and exposes:
+
+```haskell
+migrate :: Session (Either MigrationError ())
+upgrade :: Session (Either MigrationError ())
+```
+
+Use `migrate` for a fresh database. Use `upgrade` when the database may already
+be managed by `pgmq-migration`.
+
+## Queue topology
+
+Topology is the set of application queues and queue features:
+
+- standard, unlogged, or partitioned queue creation
+- insert notifications
+- FIFO indexes
+- topic pattern bindings
+
+You can create these directly with `pgmq-hasql`, but most applications should
+prefer `pgmq-config` for boot-time reconciliation:
+
+```haskell
+ensureQueues :: [QueueConfig] -> Session ()
+ensureQueuesReport :: [QueueConfig] -> Session [ReconcileAction]
+```
+
+## Additive reconciliation
+
+`pgmq-config` reads existing queues, topic bindings, and notification throttle
+state before mutating anything. It creates missing objects and reports skipped
+objects. It does not remove queues, disable notify, remove old topic bindings,
+or change an existing queue's kind.
+
+This makes it safe to call on every boot, but it also means destructive topology
+changes should be modeled as explicit migrations or operator actions.
+
+## FIFO and topics are opt-in
+
+FIFO uses the `x-pgmq-group` header and grouped read functions. It does not
+require a special queue type, but production consumers should create the FIFO
+index for performance.
+
+Topics use bindings from topic patterns to queues. A topic send can deliver one
+message to zero, one, or many queues depending on pattern matches. This is
+publish-subscribe routing inside pgmq, not a separate broker.
+
+## Choose the smallest setup that matches the workload
+
+Use a standard queue for durable background work. Use an unlogged queue only
+when losing queued work on crash is acceptable. Use a partitioned queue when the
+queue is large enough that retention and partition maintenance matter. Add FIFO
+only for per-group ordering, and add topics only when multiple queues should
+receive messages by routing key.

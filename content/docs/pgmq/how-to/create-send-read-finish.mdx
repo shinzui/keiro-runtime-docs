@@ -1,0 +1,98 @@
+---
+title: "Create, send, read, finish"
+description: "Create a queue, enqueue JSON, lease messages, then archive or delete them."
+---
+
+This guide uses the direct `Pgmq` Hasql API. The same operation names are
+available through the `Pgmq.Effectful` effect when you run an Effectful stack.
+
+## Create a queue
+
+```haskell
+import Data.Aeson (object, (.=))
+import Hasql.Pool qualified as Pool
+import Pgmq
+
+runQueueExample :: Pool.Pool -> IO ()
+runQueueExample pool = do
+  let Right queue = parseQueueName "background_jobs"
+  created <- Pool.use pool (createQueue queue)
+  case created of
+    Left err -> print err
+    Right () -> putStrLn "queue ready"
+```
+
+Use `createUnloggedQueue` for ephemeral high-throughput work where crash loss is
+acceptable. Use `createPartitionedQueue` for queues that need pgmq's partitioned
+storage.
+
+## Send a JSON message
+
+```haskell
+let payload = MessageBody (object ["job" .= ("send-email" :: String)])
+    command =
+      SendMessage
+        { queueName = queue
+        , messageBody = payload
+        , delay = Nothing
+        }
+
+sent <- Pool.use pool (sendMessage command)
+```
+
+`delay = Just 30` makes the message invisible for 30 seconds before its first
+delivery. For an absolute scheduled time, use `sendMessageForLater`.
+
+## Read with a visibility timeout
+
+```haskell
+let lease =
+      ReadMessage
+        { queueName = queue
+        , delay = 30
+        , batchSize = Just 10
+        , conditional = Nothing
+        }
+
+leased <- Pool.use pool (readMessage lease)
+```
+
+`delay` is the visibility timeout in seconds. While a message is leased, other
+readers do not see it. If you neither archive nor delete it before the timeout,
+it becomes visible again.
+
+## Finish successful work
+
+```haskell
+finishOk :: Pool.Pool -> QueueName -> Message -> IO ()
+finishOk pool queue msg = do
+  let query =
+        MessageQuery
+          { queueName = queue
+          , messageId = msg.messageId
+          }
+  result <- Pool.use pool (archiveMessage query)
+  print result
+```
+
+`archiveMessage` moves the row into pgmq's archive table. Use it when you want
+processed-message history.
+
+## Delete unwanted work
+
+```haskell
+dropMessage :: Pool.Pool -> QueueName -> Message -> IO ()
+dropMessage pool queue msg = do
+  let query = MessageQuery { queueName = queue, messageId = msg.messageId }
+  result <- Pool.use pool (deleteMessage query)
+  print result
+```
+
+`deleteMessage` removes the row. Use it for messages where retaining history is
+not useful.
+
+<Callout type="warn">
+  Message handling should be idempotent. pgmq provides leases and redelivery,
+  not exactly-once processing. A message can reappear after timeout expiry or
+  after a worker crashes before archiving/deleting it.
+</Callout>
