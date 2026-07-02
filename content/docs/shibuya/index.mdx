@@ -5,13 +5,14 @@ description: A supervised queue-processing framework with adapters, explicit ack
 
 shibuya (渋谷) is the runtime layer that keeps queue work moving. It runs one or more named
 processors, each processor reads from an **adapter**, hands each **ingested** message to a
-`Handler`, and finalizes the backend message with the handler's explicit `AckDecision`.
+`Handler` as a read-only `Message`, and finalizes the backend message with the handler's explicit
+`AckDecision`.
 
 The core package, `shibuya-core`, deliberately separates intent from mechanics. Handlers return
 `AckOk`, `AckRetry`, `AckDeadLetter`, or `AckHalt`; adapters own how those decisions become broker
 commits, visibility changes, dead-letter writes, or shutdowns. The runner owns the bounded inbox,
-supervision, ordering policy, concurrency policy, graceful shutdown, and trace spans around handler
-execution.
+supervision, ordering policy, concurrency policy, first-class batching, graceful shutdown, and trace
+spans around handler execution.
 
 Use shibuya directly for background workers and queue consumers, or through adapters that connect it
 to the rest of the runtime family:
@@ -26,7 +27,8 @@ flowchart LR
   Backend["queue, log, or store"] --> Adapter["Adapter.source"]
   Adapter --> Ingested["Ingested: envelope + ack + lease"]
   Ingested --> Inbox["bounded inbox"]
-  Inbox --> Handler["Handler es msg"]
+  Inbox --> Message["Message: envelope + lease"]
+  Message --> Handler["Handler es msg"]
   Handler --> Decision{"AckDecision"}
   Decision --> Ack["AckHandle.finalize"]
   Ack --> Backend
@@ -34,7 +36,8 @@ flowchart LR
 
 The `Envelope` carries `messageId`, optional cursor, partition, enqueue time, trace context,
 headers, delivery attempt, adapter-supplied trace attributes, and the payload. The `Ingested` value
-adds the backend-provided `AckHandle` and an optional `Lease` for queues with visibility timeouts.
+adds the backend-provided `AckHandle`; handlers see the projected `Message`, which omits the ack
+handle so finalization remains framework-owned.
 
 ## Where to start
 
@@ -52,7 +55,7 @@ adds the backend-provided `AckHandle` and an optional `Lease` for queues with vi
 An **adapter** is a backend bridge. It exposes a Streamly stream of `Ingested es msg` values and a
 `shutdown` action. It does not run handlers.
 
-An **envelope** is the normalized message container inside `Ingested`. It is where adapter metadata
+An **envelope** is the normalized message container inside `Ingested` and `Message`. It is where adapter metadata
 becomes portable across pgmq, Kafka, kiroku, Message DB, or a test adapter.
 
 An **ack decision** is the handler's semantic outcome. `AckOk` means success, `AckRetry delay` means
@@ -61,3 +64,6 @@ stop the processor because continuing would be unsafe.
 
 A **runner** is the supervised machinery that reads from adapters into bounded inboxes, applies
 ordering and concurrency policy, invokes handlers, finalizes ack decisions, and exposes metrics.
+
+A **batching processor** groups messages by `BatchKey`, emits batches by size, timeout, or flush,
+and resolves a `BatchAck` into one final `AckDecision` per retained message.

@@ -19,11 +19,14 @@ graceful stop. `adapterName` is for logging and observability.
 ## Handler
 
 ```haskell
-type Handler es msg = Ingested es msg -> Eff es AckDecision
+type Handler es msg = Message es msg -> Eff es AckDecision
 ```
 
-The handler returns intent only. It does not receive a commit function separately because the
-`AckHandle` is carried in `Ingested` for the runner to finalize exactly once.
+The handler returns intent only. It receives `Message`, not `Ingested`, so application code can read
+the envelope and optional lease but cannot call the adapter finalizer directly. The framework owns
+finalization and applies the returned decision to the original `AckHandle` exactly once. If the
+handler throws, the single-message runner finalizes the delivery with `AckRetry (RetryDelay 0)` and
+uses the same bounded finalizer retry path as batch processing.
 
 ## Ack decisions
 
@@ -68,6 +71,10 @@ getTrackedDecisions ::
   (IOE :> es) =>
   TrackingAck ->
   Eff es [(MessageId, AckDecision)]
+
+mkTrackedIngested :: (IOE :> es) => TrackingAck -> Envelope msg -> Ingested es msg
+
+trackedListAdapter :: (IOE :> es) => TrackingAck -> [Envelope msg] -> Adapter es msg
 ```
 
 Use these helpers to test handlers and runner behavior without a real queue backend.

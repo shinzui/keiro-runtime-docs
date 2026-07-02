@@ -5,10 +5,10 @@ description: "How ordering guarantees constrain the runner's concurrency mode an
 
 shibuya separates the ordering guarantee from the execution strategy.
 
-`Ordering` describes the guarantee the source requires:
+`OrderingPolicy` describes the guarantee the source requires:
 
 ```haskell
-data Ordering
+data OrderingPolicy
   = StrictInOrder
   | PartitionedInOrder
   | Unordered
@@ -28,12 +28,16 @@ of one another could commit or dead-letter later messages before earlier message
 `validatePolicy` rejects `StrictInOrder` with `Ahead` or `Async`.
 
 `PartitionedInOrder` is for backends that preserve order inside a partition but allow different
-partitions to move independently. The core policy type records this guarantee; adapter-specific
-plans describe how each adapter maps backend partitions to processors.
+partitions to move independently. Single-message processors enforce this with partition-keyed
+dispatch: equal `Envelope.partition` values run and finalize in arrival order, while distinct
+partitions can use the configured concurrency.
 
 `Unordered` means messages can be processed independently. It can run with `Serial`, `Ahead n`, or
 `Async n`.
 
-Backpressure is independent of those policies. `runSupervised` creates a bounded NQE inbox of the
-configured size. The ingester reads from `Adapter.source` and blocks when the inbox is full, so a
-fast backend stream cannot grow memory without bound while handlers are slow.
+Batching processors schedule by `BatchKey`, not by `Envelope.partition`, so `runApp` rejects
+`PartitionedInOrder` with `Ahead n` or `Async n` for `BatchingProcessor`.
+
+Backpressure is independent of those policies. The internal supervised runner creates a bounded NQE
+inbox of the configured size. The ingester reads from `Adapter.source` and blocks when the inbox is
+full, so a fast backend stream cannot grow memory without bound while handlers are slow.

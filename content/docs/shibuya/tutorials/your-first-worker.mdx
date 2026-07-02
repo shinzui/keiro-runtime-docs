@@ -9,12 +9,12 @@ emits `Ingested` messages, write a `Handler`, wrap both in a `QueueProcessor`, a
 
 ## Define the payload and handler
 
-A handler receives the whole `Ingested` value, not only the payload. Read the payload from
-`ingested.envelope.payload` and return an `AckDecision`.
+A handler receives `Message es msg`, not only the payload. Read the payload from
+`message.envelope.payload` and return an `AckDecision`.
 
 ```haskell
 import Effectful (Eff, IOE, liftIO, (:>))
-import Shibuya.Core
+import Shibuya
 
 data OrderJob = OrderJob
   { orderId :: Text
@@ -22,8 +22,8 @@ data OrderJob = OrderJob
   }
 
 handleOrder :: (IOE :> es) => Handler es OrderJob
-handleOrder ingested = do
-  let job = ingested.envelope.payload
+handleOrder message = do
+  let job = message.envelope.payload
   liftIO (print job)
   pure AckOk
 ```
@@ -65,16 +65,15 @@ ordersProcessor ordersAdapter =
     }
 ```
 
-Start processors with `runApp`. The first argument controls supervisor behavior, the second is the
-bounded inbox size used for backpressure, and the list names every processor.
+Start processors with `runApp`. `AppConfig` controls supervisor behavior and the bounded inbox size
+used for backpressure; the list names every processor.
 
 ```haskell
 main :: IO ()
 main = runEff . runTracingNoop $ do
   result <-
     runApp
-      IgnoreFailures
-      100
+      defaultAppConfig {strategy = IgnoreFailures, inboxSize = 100}
       [(ProcessorId "orders", ordersProcessor myAdapter)]
 
   case result of
@@ -92,5 +91,5 @@ After the worker starts, each processor should move through this sequence:
 1. The adapter's `source` yields `Ingested` messages.
 2. The bounded inbox receives them, applying backpressure if handlers fall behind.
 3. The handler returns an `AckDecision`.
-4. The runner calls `ingested.ack.finalize decision` exactly once.
+4. The runner calls the original `AckHandle.finalize decision` exactly once.
 5. The processor metrics count received, processed, failed, and in-flight work.

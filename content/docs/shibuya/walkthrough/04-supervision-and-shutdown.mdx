@@ -8,22 +8,22 @@ description: "How runApp starts processors, the Master tracks metrics, and grace
 ```haskell
 runApp ::
   (IOE :> es, Tracing :> es) =>
-  SupervisionStrategy ->
-  Int ->
+  AppConfig ->
   [(ProcessorId, QueueProcessor es)] ->
   Eff es (Either AppError (AppHandle es))
 ```
 
-It validates every `QueueProcessor` policy first. If validation passes, it starts a `Master`, spawns
-each processor with `runSupervised`, and returns an `AppHandle`.
+It validates `AppConfig`, every `QueueProcessor` policy, and every batch config first. If validation
+passes, it starts a `Master`, spawns each processor with the internal supervised runner, and returns
+an `AppHandle`.
 
-The `Master` in `Shibuya.Runner.Master` owns two things: the NQE supervisor and a TVar map from
-`ProcessorId` to each processor's metrics TVar. Processor metrics are registered on start and
-unregistered when the supervised child exits.
+The `Master` in `Shibuya.Internal.Runner.Master` owns the NQE supervisor and the processor metrics
+registry. Public modules keep `Master` opaque; use `getAppMaster`, `getAppMetrics`, and the metrics
+server helpers instead of record fields.
 
-`runSupervised` creates the metrics TVar and done TVar, registers with the master, then adds the
-processor body as a supervised child. It catches `ProcessorHalt` so a handler's intentional halt is
-not treated as an unexpected exception by that child.
+The internal supervised runner creates metrics and done state, registers with the master, then adds
+the processor body as a supervised child. It catches `ProcessorHalt` so a handler's intentional halt
+is not treated as an unexpected exception by that child.
 
 Graceful shutdown is in `stopAppGracefully`:
 

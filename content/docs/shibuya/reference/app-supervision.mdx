@@ -12,7 +12,22 @@ data SupervisionStrategy
 ```
 
 `IgnoreFailures` keeps other processors running if one child exits. `StopAllOnFailure` maps to an
-NQE strategy that stops all processors when one fails.
+NQE strategy that stops all processors when one fails. Graceful exits, including finite streams
+completing and handlers returning `AckHalt`, do not stop sibling processors.
+
+## Application config
+
+```haskell
+data AppConfig = AppConfig
+  { strategy :: SupervisionStrategy
+  , inboxSize :: Int
+  }
+
+defaultAppConfig :: AppConfig
+```
+
+`defaultAppConfig` is `IgnoreFailures` with an inbox of `100`. `runApp` validates that `inboxSize`
+is at least `1` before starting any processor.
 
 ## Shutdown configuration
 
@@ -53,7 +68,10 @@ data AppError
   = AppPolicyError PolicyError
   | AppHandlerError HandlerError
   | AppRuntimeError RuntimeError
+  | AppBatchConfigError BatchConfigError
+  | AppConfigInvalid ConfigError
 ```
 
-Policy errors are produced before processors start. Runtime errors cover supervisor and inbox
-failures. Handler exceptions are represented as `HandlerException Text`.
+Policy, batch config, and app config errors are produced before processors start. Runtime errors
+cover supervisor failures. Handler exceptions are represented as `HandlerException Text`; on the
+single-message path, thrown handlers are finalized as `AckRetry (RetryDelay 0)`.

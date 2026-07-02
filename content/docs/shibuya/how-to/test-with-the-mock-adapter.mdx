@@ -6,23 +6,26 @@ description: "Build finite source streams and inspect ack decisions without a re
 Use `Shibuya.Adapter.Mock` when the behavior under test is your handler or core runner wiring.
 
 1. Create `TrackingAck` with `newTrackingAck`.
-2. Build `Ingested` values whose `ack` is `trackingAckHandle tracking msgId`.
-3. Feed them through `listAdapter`.
-4. Run the finite adapter with `runWithMetrics`.
+2. Build `Envelope` values with `mkEnvelope`.
+3. Feed them through `trackedListAdapter`.
+4. Run the finite adapter with `runApp` and wait for it with `waitApp`.
 5. Assert `getTrackedDecisions`.
 
 ```haskell
 testHandler :: Eff '[Tracing, IOE] [(MessageId, AckDecision)]
 testHandler = do
   tracking <- newTrackingAck
-  message <- mkTestMessage tracking (MessageId "bad") BadPayload
+  let envelope = mkEnvelope (MessageId "bad") BadPayload
+      adapter = trackedListAdapter tracking [envelope]
 
-  _ <-
-    runWithMetrics
-      1
-      (ProcessorId "handler-test")
-      (listAdapter [message])
-      handlerUnderTest
+  result <-
+    runApp
+      defaultAppConfig {inboxSize = 1}
+      [(ProcessorId "handler-test", mkProcessor adapter handlerUnderTest)]
+
+  case result of
+    Left err -> liftIO (fail (show err))
+    Right appHandle -> waitApp appHandle
 
   getTrackedDecisions tracking
 ```

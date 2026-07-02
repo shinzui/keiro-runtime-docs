@@ -3,65 +3,48 @@ title: "Test with the mock adapter"
 description: "Use listAdapter and trackingAckHandle to run handlers against finite messages."
 ---
 
-`Shibuya.Adapter.Mock` is the test adapter in `shibuya-core`. It provides a finite list-backed
-adapter and an ack handle that records every decision.
+`Shibuya.Adapter.Mock` is the test adapter in `shibuya-core`. It provides finite list-backed
+adapters and ack handles that record every decision.
 
-## Create tracked ingested messages
+## Create tracked messages
 
-The helper `newTrackingAck` allocates an in-memory decision log. `trackingAckHandle` turns a
-`MessageId` into an `AckHandle` that appends `(MessageId, AckDecision)` to that log.
+The helper `newTrackingAck` allocates an in-memory decision log. `trackedListAdapter` wraps
+envelopes in `Ingested` values whose ack handles append `(MessageId, AckDecision)` to that log.
 
 ```haskell
-mkTestMessage ::
-  (IOE :> es) =>
-  TrackingAck ->
-  MessageId ->
-  msg ->
-  Eff es (Ingested es msg)
-mkTestMessage tracking msgId payload =
-  pure
-    Ingested
-      { envelope =
-          Envelope
-            { messageId = msgId
-            , cursor = Nothing
-            , partition = Nothing
-            , enqueuedAt = Nothing
-            , traceContext = Nothing
-            , headers = Nothing
-            , attempt = Just (Attempt 0)
-            , attributes = mempty
-            , payload = payload
-            }
-      , ack = trackingAckHandle tracking msgId
-      , lease = Nothing
-      }
+mkTestEnvelope :: MessageId -> msg -> Envelope msg
+mkTestEnvelope msgId payload =
+  (mkEnvelope msgId payload)
+    { attempt = Just (Attempt 0)
+    }
 ```
 
 ## Feed a finite adapter
 
-`listAdapter` wraps a list of `Ingested` values in an `Adapter` whose stream ends after the list is
+`trackedListAdapter` wraps a list of envelopes in an `Adapter` whose stream ends after the list is
 drained.
 
 ```haskell
 runOneBatch :: Eff '[Tracing, IOE] [(MessageId, AckDecision)]
 runOneBatch = do
   tracking <- newTrackingAck
-  msg1 <- mkTestMessage tracking (MessageId "one") (OrderJob "o-1" 1200)
-  msg2 <- mkTestMessage tracking (MessageId "two") (OrderJob "o-2" 0)
+  let env1 = mkTestEnvelope (MessageId "one") (OrderJob "o-1" 1200)
+      env2 = mkTestEnvelope (MessageId "two") (OrderJob "o-2" 0)
+      adapter = trackedListAdapter tracking [env1, env2]
 
-  _processor <-
-    runWithMetrics
-      10
-      (ProcessorId "orders-test")
-      (listAdapter [msg1, msg2])
-      handleOrder
+  result <-
+    runApp
+      defaultAppConfig {inboxSize = 10}
+      [(ProcessorId "orders-test", mkProcessor adapter handleOrder)]
+
+  case result of
+    Left err -> liftIO (fail (show err))
+    Right appHandle -> waitApp appHandle
 
   getTrackedDecisions tracking
 ```
 
-`runWithMetrics` is useful in tests because it blocks until the finite stream is exhausted and the
-inbox is drained. `runApp` is the multi-processor application entry point.
+`waitApp` returns after the finite adapter stream is exhausted and the inbox is drained.
 
 ## Assert decisions, not backend effects
 

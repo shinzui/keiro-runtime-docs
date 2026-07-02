@@ -1,10 +1,11 @@
 ---
 title: "Core values and envelopes"
-description: "The stable message identity, cursor, attempt, envelope, ingested message, lease, and ack-handle types."
+description: "The stable message identity, cursor, attempt, envelope, handler-facing message, ingested message, lease, and ack-handle types."
 ---
 
 These types live in `Shibuya.Core.Types`, `Shibuya.Core.Ingested`, `Shibuya.Core.Lease`, and
-`Shibuya.Core.AckHandle`. `Shibuya.Core` re-exports them for application code.
+`Shibuya.Core.AckHandle`. New application code should import the `Shibuya` umbrella module;
+`Shibuya.Core` remains a compatibility re-export in the 0.8 line.
 
 ## Message identity and position
 
@@ -46,6 +47,8 @@ data Envelope msg = Envelope
   , attributes :: HashMap Text Attribute
   , payload :: msg
   }
+
+mkEnvelope :: MessageId -> msg -> Envelope msg
 ```
 
 `headers = Nothing` means the adapter does not surface headers. `headers = Just []` means the
@@ -53,7 +56,10 @@ adapter does surface headers and this message carried none. `attributes` is for 
 OpenTelemetry attributes; runner defaults are applied first and adapter attributes override keys of
 the same name.
 
-## Ingested, lease, and ack handle
+Prefer `mkEnvelope` for adapter and test code. It fills optional metadata with defaults; set
+backend-specific fields with record update syntax.
+
+## Message, ingested, lease, and ack handle
 
 ```haskell
 data Ingested es msg = Ingested
@@ -61,6 +67,15 @@ data Ingested es msg = Ingested
   , ack :: AckHandle es
   , lease :: Maybe (Lease es)
   }
+
+data Message es msg = Message
+  { envelope :: Envelope msg
+  , lease :: Maybe (Lease es)
+  }
+
+toMessage :: Ingested es msg -> Message es msg
+
+mkIngested :: Envelope msg -> AckHandle es -> Ingested es msg
 
 data Lease es = Lease
   { leaseId :: Text
@@ -72,5 +87,7 @@ newtype AckHandle es = AckHandle
   }
 ```
 
-Handlers receive `Ingested`. The runner calls `finalize` after the handler returns. Long-running
-handlers may use `leaseExtend` only when the adapter supplied a lease.
+Adapters construct `Ingested`: it is the framework-side value that carries the backend finalizer.
+Handlers receive `Message`: it is the read-only view with `envelope` and optional `lease`, but no
+ack handle. The runner calls `finalize` after the handler returns or throws. Long-running handlers
+may use `leaseExtend` only when the adapter supplied a lease.

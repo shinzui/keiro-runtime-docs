@@ -9,14 +9,14 @@ and start time. It does not create metrics itself; processors update their own T
 `Master` exposes snapshots.
 
 <Callout type="info">
-  Package `shibuya-metrics` v0.7.1.0 exposes `Shibuya.Metrics`, `Config`, `Health`, `JSON`,
+  Package `shibuya-metrics` exposes `Shibuya.Metrics`, `Config`, `Health`, `JSON`,
   `Prometheus`, `Server`, `Types`, and `WebSocket`. The server binds Warp to host `"*"` on
   `config.port`; put auth, TLS, and public exposure policy in your deployment layer.
 </Callout>
 
 ## Metrics values
 
-`Shibuya.Runner.Metrics` defines the shape surfaced by every endpoint:
+`Shibuya.Core.Metrics` defines the shape surfaced by every endpoint:
 
 ```haskell
 newtype ProcessorId = ProcessorId { unProcessorId :: Text }
@@ -34,14 +34,23 @@ data InFlightInfo = InFlightInfo
 
 data StreamStats = StreamStats
   { received :: Int
-  , dropped :: Int
   , processed :: Int
   , failed :: Int
+  }
+
+data BatchStats = BatchStats
+  { batchesEmitted :: Int
+  , batchedMessages :: Int
+  , partialFailures :: Int
+  , sizeTriggered :: Int
+  , timeoutTriggered :: Int
+  , flushTriggered :: Int
   }
 
 data ProcessorMetrics = ProcessorMetrics
   { state :: ProcessorState
   , stats :: StreamStats
+  , batch :: BatchStats
   , startedAt :: UTCTime
   }
 
@@ -52,6 +61,9 @@ type MetricsMap = Map ProcessorId ProcessorMetrics
 increments for `AckOk` and `AckRetry`. `failed` increments for `AckDeadLetter` and handler
 exceptions. `AckHalt` marks the processor failed with the halt reason; it does not increment
 `processed`.
+
+`batch` is populated by batching processors. It counts emitted batches, total messages inside those
+batches, partial-failure batches, and which trigger emitted each batch.
 
 ## Server config
 
@@ -147,13 +159,14 @@ stuck. A processor is stuck when it remains in `Processing` longer than `stuckTh
 ```text
 shibuya_messages_received_total
 shibuya_messages_processed_total
-shibuya_messages_dropped_total
 shibuya_messages_failed_total
 shibuya_processor_state
 shibuya_processor_in_flight
 ```
 
 `shibuya_processor_state` is an integer gauge: `1` idle, `2` processing, `3` failed, `4` stopped.
+`shibuya_messages_dropped_total` was removed with `StreamStats.dropped`; dropped messages were not
+a live counter in the current runner.
 
 ## WebSocket protocol
 

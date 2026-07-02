@@ -14,14 +14,16 @@ data Adapter es msg = Adapter
 ```
 
 The adapter owns polling, decoding, lease acquisition, cursor or offset tracking, and the backend
-effect of each `AckDecision`. The runner owns none of that. It only consumes `source`, invokes
-handlers, and calls the `AckHandle` inside each `Ingested`.
+effect of each `AckDecision`. The runner owns none of that. It only consumes `source`, projects each
+`Ingested` to a handler-facing `Message`, invokes handlers, and calls the `AckHandle` inside the
+original `Ingested`.
 
 That split is why adapters can vary widely. A pgmq adapter can derive `Attempt` from the queue row's
 read count and implement retry with visibility timeouts. A Kafka adapter can set partition metadata
 and commit offsets. A kiroku adapter can expose event-store positions as cursors. A mock adapter can
 record decisions in an `IORef`.
 
-Adapters should fill the `Envelope` as faithfully as the backend allows. Use `Nothing` when the
-backend cannot surface a field. For headers, `Nothing` means the adapter does not surface headers at
-all, while `Just []` means the adapter surfaces headers and this message had none.
+Adapters should fill the `Envelope` as faithfully as the backend allows. Prefer `mkEnvelope` and set
+backend-specific optional fields with record updates. Use `Nothing` when the backend cannot surface
+a field. For headers, `Nothing` means the adapter does not surface headers at all, while `Just []`
+means the adapter surfaces headers and this message had none.

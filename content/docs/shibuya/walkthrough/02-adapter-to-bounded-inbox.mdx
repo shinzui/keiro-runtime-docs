@@ -15,7 +15,7 @@ data Adapter es msg = Adapter
 
 The runner never asks the backend for messages directly. It consumes `source`.
 
-In `Shibuya.Runner.Supervised.runIngesterAndProcessor`, the runner creates a bounded NQE inbox:
+In `Shibuya.Internal.Runner.Supervised`, the runner creates a bounded NQE inbox:
 
 ```haskell
 inbox <- liftIO $ newBoundedInbox inboxSize
@@ -25,13 +25,12 @@ Then it starts the ingester in an async thread and processes from the inbox in t
 thread. `runIngesterWithMetrics` is the bridge:
 
 ```haskell
-runIngesterWithMetrics metricsVar source inbox = do
+runIngesterWithMetrics metricsHandle source inbox = do
   let mailbox = inboxToMailbox inbox
   Stream.fold Fold.drain $
     Stream.mapM
       ( \msg -> do
-          liftIO $ atomically $ modifyTVar' metricsVar $ \m ->
-            m {stats = incReceived m.stats}
+          liftIO $ incrementReceived metricsHandle
           liftIO $ send msg mailbox
           pure msg
       )

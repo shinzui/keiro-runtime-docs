@@ -8,17 +8,19 @@ assume the vocabulary from earlier chapters.
 
 ```text
 shibuya-core/src/Shibuya/Core/Types.hs       -- MessageId, Cursor, Attempt, Envelope
-shibuya-core/src/Shibuya/Core/Ingested.hs    -- Ingested = envelope + ack + lease
+shibuya-core/src/Shibuya/Core/Ingested.hs    -- Ingested and handler-facing Message
 shibuya-core/src/Shibuya/Adapter.hs          -- Adapter.source and shutdown
-shibuya-core/src/Shibuya/Runner/Ingester.hs  -- stream to bounded inbox
-shibuya-core/src/Shibuya/Runner/Supervised.hs -- processOne and concurrency
+shibuya-core/src/Shibuya/Internal/Runner/Ingester.hs -- stream to bounded inbox
+shibuya-core/src/Shibuya/Internal/Runner/Supervised.hs -- processOne and concurrency
+shibuya-core/src/Shibuya/Internal/Runner/Batcher.hs -- keyed batch accumulation
 shibuya-core/src/Shibuya/App.hs              -- runApp, QueueProcessor, graceful stop
-shibuya-core/src/Shibuya/Runner/Master.hs    -- metrics registry and supervisor handle
+shibuya-core/src/Shibuya/Internal/Runner/Master.hs -- metrics registry and supervisor handle
 ```
 
-The key invariant is that exactly one value flows through the worker: `Ingested es msg`. It already
-contains the normalized `Envelope`, the backend `AckHandle`, and the optional visibility `Lease`.
-Everything else is runner mechanics around that value.
+The key boundary is split in two. Adapters emit `Ingested es msg`, which contains the normalized
+`Envelope`, backend `AckHandle`, and optional visibility `Lease`. Handlers receive `Message es msg`,
+the read-only projection with envelope and lease but no finalizer. Everything else is runner
+mechanics around that boundary.
 
 ```mermaid
 flowchart TD
@@ -26,6 +28,7 @@ flowchart TD
   Ingester --> Inbox["bounded NQE inbox"]
   Inbox --> Processor["processUntilDrained"]
   Processor --> One["processOne"]
+  One --> Message["toMessage"]
   One --> Handler["Handler es msg"]
   Handler --> Finalize["AckHandle.finalize"]
   One --> Metrics["ProcessorMetrics TVar"]

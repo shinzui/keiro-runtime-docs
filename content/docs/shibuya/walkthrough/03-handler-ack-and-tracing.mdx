@@ -3,8 +3,9 @@ title: "03 — Handler, ack, and tracing"
 description: "The processOne path: call the handler, finalize the decision, record metrics, and stop on halt."
 ---
 
-`processOne` in `Shibuya.Runner.Supervised` is the message execution center. It receives the
-processor metrics TVar, processor id, max concurrency, halt flag, handler, and `Ingested` message.
+`processOne` in `Shibuya.Internal.Runner.Supervised` is the message execution center. It receives
+the processor metrics handle, processor id, max concurrency, halt flag, handler, and `Ingested`
+message.
 
 First it extracts parent trace context:
 
@@ -18,14 +19,14 @@ attributes. Adapter attributes win on duplicate keys.
 The handler call is intentionally small:
 
 ```haskell
-decision <- handler ingested
+decision <- handler (toMessage ingested)
 ingested.ack.finalize decision
 pure (Right decision)
 ```
 
-If the handler throws, `processOne` records the exception on the trace span and treats the result as
-`Left (HandlerException ...)` for metrics. If the handler returns normally, the runner records the
-ack decision as a span event and attribute.
+If the handler throws, `processOne` records the exception on the trace span and finalizes the
+message with `AckRetry (RetryDelay 0)`. If the handler returns normally, the runner records the ack
+decision as a span event and attribute.
 
 Metrics are updated after the handler finishes. `AckOk` and `AckRetry` increment processed.
 `AckDeadLetter` increments failed. Exceptions increment failed. `AckHalt` records a failed processor

@@ -1,6 +1,6 @@
 ---
-title: "01 — Core types and Ingested"
-description: "The value that moves through shibuya: Envelope plus AckHandle plus optional Lease."
+title: "01 — Core types, Ingested, and Message"
+description: "The adapter-side value and handler-side projection: Envelope, AckHandle, and optional Lease."
 ---
 
 `Shibuya.Core.Types` is deliberately boring: identity, position, attempt count, headers, trace
@@ -18,6 +18,8 @@ data Envelope msg = Envelope
   , attributes :: HashMap Text Attribute
   , payload :: msg
   }
+
+mkEnvelope :: MessageId -> msg -> Envelope msg
 ```
 
 The non-obvious fields are the portability fields. `attempt` lets retry helpers grow the delay
@@ -34,7 +36,17 @@ data Ingested es msg = Ingested
   , ack :: AckHandle es
   , lease :: Maybe (Lease es)
   }
+
+data Message es msg = Message
+  { envelope :: Envelope msg
+  , lease :: Maybe (Lease es)
+  }
+
+toMessage :: Ingested es msg -> Message es msg
 ```
+
+Adapters construct `Ingested`; handlers receive `Message`. That keeps the backend finalizer out of
+application code while preserving envelope and lease access.
 
 `AckHandle` is one function:
 

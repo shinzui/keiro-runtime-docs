@@ -22,14 +22,14 @@ Then map those outcomes to shibuya decisions at the handler boundary:
 
 ```haskell
 handleCharge :: (IOE :> es) => Handler es ChargeJob
-handleCharge ingested = do
-  result <- liftIO (chargeCard ingested.envelope.payload)
+handleCharge message = do
+  result <- liftIO (chargeCard message.envelope.payload)
   case result of
     Charged ->
       pure AckOk
 
     GatewayUnavailable ->
-      retryWithBackoff defaultBackoffPolicy ingested.envelope
+      retryWithBackoff defaultBackoffPolicy message.envelope
 
     BadCard reason ->
       pure (AckDeadLetter (InvalidPayload reason))
@@ -60,8 +60,8 @@ Adapters that can track redelivery set `envelope.attempt`. `retryWithBackoff` re
 
 ```haskell
 retryTransient :: (IOE :> es) => Handler es msg
-retryTransient ingested =
-  retryWithBackoff defaultBackoffPolicy ingested.envelope
+retryTransient message =
+  retryWithBackoff defaultBackoffPolicy message.envelope
 ```
 
 For deterministic tests, use `exponentialBackoffPure` with an explicit jitter sample.

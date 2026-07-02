@@ -1,12 +1,12 @@
 ---
 title: "Policy and runner entry points"
-description: "Ordering, concurrency, validation, and the supervised runner APIs."
+description: "Ordering, concurrency, validation, AppConfig, and the public application runner APIs."
 ---
 
 ## Ordering and concurrency
 
 ```haskell
-data Ordering
+data OrderingPolicy
   = StrictInOrder
   | PartitionedInOrder
   | Unordered
@@ -16,11 +16,16 @@ data Concurrency
   | Ahead Int
   | Async Int
 
-validatePolicy :: Ordering -> Concurrency -> Either PolicyError ()
+validatePolicy :: OrderingPolicy -> Concurrency -> Either PolicyError ()
 ```
 
 `validatePolicy` rejects `StrictInOrder` with `Ahead _` or `Async _`. Other combinations are
-accepted by `shibuya-core`.
+accepted by `shibuya-core` for single-message processors. `PartitionedInOrder` with `Ahead _` or
+`Async _` is now enforced by keyed scheduling: messages with the same `Envelope.partition` are
+processed and acknowledged in arrival order, while distinct partitions can run concurrently.
+
+Batching processors use `BatchKey`, not `Envelope.partition`, for their scheduling key. `runApp`
+therefore rejects `BatchingProcessor` with `PartitionedInOrder` plus `Ahead _` or `Async _`.
 
 ## QueueProcessor
 
@@ -29,51 +34,52 @@ data QueueProcessor es where
   QueueProcessor ::
     { adapter :: Adapter es msg
     , handler :: Handler es msg
-    , ordering :: Ordering
+    , ordering :: OrderingPolicy
+    , concurrency :: Concurrency
+    } ->
+    QueueProcessor es
+  BatchingProcessor ::
+    { adapter :: Adapter es msg
+    , batchHandler :: BatchHandler es msg
+    , batchConfig :: BatchConfig es msg
+    , ordering :: OrderingPolicy
     , concurrency :: Concurrency
     } ->
     QueueProcessor es
 
 mkProcessor :: Adapter es msg -> Handler es msg -> QueueProcessor es
+
+mkBatchProcessor ::
+  Adapter es msg ->
+  BatchHandler es msg ->
+  BatchConfig es msg ->
+  QueueProcessor es
 ```
 
-`mkProcessor` uses `Unordered` and `Serial`.
-
-## Supervised runner
-
-```haskell
-runSupervised ::
-  (IOE :> es, Tracing :> es) =>
-  Master ->
-  Natural ->
-  ProcessorId ->
-  Concurrency ->
-  Adapter es msg ->
-  Handler es msg ->
-  Eff es SupervisedProcessor
-
-runWithMetrics ::
-  (IOE :> es, Tracing :> es) =>
-  Natural ->
-  ProcessorId ->
-  Adapter es msg ->
-  Handler es msg ->
-  Eff es SupervisedProcessor
-```
-
-`runSupervised` registers the processor under a `Master` and returns immediately. `runWithMetrics`
-is standalone and blocks until a finite stream and inbox are drained.
+`mkProcessor` uses `Unordered` and `Serial`. `mkBatchProcessor` uses the same conservative defaults
+for a batch handler and `BatchConfig`.
 
 ## Application runner
 
 ```haskell
+data AppConfig = AppConfig
+  { strategy :: SupervisionStrategy
+  , inboxSize :: Int
+  }
+
+defaultAppConfig :: AppConfig
+
 runApp ::
   (IOE :> es, Tracing :> es) =>
-  SupervisionStrategy ->
-  Int ->
+  AppConfig ->
   [(ProcessorId, QueueProcessor es)] ->
   Eff es (Either AppError (AppHandle es))
 ```
 
-The `Int` is the bounded inbox size. `runApp` validates every processor policy, starts the master,
-spawns each processor, and returns an `AppHandle`.
+`defaultAppConfig` is `IgnoreFailures` with an inbox of `100`. `runApp` validates `inboxSize`,
+processor policies, and batch configs before starting processors. An invalid inbox size returns
+`Left (AppConfigInvalid (InvalidInboxSize n))`.
+
+Runner internals now live under `Shibuya.Internal.Runner.*` and carry no public stability
+guarantee. Application code should enter through `runApp` and observe the app with `AppHandle`
+operations.
