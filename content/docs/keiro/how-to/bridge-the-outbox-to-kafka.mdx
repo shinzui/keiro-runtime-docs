@@ -1,10 +1,10 @@
 ---
 title: "Bridge the outbox to Kafka"
-description: "Write the OutboxRow -> Eff es PublishOutcome callback: convert a row to a KafkaProducerRecord, produce it synchronously, and return PublishSucceeded only after the broker acks."
+description: "Write the batch-shaped outbox publisher callback: convert OutboxRows to KafkaProducerRecords, produce them, and return PublishSucceeded only after broker acks."
 ---
 
-`publishClaimedOutbox` is transport-neutral — it hands you each claimed row and asks for a
-`PublishOutcome`. This guide shows how to write that callback for Kafka.
+`publishClaimedOutbox` is transport-neutral — it hands you the claimed rows as a batch and asks for
+one `PublishOutcome` per row. This guide shows how to write that callback for Kafka.
 
 <Callout type="info">
 Assumes you publish through the outbox (see [Publish with the
@@ -14,8 +14,8 @@ library (e.g. `hw-kafka-client` or `kafka-effectful`).
 
 ## Goal
 
-Implement the `OutboxRow -> Eff es PublishOutcome` publish function so the worker produces each row
-to Kafka and reflects the broker's acknowledgement back into the row's status.
+Implement the `[OutboxRow] -> Eff es [(OutboxId, PublishOutcome)]` publish function so the worker
+can hand Kafka a batch and reflect each broker acknowledgement back into the row's status.
 
 ## keiro stays free of librdkafka
 
@@ -35,23 +35,29 @@ copies the `payloadBytes`, and UTF-8-encodes the canonical headers.
 
 ## Steps
 
-1. **Convert the row to a `KafkaProducerRecord`.** This is pure:
+1. **Convert each row to a `KafkaProducerRecord`.** This is pure:
 
    ```haskell
    let rec = outboxRowToKafkaRecord row    -- :: KafkaProducerRecord
    ```
 
-2. **Produce it synchronously and map the result.** Return `PublishSucceeded` **only after the
+2. **Produce each record and map the result.** Return `PublishSucceeded` **only after the
    broker acks**; any failure is `PublishFailed err` (the worker will retry it after the backoff):
 
    ```haskell
-   publishViaKafka :: (IOE :> es) => Producer -> OutboxRow -> Eff es PublishOutcome
-   publishViaKafka producer row = do
-     let rec = outboxRowToKafkaRecord row
-     result <- liftIO (produceSync producer (toBrokerRecord rec))   -- your library's record type
-     pure $ case result of
-       Right () -> PublishSucceeded
-       Left err -> PublishFailed (renderProduceError err)
+   publishViaKafka :: (IOE :> es) => Producer -> [OutboxRow] -> Eff es [(OutboxId, PublishOutcome)]
+   publishViaKafka producer rows =
+     traverse publishOne rows
+    where
+     publishOne row = do
+       let rec = outboxRowToKafkaRecord row
+       result <- liftIO (produceSync producer (toBrokerRecord rec))   -- your library's record type
+       pure
+         ( row ^. #outboxId
+         , case result of
+             Right () -> PublishSucceeded
+             Left err -> PublishFailed (renderProduceError err)
+         )
    ```
 
    `toBrokerRecord` is the small adapter in your integration package that maps the neutral
@@ -65,11 +71,15 @@ copies the `payloadBytes`, and UTF-8-encodes the canonical headers.
    ```
 
 <Callout type="warn">
-Produce **synchronously** (await the broker ack) before returning `PublishSucceeded`. If you
-fire-and-forget and return success prematurely, the worker marks the row `sent` for a publish that
-may not have landed — defeating the durability the outbox exists to provide. A late ack that races a
+Do not report `PublishSucceeded` for a row until the broker has accepted that row. If you
+fire-and-forget and return success prematurely, the worker marks the row `sent` for a publish that may
+not have landed — defeating the durability the outbox exists to provide. A late ack that races a
 crash just means the row is republished, which the consumer's inbox deduplicates.
 </Callout>
+
+For higher throughput, replace the `traverse publishOne` body with your broker library's batch or
+pipelined send API and return outcomes keyed by `OutboxId`. Under `StopTheLine`, keiro calls your
+callback with singleton batches; under the other ordering policies it passes the whole claimed batch.
 
 ## Verify it worked
 

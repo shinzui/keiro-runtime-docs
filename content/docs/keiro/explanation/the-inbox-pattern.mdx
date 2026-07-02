@@ -26,16 +26,16 @@ dedupe_key)`**, all inside *one* PostgreSQL transaction:
 ```mermaid
 flowchart TD
   M["delivered message"] --> K["dedupeKeyFor policy -> (source, dedupe_key)"]
-  K --> I["INSERT inbox row 'processing' ON CONFLICT DO NOTHING"]
+  K --> I["INSERT completed inbox row ON CONFLICT DO NOTHING"]
   I -->|new row| H["run handler + local writes"]
-  H --> C["UPDATE row -> 'completed'"]
-  C --> OK["InboxProcessed a (all commits atomically)"]
+  H --> OK["InboxProcessed a (row + handler commits atomically)"]
   I -->|row exists, completed| D["InboxDuplicate (handler NOT run)"]
+  I -->|row exists, processing| P["InboxInProgress"]
   I -->|row exists, failed| F["InboxPreviouslyFailed"]
 ```
 
-The inbox-row insert, the handler's local writes, and the `status = 'completed'` update **commit
-together or not at all**. This is the crux of the idempotency:
+The completed inbox-row insert and the handler's local writes **commit together or not at all**. This
+is the crux of the idempotency:
 
 - If this is the **first** delivery, the row is new, the handler runs, and everything commits.
 - If a **duplicate** arrives, the `INSERT … ON CONFLICT (source, dedupe_key) DO NOTHING` finds the
@@ -70,15 +70,24 @@ redelivery that arrives *after* its completed row has been GC'd will be treated 
 processed again. So the retention must exceed the maximum delivery delay you tolerate — the user
 guide recommends **30 days**. Failed rows are **never** GC'd (an operator must review them).
 
-## A v1 detail: `InboxProcessing` never escapes a transaction
+## A v1 detail: successful intake skips the visible processing row
 
-The `InboxProcessing` status and the reserved `markFailedTx` primitive exist for a *future* async
-path. In the shipped v1 single-transaction wrapper, a row is only ever observed as `completed` (or
-absent, after a rollback) — `processing` never escapes the transaction, and `markFailedTx` is not
-called by `runInboxTransaction`. So `InboxInProgress` and `InboxPreviouslyFailed` results are
-reachable only from those future paths; the v1 happy path is `InboxProcessed` then `InboxDuplicate`
-on redelivery. The retrying wrapper is the exception: it records `failed` rows explicitly for
-operator-visible poison accounting.
+The `InboxProcessing` status remains decodable for legacy rows and reserved async paths, but current
+fresh successful intake inserts directly as `completed`; it no longer writes a `processing` row and
+then updates it. So the normal happy path is `InboxProcessed` then `InboxDuplicate` on redelivery.
+The retrying wrapper is the exception: it records `failed` rows explicitly for operator-visible
+poison accounting.
+
+```mermaid
+flowchart LR
+  Single["single-message wrapper"] --> Completed["fresh success: one completed row insert"]
+  Batch["batch wrapper"] --> Shared["many messages in one transaction"]
+  Shared --> Fallback["on throw/condemn: fall back to retrying singles"]
+  Slim["PersistDedupeOnly"] --> Dedupe["success rows keep only dedupe/correlation data"]
+  Full["PersistFullEnvelope"] --> Envelope["success rows keep full envelope"]
+  Dedupe --> Failed["failed rows always keep full envelope"]
+  Envelope --> Failed
+```
 
 ## Trade-offs
 

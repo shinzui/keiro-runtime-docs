@@ -233,16 +233,16 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 
 | Wire name | Kind | Unit | Record helper | Emitted by |
 |---|---|---|---|---|
-| `keiro.outbox.backlog` | Gauge | `{event}` | `recordOutboxBacklog` | Outbox publisher, once per pass — rows in `pending`/`failed` awaiting publish. |
+| `keiro.outbox.backlog` | Gauge | `{event}` | `recordOutboxBacklog` | `outboxMaintenancePass` / `sampleOutboxBacklog` — rows in `pending`/`failed` awaiting publish. |
 | `keiro.outbox.published` | Counter | `{event}` | `recordOutboxPublished` | Outbox publisher, per-pass summary — rows successfully published. |
 | `keiro.outbox.retried` | Counter | `{event}` | `recordOutboxRetried` | Outbox publisher — publish attempts that failed and will retry. |
 | `keiro.outbox.deadlettered` | Counter | `{event}` | `recordOutboxDeadlettered` | Outbox publisher — rows parked in `dead` after exhausting retries. |
-| `keiro.outbox.reclaimed` | Counter | `{event}` | `recordOutboxReclaimed` | Outbox publisher — stale `publishing` rows reclaimed from a crashed or stalled publisher. |
+| `keiro.outbox.reclaimed` | Counter | `{event}` | `recordOutboxReclaimed` | `outboxMaintenancePass` — stale `publishing` rows reclaimed from a crashed or stalled publisher. |
 | `keiro.inbox.processed` | Counter | `{message}` | `recordInboxProcessed` | Inbox transaction — messages processed to completion. |
 | `keiro.inbox.duplicates` | Counter | `{message}` | `recordInboxDuplicates` | Inbox transaction — deliveries skipped as duplicates by `(source, dedupe_key)`. |
 | `keiro.inbox.failed` | Counter | `{message}` | `recordInboxFailed` | Inbox transaction — messages whose handler raised. |
 | `keiro.inbox.poisoned` | Counter | `{message}` | `recordInboxPoisoned` | Retrying inbox wrapper — handler failures that reached the configured attempt ceiling. |
-| `keiro.inbox.backlog` | Gauge | `{message}` | `recordInboxBacklog` | Inbox transaction — rows in `processing`/`failed` (non-terminal). |
+| `keiro.inbox.backlog` | Gauge | `{message}` | `recordInboxBacklog` | `sampleInboxBacklog` — rows in `processing`/`failed` (non-terminal). |
 | `keiro.timer.backlog` | Gauge | `{timer}` | `recordTimerBacklog` | Timer worker, once per pass — `scheduled` timers already due. |
 | `keiro.timer.fire.lag` | Histogram | `ms` | `recordTimerFireLag` | Timer worker, per claimed timer — milliseconds between `fire_at` and the actual fire. |
 | `keiro.timer.attempts` | Histogram | `{attempt}` | `recordTimerAttempts` | Timer worker, per claimed timer — the post-claim attempt count. |
@@ -256,8 +256,10 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 
 The worker entry points thread the handle for you: the [timer worker](/docs/keiro/reference/timers#runtimerworker)
 records the backlog, stuck, fire-lag, and attempts instruments inside each pass; the
-[outbox](/docs/keiro/reference/outbox) and [inbox](/docs/keiro/reference/inbox) helpers record theirs
-per pass and per transaction; and the projection path exposes
+[outbox](/docs/keiro/reference/outbox) publisher records publish outcome counters while
+`outboxMaintenancePass`/`sampleOutboxBacklog` record reclaim and backlog gauges; the
+[inbox](/docs/keiro/reference/inbox) helpers record per-message result counters while
+`sampleInboxBacklog` records the backlog gauge; and the projection path exposes
 [`recordProjectionLag`](/docs/keiro/reference/projection#recordprojectionlag) for the application to
 call on its drain loop. See [Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) for the
 end-to-end wiring.

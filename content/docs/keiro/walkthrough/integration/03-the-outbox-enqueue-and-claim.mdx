@@ -117,7 +117,7 @@ WITH ready AS (
   WHERE r.status IN ('pending', 'failed')
     AND r.next_attempt_at <= $2
     AND ( <ordering predicate> )
-  ORDER BY r.created_at
+  ORDER BY r.created_at, r.outbox_id
   LIMIT $1
   FOR UPDATE SKIP LOCKED
 )
@@ -130,7 +130,7 @@ RETURNING <row columns>
 Three load-bearing facts:
 
 1. The candidate set is `status IN ('pending', 'failed')`; stale `publishing` rows are reclaimed by
-   `publishClaimedOutbox` before the claim pass.
+   `outboxMaintenancePass` outside the publish hot path.
 2. `FOR UPDATE SKIP LOCKED` lets many workers claim disjoint batches concurrently without blocking
    on each other.
 3. The claim atomically flips the claimed rows to `publishing` and bumps `attempt_count`, all in the
@@ -152,13 +152,13 @@ policyPredicate = \case
     SELECT 1 FROM keiro_outbox earlier
     WHERE earlier.source = r.source
       AND earlier.message_key = r.message_key
-      AND earlier.created_at < r.created_at
+      AND (earlier.created_at, earlier.outbox_id) < (r.created_at, r.outbox_id)
       AND earlier.status NOT IN ('sent', 'dead') ) )
 
 -- perSourcePredicate: skip a row if ANY earlier row in the same source is still non-terminal.
 NOT EXISTS ( SELECT 1 FROM keiro_outbox earlier
   WHERE earlier.source = r.source
-    AND earlier.created_at < r.created_at
+    AND (earlier.created_at, earlier.outbox_id) < (r.created_at, r.outbox_id)
     AND earlier.status NOT IN ('sent', 'dead') )
 ```
 
@@ -181,12 +181,13 @@ ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
 
 ## Stale `publishing` recovery
 
-`publishClaimedOutbox` calls `requeueStuckOutbox` before claiming fresh work. A `publishing` row
+`outboxMaintenancePass` calls `requeueStuckOutbox` on its own slower schedule. A `publishing` row
 whose `updated_at` is older than `publishingTimeout` moves back to `failed` when it is still below
 `maxAttempts`, or to `dead` when it has exhausted attempts. This lets the next claim pass recover
-from a publisher crash without an operator resetting the row by hand. The trade-off is still
-at-least-once publish: if the broker ack happened but the process died before `markOutboxSent`, the
-reclaimed row can be published again.
+from a publisher crash without an operator resetting the row by hand, while keeping the claim/publish
+hot path free of the sweep and backlog `COUNT(*)`. The trade-off is still at-least-once publish: if
+the broker ack happened but the process died before `markOutboxSent`, the reclaimed row can be
+published again.
 
 ## The `keiro_outbox` table
 

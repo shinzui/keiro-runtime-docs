@@ -81,26 +81,28 @@ The span is `Producer`-kind and named `"send " <> destination` — the destinati
 `IntegrationEvent`, so a publish to `billing.orders.v1` opens a span named `send billing.orders.v1`.
 `setProducerAttributes` populates the messaging attributes (chapter 02 lists them).
 
-**Call site — `Outbox.hs`.** `publishClaimedOutbox`'s inner `drainBatch` wraps each claimed row's
-publish in the helper, passing the option-record tracer and the row's event/record. On a
-`PublishFailed` outcome it records `error.type = "publish_failed"` and span status `Error` on the
-live span:
+**Call site — `Outbox.hs`.** `publishClaimedOutbox` wraps each publish callback invocation in the
+helper, passing the option-record tracer and the first row's event/record. It also records
+`keiro.outbox.batch.size`. If any returned outcome is `PublishFailed`, it records
+`error.type = "publish_failed"` and span status `Error` on the live span:
 
 ```haskell
--- keiro/src/Keiro/Outbox.hs (drainBatch, abridged)
-outcome <-
+-- keiro/src/Keiro/Outbox.hs (publishRows, abridged)
+outcomes <-
   withProducerSpan
     (options ^. #tracer)
-    (row ^. #event)
-    (outboxRowToKafkaRecord row)
+    (firstRow ^. #event)
+    (outboxRowToKafkaRecord firstRow)
     $ \mSpan -> do
-      out <- publish row
-      case (mSpan, out) of
-        (Just sp, PublishFailed errMsg) -> do
+      for_ mSpan $ \sp ->
+        addAttribute sp "keiro.outbox.batch.size" (fromIntegral (length batch) :: Int64)
+      reported <- publish batch
+      case (mSpan, firstFailure reported) of
+        (Just sp, Just errMsg) -> do
           addAttribute sp (unkey error_type) ("publish_failed" :: Text)
           setStatus sp (Error errMsg)
         _ -> pure ()
-      pure out
+      pure reported
 ```
 
 Note the pattern that recurs everywhere: the helper hands back `Maybe Span`, and the caller only

@@ -11,8 +11,8 @@ pattern](/docs/keiro/explanation/the-inbox-pattern).
 ## `runInboxTransaction`
 
 Run `handler` at most once per `(source, dedupe_key)`. Computes the dedupe key from the policy,
-then in one transaction inserts the inbox row, runs the handler if the row is new, and marks it
-completed — or branches on the existing row's status if it is a duplicate.
+then in one transaction inserts a fresh successful row directly as `completed`, runs the handler if
+the row is new, or branches on the existing row's status if it is a duplicate.
 
 ```haskell
 runInboxTransaction ::
@@ -27,8 +27,49 @@ Returns `Left (DedupePolicyUnsatisfied …)` if the policy's required field is a
 `Tx.Transaction a` — a thrown exception or `Tx.condemn` rolls back the whole transaction including
 the inbox row. The leading `Maybe KeiroMetrics` is the opt-in
 [metrics](/docs/keiro/reference/telemetry#metrics-surface) handle: each transaction records the
-`keiro.inbox.processed`, `keiro.inbox.duplicates`, `keiro.inbox.failed`, and `keiro.inbox.backlog`
-instruments. Pass `Nothing` to disable them.
+`keiro.inbox.processed`, `keiro.inbox.duplicates`, and `keiro.inbox.failed` counters. Pass `Nothing`
+to disable them.
+
+```mermaid
+flowchart TD
+  Event["IntegrationEvent + optional KafkaDeliveryRef"] --> Key["dedupeKeyFor policy"]
+  Key -->|missing identity| Err["Left DedupePolicyUnsatisfied"]
+  Key -->|source + dedupe_key| Tx["single Postgres transaction"]
+  Tx --> Insert["tryInsertCompletedTx"]
+  Insert -->|new row| Handler["run handler"]
+  Handler -->|success| Done["commit row as completed + local writes"]
+  Handler -->|throw or condemn| Rollback["rollback everything; next delivery retries fresh"]
+  Insert -->|existing completed| Dup["InboxDuplicate"]
+  Insert -->|existing processing| Progress["InboxInProgress"]
+  Insert -->|existing failed| Failed["InboxPreviouslyFailed"]
+```
+
+## `runInboxTransactionWith`
+
+```haskell
+data InboxPersistence = PersistFullEnvelope | PersistDedupeOnly
+
+runInboxTransactionWith ::
+  forall a es. (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics -> InboxPersistence -> InboxDedupePolicy ->
+  IntegrationEvent -> Maybe KafkaDeliveryRef ->
+  (IntegrationEvent -> Tx.Transaction a) ->
+  Eff es (Either InboxError (InboxResult a))
+```
+
+`PersistFullEnvelope` is the default used by `runInboxTransaction`. `PersistDedupeOnly` keeps enough
+columns for dedupe and operator correlation but stores an empty payload and omits schema, trace, and
+attributes for successfully processed rows. Failed rows always persist the full envelope because the
+failed inbox row is the operator's dead-letter record.
+
+```mermaid
+flowchart LR
+  Mode{"InboxPersistence"}
+  Mode -->|PersistFullEnvelope| Full["completed row keeps payload, schema, trace, attributes"]
+  Mode -->|PersistDedupeOnly| Slim["completed row keeps dedupe and correlation fields; payload is empty"]
+  Full --> Failure["failed rows always keep full envelope"]
+  Slim --> Failure
+```
 
 ## `runInboxTransactionWithKey`
 
@@ -69,6 +110,40 @@ A failed row with `attempt_count < ceiling` is retried; a failed row at or above
 the failed inbox row as the operator-visible dead-letter record. `Tx.condemn` keeps the original
 rollback semantics and is not counted as a handler exception by this wrapper.
 
+`runInboxTransactionWithRetriesWith` is the persistence-controlling variant; it accepts the same
+`InboxPersistence` argument as `runInboxTransactionWith`.
+
+## `runInboxTransactionBatch`
+
+```haskell
+runInboxTransactionBatch ::
+  forall a es. (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics ->
+  Int ->
+  InboxDedupePolicy ->
+  InboxPersistence ->
+  [(IntegrationEvent, Maybe KafkaDeliveryRef)] ->
+  (IntegrationEvent -> Tx.Transaction a) ->
+  Eff es [Either InboxError (InboxResult a)]
+```
+
+The batch wrapper computes all dedupe keys, suppresses repeated keys within the batch as
+`InboxDuplicate`, and runs the remaining deliveries through one transaction. If any handler throws
+or the transaction is condemned, keiro falls back to the retrying single-message path for every
+original delivery so one poison message cannot discard unrelated batch mates.
+
+```mermaid
+flowchart TD
+  Batch["N delivered messages"] --> Plan["planInboxBatch"]
+  Plan --> KeyErr["key errors -> Left InboxError"]
+  Plan --> InBatchDup["repeated in-batch keys -> InboxDuplicate"]
+  Plan --> Work["unique valid deliveries"]
+  Work --> Fast["one transaction fast path"]
+  Fast -->|committed| Results["record per-message results"]
+  Fast -->|exception or condemned| Fallback["per-message runInboxTransactionWithRetriesWith"]
+  Fallback --> Results
+```
+
 ## `InboxDedupePolicy`
 
 Which identity becomes the inbox primary key.
@@ -99,7 +174,8 @@ data InboxStatus = InboxProcessing | InboxCompleted | InboxFailed
 ```
 
 `InboxProcessing` is reserved for a future async path — in the v1 single-transaction wrapper it
-never escapes a transaction. `InboxCompleted` and `InboxFailed` are terminal.
+does not escape a transaction on fresh successful intake. Legacy `processing` rows can still decode.
+`InboxCompleted` and `InboxFailed` are terminal.
 
 ## `InboxResult`
 
@@ -147,11 +223,12 @@ recommends 30 days). Failed rows are never GC'd.
 
 Count non-terminal inbox rows — those still `processing` (in flight) or `failed` (awaiting a retry).
 This is the source for the [`keiro.inbox.backlog`](/docs/keiro/reference/telemetry#metric-catalogue)
-gauge; the inbox wrappers record it when metrics are enabled. The retrying wrapper also records
+gauge; call `sampleInboxBacklog metrics` on a timer to record it. The retrying wrapper also records
 `keiro.inbox.poisoned` when a handler failure reaches the configured attempt ceiling.
 
 ```haskell
 countInboxBacklog :: (Store :> es) => Eff es Int
+sampleInboxBacklog :: (IOE :> es, Store :> es) => Maybe KeiroMetrics -> Eff es ()
 ```
 
 ## `lookupInbox` / `listInbox`
@@ -161,10 +238,11 @@ lookupInbox :: (Store :> es) => Text -> Text -> Eff es (Maybe InboxRow)
 listInbox   :: (Store :> es) => Text -> Eff es [InboxRow]
 ```
 
-Inspection helpers (`lookupInbox source dedupeKey`; `listInbox source`). `Keiro.Inbox.Schema` also
-exposes the SQL primitives `tryInsertProcessingTx`, `markCompletedTx`, and `markFailedTx` — the
-last is **reserved** (the v1 wrapper never calls it, because `InboxProcessing` never escapes a
-transaction).
+Inspection helpers (`lookupInbox source dedupeKey`; `listInbox source`). Rows written with
+`PersistDedupeOnly` read back with an empty `payloadBytes`, no attributes, no trace context, and no
+schema reference; identity, source-event ids, occurrence time, and Kafka diagnostics remain.
+`Keiro.Inbox.Schema` also exposes lower-level SQL primitives such as `tryInsertCompletedTx`,
+`markCompletedTx`, and `markFailedTx`.
 
 ## The Kafka decoder (`Keiro.Inbox.Kafka`)
 
@@ -225,13 +303,16 @@ CREATE TABLE IF NOT EXISTS keiro_inbox (
   PRIMARY KEY (source, dedupe_key)
 );
 
-CREATE INDEX IF NOT EXISTS keiro_inbox_received_idx ON keiro_inbox (received_at);
 CREATE INDEX IF NOT EXISTS keiro_inbox_completed_idx ON keiro_inbox (completed_at) WHERE status = 'completed';
 CREATE INDEX IF NOT EXISTS keiro_inbox_backlog_idx ON keiro_inbox (status) WHERE status IN ('processing', 'failed');
 ```
 
 The `PRIMARY KEY (source, dedupe_key)` is what makes the `INSERT … ON CONFLICT DO NOTHING` dedupe
-atomic; the partial `keiro_inbox_completed_idx` keeps `garbageCollectCompleted` cheap.
+atomic. Fresh successful intake inserts directly as `completed`; `processing` remains the default and
+the legacy/on-disk status, but the current fresh path does not perform a visible
+`processing -> completed` update. The partial `keiro_inbox_completed_idx` keeps
+`garbageCollectCompleted` cheap, and `keiro_inbox_backlog_idx` supports backlog sampling. The older
+`keiro_inbox_received_idx` was dropped because no hot path reads by `received_at`.
 
 <Cards>
   <Card title="The inbox pattern" href="/docs/keiro/explanation/the-inbox-pattern" />

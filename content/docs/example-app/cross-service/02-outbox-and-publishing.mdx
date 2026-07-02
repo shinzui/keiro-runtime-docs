@@ -68,21 +68,29 @@ need and writes its outbox row.
 
 ## Claim and publish
 
-A second step drains the outbox. `publishClaimedOutbox` claims pending rows and hands each to a
-publish function; the service provides two — a **dry-run** that always succeeds (for deterministic
-span evidence) and a **real Kafka** publish:
+A second step drains the outbox. `publishClaimedOutbox` claims pending rows and hands the claimed
+batch to a publish function; the service provides two — a **dry-run** that always succeeds (for
+deterministic span evidence) and a **real Kafka** publish:
 
 ```haskell
 -- services/incident-command/src/IncidentCommand/Store.hs
 runOutboxPublisherDryRunOnceWithTelemetry tracer store = do
   metrics <- serviceMetricsFromGlobalProvider tracer
   runStoreIO store $
-    publishClaimedOutbox (\_row -> pure PublishSucceeded) (outboxPublishOptionsWithTelemetry tracer) metrics
+    publishClaimedOutbox
+      (\rows -> pure [(row ^. #outboxId, PublishSucceeded) | row <- rows])
+      (outboxPublishOptionsWithTelemetry tracer)
+      metrics
 
 runOutboxPublisherKafkaOnceWithTelemetry tracer store config = do
   metrics <- serviceMetricsFromGlobalProvider tracer
   runStoreIO store $
-    publishClaimedOutbox (liftIO . publishOutboxRowToKafka config) (outboxPublishOptionsWithTelemetry tracer) metrics
+    publishClaimedOutbox
+      (traverse (\row -> do
+        outcome <- liftIO (publishOutboxRowToKafka config row)
+        pure (row ^. #outboxId, outcome)))
+      (outboxPublishOptionsWithTelemetry tracer)
+      metrics
 ```
 
 ## The Kafka publish itself

@@ -28,10 +28,11 @@ data OutboxStatus = OutboxPending | OutboxPublishing | OutboxSent | OutboxFailed
 (terminal failure after `maxAttempts`, kept for inspection).
 
 <Callout type="info">
-A row stranded in `OutboxPublishing` by a worker crash is reclaimed by `publishClaimedOutbox` before
-it claims new rows. Stale publishing rows below `maxAttempts` move back to `failed`; rows at or above
-the ceiling move to `dead`. This is at-least-once publishing: a crash after broker ack but before
-`markOutboxSent` can republish the same event, so consumers still dedupe with the inbox.
+A row stranded in `OutboxPublishing` by a worker crash is reclaimed by the separately scheduled
+`outboxMaintenancePass`, not by the publish hot path. Stale publishing rows below `maxAttempts` move
+back to `failed`; rows at or above the ceiling move to `dead`. This is at-least-once publishing: a
+crash after broker ack but before `markOutboxSent` can republish the same event, so consumers still
+dedupe with the inbox.
 </Callout>
 
 ## `OrderingPolicy`
@@ -44,6 +45,23 @@ data OrderingPolicy = PerKeyHeadOfLine | PerSourceStream | StopTheLine | BestEff
 non-terminal one (null-keyed rows bypass); `PerSourceStream` blocks across all keys in a source;
 `StopTheLine` halts the worker on the first failure; `BestEffort` never blocks. See [Choose an
 outbox ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
+
+```mermaid
+flowchart TD
+  Pass["publishClaimedOutbox pass"] --> Claim["claimOutboxBatch"]
+  Claim --> Policy{"OrderingPolicy"}
+  Policy -->|PerKeyHeadOfLine| Key["Claim contiguous ready rows while earlier same source+key rows block"]
+  Policy -->|PerSourceStream| Source["Claim contiguous ready rows while earlier same-source rows block"]
+  Policy -->|BestEffort| Free["Claim ready rows without head-of-line blocking"]
+  Policy -->|StopTheLine| Stop["Claim with per-key predicate, publish singleton rows, halt on first failure"]
+  Key --> Batch["Publish callback receives the claimed batch"]
+  Source --> Batch
+  Free --> Batch
+  Stop --> Single["Publish callback receives singleton batches"]
+  Batch --> Mark["Mark successful prefix sent; failed pivot retry/dead; ordered suffix skipped"]
+  Single --> Mark
+  Mark --> Summary["OutboxPublishSummary"]
+```
 
 ## `BackoffSchedule` and `ExponentialBackoffOptions`
 
@@ -101,8 +119,10 @@ defaultPublishOptions :: OutboxPublishOptions
 mkOutboxPublishOptions :: OutboxPublishOptions -> Either OutboxPublishConfigError OutboxPublishOptions
 ```
 
-`published + retried + dead + (1 if halted)` equals `claimed`; `haltedOn` is populated only under
-`StopTheLine`.
+`published + retried + dead` equals the claimed rows that were accounted for by the pass. `retried`
+also includes rows skipped after an earlier failure in the same ordered group; those skipped rows are
+returned to retryable state without consuming an attempt. `haltedOn` is populated only under
+`StopTheLine` and names the failed pivot row, which is already counted in `retried` or `dead`.
 
 ## Inline escape hatch
 
@@ -147,27 +167,66 @@ data PublishOutcome = PublishSucceeded | PublishFailed !Text
 
 publishClaimedOutbox ::
   (IOE :> es, Store :> es) =>
-  (OutboxRow -> Eff es PublishOutcome) -> OutboxPublishOptions -> Maybe KeiroMetrics ->
+  ([OutboxRow] -> Eff es [(OutboxId, PublishOutcome)]) -> OutboxPublishOptions -> Maybe KeiroMetrics ->
   Eff es OutboxPublishSummary
 ```
 
-**One claim pass per call** — it claims a batch, calls your publish function per row, marks each
-sent/failed/dead, and returns. It does **not** loop; the application schedules it repeatedly (e.g.
-once per process-compose tick). Mark a row sent only after the broker acks (return
-`PublishSucceeded`); the inbox dedupes any double-send. See [Bridge the outbox to
+**One claim pass per call** — it claims a batch, calls your publish function with the claimed rows in
+claim order, marks the successful prefix sent, marks a failed pivot retryable or dead, skips any
+later rows in the same ordered group without consuming attempts, and returns. It does **not** loop;
+the application schedules it repeatedly (e.g. once per process-compose tick). Mark a row sent only
+after the broker acks (return `PublishSucceeded` for that row); the inbox dedupes any double-send.
+See [Bridge the outbox to
 Kafka](/docs/keiro/how-to/bridge-the-outbox-to-kafka).
 
 The trailing `Maybe KeiroMetrics` is the opt-in
-[metrics](/docs/keiro/reference/telemetry#metrics-surface) handle: per pass it records the
-`keiro.outbox.reclaimed` counter for stale `publishing` rows, the `keiro.outbox.backlog` gauge, and
+[metrics](/docs/keiro/reference/telemetry#metrics-surface) handle: per publish pass it records only
 the `keiro.outbox.published`, `keiro.outbox.retried`, and `keiro.outbox.deadlettered` counters. Pass
 `Nothing` to disable them.
+
+For `StopTheLine`, the worker calls the publish function with singleton batches and halts after the
+first failure. For the other policies, the publish function receives the whole claimed batch so a
+Kafka adapter can pipeline or batch broker sends. If the callback omits an outcome for a claimed row,
+keiro treats it as `PublishFailed "publisher returned no outcome"`; if the callback throws, every row
+in that callback is treated as failed.
+
+## `outboxMaintenancePass` and `sampleOutboxBacklog`
+
+```haskell
+data OutboxMaintenanceOptions = OutboxMaintenanceOptions
+  { maxAttempts :: !Int, publishingTimeout :: !NominalDiffTime }
+
+data OutboxMaintenanceSummary = OutboxMaintenanceSummary
+  { requeued :: !Int, deadLettered :: !Int, backlog :: !Int }
+
+defaultMaintenanceOptions :: OutboxMaintenanceOptions
+
+outboxMaintenancePass ::
+  (IOE :> es, Store :> es) =>
+  OutboxMaintenanceOptions -> Maybe KeiroMetrics -> Eff es OutboxMaintenanceSummary
+
+sampleOutboxBacklog :: (IOE :> es, Store :> es) => Maybe KeiroMetrics -> Eff es ()
+```
+
+Schedule `outboxMaintenancePass defaultMaintenanceOptions metrics` on a slower cadence than
+publishing. It reclaims stale `publishing` rows, records `keiro.outbox.reclaimed` /
+`keiro.outbox.deadlettered`, counts backlog, and records `keiro.outbox.backlog`. Use
+`sampleOutboxBacklog` when you only want the backlog gauge without crash reclamation.
+
+```mermaid
+flowchart LR
+  Publish["Fast publish loop"] -->|claim + publish + mark| Counters["published / retried / dead counters"]
+  Maintenance["Slower maintenance loop"] --> Sweep["requeueStuckOutbox"]
+  Sweep --> Reclaimed["reclaimed / deadlettered counters"]
+  Maintenance --> Backlog["countOutboxBacklog"]
+  Backlog --> Gauge["keiro.outbox.backlog gauge"]
+```
 
 ## `countOutboxBacklog`
 
 Count rows awaiting publish — those in `pending` or `failed` status. This is the source for the
-[`keiro.outbox.backlog`](/docs/keiro/reference/telemetry#metric-catalogue) gauge; `publishClaimedOutbox`
-records it each pass.
+[`keiro.outbox.backlog`](/docs/keiro/reference/telemetry#metric-catalogue) gauge; schedule
+`outboxMaintenancePass` or `sampleOutboxBacklog` to record it.
 
 ```haskell
 countOutboxBacklog :: (Store :> es) => Eff es Int
@@ -180,6 +239,7 @@ enqueueOutboxTx   :: OutboxMessage -> Tx.Transaction ()                         
 claimOutboxBatch  :: (Store :> es) => OrderingPolicy -> Int -> UTCTime -> Eff es [OutboxRow]
 requeueStuckOutbox :: (Store :> es) => Int -> NominalDiffTime -> UTCTime -> Eff es (Int, Int)
 markOutboxSent    :: (Store :> es) => OutboxId -> UTCTime -> Eff es ()
+markOutboxSentBatch :: (Store :> es) => [OutboxId] -> UTCTime -> Eff es Int
 markOutboxFailedTx :: OutboxId -> Text -> Int -> NominalDiffTime -> UTCTime -> Tx.Transaction OutboxStatus
 lookupOutbox      :: (Store :> es) => OutboxId -> Eff es (Maybe OutboxRow)
 listOutbox        :: (Store :> es) => Text -> Eff es [OutboxRow]
@@ -255,6 +315,10 @@ CREATE TABLE IF NOT EXISTS keiro_outbox (
 CREATE INDEX IF NOT EXISTS keiro_outbox_pending_idx
   ON keiro_outbox (status, next_attempt_at, created_at);
 
+CREATE INDEX IF NOT EXISTS keiro_outbox_claim_order_idx
+  ON keiro_outbox (next_attempt_at, created_at, outbox_id)
+  WHERE status IN ('pending', 'failed');
+
 CREATE INDEX IF NOT EXISTS keiro_outbox_head_of_line_idx
   ON keiro_outbox (source, message_key, created_at)
   WHERE status NOT IN ('sent', 'dead') AND message_key IS NOT NULL;
@@ -269,8 +333,9 @@ CREATE INDEX IF NOT EXISTS keiro_outbox_source_order_idx
 ```
 
 The `UNIQUE (source, message_id)` constraint coalesces idempotent re-enqueues; the partial
-`keiro_outbox_head_of_line_idx` backs the per-key head-of-line predicate. The source-order index
-supports `PerSourceStream`, including null keys, and the sent-GC index keeps retention pruning cheap.
+`keiro_outbox_claim_order_idx` backs the hot claim order, while `keiro_outbox_head_of_line_idx` backs
+the per-key head-of-line predicate. The source-order index supports `PerSourceStream`, including null
+keys, and the sent-GC index keeps retention pruning cheap.
 
 <Cards>
   <Card title="The outbox pattern" href="/docs/keiro/explanation/the-outbox-pattern" />

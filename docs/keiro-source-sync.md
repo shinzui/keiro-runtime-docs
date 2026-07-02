@@ -20,13 +20,43 @@ the affected pages, then bump the pointer below.
 ## Last reviewed commit
 
 ```text
-f1d67a01b7457387a4861e7268d1c521ef82287d  (f1d67a0)
-2026-06-15T11:27:19-07:00
-docs(master-plan): close production readiness hardening
-keiro 0.1.0.0 development line; docs reviewed against the production-readiness hardening HEAD
+a9cecda2e15c18ba44cc887ebe5eba6b58fa4b85  (a9cecda)
+2026-07-01T19:52:44-07:00
+docs(masterplan): record post-implementation review and follow-up fixes
+keiro 0.1.0.0 development line; docs reviewed against the post-throughput-overhaul HEAD
 ```
 
-> **Note.** The `9fa283b..f1d67a0` range is the June production-readiness hardening refresh. It
+> **Note.** The `f1d67a0..a9cecda` range covers the post-hardening changes through the inbox/outbox
+> throughput overhaul and review follow-up fixes.
+>
+> - **`keiro-dsl` ergonomics:** the CLI now supports module placement via `module` / `layout` clauses
+>   and `--module-root` / `--collocate`, writes a Cabal-pasteable scaffold manifest, self-checks the
+>   generated firewall, supports `check --emit`, and has `new <kind>` skeleton generation. The
+>   existing notation, tutorial, how-to, and toolchain pages were already mostly current; this sync
+>   leaves them as the documented DSL surface.
+> - **Outbox throughput and semantics:** `publishClaimedOutbox` now accepts a batch-shaped publisher
+>   (`[OutboxRow] -> Eff es [(OutboxId, PublishOutcome)]`), claims contiguous publish runs, bulk-marks
+>   successful rows sent, groups publish outcomes by `(source, key)` or source as appropriate, and
+>   skips ordered suffix rows without consuming attempts after a failed pivot. Stale publishing-row
+>   reclaim and backlog gauge sampling moved off the publish hot path to `outboxMaintenancePass` /
+>   `sampleOutboxBacklog`. The docs now reflect the batch callback, the maintenance split, the
+>   `keiro_outbox_claim_order_idx` migration, and the fixed `PerSourceStream` outcome grouping.
+> - **Inbox throughput and semantics:** fresh successful intake now inserts completed rows directly,
+>   `sampleInboxBacklog` owns backlog gauge sampling, `runInboxTransactionBatch` amortizes a batch in
+>   one transaction with per-message fallback on failure or condemned transaction, and
+>   `InboxPersistence` adds `PersistDedupeOnly` for success-path slim storage. The docs now reflect the
+>   new `runInboxTransactionWith` / `runInboxTransactionWithRetriesWith` / batch signatures, the
+>   single-insert completed path, the dropped `keiro_inbox_received_idx`, and the condemned-batch
+>   fallback fix.
+> - **Diagrams:** inbox and outbox reference/explanation/walkthrough pages now include Mermaid mode
+>   diagrams for dedupe, persistence, batch intake, ordering policy, publish outcome grouping, and
+>   maintenance/sampling split.
+> - **Not live yet:** the untracked Keiro plan
+>   `docs/plans/83-delegated-idempotence-inbox-intake-bypass-the-keiro-inbox-table-when-the-downstream-state-machine-already-dedupes.md`
+>   is still planning material, so this docs sync intentionally does **not** document delegated
+>   idempotence as a shipped API.
+>
+> **Note (prior range).** The `9fa283b..f1d67a0` range is the June production-readiness hardening refresh. It
 > changed the runtime surface across command execution, projections, messaging workers, PGMQ jobs,
 > durable workflows, schema, telemetry, and test support; this docs repo folded those source changes
 > into the keiro reference, how-to, tutorial, cookbook, walkthrough, integration, FAQ, and source-sync
@@ -180,6 +210,12 @@ keiro 0.1.0.0 development line; docs reviewed against the production-readiness h
 
 ### Previous pointers (for traceability)
 
+- `f1d67a01b7457387a4861e7268d1c521ef82287d` (`f1d67a0`, 2026-06-15, keiro 0.1.0.0) — the baseline
+  before the post-hardening `keiro-dsl` ergonomics pass and the July inbox/outbox throughput
+  overhaul. The `f1d67a0..a9cecda` range changed `keiro-dsl` placement/manifest/firewall/new-command
+  ergonomics, made outbox publishing batch-shaped with off-hot-path maintenance and a claim-order
+  index, made inbox intake single-insert/batched/slim with off-hot-path backlog sampling, and fixed
+  review follow-ups around `PerSourceStream` outcome grouping and condemned batch transactions.
 - `9fa283b6cfbf3734367f3bef4801001e6b19abfc` (`9fa283b`, 2026-06-10, keiro 0.1.0.0) — the baseline
   before the June production-readiness hardening. The `9fa283b..f1d67a0` range updated command,
   projection/read-side, messaging workers, `keiro-pgmq`, durable workflows, schema, telemetry, and
@@ -242,8 +278,8 @@ keiro 0.1.0.0 development line; docs reviewed against the production-readiness h
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline f1d67a0..HEAD
-   git -C "$KEIRO" diff --stat f1d67a0..HEAD
+   git -C "$KEIRO" log --oneline a9cecda..HEAD
+   git -C "$KEIRO" diff --stat a9cecda..HEAD
    ```
    keiro also keeps its own `docs/`, `CHANGELOG.md`, and `docs/plans|masterplans` entries — the
    prose diff there is the fastest way to understand intent before touching the source. Note that

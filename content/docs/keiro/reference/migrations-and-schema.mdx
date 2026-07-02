@@ -153,6 +153,8 @@ Relevant migration files, applied in this order:
 2026-06-15-21-49-37-keiro-projection-dedup.sql    -- keiro_projection_dedup
 2026-06-15-22-10-00-keiro-workflow-gc-index.sql   -- workflow GC index
 2026-06-15-22-20-00-keiro-workflows-wake-after.sql -- workflow wake-after column
+2026-07-02-00-12-00-keiro-outbox-claim-order-index.sql -- hot-path outbox claim-order index
+2026-07-02-00-55-00-keiro-inbox-drop-received-idx.sql -- drop unused inbox received-at index
 ```
 
 The timer-recovery migration adds the `last_error` column (populated only for dead-lettered timers)
@@ -170,9 +172,12 @@ statuses from the step index, seeds running child workflow rows, and widens chil
 resume discovery until their timer is due; the GC-index migration supports terminal-instance pruning.
 The **subscription-shards** migration (EP-51) adds the `keiro_subscription_shards` lease table. The
 projection-dedup migration adds `keiro_projection_dedup` with a primary key on
-`(projection_name, event_id)` and an `applied_at` pruning index. Recent workflow and messaging
-migrations are listed here so schema drift checks are complete; their behavior is documented on the
-owning subsystem pages. New migrations open with a
+`(projection_name, event_id)` and an `applied_at` pruning index. The July 2026 outbox migration adds
+the partial `keiro_outbox_claim_order_idx` that backs the throughput-oriented claim order
+`(next_attempt_at, created_at, outbox_id)` for `pending`/`failed` rows; the inbox migration drops the
+write-only `keiro_inbox_received_idx` now that the hot path no longer reads by `received_at`. Recent
+workflow and messaging migrations are listed here so schema drift checks are complete; their behavior
+is documented on the owning subsystem pages. New migrations open with a
 `SET search_path TO kiroku, pg_catalog;` pin so unqualified names resolve into the `kiroku` schema on
 an incremental upgrade.
 

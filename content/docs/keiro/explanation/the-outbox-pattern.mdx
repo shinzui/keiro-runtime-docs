@@ -39,8 +39,8 @@ Two surfaces enqueue rows:
   an event directly inside its `runCommandWithSqlEvents` transaction (see [Publish with the
   outbox](/docs/keiro/how-to/publish-with-the-outbox)).
 
-A separate worker, `publishClaimedOutbox`, claims pending rows, hands each to your publish
-function, and marks it sent only **after the broker acknowledges**.
+A separate worker, `publishClaimedOutbox`, claims pending rows, hands the claimed batch to your
+publish function, and marks each row sent only **after the broker acknowledges**.
 
 ## At-least-once publish (and why that's fine)
 
@@ -73,9 +73,10 @@ Each failed publish bumps `attempt_count` and sets `next_attempt_at = now + back
 for an operator to inspect — it never silently disappears, and it never blocks forever under
 `PerKeyHeadOfLine` (a `dead` row is terminal, so it stops blocking its key).
 
-Before each claim pass, `publishClaimedOutbox` reclaims stale `publishing` rows. Rows below the
-attempt ceiling move back to `failed`; rows at or above the ceiling move to `dead`. This closes the
-old crash-recovery gap where a mid-publish process death could block a key forever.
+Schedule `outboxMaintenancePass` separately from the publish hot path to reclaim stale `publishing`
+rows. Rows below the attempt ceiling move back to `failed`; rows at or above the ceiling move to
+`dead`. This closes the old crash-recovery gap where a mid-publish process death could block a key
+forever without adding a backlog query to every publish pass.
 
 ## Trade-offs
 

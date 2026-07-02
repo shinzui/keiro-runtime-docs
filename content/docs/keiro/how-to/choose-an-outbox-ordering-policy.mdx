@@ -56,14 +56,14 @@ is a fixed delay; `ExponentialBackoff` grows `initial * multiplier ^ (attempt-1)
 
 ## Recovering stale publishing rows
 
-`publishClaimedOutbox` now begins each pass by calling `requeueStuckOutbox maxAttempts
-publishingTimeout now`. Rows left in `publishing` longer than `publishingTimeout` are reclaimed
-automatically:
+Schedule `outboxMaintenancePass defaultMaintenanceOptions metrics` independently from
+`publishClaimedOutbox`, typically less frequently than the publish pass. Rows left in `publishing`
+longer than `publishingTimeout` are reclaimed automatically:
 
 - below the attempt ceiling, the row moves back to `failed` and becomes claimable again;
 - at or above the attempt ceiling, the row moves to `dead`;
-- the worker records `keiro.outbox.reclaimed` and `keiro.outbox.deadlettered` when metrics are
-  enabled.
+- the maintenance pass records `keiro.outbox.reclaimed`, `keiro.outbox.deadlettered`, and
+  `keiro.outbox.backlog` when metrics are enabled.
 
 Choose `publishingTimeout` above your worst expected broker publish latency. A timeout that is too
 short can republish a row while the first publisher is still running; a timeout that is too long
