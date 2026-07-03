@@ -1,6 +1,13 @@
 import { defineConfig, defineDocs } from "fumadocs-mdx/config"
-import keiroGrammar from "shiki-keiro/syntaxes/keiro.tmLanguage.json" with { type: "json" }
 
+// Vendored copy of the keiro-dsl TextMate grammar, kept in sync with the
+// upstream `shiki-keiro` package (packages/shiki-keiro/syntaxes/ in the
+// keiro-syntax repo). We import it via a relative path — NOT a deep import into
+// the `shiki-keiro` git dependency — so fumadocs-mdx (esbuild) inlines the JSON
+// into `.source/source.config.mjs` at build time. Deep-importing the git dep's
+// `syntaxes/*.json` subpath is not reliably materialized by pnpm in CI, which
+// broke `pnpm run typecheck` (ERR_MODULE_NOT_FOUND). See docs↔source sync notes.
+import keiroGrammar from "./src/lib/keiro.tmLanguage.json" with { type: "json" }
 import { rehypeMermaid } from "./src/lib/rehype-mermaid"
 
 const keiroLanguage = {
