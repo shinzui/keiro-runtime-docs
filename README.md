@@ -22,7 +22,7 @@ Licensed PragmataPro users can opt in to local code-block ligatures through an e
 or Nix registry alias; see [`docs/optional-commercial-fonts.md`](docs/optional-commercial-fonts.md).
 
 ```bash
-pnpm install        # install dependencies
+pnpm install        # postinstall runs `fumadocs-mdx`, generating the .source/ collection
 pnpm dev            # local dev server with hot reload
 ```
 
@@ -35,7 +35,7 @@ Open the URL Vite prints (default <http://localhost:3000>).
 | `pnpm dev`          | Dev server with hot reload.                                              |
 | `pnpm build`        | Prerender the static SPA into `.output/public/`.                         |
 | `pnpm start`        | Serve a built `.output/public/`.                                         |
-| `pnpm typecheck`    | Generate `.source/` with `fumadocs-mdx`, then run `tsc --noEmit`.         |
+| `pnpm typecheck`    | `fumadocs-mdx` + `tsc --noEmit`.                                         |
 | `pnpm lint`         | `oxlint`.                                                                |
 | `pnpm format:check` | `oxfmt --check .` (use `pnpm format` to write).                          |
 | `pnpm lint:links`   | Source-level `/docs` link check, then a `linkinator` crawl of the build. |

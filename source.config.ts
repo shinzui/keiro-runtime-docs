@@ -1,5 +1,5 @@
 import { defineConfig, defineDocs } from "fumadocs-mdx/config"
-import keiroGrammar from "shiki-keiro/grammar" with { type: "json" }
+import keiroGrammar from "shiki-keiro/syntaxes/keiro.tmLanguage.json" with { type: "json" }
 
 import { rehypeMermaid } from "./src/lib/rehype-mermaid"
 
