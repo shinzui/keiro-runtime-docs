@@ -19,7 +19,7 @@ runCommand ::
   forall phi rs s ci co es.
   (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
   RunCommandOptions ->
-  EventStream phi rs s ci co ->
+  ValidatedEventStream phi rs s ci co ->
   Stream (EventStream phi rs s ci co) ->
   ci ->
   Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co)))
@@ -28,7 +28,7 @@ runCommandWithSql ::
   forall phi rs s ci co a es.
   (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
   RunCommandOptions ->
-  EventStream phi rs s ci co ->
+  ValidatedEventStream phi rs s ci co ->
   Stream (EventStream phi rs s ci co) ->
   ci ->
   (AppendResult -> Tx.Transaction a) ->
@@ -38,7 +38,7 @@ runCommandWithSqlEvents ::
   forall phi rs s ci co a es.
   (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
   RunCommandOptions ->
-  EventStream phi rs s ci co ->
+  ValidatedEventStream phi rs s ci co ->
   Stream (EventStream phi rs s ci co) ->
   ci ->
   ([(co, RecordedEvent)] -> AppendResult -> Tx.Transaction a) ->
@@ -59,8 +59,12 @@ runCommandWithSql options eventStream targetStream command afterAppend =
     (\_ appendResult -> afterAppend appendResult)
 ```
 
-One primitive, three ergonomic surfaces. Both `Maybe a`-returning runners return `Just` the callback's
-result on an append and `Nothing` for a no-op (the callback never runs when nothing is appended).
+The runners immediately unwrap the `ValidatedEventStream` internally and use the underlying
+`EventStream` for hydration, transduction, stream-name resolution, codecs, and snapshots. That
+wrapper is the public guardrail: a bare record can be built and validated, but it cannot be passed to
+the write path. One primitive, three ergonomic surfaces. Both `Maybe a`-returning runners return
+`Just` the callback's result on an append and `Nothing` for a no-op (the callback never runs when
+nothing is appended).
 
 ## One transaction: append, then the callback
 

@@ -45,6 +45,11 @@ Everything downstream flows from that one embedded transducer:
   (control state), `ci` (command input), `co` (event output) are keiki's, surfaced unchanged on the
   `EventStream`.
 
+The public runtime boundary is stricter than the raw record: command runners, projections, routers,
+and process managers accept a `ValidatedEventStream`. Build one with `mkEventStream` or
+`mkEventStreamWith`; generated modules and tests commonly use `mkEventStreamOrThrow` after the
+generator has produced a known-good transducer.
+
 For the field-by-field tour of that boundary, read the foundation walkthrough starting at
 [Start here](/docs/keiro/walkthrough/foundation/00-start-here).
 
@@ -64,11 +69,10 @@ That umbrella check is keiki's [`validateTransducer`](/docs/keiki/walkthrough/sy
 its streams are sound before any of them is ever hydrated.
 
 <Callout type="info">
-This surface lives in `Keiro.EventStream.Validate` and is **not** re-exported from `Keiro` — import
-it by its module path. It requires the control state `s` to satisfy `(Bounded s, Enum s, Ord s,
-Show s)`, because the check walks `[minBound .. maxBound]` exactly as the renderers and
-`defaultStateCodec` shape hash do, and the transducer must use keiki's standard `HsPred` guard
-carrier.
+This surface lives in `Keiro.EventStream.Validate` and is also re-exported from the top-level
+`Keiro` module. It requires the control state `s` to satisfy `(Bounded s, Enum s, Ord s, Show s)`,
+because the check walks `[minBound .. maxBound]` exactly as the renderers and `defaultStateCodec`
+shape hash do, and the transducer must use keiki's standard `HsPred` guard carrier.
 </Callout>
 
 ### The three entry points
@@ -94,7 +98,17 @@ validateEventStreamWith ::
 mkEventStream ::
   (Bounded s, Enum s, Ord s, Show s) =>
   Text -> EventStream (HsPred rs ci) rs s ci co ->
-  Either [EventStreamWarning] (EventStream (HsPred rs ci) rs s ci co)
+  Either [EventStreamWarning] (ValidatedEventStream (HsPred rs ci) rs s ci co)
+
+mkEventStreamWith ::
+  (Bounded s, Enum s, Ord s, Show s) =>
+  ValidationOptions -> Text -> EventStream (HsPred rs ci) rs s ci co ->
+  Either [EventStreamWarning] (ValidatedEventStream (HsPred rs ci) rs s ci co)
+
+mkEventStreamOrThrow ::
+  (HasCallStack, Bounded s, Enum s, Ord s, Show s) =>
+  Text -> EventStream (HsPred rs ci) rs s ci co ->
+  ValidatedEventStream (HsPred rs ci) rs s ci co
 ```
 
 The `label` you pass is echoed into every `EventStreamWarning`, so a multi-aggregate service can tell
@@ -120,7 +134,7 @@ import Keiro.EventStream.Validate (mkEventStream)
 orderEventStream ::
   Either
     [EventStreamWarning]
-    (EventStream (HsPred OrderRegs OrderCommand) OrderRegs OrderState OrderCommand OrderEvent)
+    (ValidatedEventStream (HsPred OrderRegs OrderCommand) OrderRegs OrderState OrderCommand OrderEvent)
 orderEventStream =
   mkEventStream "order" EventStream
     { transducer        = orderTransducer
@@ -134,9 +148,24 @@ orderEventStream =
 ```
 
 `Left warns` means at least one of `orderTransducer`'s edges is unsafe — surface the warnings and
-refuse to start. `Right es` is a stream proven sound under `defaultValidationOptions`. The bare
-`EventStream { … }` record literal stays available for low-level callers who deliberately want to skip
-the check.
+refuse to start. `Right validated` is a stream proven sound under `defaultValidationOptions`. The bare
+`EventStream { … }` record literal stays available for construction and low-level internals, but it
+cannot be passed to `runCommand`.
+
+### The full safety stack
+
+Replay safety is enforced at several layers:
+
+- `ValidatedEventStream` keeps unchecked streams out of command runners at compile time.
+- keiki validation rejects hidden input, checks structural determinism, and flags dead edges before a
+  stream is hydrated.
+- `mkEventStream` also rejects a snapshotting policy with `stateCodec = Nothing`.
+- `StateCodec` identity (`stateCodecVersion` plus `shapeHash`) makes stale snapshots miss safely and
+  fall back to full replay.
+- `Codec` and `mkCodec` keep event tags, schema versions, and upcaster chains explicit; malformed
+  stored events fail hydration instead of being skipped.
+- `Stream`/`StreamCategory` prevent stream-name/category drift, keeping category reads and
+  subscriptions pointed at the same family of streams as command writes.
 
 ### Assert it over your whole registry, in CI
 

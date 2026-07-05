@@ -3,8 +3,9 @@ title: "Event stream and Stream handle"
 description: "EventStream, SnapshotPolicy, StateCodec (Keiro.EventStream) and the phantom-typed Stream handle (Keiro.Stream)."
 ---
 
-`EventStream` (and its `SnapshotPolicy`/`StateCodec`) live in `Keiro.EventStream`; the `Stream`
-handle lives in `Keiro.Stream`. Both are re-exported from `Keiro`.
+`EventStream` (and its `SnapshotPolicy`/`StateCodec`) live in `Keiro.EventStream`; replay-safety
+validation lives in `Keiro.EventStream.Validate`; the `Stream` handle lives in `Keiro.Stream`. All
+three surfaces are re-exported from `Keiro`.
 
 ## `EventStream`
 
@@ -26,14 +27,14 @@ output.
 />
 
 <Callout type="info">
-`stateCodec = Nothing` disables snapshotting at runtime. `mkEventStream` now warns when
+`stateCodec = Nothing` disables snapshotting at runtime. `mkEventStream` rejects a stream when
 `snapshotPolicy` is not `Never` but `stateCodec` is `Nothing`, because that configuration asks for
 snapshots that can never be written. The `jitsurei` order stream shows both ends: `orderEventStream`
 uses `snapshotPolicy = Never`, `stateCodec = Nothing`, while `snapshotOrderEventStream` uses
 `snapshotPolicy = Every 2`, `stateCodec = Just (defaultStateCodec @OrderRegs @OrderState 1)`.
 </Callout>
 
-## Replay-safety validation (`Keiro.EventStream.Validate`)
+## `ValidatedEventStream` and replay-safety validation
 
 An `EventStream` is only as safe to replay as the keiki transducer inside it.
 `Keiro.EventStream.Validate` lifts keiki's pure umbrella check (`validateTransducer`, keiki EP-56)
@@ -41,6 +42,11 @@ to the `EventStream` boundary, so a service can assert every stream is sound **b
 hydrated — with no SMT solver. keiki can prove statically that a transducer is *replay-safe* (every
 command field an edge consumes is recoverable from the event(s) it emits), that its guards are
 deterministic, and that no edge is dead.
+
+This is now a breaking API boundary: `runCommand`, `runCommandWithSql`,
+`runCommandWithSqlEvents`, `runCommandWithProjections`, routers, and process managers accept a
+`ValidatedEventStream`, not a bare `EventStream`. The raw record remains available for constructing
+and validating definitions; the constructor for `ValidatedEventStream` is intentionally hidden.
 
 ```haskell
 data EventStreamWarning = EventStreamWarning
@@ -60,7 +66,19 @@ validateEventStreamWith ::
 mkEventStream ::
   (Bounded s, Enum s, Ord s, Show s) =>
   Text -> EventStream (HsPred rs ci) rs s ci co ->
-  Either [EventStreamWarning] (EventStream (HsPred rs ci) rs s ci co)
+  Either [EventStreamWarning] (ValidatedEventStream (HsPred rs ci) rs s ci co)
+
+mkEventStreamWith ::
+  (Bounded s, Enum s, Ord s, Show s) =>
+  ValidationOptions -> Text -> EventStream (HsPred rs ci) rs s ci co ->
+  Either [EventStreamWarning] (ValidatedEventStream (HsPred rs ci) rs s ci co)
+
+mkEventStreamOrThrow ::
+  (HasCallStack, Bounded s, Enum s, Ord s, Show s) =>
+  Text -> EventStream (HsPred rs ci) rs s ci co ->
+  ValidatedEventStream (HsPred rs ci) rs s ci co
+
+unvalidated :: ValidatedEventStream phi rs s ci co -> EventStream phi rs s ci co
 ```
 
 - `validateEventStream label es` runs the check with `defaultValidationOptions` and returns the
@@ -68,8 +86,79 @@ mkEventStream ::
 - `validateEventStreamWith opts label es` is the same with caller-chosen `ValidationOptions` (e.g.
   to narrow the checks for a stream with a known-benign warning).
 - `mkEventStream label es` is the fail-fast smart constructor: `Left warnings` for an unsafe stream,
-  `Right es` for a sound one. The bare `EventStream { … }` record literal stays available for
-  low-level callers who do not want the check.
+  `Right validated` for a sound one.
+- `mkEventStreamOrThrow label es` is the partial constructor used by generated modules and fixtures
+  that have a sibling validation proof. Hand-authored service boot code should usually prefer
+  `mkEventStream` and handle `Left` explicitly.
+
+The bare `EventStream { … }` record literal stays available for construction, validation, and
+low-level internals. It is not enough to call the command runners.
+
+### Lifecycle of a validated stream
+
+1. **Author the raw definition.** Write `fooEventStreamDef :: EventStream …` with the transducer,
+   initial state/registers, event codec, stream-name resolver, snapshot policy, and optional
+   `StateCodec`.
+2. **Validate at the boundary.** Call `mkEventStream "foo" fooEventStreamDef` at application boot, in
+   a registry module, or from generated code. Hand-authored services should handle `Left warnings`
+   and refuse to start; generated code and fixtures may use `mkEventStreamOrThrow` when the adjacent
+   harness proves validation stays green.
+3. **Export the wrapper.** Export `fooEventStream :: ValidatedEventStream …` and pass that value to
+   `runCommand`, `runCommandWithSql`, `runCommandWithProjections`, `ProcessManager`, or `Router`.
+4. **Let internals unwrap.** Runtime modules call `unvalidated` internally after the type boundary has
+   done its job. The raw record is then used for hydration, `Keiki.step`, event encoding,
+   stream-name resolution, and snapshot handling.
+
+That shape is why migration is compiler-driven: any old call that passes `fooEventStreamDef` to a
+runner fails to typecheck until the stream has a validated wrapper.
+
+### What validation proves
+
+With `defaultValidationOptions`, `mkEventStream` accepts only streams whose transducer passes these
+enabled checks:
+
+- **Hidden-input / replay-safety.** If an edge reads a command field, the emitted event(s) must carry
+  enough data for replay to recover that field. Otherwise hydration can never reconstruct the same
+  register writes or guard outcomes from the event log alone.
+- **Structural determinism.** The check rejects overlaps it can prove among outgoing edges for the
+  same state/command shape, so one command does not select multiple transitions.
+- **Structural reachability.** The check flags edges that are statically dead or whose source cannot
+  be reached under the visible graph.
+- **Snapshot coherence.** Keiro adds the non-keiki check: `snapshotPolicy /= Never` requires
+  `stateCodec = Just …`.
+
+### What validation does not prove
+
+Validation is intentionally cheap and local. It does **not** prove that the codec round-trips every
+domain value, that an upcaster chain is well configured (`mkCodec` covers that), that a stream name is
+the one you meant (`StreamCategory` helps there), or that external effects in handlers are
+idempotent. It also does not make stale snapshots authoritative: snapshots remain advisory and
+miss safely back to full replay.
+
+## How keiro makes streams replayable and safe
+
+Replayability is not one check; keiro layers several independent guards:
+
+- **Pure transition semantics.** `EventStream.transducer` is a keiki `SymTransducer`. Hydration folds
+  stored events through `Keiki.applyEventStreaming`, and command handling calls `Keiki.step` with the
+  hydrated `(state, registers)`. There is no effectful decide/evolve callback hidden in the stream.
+- **Compile-time runner boundary.** Public command and projection runners require
+  `ValidatedEventStream`, so a bare record cannot accidentally reach the write path.
+- **Build-time stream validation.** `validateEventStream` runs hidden-input, determinism, and
+  reachability checks over the transducer. Hidden-input warnings are the replay-safety failures:
+  they mean an edge read command data that its emitted events do not preserve.
+- **Snapshot coherence.** `mkEventStream` rejects snapshotting policies without a `stateCodec`, and
+  snapshot reuse is gated by `stateCodecVersion` plus `shapeHash`. A stale or undecodable snapshot is
+  a cache miss, so hydration falls back to full event replay.
+- **Codec invariants.** `mkCodec` validates schema versions, duplicate event types, duplicate
+  upcaster sources, out-of-range upcasters, and missing migration rungs before runtime. On read,
+  unknown event types and malformed schema-version stamps are fatal instead of being skipped.
+- **Typed stream names.** `Stream a` and `StreamCategory a` keep target streams and category reads
+  aligned. `category` rejects ambiguous category prefixes before they can fan events into the wrong
+  subscription or read model.
+- **Idempotent append inputs.** `RunCommandOptions.eventIds` lets routers, process managers, and
+  replayed handlers supply deterministic event ids, so repeated fan-out attempts coalesce at the
+  store boundary.
 
 The `label` is echoed into every `EventStreamWarning` so a multi-aggregate service can tell *which*
 stream is at fault; `eswReason` renders the underlying keiki warning (`hidden-input @…`,

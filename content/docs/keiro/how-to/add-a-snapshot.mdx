@@ -7,7 +7,8 @@ Hydrating a long stream by replaying every event gets slow. A snapshot caches th
 hydration can start partway. You enable it on the `EventStream`.
 
 <Callout type="info">
-  Assumes you have an `EventStream` (see [Get started with keiro](/docs/keiro/tutorials/getting-started))
+  Assumes you have an `EventStream` definition and know how to validate it into a
+  `ValidatedEventStream` (see [Get started with keiro](/docs/keiro/tutorials/getting-started))
   and understand that snapshots are advisory (see
   [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots)).
 </Callout>
@@ -23,16 +24,21 @@ Turn on snapshotting for a stream and know how to invalidate old snapshots.
 
    ```haskell
    -- jitsurei/src/Jitsurei/OrderStream.hs (re-exported by Jitsurei/Snapshots.hs)
-   snapshotOrderEventStream :: OrderEventStream
-   snapshotOrderEventStream = baseOrderEventStream
+   snapshotOrderEventStreamDef :: OrderEventStream
+   snapshotOrderEventStreamDef = orderEventStreamDef
      { snapshotPolicy = Every 2
      , stateCodec     = Just (defaultStateCodec @OrderRegs @OrderState 1)
      }
+
+   snapshotOrderEventStream :: ValidatedOrderEventStream
+   snapshotOrderEventStream =
+     mkEventStreamOrThrow "jitsurei-order-snapshot" snapshotOrderEventStreamDef
    ```
 
    `defaultStateCodec` encodes the joint `(state, registers)`; its `Int` argument is the
    `stateCodecVersion`. `Every 2` writes a snapshot whenever the stream version is a positive multiple
-   of 2. Leaving `stateCodec = Nothing` disables snapshotting regardless of policy.
+   of 2. Leaving `stateCodec = Nothing` disables snapshotting regardless of policy, and
+   `mkEventStream` rejects that incoherent configuration when the policy is not `Never`.
 
 2. **Invalidate when needed.** Old snapshot rows are ignored automatically when their identity no
    longer matches (a register-shape change bumps `regfile_shape_hash`; a codec-version change bumps

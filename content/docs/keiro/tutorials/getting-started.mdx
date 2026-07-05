@@ -5,8 +5,9 @@ description: "Open a store, define an event stream, run a command, and read the 
 
 By the end of this tutorial you will have run a command through keiro's **Hydrate → Transduce →
 Append** cycle: you will apply the schema, open a kiroku store, define a minimal `EventStream`,
-call `runCommand`, inspect the result, and read the resulting events back out of the stream. Every
-snippet uses keiro's real API as shipped at `0.1.0.0`.
+validate it into a `ValidatedEventStream`, call `runCommand`, inspect the result, and read the
+resulting events back out of the stream. Every snippet uses keiro's real API as shipped at
+`0.1.0.0`.
 
 <Callout type="info">
   This is a tutorial — a guided lesson. Follow every step in order. You do not need prior
@@ -76,8 +77,10 @@ failures:
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedLabels  #-}
 import Keiro                                   -- runCommand, defaultRunCommandOptions, EventStream(..), Codec(..), Stream
+import Keiki.Core (HsPred)
 import qualified Keiro.Stream as Stream
 import Keiro.EventStream (SnapshotPolicy (Never))
+import Keiro.EventStream.Validate (ValidatedEventStream, mkEventStreamOrThrow)
 import qualified Kiroku.Store as Store
 import Kiroku.Store.Types (StreamName (..), StreamVersion (..), RecordedEvent (..))
 import Control.Lens ((^.))
@@ -92,17 +95,27 @@ main =
 </Step>
 <Step>
 
-### Define a minimal `EventStream`
+### Define and validate an `EventStream`
 
 An `EventStream` marries a keiki transducer to a `Codec`, an initial state and registers, a name
 resolver, and a snapshot policy. For a first stream, set `resolveStreamName = Stream.streamName`
 (the stream's own name is its kiroku `StreamName`), `snapshotPolicy = Never`, and `stateCodec =
-Nothing`; pair it with a tiny `Codec` whose `schemaVersion = 1` and `upcasters = []`:
+Nothing`; pair it with a tiny `Codec` whose `schemaVersion = 1` and `upcasters = []`.
+
+The raw record is named `orderEventStreamDef` below because it is not runnable yet. Public runners
+accept `ValidatedEventStream`, so validate the record with `mkEventStream` or
+`mkEventStreamOrThrow` before using it:
 
 ```haskell
--- the EventStream + Codec the command runs against (sketch; see jitsurei/src/Jitsurei/OrderStream.hs)
-orderEventStream :: EventStream phi rs OrderState OrderCommand OrderEvent
-orderEventStream = EventStream
+-- the EventStream + Codec definition (sketch; see jitsurei/src/Jitsurei/OrderStream.hs)
+type OrderEventStream =
+  EventStream (HsPred OrderRegs OrderCommand) OrderRegs OrderState OrderCommand OrderEvent
+
+type ValidatedOrderEventStream =
+  ValidatedEventStream (HsPred OrderRegs OrderCommand) OrderRegs OrderState OrderCommand OrderEvent
+
+orderEventStreamDef :: OrderEventStream
+orderEventStreamDef = EventStream
   { transducer        = orderTransducer        -- a keiki SymTransducer phi rs s ci co
   , initialState      = NotStarted
   , initialRegisters  = RNil
@@ -112,9 +125,19 @@ orderEventStream = EventStream
   , stateCodec        = Nothing
   }
 
-orderStream :: Text -> Stream (EventStream phi rs OrderState OrderCommand OrderEvent)
+orderEventStream :: ValidatedOrderEventStream
+orderEventStream =
+  mkEventStreamOrThrow "getting-started-order" orderEventStreamDef
+
+orderStream :: Text -> Stream OrderEventStream
 orderStream = Stream.stream
 ```
+
+`mkEventStreamOrThrow` is acceptable in generated examples and fixtures. In service boot code, prefer
+`mkEventStream "order" orderEventStreamDef` and refuse to start on `Left warnings`; each warning names
+the stream label and the replay-safety or snapshot-coherence problem. The important rule is the same
+either way: a bare `EventStream` record can describe a stream, but only a `ValidatedEventStream` can
+be passed to `runCommand`.
 
 The real, complete definition — with the actual order state machine and a codec that includes an
 upcaster chain — lives in `jitsurei/src/Jitsurei/OrderStream.hs`; copy from there when you build
@@ -125,7 +148,8 @@ your own.
 
 ### Run a command
 
-Call `runCommand defaultRunCommandOptions eventStream target command` inside `Store.runStoreIO`.
+Call `runCommand defaultRunCommandOptions validatedEventStream target command` inside
+`Store.runStoreIO`.
 This is the Hydrate → Transduce → Append cycle: it reads the target stream into state, runs the
 transducer to turn the command into events, and appends them under optimistic concurrency.
 
@@ -192,10 +216,10 @@ You should see the event(s) your command produced, in append order.
 
 ## What you built
 
-You applied the schema, opened a store, defined an `EventStream`, ran a command through the
-Hydrate → Transduce → Append cycle, inspected the `Either StoreError (Either CommandError
-(CommandResult …))`, and read the events back. To see all of this working end-to-end against a
-real aggregate, run the fulfillment demo in the keiro repository:
+You applied the schema, opened a store, defined an `EventStream`, validated it into a
+`ValidatedEventStream`, ran a command through the Hydrate → Transduce → Append cycle, inspected the
+`Either StoreError (Either CommandError (CommandResult …))`, and read the events back. To see all of
+this working end-to-end against a real aggregate, run the fulfillment demo in the keiro repository:
 
 ```bash
 just jitsurei-fulfillment

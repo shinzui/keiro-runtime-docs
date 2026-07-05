@@ -60,17 +60,24 @@ manager state stream.
 </Step>
 <Step>
 
-### Define the manager's own EventStream
+### Define and validate the manager's own EventStream
 
 The manager remembers its progress in its own event-sourced stream. Give it a tiny aggregate whose
-only command observes an order event:
+only command observes an order event. As with any command-side stream, keep the raw definition
+separate from the validated value that the process manager accepts:
 
 ```haskell
 data FulfillmentCommand = ObserveFulfillmentEvent !ObserveFulfillmentEventData
 data FulfillmentEvent   = FulfillmentObserved     !FulfillmentObservedData
 
-fulfillmentEventStream :: FulfillmentEventStream
-fulfillmentEventStream = EventStream
+type FulfillmentEventStream =
+  EventStream (HsPred FulfillmentRegs FulfillmentCommand) FulfillmentRegs FulfillmentState FulfillmentCommand FulfillmentEvent
+
+type ValidatedFulfillmentEventStream =
+  ValidatedEventStream (HsPred FulfillmentRegs FulfillmentCommand) FulfillmentRegs FulfillmentState FulfillmentCommand FulfillmentEvent
+
+fulfillmentEventStreamDef :: FulfillmentEventStream
+fulfillmentEventStreamDef = EventStream
   { transducer       = fulfillmentTransducer
   , initialState     = FulfillmentIdle
   , initialRegisters = RNil
@@ -80,12 +87,17 @@ fulfillmentEventStream = EventStream
   , stateCodec       = Nothing
   }
 
+fulfillmentEventStream :: ValidatedFulfillmentEventStream
+fulfillmentEventStream =
+  mkEventStreamOrThrow "jitsurei-fulfillment" fulfillmentEventStreamDef
+
 fulfillmentStream :: OrderId -> Stream FulfillmentEventStream
 fulfillmentStream orderId = stream ("fulfillment-" <> orderIdText orderId)
 ```
 
 The `fulfillmentStream` function is the `streamFor` you will wire below: it maps a correlation id to
-the manager's `Stream` handle (`fulfillment-o-1`).
+the manager's `Stream` handle (`fulfillment-o-1`). `fulfillmentEventStream` is the validated wrapper;
+that is what `ProcessManager.eventStream` requires.
 
 </Step>
 <Step>
@@ -97,7 +109,7 @@ aggregate itself — reuse its `EventStream` and its command-stream constructor:
 
 ```haskell
 -- from jitsurei/src/Jitsurei/OrderStream.hs
-orderEventStream   :: OrderEventStream
+orderEventStream   :: ValidatedOrderEventStream
 orderCommandStream :: OrderId -> Stream OrderCommand
 ```
 

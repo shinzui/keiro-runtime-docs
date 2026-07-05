@@ -20,11 +20,30 @@ the affected pages, then bump the pointer below.
 ## Last reviewed commit
 
 ```text
-a9cecda2e15c18ba44cc887ebe5eba6b58fa4b85  (a9cecda)
-2026-07-01T19:52:44-07:00
-docs(masterplan): record post-implementation review and follow-up fixes
-keiro 0.1.0.0 development line; docs reviewed against the post-throughput-overhaul HEAD
+601f9f36f016d6c9f3f762cda093f65f7dea5225  (601f9f3)
+2026-07-05T07:51:10-07:00
+feat(release): add project-specific Hackage release skill
+keiro 0.1.0.0 development line; docs reviewed against the validated-event-stream/replay-safety HEAD
 ```
+
+> **Note.** The `a9cecda..601f9f3` range contains the breaking validated-stream API change and its
+> follow-up release/documentation work. Public command-side runners now accept
+> `ValidatedEventStream` instead of a bare `EventStream`; `Keiro.EventStream.Validate` exports
+> `ValidatedEventStream`, `unvalidated`, `mkEventStream`, `mkEventStreamWith`, and
+> `mkEventStreamOrThrow`; and the top-level `Keiro` module re-exports the validation surface.
+> `mkEventStream` now combines keiki's hidden-input/determinism/dead-edge validation with keiro's
+> snapshot-policy coherence check, rejecting any snapshotting policy with `stateCodec = Nothing`.
+> The docs folded this into `reference/event-stream-and-stream.mdx`, `reference/command.mdx`,
+> `reference/projection.mdx`, the command-cycle explanation and walkthrough, the keiro landing page,
+> `integrations/keiro-with-keiki.mdx`, first-command/read-model/process-manager tutorials,
+> snapshot/router/transaction how-tos, keiro-dsl guide pages, and the source-code walkthroughs for
+> `EventStream`, `runCommand`, routers, process managers, and snapshot hydration.
+>
+> The same range also adds codec construction validation (`mkCodec`, `CodecConfigError`) and updates
+> generated/jitsurei stream definitions to produce `ValidatedEventStream` values via
+> `mkEventStreamOrThrow`. These changes are part of the replay-safety story: unchecked streams cannot
+> reach command runners, incoherent snapshots fail before hydration, and malformed codec/upcaster
+> chains can be caught at construction time.
 
 > **Note.** The `f1d67a0..a9cecda` range covers the post-hardening changes through the inbox/outbox
 > throughput overhaul and review follow-up fixes.
@@ -172,9 +191,10 @@ keiro 0.1.0.0 development line; docs reviewed against the post-throughput-overha
 > - **Replay-safety validation (EP, `ac197da`):** new module `Keiro.EventStream.Validate`
 >   (`keiro-core`) — `validateEventStream` / `validateEventStreamWith` lift keiki's pure
 >   `validateTransducer` (hidden-input + determinism + dead-edge) to the `EventStream` boundary and
->   return labelled `EventStreamWarning`s; `mkEventStream` is a fail-fast smart constructor returning
->   `Left [EventStreamWarning]`. Requires `(Bounded s, Enum s, Ord s, Show s)`; **not** re-exported
->   from `Keiro` (reference it as `Keiro.EventStream.Validate`). Folded into
+>   return labelled `EventStreamWarning`s; `mkEventStream` was introduced as a fail-fast smart
+>   constructor returning `Left [EventStreamWarning]`. Requires `(Bounded s, Enum s, Ord s, Show s)`.
+>   Superseded by the `a9cecda..601f9f3` note above: this surface is now re-exported from `Keiro`,
+>   and `mkEventStream` returns `ValidatedEventStream`. Folded into
 >   `reference/event-stream-and-stream.mdx` (new "Replay-safety validation" section),
 >   `explanation/why-symtransducer-not-decider.mdx` (new "What the framework can prove" section), and
 >   `faq.mdx`.

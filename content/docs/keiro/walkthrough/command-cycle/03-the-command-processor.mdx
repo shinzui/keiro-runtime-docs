@@ -13,26 +13,42 @@ append, and maybe snapshot. Read
 
 ```haskell
 -- keiro/src/Keiro/Command.hs
-runCommand options eventStream targetStream command =
+runCommand ::
+  RunCommandOptions ->
+  ValidatedEventStream phi rs s ci co ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co)))
+runCommand options validatedEventStream targetStream command =
   withCommandSpan (options ^. #tracer) (resolvedStreamName eventStream targetStream) Nothing $ \mSpan -> do
-    result <- attempt (options ^. #retryLimit)
-    recordCommandOutcome mSpan (^. #eventsAppended) result
+    (result, attemptNo) <- attempt 1 Nothing
+    recordCommandOutcome mSpan (^. #eventsAppended) attemptNo result
     pure result
   where
-    attempt remaining = do
+    eventStream = unvalidated validatedEventStream
+
+    attempt attemptNo lastConflict = do
       hydrated <- hydrate options eventStream targetStream
-      either (pure . Left) (runPlan remaining) hydrated
+      either (\err -> pure (Left err, attemptNo)) (runPlan attemptNo lastConflict) hydrated
 ```
 
-The body opens with the telemetry bookends — worth naming explicitly rather than skimming past.
+The first important line is not telemetry; it is `eventStream = unvalidated validatedEventStream`.
+The public API accepts only `ValidatedEventStream`, whose constructor is hidden in
+`Keiro.EventStream.Validate`. `runCommand` unwraps it only after the type system has forced callers
+to prove the stream with `mkEventStream`, `mkEventStreamWith`, or `mkEventStreamOrThrow`. From that
+point on the implementation uses the raw `EventStream` fields for hydration, `Keiki.step`, encoding,
+name resolution, and snapshotting.
+
+Then the body opens with the telemetry bookends — worth naming explicitly rather than skimming past.
 `withCommandSpan` opens an *optional* OpenTelemetry span: a `Nothing` tracer (the default) means no
 span and zero overhead; a `Just` tracer opens an internal-kind span named after the resolved stream.
 After the work, `recordCommandOutcome` stamps the outcome onto that span:
 
 ```haskell
-recordCommandOutcome Nothing _ _ = pure ()
-recordCommandOutcome (Just sp) eventsOf result = do
+recordCommandOutcome Nothing _ _ _ = pure ()
+recordCommandOutcome (Just sp) eventsOf attemptNo result = do
   addAttribute sp (unkey db_system_name) ("postgresql" :: Text)
+  addAttribute sp (unkey keiro_retry_attempt) (fromIntegral attemptNo :: Int64)
   case result of
     Right v  -> addAttribute sp (unkey keiro_events_appended) (Prelude.fromIntegral (eventsOf v) :: Int64)
     Left err -> do
@@ -40,9 +56,10 @@ recordCommandOutcome (Just sp) eventsOf result = do
       setStatus sp (Error (Text.pack (show err)))
 ```
 
-It is a pure no-op without a span. With one, success stamps `db.system.name` and
-`keiro.events.appended`; failure stamps a low-cardinality `error.type` from `commandErrorClass` and
-sets the span status to `Error` carrying the rendered `CommandError`:
+It is a pure no-op without a span. With one, success stamps `db.system.name`,
+`keiro.retry.attempt`, and `keiro.events.appended`; failure stamps the retry attempt and a
+low-cardinality `error.type` from `commandErrorClass`, then sets the span status to `Error` carrying
+the rendered `CommandError`:
 
 ```haskell
 commandErrorClass = \case
@@ -64,12 +81,15 @@ short-circuits to `Left`; otherwise control passes to `runPlan`.
 ## `runPlan` → `prepareCommandPlan`: Transduce, then encode
 
 ```haskell
-    runPlan remaining current =
-      case prepareCommandPlan options eventStream targetStream current command of
-        Left err -> pure (Left err)
-        Right (CommandNoOp result) -> pure (Right result)
-        Right (CommandAppend current' events encoded) ->
-          appendOnce remaining current' events encoded
+    runPlan attemptNo lastConflict current =
+      case conflictFixpoint lastConflict (current ^. #streamVersion) of
+        Just err -> pure (Left err, attemptNo)
+        Nothing ->
+          case prepareCommandPlan options eventStream targetStream current command of
+            Left err -> pure (Left err, attemptNo)
+            Right (CommandNoOp result) -> pure (Right result, attemptNo)
+            Right (CommandAppend current' events encoded) ->
+              appendOnce attemptNo current' events encoded
 ```
 
 `prepareCommandPlan` runs the **Transduce** phase and the encode step, producing the `CommandPlan` from
@@ -128,7 +148,7 @@ re-run be rejected as a duplicate rather than re-applied (see
 ## `appendOnce`: optimistic append, then maybe a snapshot
 
 ```haskell
-    appendOnce remaining current events encoded = do
+    appendOnce attemptNo current events encoded = do
       liftIO (options ^. #beforeAppend)
       appended <- tryError @StoreError $
         appendToStream
@@ -137,10 +157,10 @@ re-run be rejected as a duplicate rather than re-applied (see
           encoded
       case appended of
         Right appendResult -> do
-          writeSnapshotIfNeeded eventStream current events appendResult
-          pure (Right (appendedResult targetStream appendResult (Prelude.length encoded)))
+          writeSnapshotIfNeeded options eventStream current events appendResult
+          pure (Right (appendedResult targetStream appendResult (Prelude.length encoded)), attemptNo)
         Left (_, storeError) ->
-          retryOrFail options attempt remaining storeError
+          retryOrFail options attempt attemptNo (current ^. #streamVersion) storeError
 ```
 
 The append asserts an expected version derived from the hydrated version:
@@ -157,7 +177,7 @@ rather than throwing it, handing control to `retryOrFail`. On success, `writeSna
 **synchronously, inline in the command effect** — not on a background thread:
 
 ```haskell
-writeSnapshotIfNeeded eventStream current events appendResult =
+writeSnapshotIfNeeded options eventStream current events appendResult =
   case eventStream ^. #stateCodec of
     Nothing -> pure ()
     Just codec ->
@@ -165,17 +185,24 @@ writeSnapshotIfNeeded eventStream current events appendResult =
         Nothing -> pure ()
         Just finalState -> do
           let finalVersion = appendResult ^. #streamVersion
-              terminal = Keiki.isFinal (eventStream ^. #transducer) (Prelude.fst finalState)
-          when (shouldSnapshot (eventStream ^. #snapshotPolicy) terminal finalState finalVersion) $
-            writeSnapshot (appendResult ^. #streamId) finalVersion codec finalState
+              terminality =
+                if Keiki.isFinal (eventStream ^. #transducer) (Prelude.fst finalState)
+                  then Terminal
+                  else NotTerminal
+          when (shouldSnapshotSpan (eventStream ^. #snapshotPolicy) terminality finalState (current ^. #streamVersion) finalVersion) $ do
+            outcome <- tryError @StoreError (writeSnapshot (appendResult ^. #streamId) finalVersion codec finalState)
+            case outcome of
+              Right () -> pure ()
+              Left _ -> recordSnapshotWriteFailures (options ^. #metrics) 1
 ```
 
 Walk the guard chain: a stream with `stateCodec = Nothing` snapshots never, so this returns
 immediately. Otherwise it re-folds the just-emitted events onto the hydrated state via
 `Keiki.applyEvents`, computes terminality with `Keiki.isFinal`, and writes a snapshot only when
-`shouldSnapshot` agrees given the policy, terminality, final state, and final version. The policy and
-codec mechanics belong to the [snapshot reference](/docs/keiro/reference/snapshot); this tour walks
-only the firing rule at the call site.
+`shouldSnapshotSpan` agrees over the version span the append crossed. Snapshot write failures do not
+turn a successful command into a command failure; they are recorded on the optional metrics handle.
+The policy and codec mechanics belong to the [snapshot reference](/docs/keiro/reference/snapshot);
+this tour walks only the firing rule at the call site.
 
 Both exits return a `CommandResult` through one of two constructors — `appendedResult` after an append,
 `noOpResult` for the `CommandNoOp` branch above:
@@ -198,7 +225,7 @@ reports the *post-append* version and a `Just` position with the real count.
 On a store error, the conflict loop decides whether to retry:
 
 ```haskell
-retryOrFail options retry remaining storeError
+retryOrFail options retry attemptNo observedVersion storeError
   | isRetryableConflict storeError, attemptNo <= options ^. #retryLimit = retry (attemptNo + 1)
   | isRetryableConflict storeError = pure (Left (RetryExhausted attemptNo storeError))
   | otherwise = pure (Left (StoreFailed storeError))

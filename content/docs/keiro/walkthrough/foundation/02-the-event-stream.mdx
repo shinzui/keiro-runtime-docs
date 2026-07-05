@@ -10,9 +10,12 @@ description: "Keiro.EventStream field by field: marrying a keiki SymTransducer t
 
 ## What this part covers
 
-`keiro-core/src/Keiro/EventStream.hs` — the record that, in the module's own words, "marries a pure
-keiki `SymTransducer` … with everything keiro needs to run it against a durable event store." We read
-its seven fields, then the two helper types it carries: `SnapshotPolicy` and `StateCodec`.
+`keiro-core/src/Keiro/EventStream.hs` and `keiro-core/src/Keiro/EventStream/Validate.hs`. The first
+module defines the raw record that, in the module's own words, "marries a pure keiki
+`SymTransducer` … with everything keiro needs to run it against a durable event store." The second
+module defines the validation wrapper that public runners now require. We read the seven raw fields,
+the two helper types it carries (`SnapshotPolicy` and `StateCodec`), and then the
+`ValidatedEventStream` boundary that keeps unchecked streams out of the write path.
 
 ## The marriage, field by field
 
@@ -116,13 +119,65 @@ snapshot encoding or the shape of the folded state invalidates older snapshots a
 rehydration from events. That is what protects you from silently decoding a snapshot whose structure no
 longer matches the code.
 
-## The two load-bearing facts
+## The validated wrapper
 
-1. **`stateCodec = Nothing` disables snapshotting — regardless of `snapshotPolicy`.** The type makes
+The raw record above is only the definition. The runtime boundary is a hidden-constructor wrapper:
+
+```haskell
+-- keiro-core/src/Keiro/EventStream/Validate.hs
+newtype ValidatedEventStream phi rs s ci co =
+  ValidatedEventStream (EventStream phi rs s ci co)
+
+unvalidated :: ValidatedEventStream phi rs s ci co -> EventStream phi rs s ci co
+```
+
+Application code cannot construct `ValidatedEventStream` directly. It must pass the raw record
+through one of the smart constructors:
+
+```haskell
+mkEventStream ::
+  (Bounded s, Enum s, Ord s, Show s) =>
+  Text ->
+  EventStream (HsPred rs ci) rs s ci co ->
+  Either [EventStreamWarning] (ValidatedEventStream (HsPred rs ci) rs s ci co)
+
+mkEventStreamWith ::
+  (Bounded s, Enum s, Ord s, Show s) =>
+  ValidationOptions ->
+  Text ->
+  EventStream (HsPred rs ci) rs s ci co ->
+  Either [EventStreamWarning] (ValidatedEventStream (HsPred rs ci) rs s ci co)
+
+mkEventStreamOrThrow ::
+  (HasCallStack, Bounded s, Enum s, Ord s, Show s) =>
+  Text ->
+  EventStream (HsPred rs ci) rs s ci co ->
+  ValidatedEventStream (HsPred rs ci) rs s ci co
+```
+
+`mkEventStream` runs two classes of checks:
+
+- **keiki transducer validation** via `validateTransducer`: hidden input (replay safety),
+  structural determinism, and structural dead-edge detection under `defaultValidationOptions`.
+- **keiro stream-level validation** via `snapshotWarnings`: any policy other than `Never` with
+  `stateCodec = Nothing` is rejected, because the stream asks for snapshots it can never encode.
+
+On success the smart constructor returns `Right validated`. On failure it returns labelled
+`EventStreamWarning`s whose `eswStreamLabel` is the caller's label and whose `eswReason` renders the
+specific hidden-input, nondeterminism, dead-edge, opaque-guard, or snapshot-coherence problem. The
+public command runners unwrap with `unvalidated` internally, but only after the type system has forced
+callers to present this validated wrapper.
+
+## The load-bearing facts
+
+1. **A raw `EventStream` is no longer runnable.** It is the construction shape, not the command-runner
+   input. `runCommand`, `runCommandWithSql`, projections, routers, and process managers require
+   `ValidatedEventStream`.
+2. **`stateCodec = Nothing` disables snapshotting — regardless of `snapshotPolicy`.** The type makes
    the dependency explicit: `stateCodec` is a `Maybe`. With no codec there is no way to serialize a
-   snapshot, so even an aggressive `snapshotPolicy` like `Every 1` writes nothing. To turn snapshotting
-   on you must set *both* a firing policy *and* a `Just` state codec.
-2. **Snapshots are about the pair.** Because `snapshotPolicy` and `stateCodec` are both over
+   snapshot, so even an aggressive `snapshotPolicy` like `Every 1` writes nothing. `mkEventStream`
+   now rejects that incoherent pair instead of letting it become a silent no-op.
+3. **Snapshots are about the pair.** Because `snapshotPolicy` and `stateCodec` are both over
    `(s, RegFile rs)`, the persisted blob always carries the control state *and* the registers.
 
 ## The jitsurei anchor — both ends
@@ -132,8 +187,8 @@ The order example shows both configurations side by side
 
 ```haskell
 -- jitsurei/src/Jitsurei/OrderStream.hs
-orderEventStream :: OrderEventStream
-orderEventStream = EventStream
+orderEventStreamDef :: OrderEventStream
+orderEventStreamDef = EventStream
   { transducer = orderTransducer
   , initialState = NotStarted
   , initialRegisters = RNil               -- OrderRegs = '[]: an empty register file
@@ -142,23 +197,33 @@ orderEventStream = EventStream
   , snapshotPolicy = Never
   , stateCodec = Nothing
   }
+
+orderEventStream :: ValidatedOrderEventStream
+orderEventStream =
+  mkEventStreamOrThrow "jitsurei-order" orderEventStreamDef
 ```
 
 where `type OrderEventStream = EventStream (HsPred OrderRegs OrderCommand) OrderRegs OrderState
-OrderCommand OrderEvent` and `type OrderRegs = '[]`. The order aggregate carries *no* registers
-(`RNil`), so it is the cleanest place to see the wiring without register noise. It also opts out of
-snapshotting on both counts: `snapshotPolicy = Never` and `stateCodec = Nothing`.
+OrderCommand OrderEvent`, `type ValidatedOrderEventStream = ValidatedEventStream (HsPred OrderRegs
+OrderCommand) OrderRegs OrderState OrderCommand OrderEvent`, and `type OrderRegs = '[]`. The order
+aggregate carries *no* registers (`RNil`), so it is the cleanest place to see the wiring without
+register noise. It also opts out of snapshotting on both counts: `snapshotPolicy = Never` and
+`stateCodec = Nothing`. The runnable value is the validated wrapper, not `orderEventStreamDef`.
 
 Then the same stream with snapshotting switched on — note it overrides *both* fields:
 
 ```haskell
 -- jitsurei/src/Jitsurei/OrderStream.hs
-snapshotOrderEventStream :: OrderEventStream
-snapshotOrderEventStream =
-  orderEventStream
+snapshotOrderEventStreamDef :: OrderEventStream
+snapshotOrderEventStreamDef =
+  orderEventStreamDef
     { snapshotPolicy = Every 2
     , stateCodec = Just (defaultStateCodec @OrderRegs @OrderState 1)
     }
+
+snapshotOrderEventStream :: ValidatedOrderEventStream
+snapshotOrderEventStream =
+  mkEventStreamOrThrow "jitsurei-order-snapshot" snapshotOrderEventStreamDef
 ```
 
 `Every 2` fires the policy on even versions, and `Just (defaultStateCodec @OrderRegs @OrderState 1)`
