@@ -54,7 +54,8 @@ mkEnvelope :: MessageId -> msg -> Envelope msg
 `headers = Nothing` means the adapter does not surface headers. `headers = Just []` means the
 adapter does surface headers and this message carried none. `attributes` is for adapter-supplied
 OpenTelemetry attributes; runner defaults are applied first and adapter attributes override keys of
-the same name.
+the same name. Kafka uses this to set broker-specific messaging attributes; PGMQ leaves it empty
+because there is no stable `messaging.pgmq.*` semantic convention.
 
 Prefer `mkEnvelope` for adapter and test code. It fills optional metadata with defaults; set
 backend-specific fields with record update syntax.
@@ -91,3 +92,6 @@ Adapters construct `Ingested`: it is the framework-side value that carries the b
 Handlers receive `Message`: it is the read-only view with `envelope` and optional `lease`, but no
 ack handle. The runner calls `finalize` after the handler returns or throws. Long-running handlers
 may use `leaseExtend` only when the adapter supplied a lease.
+
+`finalize` may be retried with the same `AckDecision` if the adapter throws while applying it.
+Adapter authors must make finalization idempotent or phase-tracked for a single delivery.

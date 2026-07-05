@@ -28,9 +28,9 @@ source walkthroughs.
 ## Last reviewed commit
 
 ```text
-f5c921f862d1b0d2b035801c3b7cfe339f0b5125  (f5c921f)
-2026-07-02T15:41:34-07:00
-docs(plans): record Kafka live validation results
+172df245f40a454af46dd7f4cde855eaa4414c5a  (172df24)
+2026-07-04T15:38:47-07:00
+chore(release): 0.8.0.1
 ```
 
 ## Current source-backed claims
@@ -53,6 +53,9 @@ docs(plans): record Kafka live validation results
   `AppConfigInvalid (InvalidInboxSize n)` for invalid sizes.
 - `Shibuya.Batch` provides first-class batch processors, keyed accumulation,
   size/timeout/flush triggers, and deterministic `BatchAck` resolution.
+- `AckHandle.finalize` may be retried with the same `AckDecision` after a
+  transient finalizer failure. Adapters must make finalization idempotent or
+  phase-tracked for a single delivery.
 - Metrics and health surfaces come from `shibuya-metrics`; Prometheus,
   WebSocket, JSON, and health endpoints are documented from current source.
   `StreamStats.dropped` and `shibuya_messages_dropped_total` were removed.
@@ -65,8 +68,8 @@ docs(plans): record Kafka live validation results
 1. List what changed since the pointer:
    ```text
    SHIBUYA=$(mori registry show shinzui/shibuya --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$SHIBUYA" log --oneline f5c921f..HEAD
-   git -C "$SHIBUYA" diff --stat f5c921f..HEAD
+   git -C "$SHIBUYA" log --oneline 172df24..HEAD
+   git -C "$SHIBUYA" diff --stat 172df24..HEAD
    ```
 2. Inspect changed modules under `shibuya-core/`, `shibuya-metrics/`, and
    `shibuya-example/`, plus `README.md`, `CHANGELOG.md`, and
@@ -80,6 +83,9 @@ docs(plans): record Kafka live validation results
 
 ## Previous pointers
 
+- `f5c921f862d1b0d2b035801c3b7cfe339f0b5125 (f5c921f)` — pointer before the
+  0.8.0.1 follow-up range covering the release migration guide, README refresh,
+  runner allocation work, and docs alignment for the finalized 0.8 public API.
 - `3f276ee190e563fddb0bc81e01d62a96a1b31715 (3f276ee)` — 0.7.1.0 release
   pointer before the 0.8 changes covering first-class batching, `AppConfig`,
   handler-facing `Message`, `OrderingPolicy`, internalized runner modules,

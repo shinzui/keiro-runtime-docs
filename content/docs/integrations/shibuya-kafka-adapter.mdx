@@ -25,18 +25,21 @@ kafkaAdapter ::
 
 The adapter runs inside the `KafkaConsumer` effect supplied by the caller's
 consumer properties. `KafkaAdapterConfig` supplies the topic list, poll timeout,
-batch size, and offset reset behavior:
+and batch size:
 
 | Field | Default | Effect |
 | --- | --- | --- |
 | `topics` | required | Topics subscribed by this adapter. |
 | `pollTimeout` | `Timeout 1000` | Kafka poll timeout in milliseconds. |
 | `batchSize` | `100` | Maximum records handled from a poll cycle. |
-| `offsetReset` | `Earliest` | Reset policy used when no committed offset exists. |
 
 The adapter name is `kafka:<topics>`. The adapter's `shutdown` action marks the
 source as stopped and commits all offsets accumulated by successful finalization.
 Call `shutdown` while the `KafkaConsumer` effect is still in scope.
+
+Use `kafkaAdapterWith` when you need caller-owned `KafkaAdapterState`, usually so
+the same state can be passed to `kafkaRebalanceHandler` in the consumer
+properties before the consumer is created.
 
 ## Ack Mapping
 
@@ -46,15 +49,20 @@ The adapter therefore maps ack decisions to offset behavior:
 | shibuya decision | Kafka adapter behavior |
 | --- | --- |
 | `AckOk` | Store this record's offset for a later commit. |
-| `AckRetry delay` | Store the offset; retry topics or handler-level retry state are application concerns. |
-| `AckDeadLetter reason` | Store the offset; the adapter does not publish a DLQ record. |
+| `AckRetry delay` | Wait for the requested delay, record a retry barrier, and seek the partition back to this record's offset. |
+| `AckDeadLetter reason` | Warn to stderr, then store the offset; the adapter does not publish a DLQ record. |
 | `AckHalt` | Pause the record's partition and do not store the offset. |
 
-`AckRetry` and `AckDeadLetter` both move the offset forward. That is intentional:
-once Kafka has delivered a record in this consumer session, the adapter cannot
-un-read it. If your service needs delayed retries or durable DLQs, publish to
-retry/DLQ topics from the handler before returning the ack decision, and make
-that side effect idempotent.
+`AckRetry` is a local redelivery mechanism, not a durable retry topic. The
+adapter seeks the partition back and drops stale records above the retry barrier
+that were already buffered. It also serializes poll, seek, store, pause, and
+commit operations behind one consumer lock because librdkafka consumer handles
+are not safe to poll and seek/store concurrently from shibuya's ingester and
+finalizer paths.
+
+`AckDeadLetter` moves the offset forward. If your service needs a durable DLQ,
+publish to a DLQ topic from the handler before returning `AckDeadLetter`, and
+make that side effect idempotent.
 
 `AckHalt` is the only decision that deliberately withholds the offset. The
 partition is paused for the current session. On a new consumer session, the
@@ -87,6 +95,15 @@ decide whether the processor should stop or restart.
 Offset commits happen through the adapter's stored-offset ledger. A crash before
 commit can replay records whose handlers already ran. Treat handlers as
 at-least-once and idempotent even when they return `AckOk`.
+
+The adapter must be run with serial processing. librdkafka stores the highest
+offset per partition without gap tracking, so concurrent finalization can commit
+past an earlier record that requested retry or halt. Use `Serial` for Kafka
+processors until a gap-tracking commit layer exists.
+
+Ack finalizer failures are retried a small number of times. Fatal Kafka errors,
+or exhausted finalizer retries, are recorded in adapter state and then surfaced
+through the source stream so shibuya supervision sees a processor failure.
 
 ## Examples
 

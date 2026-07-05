@@ -25,15 +25,16 @@ behavior begins.
 | Decision | pgmq | kiroku | Kafka | Message DB |
 | --- | --- | --- | --- | --- |
 | `AckOk` | Delete the leased row. | Continue and checkpoint. | Store the offset for later commit. | Mark complete; contiguous checkpoint can advance. |
-| `AckRetry` | Change message visibility by the retry delay. | Return Kiroku `Retry delay`. | Store the offset because Kafka cannot un-read a record. | Buffer in-process for delayed redelivery; overflow becomes `MaxRetriesExceeded`. |
+| `AckRetry` | Change message visibility by the retry delay. | Return Kiroku `Retry delay`. | Seek the partition back to the record after the requested delay; retry is local to the consumer session. | Buffer in-process for delayed redelivery; overflow becomes `MaxRetriesExceeded`. |
 | `AckDeadLetter` | Archive or write a DLQ copy, then remove original. | Write to Kiroku dead letters and checkpoint. | Store the offset; Kafka DLQ publishing is not implemented in the adapter. | Skip-and-log or write deterministic copy to a DLQ stream, then advance. |
-| `AckHalt` | Extend visibility and stop. | Cancel the subscription; event replays on restart. | Pause the partition without storing the offset. | Stop source and leave the position uncheckpointed. |
+| `AckHalt` | Change visibility with the configured halt timeout and stop. | Cancel the subscription; event replays on restart. | Pause the partition without storing the offset. | Stop source and leave the position uncheckpointed. |
 
 The important split is broker-owned retry versus adapter-owned retry. PGMQ and
-Kiroku have native redelivery semantics. Kafka offsets are one-way, so retry is
-a handler/application concern. Message DB has no queue primitive, so the adapter
-implements a bounded in-memory retry buffer and relies on checkpoint replay
-after process failure.
+Kiroku have native redelivery semantics. Kafka can seek the current consumer
+session back to a failed offset, but durable retry topics and DLQ publishing are
+still handler/application concerns. Message DB has no queue primitive, so the
+adapter implements a bounded in-memory retry buffer and relies on checkpoint
+replay after process failure.
 
 ## Ordering and Concurrency
 
@@ -47,9 +48,11 @@ durable checkpoint until shibuya finalizes the event. Consumer groups route
 originating streams to members and require serial member execution so per-stream
 order is preserved.
 
-Kafka preserves order per partition. The adapter stores offsets per
-topic-partition and commits them on shutdown. `AckHalt` pauses a partition and
-keeps the offset uncommitted so restart can redeliver.
+Kafka preserves order per partition. The adapter serializes consumer operations,
+stores offsets per topic-partition, and commits them on shutdown. Run Kafka
+processors with `Serial`; without a gap-tracking commit layer, concurrent
+finalization can store a later offset before an earlier retry or halt. `AckHalt`
+pauses a partition and keeps the offset uncommitted so restart can redeliver.
 
 Message DB polls a category by global position and advances the stored
 checkpoint only across a gap-free prefix of completed positions. Out-of-order
@@ -80,8 +83,9 @@ tables to remain authoritative.
 
 Choose `shibuya-kafka-adapter` when topics and partitions are the source
 contract. It is the lowest-level adapter in this set: it exposes Kafka headers
-and offsets clearly, but application code must own retry topics, DLQ publishing,
-and idempotency beyond offset commits.
+and offsets clearly, supports local seek-based retries, and leaves durable retry
+topics, DLQ publishing, and idempotency beyond offset commits to application
+code.
 
 Choose `shibuya-message-db-adapter` when the source is Message DB's
 append-only event store and you want a shibuya processor over category streams.

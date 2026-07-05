@@ -27,35 +27,47 @@ pgmqAdapter ::
   , IOE :> es
   , Tracing :> es
   ) =>
+  PgmqAdapterEnv ->
   PgmqAdapterConfig ->
-  Eff es (Adapter es Value)
+  Eff es (Either PgmqConfigError (Adapter es Value))
 ```
+
+Build the environment with `mkPgmqAdapterEnv pool`, or set the
+`onAutoDeadLetter` / `onAckFailure` callbacks yourself when operators need a
+side channel for automatic DLQs and exhausted ack retries. `pgmqAdapter`
+validates `PgmqAdapterConfig` before it starts polling; invalid configs return
+`Left PgmqConfigError`.
 
 The adapter name is `pgmq:<queueName>`. The source polls PGMQ, converts each
 leased `Message Value` into a shibuya `Envelope Value`, and attaches an
 `AckHandle` that performs the matching PGMQ operation. `shutdown` stops the
-source; leased messages that were not acked reappear naturally after their
-visibility timeout expires.
+source. In the normal non-prefetch path it releases already-read chunks that
+were not handed to shibuya; messages already in processing are redelivered by
+PGMQ if their visibility timeout expires without a final ack.
 
 Use the adapter directly when you want the raw PGMQ payload and queue semantics.
 Use `keiro-pgmq` when the queue is a typed keiro background-job queue.
 
 ## Configuration
 
-Start with `defaultPgmqAdapterConfig` and override the fields that match your
-queue:
+Start with `defaultConfig` and override the fields that match your queue:
 
 ```haskell
 import Shibuya.Adapter.Pgmq
 
-cfg =
-  defaultPgmqAdapterConfig (QueueName "reservation_work")
-    { batchSize = 25
-    , visibilityTimeout = 60
-    , maxRetries = 5
-    , deadLetterConfig =
-        Just (directDeadLetter (QueueName "reservation_work_dlq"))
-    }
+case (parseQueueName "reservation_work", parseQueueName "reservation_work_dlq") of
+  (Right reservationWork, Right reservationWorkDlq) ->
+    let cfg =
+          defaultConfig reservationWork
+            { batchSize = 25
+            , visibilityTimeout = 60
+            , maxRetries = 5
+            , deadLetterConfig =
+                Just (directDeadLetter reservationWorkDlq True)
+            }
+     in ...
+  _ ->
+    error "invalid queue name"
 ```
 
 | Field | Default | Effect |
@@ -65,14 +77,18 @@ cfg =
 | `batchSize` | `1` | Maximum messages requested per poll. |
 | `polling` | `StandardPolling` | Standard sleep-after-empty polling or PGMQ long polling. |
 | `pollRetry` | 5 attempts, 100 ms to 5 s backoff | Retries transient read failures before surfacing `PgmqRuntimeError`. |
+| `ackRetry` | 5 attempts, 100 ms to 5 s backoff | Retries transient ack, visibility, and DLQ operations before calling `onAckFailure`. |
 | `deadLetterConfig` | `Nothing` | Optional direct queue or topic route for `AckDeadLetter`. |
+| `haltVisibilityTimeout` | `Nothing` | Optional visibility timeout for `AckHalt`; falls back to `visibilityTimeout`. |
 | `maxRetries` | `3` | Maximum PGMQ read count before the adapter auto-dead-letters. |
 | `fifoConfig` | `Nothing` | Enables grouped FIFO read strategies. |
 | `prefetchConfig` | `Nothing` | Adds a bounded prefetch buffer in front of the processor. |
 
-When prefetch is enabled, size the buffer against the lease: `bufferSize *
-batchSize * averageProcessingTime` should stay below `visibilityTimeout`, or a
-message can become visible again before the handler acks it.
+When prefetch is enabled, size the buffer against the lease:
+`bufferSize * batchSize * averageProcessingTime` should stay below
+`visibilityTimeout`, or a message can become visible again before the handler
+acks it. Prefetched messages that are read but not handed to a handler before
+shutdown are not lost; PGMQ redelivers them after their visibility timeout.
 
 ## Ack Mapping
 
@@ -84,7 +100,7 @@ PGMQ's lease model maps cleanly onto shibuya's four ack decisions:
 | `AckRetry delay` | `changeVisibilityTimeout` using the requested retry delay. |
 | `AckDeadLetter reason` without DLQ config | `archiveMessage`; the row moves to PGMQ's archive table. |
 | `AckDeadLetter reason` with DLQ config | Write a DLQ payload to a direct queue or topic route, then `deleteMessage` the original. |
-| `AckHalt` | Extend visibility to one hour and stop the processor. |
+| `AckHalt` | Change visibility to `haltVisibilityTimeout`, or to `visibilityTimeout` when unset, and stop the processor. |
 
 Before a handler runs, the adapter compares PGMQ's `readCount` with
 `maxRetries`. If the count is already too high, it applies
@@ -92,13 +108,18 @@ Before a handler runs, the adapter compares PGMQ's `readCount` with
 the handler. The count is PGMQ's broker-side delivery count, so it survives
 process restarts.
 
+`AckHandle.finalize` is idempotent per delivery. If shibuya retries the same
+finalization after a transient failure, the adapter re-runs only unfinished
+work; once a decision succeeds, later calls are no-ops. The DLQ path writes the
+DLQ message and deletes the original in one database transaction.
+
 ## Dead Letters
 
 `DeadLetterConfig` has two target forms:
 
 ```haskell
-directDeadLetter :: QueueName -> DeadLetterConfig
-topicDeadLetter  :: RoutingKey -> DeadLetterConfig
+directDeadLetter :: QueueName -> Bool -> DeadLetterConfig
+topicDeadLetter  :: RoutingKey -> Bool -> DeadLetterConfig
 ```
 
 `DirectQueue` writes directly to a named PGMQ queue. `TopicRoute` publishes
@@ -158,8 +179,8 @@ fields; the raw payload stays as the handler's `Value`.
   retry visibility changes, and lease expiry can redeliver the same message.
 - `AckRetry` changes broker visibility; it does not allocate an in-process retry
   buffer.
-- `AckHalt` is a stop signal, not a pause. The one-hour visibility extension is
-  only a guardrail for operator intervention.
+- `AckHalt` is a stop signal, not a pause. Tune `haltVisibilityTimeout` when the
+  default queue visibility timeout is too short for operator intervention.
 - Standard polling is simpler for steady workloads. Long polling reduces idle
   query churn when the queue is mostly empty.
 - PGMQ queue provisioning, archive reads, purges, metrics, and schema migration

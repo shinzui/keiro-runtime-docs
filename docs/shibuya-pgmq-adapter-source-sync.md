@@ -9,9 +9,10 @@ commit to `HEAD`, update the affected page(s), then bump the pointer below.
 ## Status
 
 Content-authored. The integration page now documents runtime shape,
-configuration, ack mapping, dead letters, FIFO and topic helpers, envelope
-mapping, operational notes, and related links. This pass replaced the bootstrap
-stub and checked the prose against the 0.8.0.0 adapter source and bundled user
+environment callbacks, configuration validation, split poll/ack retry policies,
+ack mapping, idempotent finalization, dead letters, FIFO and topic helpers,
+envelope mapping, optional prefetch, operational notes, and related links. This
+pass checked the prose against the 0.11.0.0 adapter source and bundled user
 guides.
 
 ## Upstream source
@@ -35,21 +36,29 @@ guides.
 ## Last reviewed commit
 
 ```text
-71a7b82223449d84c395b64e480c9cfe4ff274f1  (71a7b82)
-2026-06-14
-chore(release): 0.8.0.0
+99e997e8a05f4a0deb92ddede4d419351f6da3d8  (99e997e)
+2026-07-04T16:45:08-07:00
+chore(release): 0.11.0.0
 ```
 
 ## Current source-backed claims
 
-- `pgmqAdapter` returns `Adapter es Value` and requires `Pgmq`, `Error
+- `pgmqAdapter` takes `PgmqAdapterEnv` plus `PgmqAdapterConfig`, returns
+  `Either PgmqConfigError (Adapter es Value)`, and requires `Pgmq`, `Error
   PgmqRuntimeError`, `IOE`, and `Tracing`.
 - `PgmqAdapterConfig` includes queue name, visibility timeout, batch size,
-  polling mode, poll retry settings, optional DLQ config, max retries, optional
-  FIFO config, and optional prefetch config.
+  polling mode, poll retry settings, ack retry settings, optional DLQ config,
+  halt visibility timeout, max retries, optional FIFO config, and optional
+  prefetch config.
 - `AckOk` deletes the leased message; `AckRetry` changes visibility;
   `AckDeadLetter` archives or writes a DLQ copy and removes the original;
-  `AckHalt` extends visibility and stops.
+  `AckHalt` changes visibility using `haltVisibilityTimeout` or the main
+  visibility timeout and stops.
+- `AckHandle.finalize` is idempotent per delivery; DLQ write plus original
+  delete run in one transaction when a DLQ target is configured.
+- Concurrent prefetch is opt-in via `PrefetchConfig`; shutdown of prefetched
+  unread messages is at-least-once safe, with redelivery delayed by visibility
+  timeout rather than lost.
 - Messages whose PGMQ read count exceeds `maxRetries` are automatically
   dead-lettered as `MaxRetriesExceeded` before handler delivery.
 - DLQ targets can be direct queues or topic routes. DLQ writes preserve consumer
@@ -62,6 +71,10 @@ chore(release): 0.8.0.0
 
 ## Previous pointers
 
+- `71a7b82223449d84c395b64e480c9cfe4ff274f1 (71a7b82)`, 2026-06-14:
+  0.8.0.0 source-backed pass before the 0.11 adapter break that added
+  `PgmqAdapterEnv`, split ack retry config, hardened finalization, and
+  reintroduced scoped concurrent prefetch.
 - `8e6f6e93e729bac129d7a9f2f8917f40fa4d6d9c` (`8e6f6e9`), 2026-06-05:
   bootstrap baseline. The integration page had only placeholder prose and no
   source-backed behavior transcribed.
@@ -71,8 +84,8 @@ chore(release): 0.8.0.0
 1. List what changed since the pointer:
    ```text
    ADAPTER=$(mori registry show shinzui/shibuya-pgmq-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$ADAPTER" log --oneline 71a7b82..HEAD
-   git -C "$ADAPTER" diff --stat 71a7b82..HEAD
+   git -C "$ADAPTER" log --oneline 99e997e..HEAD
+   git -C "$ADAPTER" diff --stat 99e997e..HEAD
    ```
    Also inspect `README.md`, `CHANGELOG.md`, `docs/user/`, and the source
    modules listed above. Because the adapter sits on `pgmq-hs`, check

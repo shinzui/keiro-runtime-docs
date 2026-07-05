@@ -8,7 +8,8 @@ be reviewed by diff.
 ## Status
 
 Content-authored. The integration page documents runtime shape, configuration,
-offset behavior, ack mapping, envelope mapping, fatal errors, shutdown, and
+offset behavior, local seek-based retry, serial-processing requirements,
+consumer locking, ack mapping, envelope mapping, fatal errors, shutdown, and
 runnable examples.
 
 ## Upstream source
@@ -24,30 +25,45 @@ runnable examples.
 ## Last reviewed commit
 
 ```text
-424a4c25d96333f9cf8aa13eaae3b306bbb775c5  (424a4c2)
-2026-06-05
-feat!: surface Kafka headers on Envelope and require shibuya-core 0.7
+468a218cb51bd494e670aea5f8fe4bf97c32a215  (468a218)
+2026-07-04T16:45:10-07:00
+chore(release): 0.8.0.0
 ```
 
 ## Current source-backed claims
 
 - `kafkaAdapter` returns `Adapter es (Maybe ByteString)` inside a
   `KafkaConsumer` effect.
-- Config supplies topics, poll timeout, batch size, and offset reset policy.
-- `AckOk`, `AckRetry`, and `AckDeadLetter` store offsets; `AckHalt` pauses the
-  partition and does not store the offset.
+- Config supplies topics, poll timeout, and batch size. The live Kafka
+  subscription and offset-reset policy are supplied by the caller's consumer
+  properties.
+- `AckOk` stores offsets; `AckRetry` delays, records a retry barrier, and seeks
+  the partition back to the failed offset; `AckDeadLetter` stores offsets after
+  warning; `AckHalt` pauses the partition and does not store the offset.
+- The adapter must run with serial message processing until it has a
+  gap-tracking commit layer.
 - The adapter does not publish retry-topic or DLQ records; applications that
-  need those flows must do so in handlers before finalizing.
+  need durable retry/DLQ flows must do so in handlers before finalizing.
+- The adapter serializes poll, seek, store, pause, and commit operations behind
+  a shared consumer lock and records fatal/exhausted ack errors for the source
+  stream to surface.
 - Envelope conversion lifts topic, partition, offset, timestamp, trace headers,
   ordered Kafka headers including duplicates, and the raw record value.
+
+## Previous pointers
+
+- `424a4c25d96333f9cf8aa13eaae3b306bbb775c5 (424a4c2)`, 2026-06-05:
+  header-surfacing baseline before the 0.8 adapter break covering finalized
+  safe adapter API, seek-based retry, fatal ack classification, bounded
+  consumer locking, and release.
 
 ## Update procedure
 
 1. List what changed since the pointer:
    ```text
    KAFKA=$(mori registry show shinzui/shibuya-kafka-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KAFKA" log --oneline 424a4c2..HEAD
-   git -C "$KAFKA" diff --stat 424a4c2..HEAD
+   git -C "$KAFKA" log --oneline 468a218..HEAD
+   git -C "$KAFKA" diff --stat 468a218..HEAD
    ```
 2. Inspect source modules and `shibuya-kafka-adapter-jitsurei/app/`.
 3. Update `content/docs/integrations/shibuya-kafka-adapter.mdx` and the shared
