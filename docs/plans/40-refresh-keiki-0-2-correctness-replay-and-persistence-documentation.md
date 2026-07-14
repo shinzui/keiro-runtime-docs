@@ -34,7 +34,9 @@ is exported at the reviewed source commit, and by navigating the site without li
   explicit output intent, structured replay, and `InFlight`-aware acceptors. `pnpm run typecheck`,
   `pnpm run format:check`, `pnpm build`, the 447-file internal-link scan, the removed-path scan, and
   `git diff --check` all passed.
-- [ ] Milestone 2: refresh builder validation, symbolic soundness, and checked composition.
+- [x] (2026-07-14T16:19:29Z) Milestone 2: refresh builder validation, symbolic soundness, and
+  checked composition. `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the 447-file
+  internal-link scan, the upstream-export symbol scan, and `git diff --check` all passed.
 - [ ] Milestone 3: refresh shape hashes, JSON persistence evolution, and the keiro integration
   handoff.
 - [ ] Run the complete EP-1 validation and stale-API scan, then record outcomes for EP-7.
@@ -52,6 +54,19 @@ is exported at the reviewed source commit, and by navigating the site without li
   record and explains why. All links and callable symbols for the deleted facade are gone.
   Evidence: `rg -n 'toDecider|/docs/keiki/reference/decider|07-decider-facade|decider-facade-and-when-to-use-it' content/docs`
   returns no results.
+- Observation: The old symbolic walkthrough described every fixed-width integer as an unbounded
+  `Integer` and `UTCTime` at whole-second precision. In 0.2 only platform `Int` is unbounded;
+  `Word8`/`Word16`/`Word32`/`Word64` and `Int32`/`Int64` use exact SBV bit vectors, while `UTCTime`
+  round-trips losslessly as epoch picoseconds.
+  Evidence: the reviewed instances at `src/Keiki/Symbolic.hs:145-220` and the updated symbolic
+  reference/typeclass walkthrough agree on the exact `SymRep` types.
+- Observation: The existing cross-context guide treated `lmapMaybeCi` as a replayable composition
+  bridge. 0.2 stamps mapped constructor names, carries `PoisonProvenance` through existential
+  wrappers, reports concrete drift through `composeChecked`, and raises `PoisonedCompositionError`
+  at categorical boundaries. The retained jitsurei `loanWorkflow` is topology-only; its tests drive
+  each async stage separately.
+  Evidence: `src/Keiki/Profunctor.hs:167-203,514-574`,
+  `test/Keiki/CategorySpec.hs:192-225`, and `jitsurei/test/Jitsurei/LoanWorkflowSpec.hs:1-20`.
 
 
 ## Decision Log
@@ -74,6 +89,18 @@ is exported at the reviewed source commit, and by navigating the site without li
   `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md`.
   This plan owns the foundational vocabulary that plan consumes.
   Date: 2026-07-14
+- Decision: Teach `buildTransducerEither` and `composeChecked` as the primary construction
+  boundaries while retaining `buildTransducer` and `compose` as explicit unchecked/error-raising
+  compatibility or experimental surfaces.
+  Rationale: 0.2 exposes structured, located failures at both boundaries. Leading with the raw
+  constructors would hide defects that the release added APIs specifically to surface.
+  Date: 2026-07-14
+- Decision: Recast `feedback1` as a finite two-copy cascade and cross-context `lmapMaybeCi` wiring as
+  topology-only, not shared-state feedback or a validated replay pipeline.
+  Rationale: The source and regression tests prove that `feedback1 t f` advances an independent
+  inner copy of `t`, while poison provenance deliberately rejects lossy mapped boundaries. The docs
+  must not promise stronger operational semantics than the values provide.
+  Date: 2026-07-14
 
 
 ## Outcomes & Retrospective
@@ -83,6 +110,14 @@ their navigation. New-reader paths now build with explicit edge output intent, s
 builder defects, distinguish `StepFailure` from `ReplayFailure`, and show how `outputAcceptor`
 preserves `InFlight` state for complete and truncated multi-event logs. The production site builds
 successfully without crawling a removed route.
+
+Milestone 2 now teaches explicit `emit`/`emitWith`/`noEmit` intent, eager located `BuilderError`s,
+the four new default replay-safety warnings, exact fixed-width symbolic models, and fail-closed solver
+uncertainty. Composition documentation leads with `composeChecked`, shows aligned success and rendered
+constructor-drift failure, explains sequential read-after-write substitution for collapsed multi-event
+paths, uses `PLeftArm`/`PRightArm` for total arm exclusion, carries poison provenance through the
+experimental category surface, and names `feedback1`'s independent two-copy semantics. The build and
+all incremental quality gates pass at the unchanged clean upstream SHA.
 
 
 ## Context and Orientation

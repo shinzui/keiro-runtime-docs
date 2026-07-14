@@ -179,7 +179,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 
 - [x] (2026-07-14T15:46:08Z) EP-1 Milestone 1: remove the dead Decider API and teach
   structured replay.
-- [ ] EP-1 Milestone 2: refresh builder, validation, symbolic, and composition contracts.
+- [x] (2026-07-14T16:19:29Z) EP-1 Milestone 2: refresh builder, validation, symbolic, and
+  composition contracts.
 - [ ] EP-1 Milestone 3: refresh persistence, codecs, and the keiro integration handoff.
 - [ ] EP-2 Milestone 1: refresh event-stream validation, hydration, and command failures.
 - [ ] EP-2 Milestone 2: refresh snapshot correctness and recovery behavior.
@@ -209,7 +210,13 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 Document cross-plan insights, dependency changes, scope adjustments, or unexpected
 interactions between child plans. Provide concise evidence.
 
-(None yet.)
+- EP-1 found that `lmapMaybeCi` is a standalone forward router, not a replay-safe composition
+  bridge: concrete checked composition reports its stamped names and the existential category raises
+  `PoisonedCompositionError`. EP-3 and EP-4 must keep cross-context filtering at the runtime router or
+  generate an honest structural adapter rather than composing across a lossy map.
+- EP-1 confirmed that `feedback1` is a two-copy cascade, not shared-state aggregate feedback. Runtime
+  orchestration pages should describe durable feedback as explicit cross-stream dispatch owned by
+  keiro, not as state sharing hidden inside the keiki combinator.
 
 
 ## Decision Log

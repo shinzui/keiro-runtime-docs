@@ -72,7 +72,7 @@ programmatically.
 `B.emit` recovers the input-side `InCtor` from the enclosing `B.onCmd` — that is what lets it pin the
 command constructor into the output term without you naming it. An **ε-edge body** opened with
 `B.onEpsilon` pins **no** `InCtor` (it has no command match and no `PayloadProj`), so a plain `emit`
-there has nothing to recover. It raises a finalize-time error telling you to switch to `emitWith`:
+there has no schema witness. Keiki 0.2 rejects that program at compile time; use `emitWith`:
 
 ```haskell
 -- Keiki.Builder.emit: no enclosing onCmd pinned an InCtor.
@@ -88,7 +88,7 @@ emitWith
   => InCtor ci ifs        -- the InCtor emit would otherwise recover
   -> WireCtor co fs
   -> rec
-  -> EdgeBuilder rs ci co v w w ()
+  -> EdgeBuilder rs ci co v pin w w ()
 ```
 
 ```haskell
@@ -102,19 +102,27 @@ B.from SomeVertex do
 
 <Callout type="info">
   Inside an `onCmd` body, the `InCtor`-less `emit` is preferred — it reads cleaner and cannot pin the
-  wrong constructor. Use `emitWith` only inside `onEpsilon`, or when you deliberately need to override
-  the constructor the enclosing `onCmd` bound. Like `emit`, `emitWith` snoc-appends, so multiple calls
-  build a multi-event edge.
+  wrong constructor. If `emitWith` is used there, its constructor name and slot names must match the
+  enclosing `onCmd`; `buildTransducerEither` reports `DefectOutputCtorMismatch` otherwise. Like
+  `emit`, `emitWith` snoc-appends, so multiple calls build a multi-event edge.
 </Callout>
 
-A body with no `emit`/`emitWith` at all is already an ε-edge (empty output); `B.noEmit` exists only to
-state that intent explicitly and is a documentation no-op.
+A body with no `emit`/`emitWith` must call `B.noEmit`. Omitting all three is
+`DefectMissingOutputIntent`, located at the source vertex and edge index. Silence is never inferred
+from a bare `goto`.
+
+<Callout type="warn">
+`B.noEmit` declares output intent; it does not prove persistence safety. If the edge changes vertex
+or writes registers, `validateTransducer defaultValidationOptions` reports
+`StateChangingEpsilon`. Emit a durable event for that state change, or keep the transition in a
+machine whose state is not reconstructed from an event log.
+</Callout>
 
 ## Verify it worked
 
 Both forms compile to the same edge, so the cross-form equivalence is observable: an aggregate
 authored with the record form and one authored with the positional chain produce identical `delta`,
-`omega`, and `reconstitute` results. `Jitsurei.EmailDeliveryBuilderSpec` exercises this shape for the
+`omega`, and `reconstituteEither` results. `Jitsurei.EmailDeliveryBuilderSpec` exercises this shape for the
 `EmailSent` event.
 
 ## Related

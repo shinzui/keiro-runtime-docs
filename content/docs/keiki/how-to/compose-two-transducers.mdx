@@ -1,13 +1,13 @@
 ---
 title: "Compose two transducers"
-description: "Chain one aggregate's output into another's input with compose, aligning the middle alphabet and the register slot names so the composite's guarantees survive."
+description: "Chain one aggregate's output into another's input with composeChecked, validating constructor names, field positions, and register slot names before building the composite."
 ---
 
 You have two `SymTransducer`s and want the events of the first to drive the second — an
 `AlertSource` that emits `EmailCmd`, feeding an `EmailDelivery` that consumes `EmailCmd`. keiki's
-`compose` builds that pipeline as a single transducer. This guide shows the two alignment
-obligations you must satisfy before it typechecks, and how to confirm the composite still carries
-the keiki guarantees.
+`composeChecked` validates and builds that pipeline as a single transducer. This guide shows the
+type-level and structural alignment obligations, how to render failures, and how to confirm the
+composite still carries the keiki guarantees.
 
 <Callout type="info">
   Assumes you can already author a single aggregate and read its types (input alphabet, output
@@ -17,9 +17,9 @@ the keiki guarantees.
 
 ## Goal
 
-Given `t1 :: SymTransducer _ rs1 s1 ci1 mid` and `t2 :: SymTransducer _ rs2 s2 mid co`, produce
-`compose t1 t2 :: SymTransducer _ (Append rs1 rs2) (Composite s1 s2) ci1 co` — a transducer that
-consumes t1's input and emits t2's output, threading t1's events through t2 transparently.
+Given `t1 :: SymTransducer _ rs1 s1 ci1 mid` and `t2 :: SymTransducer _ rs2 s2 mid co`, use
+`composeChecked t1 t2` to produce either located `ComposeAlignmentWarning`s or a transducer over
+`Append rs1 rs2` and `Composite s1 s2` that consumes `ci1` and emits `co`.
 
 ## Steps
 
@@ -43,10 +43,11 @@ alertSource
                    AlertRegs AlertVertex AlertCmd EmailCmd
 ```
 
-Here `mid ~ EmailCmd`: it is `alertSource`'s output and `emailDelivery`'s input. If your two
-alphabets differ — t1 emits a wrapper type, or t2 wants a renamed/filtered subset — you bridge them
-with a profunctor adapter (`lmapMaybeCi`) *before* composing; see [Build a cross-context
-process](/docs/keiki/how-to/build-a-cross-context-process).
+Here `mid ~ EmailCmd`: it is `alertSource`'s output and `emailDelivery`'s input. If the alphabets
+differ, author an honest structural adapter transducer whose `WireCtor` and `InCtor` names align, or
+keep the map at the runtime routing boundary. Do not place `lmapMaybeCi` or `rmapCo` across a
+replayable composition boundary: those maps are intentionally stamped as poisoned, and
+`composeChecked` reports them.
 
 </Step>
 
@@ -85,32 +86,77 @@ workflow) so every slot name is unique across the chain.
 
 <Step>
 
-**Call `compose t1 t2`.** With the middle alphabet aligned and the slot names disjoint, the
-composition is a one-liner. Give it a type signature spelling out the composite shape so the reader
-(and GHC's error messages) can see what you built:
+**Call `composeChecked t1 t2`.** The checked entry point also requires `Bounded`, `Enum`, and `Ord`
+for both vertex types so it can walk conservatively reachable vertex pairs. Derive `Ord` on the
+usual enum-like vertex declarations:
 
 ```haskell
-pipeline
-  :: SymTransducer
-       (HsPred (Append AlertRegs EmailRegs) AlertCmd)
-       (Append AlertRegs EmailRegs)
-       (Composite AlertVertex EmailVertex)
-       AlertCmd
-       EmailEvent
-pipeline = compose alertSource emailDelivery
+data AlertVertex = AlertQuiescent | AlertEmitted
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+```
+
+Keep the `Either` visible until your construction boundary can render any warnings:
+
+```haskell
+pipelineChecked
+  :: Either
+       [ComposeAlignmentWarning AlertVertex EmailVertex]
+       (SymTransducer
+          (HsPred (Append AlertRegs EmailRegs) AlertCmd)
+          (Append AlertRegs EmailRegs)
+          (Composite AlertVertex EmailVertex)
+          AlertCmd
+          EmailEvent)
+pipelineChecked = composeChecked alertSource emailDelivery
+
+pipeline = case pipelineChecked of
+  Right checked -> checked
+  Left warnings -> error (unlines (map show warnings))
 ```
 
 The composite's input is `AlertCmd` (t1's input), its output is `EmailEvent` (t2's output), its
 register file is `Append AlertRegs EmailRegs`, and its vertex is `Composite AlertVertex EmailVertex`
 — a strict newtype around the pair so `Bounded`/`Enum`/`Eq`/`Show` derive cleanly.
 
+`compose` remains exported as the unchecked construction primitive. Use it only when another layer
+has already validated alignment or for a controlled experiment.
+
 </Step>
 
 </Steps>
 
+## Read an alignment failure
+
+The upstream aligned fixture takes the success branch directly:
+
+```haskell
+case composeChecked stageA stageB of
+  Right _ -> pure ()
+  Left warnings -> error ("aligned pair warned: " <> show warnings)
+```
+
+Constructor names are part of the structural wire contract. In the upstream alignment fixture,
+`stageA` emits `"MsgB"`, while `misnamedStageB` expects `"MsgTypo"`. The checked call returns both
+sides of that drift with exact edge locations:
+
+```haskell
+case composeChecked stageA misnamedStageB of
+  Right _ -> error "misnamed pipeline unexpectedly aligned"
+  Left warnings -> putStrLn (unlines (map show warnings))
+
+-- UnconsumedWireOutput {cawT1Edge = EdgeRef {edgeSource = StageVertex,
+-- edgeIndex = 0}, cawWireName = "MsgB", cawT2Vertex = StageVertex}
+-- UnmatchedInCtorExpectation {cawT2Edge = EdgeRef {edgeSource = StageVertex,
+-- edgeIndex = 0}, cawInCtorName = "MsgTypo", cawT1Vertex = StageVertex}
+```
+
+An out-of-range positional read produces `FieldArityMismatch`; a boundary rewritten through a
+profunctor map produces `PoisonedNameInComposition`. Treat every warning as a schema review item.
+An empty warning list is intentionally not a proof about arbitrary opaque guard logic.
+
 ## Verify the composite's guarantees survive
 
-`compose` is built so the keiki guarantees on `t1` and `t2` carry through to the composite —
+Checked composition is built so the keiki guarantees on `t1` and `t2` carry through to the composite —
 single-valuedness, mechanical inversion, and the hidden-input check. Confirm them on the result
 exactly as you would on a single aggregate (these are the assertions in `CompositionSpec.hs`):
 
@@ -126,8 +172,8 @@ isSingleValuedSym (withSymPred pipeline) == True
 checkHiddenInputs pipeline == []
 
 -- replay (reconstitute) lands at the expected final composite state
-reconstitute pipeline [sampleEmailEvent]
-  == Just (Composite AlertEmitted EmailSentVertex, _)
+reconstituteEither pipeline [sampleEmailEvent]
+  == Right (Composite AlertEmitted EmailSentVertex, _)
 ```
 
 The single-valuedness result is the load-bearing one: the composite is single-valued whenever t1 and
@@ -139,9 +185,9 @@ derived](/docs/keiki/explanation/what-gets-derived).
 
 ## Related
 
-- [Build a cross-context process](/docs/keiki/how-to/build-a-cross-context-process) — chain more
-  than two aggregates and bridge mismatched alphabets with `lmapMaybeCi`.
+- [Build a cross-context process](/docs/keiki/how-to/build-a-cross-context-process) — route
+  mismatched, asynchronous context boundaries through the runtime without poisoning replay.
 - [Model a saga with feedback](/docs/keiki/how-to/model-a-saga-with-feedback) — close the loop with
   `feedback1`.
-- The composition reference (`Keiki.Composition` — `compose`, `Composite`) under
+- The composition reference (`Keiki.Composition` — `composeChecked`, `compose`, `Composite`) under
   [the keiki reference](/docs/keiki/reference).

@@ -1,6 +1,6 @@
 ---
 title: "09 — Solver-backed diagnostics"
-description: "checkTransitionDeterminismSym and checkDeadEdgesSym: the exact, z3-backed determinism and dead-edge checks, and the over- and under-approximation gotchas that make the …Sym variants the only meaningful ones."
+description: "checkTransitionDeterminismSym and checkDeadEdgesSym: z3-backed checks that accept only definitive unsatisfiability and fail closed on uncertainty."
 ---
 
 <Callout type="info">
@@ -12,7 +12,7 @@ the chapter map.
 The [umbrella](/docs/keiki/walkthrough/symbolic-and-validation/07-build-time-validation-umbrella) gave us
 fast, pure, false-positive-free determinism and dead-edge checks — at the cost of missing overlaps it
 could not prove syntactically. This chapter is the other side of that trade: the **exact, solver-backed**
-diagnostics. They prove overlaps the pure path cannot, and they come with three gotchas that explain why
+diagnostics. They prove overlaps the pure path cannot, and they come with four gotchas that explain why
 the `…Sym` variants are the only ones you should reach for directly. They live in `src/Keiki/Symbolic.hs`
 under *Solver-backed validation diagnostics (EP-56)*.
 
@@ -32,13 +32,15 @@ checkTransitionDeterminismSym = checkTransitionDeterminism . withSymPred
 It lifts the transducer with
 [`withSymPred`](/docs/keiki/walkthrough/symbolic-and-validation/06-the-single-valuedness-gate) and then
 runs the `BoolAlg`-polymorphic `checkTransitionDeterminism` at the `SymPred` carrier — whose `isBot` is
-the exact z3 decision. The Haddock states what this buys:
+the z3-backed decision. Only a definitive `Unsatisfiable` result proves a pair disjoint; uncertainty
+remains a possible overlap. The Haddock states what this buys:
 
 ```haskell
 -- src/Keiki/Symbolic.hs
 {- | Solver-backed determinism diagnostic. Lifts the transducer with
 'withSymPred' and runs the 'BoolAlg'-polymorphic 'checkTransitionDeterminism'
-at the 'SymPred' carrier, whose 'isBot' is the exact z3 decision. Unlike the
+at the 'SymPred' carrier, whose 'isBot' accepts only a definitive z3
+unsatisfiability proof. Unlike the
 pure path in 'validateTransducer', this catches register-value-dependent and
 other non-syntactic overlaps. Requires z3 on @PATH@.
 -}
@@ -47,7 +49,7 @@ other non-syntactic overlaps. Requires z3 on @PATH@.
 This is the same `checkTransitionDeterminism` from `Keiki.Core` you met when reading the umbrella — the
 per-vertex, per-pair `i < j` loop whose predicate is `not (isBot (guard e1 \`conj\` guard e2))`. Over the
 *pure* `HsPred` carrier that loop is useless (more on that below); over the `SymPred` carrier it is
-exact, because `isBot` now means "z3 found no model for the conjoined guards."
+precise for the supported encoding and conservative on solver uncertainty.
 
 ## `checkDeadEdgesSym`
 
@@ -89,7 +91,7 @@ own; whether it is *dead* depends on whether `available` can ever be `True` at t
 needs a reachable-state fixpoint this check does not compute. So `checkDeadEdgesSym` is a sketch: it
 catches self-contradictory guards, not guards-that-can-never-hold-here.
 
-## The three gotchas
+## The four gotchas
 
 These three facts are why you reach for the `…Sym` variants and not the bare `Keiki.Core` ones.
 
@@ -124,6 +126,13 @@ everything.
 </Step>
 
 <Step>
+**Solver uncertainty is not emptiness.** `satResultIsProvablyUnsat` returns `True` only for SBV's
+`Unsatisfiable` result. `Unknown`, `ProofError`, timeout, `Satisfiable`, and `DeltaSat` all make
+`symIsBot` return `False`. The determinism check may therefore report a conservative possible
+overlap, but it never turns an inconclusive solver run into a green proof.
+</Step>
+
+<Step>
 **`checkDeadEdgesSym` flags only guards unsat in isolation.** As shown above, it does not compute the
 registers reachable at a vertex, so a guard that is satisfiable on its own but never holds under the
 reachable register configurations stays unflagged. It is a self-contradiction detector, not a
@@ -141,14 +150,14 @@ flowchart TB
     CT["checkTransitionDeterminism over HsPred<br/>OVER-approximates: flags nearly everything"]
   end
   subgraph sym["Solver path (Keiki.Symbolic)"]
-    CS["checkTransitionDeterminismSym<br/>= checkTransitionDeterminism . withSymPred<br/>EXACT: z3 isBot"]
+    CS["checkTransitionDeterminismSym<br/>= checkTransitionDeterminism . withSymPred<br/>precise encoding; uncertainty fails closed"]
   end
   CT -.->|"only meaningful through"| CS
 ```
 
-The takeaway: the pure path is safe-but-incomplete, the raw polymorphic check is noise on the `HsPred`
-carrier, and the exact answer is the polymorphic check *fed the `SymPred` carrier* — which is exactly
-what `checkTransitionDeterminismSym` is.
+The takeaway: the pure path is safe-but-incomplete, the raw polymorphic check is noise on the
+`HsPred` carrier, and the strongest gate is the polymorphic check fed the `SymPred` carrier. A green
+result means every solver call returned definitive unsatisfiability; uncertainty is not hidden.
 
 ## The motivating case: `PTop` vs `PInCtor`
 

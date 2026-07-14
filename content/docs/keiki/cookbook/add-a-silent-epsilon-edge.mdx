@@ -1,41 +1,40 @@
 ---
-title: Add a silent epsilon-edge
-description: A transition that changes vertex and writes registers but emits no public event.
+title: Declare an intentionally silent edge
+description: Use noEmit explicitly, and keep persisted state changes replayable.
 ---
 
-Some transitions are real state changes with nothing to announce. Take the edge, emit nothing.
+Keiki 0.2 requires every builder edge to declare whether it emits. `B.noEmit` is the explicit choice
+for an output-free edge, but output-free state changes are not reconstructible from an event log.
 
 ## Problem
 
-A command should advance the lifecycle and update registers, but it must produce no public event — an internal threshold tip, or a deletion that deliberately leaves no trace.
+A command should be accepted without changing durable state or producing an event, or a transducer is
+used only in memory and deliberately has no replay contract.
 
 ## Solution
 
-Two cases from the jitsurei spine, both built with `B.noEmit`.
-
-`Jitsurei.LoanApplication` — the "ready for review" tip. When the evidence thresholds hold, a `Continue` command moves `CollectingDocuments` to `UnderReview` with no event:
+A replay-neutral self-loop can explicitly accept an idempotent command:
 
 ```haskell
-B.from CollectingDocuments do
-  -- ... the five evidence-collection edges ...
-
-  -- ε-edge: no public event ('noEmit'), gated on the threshold guard.
-  B.onCmd inCtorContinue $ \_d -> B.do
-    B.requireGuard readyForReviewGuard
+B.from Completed do
+  B.onCmd inCtorAcknowledgeAgain $ \_d -> B.do
     B.noEmit
-    B.goto UnderReview
+    B.goto Completed
 ```
 
-`Jitsurei.UserRegistration` — a GDPR deletion before confirmation, which writes the deletion timestamp but emits nothing:
+This edge keeps the same vertex, uses `UKeep` because there are no slot writes, and emits nothing.
+Forward execution and event replay therefore agree: both leave the aggregate unchanged.
+
+For an in-memory-only state machine, `noEmit` may also accompany a state change, but make that boundary
+explicit in the owning module and do not persist only its emitted outputs as an event log.
+
+For a persisted aggregate, emit a domain event whenever the vertex or registers change:
 
 ```haskell
-B.from RequiresConfirmation do
-  -- ... confirm and resend edges ...
-
-  -- GDPR before confirmation: silent ε-edge (no event).
-  B.onCmd inCtorGdpr $ \d -> B.do
+B.from Active do
+  B.onCmd inCtorDelete $ \d -> B.do
     B.slot @"deletedAt" .= d.at
-    B.noEmit
+    B.emit wireDeleted DeletedTermFields { at = d.at }
     B.goto Deleted
 ```
 
@@ -43,8 +42,19 @@ B.from RequiresConfirmation do
 
 ## How it works
 
-`B.noEmit` marks the edge's output list as empty — the transition still fires `delta` (vertex change plus register writes), but `omega` yields no events. An ε-edge is otherwise an ordinary edge: it still has a guard and still writes slots.
+`B.noEmit` sets the builder's output-decision flag while leaving the output list empty. Without
+`emit`, `emitWith`, or `noEmit`, `buildTransducerEither` returns a located
+`DefectMissingOutputIntent`.
 
-Both examples key the ε-edge on a real `inCtor` (`inCtorContinue`, `inCtorGdpr`) rather than a bare epsilon transition. That is deliberate: the constructor witness disambiguates the edge from the others leaving the same vertex, so the single-valuedness check can reason about it as a regular keyed edge. The LoanApplication tip pairs `noEmit` with `requireGuard readyForReviewGuard` so the edge only fires once the thresholds are met — see [A multi-field threshold guard](/docs/keiki/cookbook/a-multi-field-threshold-guard).
+Then run the replay-safety umbrella:
 
-See [the builder reference](/docs/keiki/reference/builder) for `noEmit` and `requireGuard`.
+```haskell
+validateTransducer defaultValidationOptions aggregate
+```
+
+`StateChangingEpsilon` identifies an output-free edge that changes vertex, can write registers, or
+does both. The check is conservative about writes: any `USet` counts even if a particular command
+writes the value already present. A self-loop with `UKeep` is clean.
+
+See [the builder reference](/docs/keiki/reference/builder) for `noEmit` and
+[Validate](/docs/keiki/reference/validate) for the durable replay checks.

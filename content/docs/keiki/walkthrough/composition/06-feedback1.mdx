@@ -1,6 +1,6 @@
 ---
 title: "06 — feedback1"
-description: "The single-step feedback combinator, reduced to two stacked composes, the stateless-aggregate constraint it forces, and why there is no feedbackN."
+description: "The single-step two-copy cascade, reduced to two stacked composes, its empty-register constraint, and why it is not shared-state feedback."
 ---
 
 <Callout type="info">
@@ -10,8 +10,8 @@ This chapter is part of the composition source tour. Start at
 
 The previous chapter read `alternative` and the `Either` lifters — disjoint-input dispatch where two
 aggregates run side by side. This chapter reads `feedback1` in `keiki/src/Keiki/Composition.hs`: a
-combinator that models *one round* of an aggregate reacting to its own emitted event through a
-stateless policy. It is the smallest combinator in the module — its entire body is a single
+combinator that models a finite *two-copy cascade* through a policy. It is the smallest combinator in
+the module — its entire body is a single
 expression — but the type it carries, and the constraint that type forces, repay a careful read.
 
 ## The reduction: two stacked composes
@@ -78,8 +78,10 @@ The module haddock spells out how to read it:
 ```
 
 The two copies of `s1` are the **same Haskell type** but **distinct dimensions** of the product. The
-inner `t` advances independently of the outer `t` — they do not share state. The acceptance test
-makes this observable.
+inner `t` advances independently of the outer `t`; the follow-up command does not return to the state
+that processed the external command. This is not shared-state aggregate feedback, and the acceptance
+test makes that distinction observable. There is deliberately no `feedback1Checked`: boundary
+alignment cannot make the two dimensions share state.
 
 ## What one round looks like
 
@@ -179,9 +181,9 @@ without special handling. The spec confirms this by replaying the canonical one-
 
 ```haskell
 -- keiki/test/Keiki/CompositionFeedback1Spec.hs
-it "reconstitute on [cascadedEvent] lands at Composite On (Composite Pol On)" $
-  case reconstitute loop [cascadedEvent] of
-    Just (Composite outerT (Composite policy innerT), _) -> do
+it "reconstituteEither on [cascadedEvent] lands at Composite On (Composite Pol On)" $
+  case reconstituteEither loop [cascadedEvent] of
+    Right (Composite outerT (Composite policy innerT), _) -> do
       outerT `shouldBe` On
       policy `shouldBe` Pol
       innerT `shouldBe` On
@@ -201,9 +203,10 @@ are expressed by **nesting** `feedback1`:
 --     twoRounds = feedback1 (feedback1 t f) f
 ```
 
-Each level of nesting adds one more round, and each level adds another copy of the aggregate to the
-composite vertex tuple — which is why nesting only typechecks while the inner aggregate stays
-stateless. For genuine async, multi-round, durable feedback loops, the composite is a wiring artifact;
+Each level of nesting adds one more round and another copy of the prior composite. The outer call
+therefore requires the first result's entire `Append rs1 (Append rs2 rs1)` register file to be empty:
+both the original aggregate and policy must be register-stateless for the shown nested form. For
+genuine async, multi-round, durable feedback loops, the composite is a wiring artifact;
 the actual reaction loop runs through keiro, which we reach in
 [11 — A cross-context process, end to end](/docs/keiki/walkthrough/composition/11-cross-context-process-tour).
 

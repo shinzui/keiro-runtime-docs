@@ -58,10 +58,10 @@ the `Either`-tagged form. `rightInCtor` is the mirror image (`Right` branch, `Ri
 atoms every higher lifter is built from.
 
 <Callout type="info">
-The `Either` wrapping is exactly what makes `alternative` need no cross-transducer mutual-exclusion
-check. A `t1`-edge guard requires `Left _` (via `leftInCtor`), a `t2`-edge guard requires `Right _` (via
-`rightInCtor`); the two are *structurally* mutually exclusive, so single-valuedness of the composite
-reduces to each arm's own check. The `Either` arms make the cross-arm overlap vacuous.
+`alternative` also conjoins each complete lifted edge with a real `PLeftArm` or `PRightArm` predicate.
+That explicit discriminator matters for epsilon and register-only guards such as `PTop`, which may
+contain no `InCtor` to lift. The concrete evaluator and SBV translator make the two arm predicates
+mutually exclusive, so single-valuedness reduces to each arm's own check.
 </Callout>
 
 ## The term / pred / update / output lifters
@@ -158,8 +158,9 @@ on each field: first **weaken** into the merged register file (chapter 02), then
 -- src/Keiki/Composition.hs
 liftEdgeL s2 e1 = case e1 of
   Edge { update = u1 } -> Edge
-    { guard  = liftLPredAlt @(Append rs1 rs2) @ci1 @ci2
-                             (weakenLPred @rs1 @rs2 (guard e1))
+    { guard  = PAnd PLeftArm
+                 (liftLPredAlt @(Append rs1 rs2) @ci1 @ci2
+                   (weakenLPred @rs1 @rs2 (guard e1)))
     , update = liftLUpdateAlt @(Append rs1 rs2) @_ @ci1 @ci2
                                (weakenLUpdate @rs1 @rs2 u1)
     , output = map (liftLOutAlt @(Append rs1 rs2) @ci1 @ci2 @co1 @co2
@@ -171,7 +172,8 @@ liftEdgeL s2 e1 = case e1 of
 
 Read each field as `lift . weaken`: `weakenLPred` then `liftLPredAlt`, `weakenLUpdate` then
 `liftLUpdateAlt`, `weakenLOut` then `liftLOutAlt`. The two passes are orthogonal — one fixes registers,
-the other fixes the alphabet. The target advances `t1`'s vertex and **freezes `s2`** at its incoming
+the other fixes the alphabet — while `PLeftArm`/`PRightArm` supplies the top-level discriminator. The
+target advances `t1`'s vertex and **freezes `s2`** at its incoming
 value (`Composite (target e1) s2`): a `Left` command moves only the left arm.
 
 `liftEdgeR` is the mirror — `weakenR*` then `liftR*Alt`, freezing `s1`:
@@ -180,8 +182,9 @@ value (`Composite (target e1) s2`): a `Left` command moves only the left arm.
 -- src/Keiki/Composition.hs
 liftEdgeR s1 e2 = case e2 of
   Edge { update = u2 } -> Edge
-    { guard  = liftRPredAlt @(Append rs1 rs2) @ci1 @ci2
-                             (weakenRPred @rs1 @rs2 (guard e2))
+    { guard  = PAnd PRightArm
+                 (liftRPredAlt @(Append rs1 rs2) @ci1 @ci2
+                   (weakenRPred @rs1 @rs2 (guard e2)))
     , update = liftRUpdateAlt @(Append rs1 rs2) @_ @ci1 @ci2
                                (weakenRUpdate @rs1 @rs2 u2)
     , output = map (liftROutAlt @(Append rs1 rs2) @ci1 @ci2 @co1 @co2

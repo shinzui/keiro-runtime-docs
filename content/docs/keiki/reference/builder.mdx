@@ -1,12 +1,12 @@
 ---
 title: "Builder"
-description: "The Keiki.Builder DSL: a three-layer monad for authoring SymTransducers, with type-checked slot writes, emit, guards, and goto."
+description: "The Keiki.Builder DSL: explicit output intent, typed slot writes, and eager structured defects for authoring SymTransducers."
 ---
 
 The DSL on this page lives in `Keiki.Builder`. It is a purely additive surface over the
 [transducer core](/docs/keiki/reference/core): every edge it produces is an ordinary
-`Keiki.Core.Edge`, and `buildTransducer` returns a `SymTransducer` that `compose`, the deciders, the
-symbolic analyses, and the example specs consume unchanged.
+`Keiki.Core.Edge`, and a successfully built `SymTransducer` is consumed unchanged by composition,
+validation, symbolic analyses, and runtime code.
 
 The builder collapses the four nested pieces of boilerplate a hand-written edge needs — the `Edge`
 record literal, an `IndexN "name" Regs T` annotation per register write, an infix `` `combine` `` chain,
@@ -53,13 +53,16 @@ so declaration order is preserved).
 ### `EdgeBuilder` (indexed)
 
 ```haskell
-newtype EdgeBuilder rs ci co v (w :: [Symbol]) (w' :: [Symbol]) a
+newtype EdgeBuilder rs ci co v (pin :: Maybe [Slot])
+                    (w :: [Symbol]) (w' :: [Symbol]) a
   = EdgeBuilder
-      { runEdgeBuilder :: PartialEdge rs ci co v w
-                       -> (a, PartialEdge rs ci co v w') }
+      { runEdgeBuilder :: PartialEdge rs ci co v pin w
+                       -> (a, PartialEdge rs ci co v pin w') }
 ```
 
-The per-edge body carrier. The two phantom slot-set indices `w` (before this step) and `w'` (after
+The per-edge body carrier. `pin` is `'Just ifs` inside `onCmd` and preserves the enclosing command's
+field schema; it is `'Nothing` inside `onEpsilon`, which makes an ordinary `emit` there a compile-time
+error. The two phantom slot-set indices `w` (before this step) and `w'` (after
 this step) make every [`.=`](#slot-writes) visible to the type system: a **duplicate write to the
 same slot fails to type-check at the offending line**, via the
 [`Disjoint`](/docs/keiki/reference/slots#disjoint) constraint that `combine` carries.
@@ -69,31 +72,47 @@ same slot fails to type-check at the offending line**, via the
 
 ```haskell
 (>>=)
-  :: EdgeBuilder rs ci co v w1 w2 a
-  -> (a -> EdgeBuilder rs ci co v w2 w3 b)
-  -> EdgeBuilder rs ci co v w1 w3 b
+  :: EdgeBuilder rs ci co v pin w1 w2 a
+  -> (a -> EdgeBuilder rs ci co v pin w2 w3 b)
+  -> EdgeBuilder rs ci co v pin w1 w3 b
 infixl 1 >>=
 
 (>>)
-  :: EdgeBuilder rs ci co v w1 w2 a
-  -> EdgeBuilder rs ci co v w2 w3 b
-  -> EdgeBuilder rs ci co v w1 w3 b
+  :: EdgeBuilder rs ci co v pin w1 w2 a
+  -> EdgeBuilder rs ci co v pin w2 w3 b
+  -> EdgeBuilder rs ci co v pin w1 w3 b
 infixl 1 >>
 
-pure   :: a -> EdgeBuilder rs ci co v w w a
-return :: a -> EdgeBuilder rs ci co v w w a
+pure   :: a -> EdgeBuilder rs ci co v pin w w a
+return :: a -> EdgeBuilder rs ci co v pin w w a
 ```
 
-## `buildTransducer`
+## `buildTransducerEither` and `buildTransducer`
 
-The top-level entry point. Runs the `VertexBuilder` block to a `[(vertex, edges)]` table, then
-assembles a `SymTransducer` from the initial vertex, initial register file, finality predicate, and a
-closure over the lookup table.
+`buildTransducerEither` is the validating entry point for new code. It runs the complete
+`VertexBuilder`, merges duplicate `from` blocks in declaration order, assigns stable per-vertex edge
+indices, forces every edge far enough to find structural defects, and returns all defects together.
+
+```haskell
+buildTransducerEither
+  :: forall rs ci co v.
+     (DistinctNames (Names rs), Eq v)
+  => v
+  -> RegFile rs
+  -> (v -> Bool)
+  -> VertexBuilder rs ci co v ()
+  -> Either
+       (NonEmpty (BuilderError v))
+       (SymTransducer (HsPred rs ci) rs v ci co)
+```
+
+`buildTransducer` is the exception-style compatibility entry point. It delegates to
+`buildTransducerEither` and renders the `NonEmpty` error list if construction fails:
 
 ```haskell
 buildTransducer
   :: forall rs ci co v.
-     (Bounded v, Enum v, Eq v, Show v)
+     (DistinctNames (Names rs), Eq v, Show v)
   => v
   -> RegFile rs
   -> (v -> Bool)
@@ -102,11 +121,34 @@ buildTransducer
 ```
 
 <Callout type="info">
-The `Bounded v` / `Enum v` constraints are not used by `buildTransducer` itself today; they are
-reserved for a future `withCompletenessCheck` combinator that would assert every vertex appears in
-some `from` block. Duplicate-vertex entries (two `from` blocks naming the same vertex) are merged:
-`edgesOut` returns the concatenation of every matching entry's edges in declaration order.
+`DistinctNames (Names rs)` rejects duplicate register slot names at compile time. `Bounded` and
+`Enum` are no longer builder constraints. A vertex omitted from every `from` block remains terminal,
+and duplicate blocks still merge in declaration order.
 </Callout>
+
+### Structured builder defects
+
+```haskell
+data BuilderDefect
+  = DefectMissingGoto
+  | DefectMultipleGoto Int
+  | DefectOutputCtorMismatch String [String] String [String]
+  | DefectMissingOutputIntent
+
+data BuilderError v = BuilderError
+  { beVertex :: v
+  , beEdgeIndex :: Int
+  , beDefect :: BuilderDefect
+  }
+
+renderBuilderErrors :: Show v => NonEmpty (BuilderError v) -> String
+```
+
+Every edge body must call exactly one `goto` and must choose its output intent with `emit`,
+`emitWith`, or `noEmit`. An `emitWith` inside `onCmd` must name the same constructor and slots as the
+enclosing `onCmd`; otherwise replay would invert the event to a different command. These are eager
+checks: even a malformed edge at a source vertex no caller later inspects appears in the returned
+error list.
 
 ## `from`
 
@@ -115,8 +157,7 @@ calls; each adds one outgoing edge to the named vertex.
 
 ```haskell
 from
-  :: (Eq v, Show v)
-  => v
+  :: v
   -> EdgeListBuilder rs ci co v ()
   -> VertexBuilder rs ci co v ()
 ```
@@ -130,9 +171,9 @@ finalizes the edge.
 ```haskell
 onCmd
   :: forall ci ifs rs co v w.
-     Show v
-  => InCtor ci ifs
-  -> (PayloadProj rs ci ifs -> EdgeBuilder rs ci co v '[] w ())
+     InCtor ci ifs
+  -> (PayloadProj rs ci ifs
+      -> EdgeBuilder rs ci co v ('Just ifs) '[] w ())
   -> EdgeListBuilder rs ci co v ()
 ```
 
@@ -150,8 +191,7 @@ constitute the full guard. Because no `InCtor` is pinned, an `emit` inside `onEp
 ```haskell
 onEpsilon
   :: forall rs ci co v w.
-     Show v
-  => EdgeBuilder rs ci co v '[] w ()
+     EdgeBuilder rs ci co v 'Nothing '[] w ()
   -> EdgeListBuilder rs ci co v ()
 ```
 
@@ -186,7 +226,7 @@ positions in the constraint head. `slot` pins the symbol via a type application 
      ( KnownSymbol name, Disjoint '[name] w )
   => IndexN name rs r
   -> Term rs ci ifs r
-  -> EdgeBuilder rs ci co v w (Concat '[name] w) ()
+  -> EdgeBuilder rs ci co v pin w (Concat '[name] w) ()
 infixr 6 .=
 
 (=:)
@@ -194,7 +234,7 @@ infixr 6 .=
      ( KnownSymbol name, Disjoint '[name] w )
   => IndexN name rs r
   -> Term rs ci ifs r
-  -> EdgeBuilder rs ci co v w (Concat '[name] w) ()
+  -> EdgeBuilder rs ci co v pin w (Concat '[name] w) ()
 infixr 6 =:
 ```
 
@@ -243,7 +283,7 @@ emit
      ToOutFields rec rs ci ifs fs
   => WireCtor co fs
   -> rec
-  -> EdgeBuilder rs ci co v w w ()
+  -> EdgeBuilder rs ci co v ('Just ifs) w w ()
 ```
 
 <Callout type="info">
@@ -260,12 +300,12 @@ Emit an event with an **explicit** `InCtor`. The escape hatch for `onEpsilon` bo
 
 ```haskell
 emitWith
-  :: forall co fs rs ci v w ifs rec.
+  :: forall co fs rs ci v pin w ifs rec.
      ToOutFields rec rs ci ifs fs
   => InCtor ci ifs
   -> WireCtor co fs
   -> rec
-  -> EdgeBuilder rs ci co v w w ()
+  -> EdgeBuilder rs ci co v pin w w ()
 ```
 
 ### `noEmit`
@@ -273,12 +313,20 @@ emitWith
 Mark the edge as ε-output (no event).
 
 ```haskell
-noEmit :: EdgeBuilder rs ci co v w w ()
+noEmit :: EdgeBuilder rs ci co v pin w w ()
 ```
 
-Idempotent: an edge with no `emit`/`noEmit` is an ε-edge by default. `noEmit` exists only to make the
-intent explicit; mixing it with `emit` in one body is allowed but the `noEmit` is then a no-op (the
-`emit`s still produce a non-empty output list).
+`noEmit` is required when the body emits nothing. Omitting `emit`, `emitWith`, and `noEmit` produces
+`DefectMissingOutputIntent`; a bare `goto` never silently becomes an ε-output edge. `noEmit` is
+idempotent, and mixing it with later `emit` calls is allowed because the emitted terms still make the
+output list non-empty.
+
+<Callout type="warn">
+Explicit silence does not make a transition durable. `validateTransducer defaultValidationOptions`
+reports `StateChangingEpsilon` when an output-free edge changes vertex or can write registers,
+because replay has no event from which to recover that change. Use `noEmit` for replay-neutral
+self-loops or in-memory-only machines; emit an event for persisted state changes.
+</Callout>
 
 ### Output-fields sugar — `ToOutFields`, `(*:)`, `oNil`
 
@@ -305,19 +353,19 @@ Both shapes produce the same `OPack` AST node.
 Each verb conjoins onto the edge's existing guard.
 
 ```haskell
-requireGuard :: HsPred rs ci -> EdgeBuilder rs ci co v w w ()
+requireGuard :: HsPred rs ci -> EdgeBuilder rs ci co v pin w w ()
 
 requireEq
   :: (Eq r, Typeable r)
-  => Term rs ci ifs1 r -> Term rs ci ifs2 r -> EdgeBuilder rs ci co v w w ()
+  => Term rs ci ifs1 r -> Term rs ci ifs2 r -> EdgeBuilder rs ci co v pin w w ()
 
 requireCmp
   :: (Ord r, Typeable r)
-  => Cmp -> Term rs ci ifs1 r -> Term rs ci ifs2 r -> EdgeBuilder rs ci co v w w ()
+  => Cmp -> Term rs ci ifs1 r -> Term rs ci ifs2 r -> EdgeBuilder rs ci co v pin w w ()
 
 requireLt, requireLe, requireGt, requireGe
   :: (Ord r, Typeable r)
-  => Term rs ci ifs1 r -> Term rs ci ifs2 r -> EdgeBuilder rs ci co v w w ()
+  => Term rs ci ifs1 r -> Term rs ci ifs2 r -> EdgeBuilder rs ci co v pin w w ()
 ```
 
 `requireGuard` conjoins an arbitrary `HsPred` (use it for negations, disjunctions, or helper-built
@@ -330,15 +378,16 @@ in [operators](/docs/keiki/reference/operators).
 ## Termination — `goto`
 
 ```haskell
-goto :: v -> EdgeBuilder rs ci co v w w ()
+goto :: v -> EdgeBuilder rs ci co v pin w w ()
 ```
 
 Set the edge's target vertex. Required **exactly once** per edge body.
 
 <Callout type="warn">
-A missing `goto`, or more than one `goto` in the same body, is caught at *finalize* time (when
-`buildTransducer` evaluates the `VertexBuilder` block) as a runtime `error` naming the source vertex
-and edge index — not at compile time. Duplicate slot writes, by contrast, are compile errors.
+A missing `goto`, multiple `goto`s, mismatched explicit output constructor, or missing output intent
+is found for every edge by the eager validation pass. `buildTransducerEither` returns located
+`BuilderError` values; `buildTransducer` renders the same list as an exception. Duplicate slot writes
+and duplicate register names remain compile-time errors.
 </Callout>
 
 ## `PayloadProj`

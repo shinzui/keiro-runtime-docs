@@ -77,11 +77,13 @@ symIsBot p = unsafePerformIO $ do
     res <- SBV.sat $ do
         env <- mkSymEnv
         translatePred env p
-    pure (not (SBV.modelExists res))
+    pure (satResultIsProvablyUnsat res)
 ```
 
-So one pair of edges becomes one `sat` call on `g1 AND g2`: `unsat` means the pair is fine,
-`sat` means the pair overlaps. The decision loop is:
+`satResultIsProvablyUnsat` recognizes only SBV's definitive `Unsatisfiable` result. `Satisfiable`,
+`DeltaSat`, `Unknown`, `ProofError`, timeout, and other failures all return `False`. So one pair of
+edges becomes one `sat` call on `g1 AND g2`: `unsat` certifies the pair; every other result means the
+pair is overlapping or unresolved.
 
 ```mermaid
 flowchart TB
@@ -91,6 +93,7 @@ flowchart TB
   Conj --> Bot["symIsBot (g1 AND g2)  — ask z3: is g1 AND g2 unsat?"]
   Bot -- "unsat (no model) → isBot = True" --> Next["pair OK"]
   Bot -- "sat (model exists) → isBot = False" --> Fail["NOT single-valued: reconstruct witness with symSatExt"]
+  Bot -- "unknown / proof error → isBot = False" --> Uncertain["NOT certified: investigate solver result"]
   Next --> P
   P -- "all pairs OK" --> V
   V -- "all vertices OK" --> Pass["isSingleValuedSym = True"]
@@ -98,10 +101,10 @@ flowchart TB
 
 ## Witnesses: the breaking input
 
-When `symIsBot (g1 AND g2)` comes back `False`, the conjunction is satisfiable — there is a
-concrete input that fires both edges. `isSingleValuedSym` itself only returns a `Bool`, but the
-same predicate that failed can be handed to `symSatExt`, which re-runs the solver and
-*reconstructs the model* into a concrete `(RegFile rs, ci)`:
+When `symIsBot (g1 AND g2)` comes back `False`, the conjunction is either satisfiable or not
+certified empty. `isSingleValuedSym` itself only returns a `Bool`; hand the same predicate to
+`symSatExt`. A `Just (regs, ci)` is a concrete input that fires both edges. `Nothing` can also mean
+solver uncertainty, so do not reinterpret it as proof of disjointness.
 
 ```haskell
 symSatExt ::

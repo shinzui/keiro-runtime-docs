@@ -1,6 +1,6 @@
 ---
 title: "07 — The builder, three layers"
-description: "How Keiki.Builder stacks two plain Monads and one indexed monad to author a SymTransducer, and how the indexed layer's write-set index turns a duplicate slot write into a compile error."
+description: "How Keiki.Builder stacks two plain Monads and one indexed monad, preserves the enclosing command schema, and eagerly returns located edge defects."
 ---
 
 Chapter 06 read the `Edge` and `SymTransducer` types and the evaluators that run them. Authoring those
@@ -35,7 +35,7 @@ definition. The module header states it plainly:
 flowchart TB
   VB["VertexBuilder — plain Monad<br/>state: [(vertex, [Edge])]<br/>verb: from"]
   ELB["EdgeListBuilder — plain Monad<br/>state: [Edge] out of one vertex<br/>verbs: onCmd / onEpsilon"]
-  EB["EdgeBuilder — indexed monad<br/>type-level w :: [Symbol] (slots written)<br/>verbs: .= / emit / require* / goto"]
+  EB["EdgeBuilder — indexed monad<br/>pin :: Maybe [Slot], w :: [Symbol]<br/>verbs: .= / emit / noEmit / require* / goto"]
   VB --> ELB --> EB
 ```
 
@@ -51,8 +51,10 @@ The top layer is a plain state monad over a list of `(vertex, edges)` entries:
 ```haskell
 -- keiki/src/Keiki/Builder.hs
 newtype VertexBuilder rs ci co v a = VertexBuilder
-  { runVertexBuilder :: [(v, [Edge (HsPred rs ci) rs ci co v])]
-                     -> (a, [(v, [Edge (HsPred rs ci) rs ci co v])]) }
+  { runVertexBuilder
+      :: [(v, [Either BuilderDefect (Edge (HsPred rs ci) rs ci co v)])]
+      -> (a, [(v, [Either BuilderDefect (Edge (HsPred rs ci) rs ci co v)])])
+  }
 ```
 
 It has the textbook `Functor` / `Applicative` / `Monad` instances — nothing exotic, just threaded
@@ -61,8 +63,7 @@ state. The verb that writes one entry is `from`:
 ```haskell
 -- keiki/src/Keiki/Builder.hs
 from
-  :: (Eq v, Show v)
-  => v
+  :: v
   -> EdgeListBuilder rs ci co v ()
   -> VertexBuilder rs ci co v ()
 from v eb = VertexBuilder $ \vs ->
@@ -80,29 +81,24 @@ recommends `from V (Prelude.pure ())`.
 
 ```haskell
 -- keiki/src/Keiki/Builder.hs
-buildTransducer
+buildTransducerEither
   :: forall rs ci co v.
-     (Bounded v, Enum v, Eq v, Show v)
+     (DistinctNames (Names rs), Eq v)
   => v
   -> RegFile rs
   -> (v -> Bool)
   -> VertexBuilder rs ci co v ()
-  -> SymTransducer (HsPred rs ci) rs v ci co
-buildTransducer initS initR isF vb = SymTransducer
-  { edgesOut    = \v -> Prelude.concatMap snd (Prelude.filter ((== v) . fst) vmap)
-  , initial     = initS
-  , initialRegs = initR
-  , isFinal     = isF
-  }
-  where
-    (_, vmap) = runVertexBuilder vb []
+  -> Either
+       (NonEmpty (BuilderError v))
+       (SymTransducer (HsPred rs ci) rs v ci co)
 ```
 
 Three scalar arguments (initial vertex, initial register file, finality predicate) plus the
-`VertexBuilder` do-block. `edgesOut` is a closure over the built lookup table: it filters the entries
-for the asked vertex and concatenates their edge lists, so duplicate-vertex entries (two `from`
-blocks on the same vertex) merge cleanly in declaration order. The `Bounded`/`Enum` constraints are
-reserved for a future completeness-check combinator; `buildTransducer` itself does not use them.
+`VertexBuilder` do-block. The implementation runs the whole block, merges duplicate-vertex entries,
+assigns stable edge indices, forces the entire table, and returns every `BuilderError`. The
+`DistinctNames (Names rs)` constraint also rejects duplicate register slot names at compile time.
+`buildTransducer` adds `Show v` and delegates to this function, rendering the same error list as an
+exception for compatibility.
 
 ## Layer 2: `EdgeListBuilder`, `onCmd` and `onEpsilon`
 
@@ -112,8 +108,8 @@ The middle layer accumulates the edges out of one source vertex:
 -- keiki/src/Keiki/Builder.hs
 newtype EdgeListBuilder rs ci co v a = EdgeListBuilder
   { runEdgeListBuilder :: v
-                       -> [Edge (HsPred rs ci) rs ci co v]
-                       -> (a, [Edge (HsPred rs ci) rs ci co v]) }
+                       -> [Either BuilderDefect (Edge (HsPred rs ci) rs ci co v)]
+                       -> (a, [Either BuilderDefect (Edge (HsPred rs ci) rs ci co v)]) }
 ```
 
 Again a plain `Monad`. Its two verbs each add one edge. `onCmd` registers a command-triggered edge:
@@ -122,54 +118,58 @@ it pins the input constructor's match-guard, hands the body a `PayloadProj` hand
 
 ```haskell
 -- keiki/src/Keiki/Builder.hs
-onCmd ic body = EdgeListBuilder $ \src acc ->
+onCmd ic body = EdgeListBuilder $ \_src acc ->
   let initial = PartialEdge
-        { peGuard   = matchInCtor ic
-        , peUpdate  = UKeep
-        , peOutput  = []
-        , peTargets = []
-        , peInCtor  = Just (PeInCtor ic)
+        { peGuard         = matchInCtor ic
+        , peUpdate        = UKeep
+        , peOutput        = []
+        , peTargets       = []
+        , pePinned        = PinCtor ic
+        , peOutputDecided = False
         }
       (_, finalPE) = runEdgeBuilder (body (PayloadProj ic)) initial
-      edgeIx       = length acc
-      edge         = finalizeEdge edgeIx src finalPE
+      edge         = finalizeEdge finalPE
   in ((), edge : acc)
 ```
 
 Read the seeded `PartialEdge`: the guard starts at `matchInCtor ic` (so the edge only fires for that
 command constructor), the update at `UKeep` (writes nothing yet), output empty, no target, and the
-`InCtor` stashed in `peInCtor` so a bare `emit` can recover it. `onEpsilon` is the same shape with no
+`InCtor` stashed in `pePinned` so a bare `emit` can recover it. `peOutputDecided` starts false.
+`onEpsilon` is the same shape with no
 input projection and a `PTop` starting guard (so whatever the body conjoins *is* the full guard) and
-`peInCtor = Nothing`.
+`pePinned = PinNone`.
 
-`finalizeEdge` closes a `PartialEdge` into an `Edge`, and this is where the **missing-/duplicate-goto**
-diagnostics live:
+`finalizeEdge` closes a `PartialEdge` into an `Either BuilderDefect Edge`. It checks target count,
+explicit output intent, and consistency between an enclosing `onCmd` and any `emitWith` constructor:
 
 ```haskell
 -- keiki/src/Keiki/Builder.hs
-finalizeEdge n src pe = case peTargets pe of
-  [t]      -> Edge { guard  = peGuard pe
-                   , update = peUpdate pe
-                   , output = peOutput pe
-                   , target = t
-                   }
-  []       -> error $ "Keiki.Builder: edge #" <> show n <> " from "
-                   <> show src <> ": goto missing. …"
-  (_:_:_)  -> error $ "Keiki.Builder: edge #" <> show n <> " from "
-                   <> show src <> ": goto called more than once. …"
+finalizeEdge pe = case peTargets pe of
+  [t] -> case outputCtorMismatch (pePinned pe) (peOutput pe) of
+    Just defect -> Left defect
+    Nothing
+      | not (peOutputDecided pe) -> Left DefectMissingOutputIntent
+      | otherwise -> Right Edge
+          { guard = peGuard pe, update = peUpdate pe
+          , output = peOutput pe, target = t }
+  []      -> Left DefectMissingGoto
+  targets -> Left (DefectMultipleGoto (length targets))
 ```
 
 `peTargets` is the reverse-order list of every `goto` in the body; finalization requires **exactly
-one**. Missing or duplicated `goto` raises a finalize-time runtime error naming the source vertex and
-edge index — so it fires when `buildTransducer` evaluates the do-block, not at type-check time.
-`BuilderSpec` pins both:
+one**. It also refuses to infer silence: one of `emit`, `emitWith`, or `noEmit` must set
+`peOutputDecided`. The top-level builder locates each defect after duplicate-`from` merging, so a
+caller receives its source vertex and stable edge index. `BuilderSpec` asserts that multiple defects
+are returned together:
 
 ```haskell
 -- keiki/test/Keiki/BuilderSpec.hs
-it "case 7: missing goto fires the expected runtime error" $ do
-  …
-it "case 8: multiple goto fires the expected runtime error" $ do
-  …
+case B.buildTransducerEither A emptyR (const False) malformedBody of
+  Left errors -> NonEmpty.toList errors `shouldBe`
+    [ B.BuilderError A 0 B.DefectMissingGoto
+    , B.BuilderError B 0 (B.DefectMultipleGoto 2)
+    ]
+  Right _ -> expectationFailure "expected structured builder defects"
 ```
 
 ## Layer 3: `EdgeBuilder`, the indexed monad
@@ -180,11 +180,16 @@ step and one for *after*:
 
 ```haskell
 -- keiki/src/Keiki/Builder.hs
-newtype EdgeBuilder rs ci co v (w :: [Symbol]) (w' :: [Symbol]) a
+newtype EdgeBuilder rs ci co v (pin :: Maybe [Slot])
+                    (w :: [Symbol]) (w' :: [Symbol]) a
   = EdgeBuilder
-      { runEdgeBuilder :: PartialEdge rs ci co v w
-                       -> (a, PartialEdge rs ci co v w') }
+      { runEdgeBuilder :: PartialEdge rs ci co v pin w
+                       -> (a, PartialEdge rs ci co v pin w') }
 ```
+
+The `pin` index is `'Just ifs` for `onCmd` and `'Nothing` for `onEpsilon`. That type-level distinction
+is why `emit` can recover the exact command schema inside `onCmd` and is a compile error inside
+`onEpsilon`; `emitWith` supplies the missing schema explicitly.
 
 The source explains why the instances are not the ordinary ones:
 
@@ -204,9 +209,9 @@ action's *input* index, and the second's output `w3` becomes the whole bind's ou
 ```haskell
 -- keiki/src/Keiki/Builder.hs
 (>>=)
-  :: EdgeBuilder rs ci co v w1 w2 a
-  -> (a -> EdgeBuilder rs ci co v w2 w3 b)
-  -> EdgeBuilder rs ci co v w1 w3 b
+  :: EdgeBuilder rs ci co v pin w1 w2 a
+  -> (a -> EdgeBuilder rs ci co v pin w2 w3 b)
+  -> EdgeBuilder rs ci co v pin w1 w3 b
 EdgeBuilder f >>= k = EdgeBuilder $ \pe ->
   let (a, pe1)        = f pe
       EdgeBuilder g   = k a
@@ -214,7 +219,7 @@ EdgeBuilder f >>= k = EdgeBuilder $ \pe ->
 infixl 1 >>=
 ```
 
-`pure` leaves the index untouched (`EdgeBuilder rs ci co v w w a`). Because `@QualifiedDo@` desugars
+`pure` leaves the indices untouched (`EdgeBuilder rs ci co v pin w w a`). Because `QualifiedDo` desugars
 `B.do { … }` to `B.>>=` / `B.>>` / `B.pure`, every statement in an edge body threads the type-level
 slot set through this bind — which is exactly what makes the next property hold.
 
@@ -230,7 +235,7 @@ writes, and demands that slot be **disjoint** from everything written so far:
      ( KnownSymbol name, Disjoint '[name] w )
   => IndexN name rs r
   -> Term rs ci ifs r
-  -> EdgeBuilder rs ci co v w (Concat '[name] w) ()
+  -> EdgeBuilder rs ci co v pin w (Concat '[name] w) ()
 ix .= t = EdgeBuilder $ \pe ->
   ((), pe { peUpdate = USet ix t `combine` peUpdate pe })
 infixr 6 .=
@@ -254,9 +259,9 @@ builder just inherits it through the index. The module header summarizes it:
 <Callout type="info">
 This is a genuine *compile-time* guarantee, not a runtime check. Two writes to distinct slots
 type-check (`BuilderSpec` case 2: "sequential `(.=)` to distinct slots writes both"); two writes to
-the *same* slot do not compile. Contrast with the missing-`goto` diagnostic above, which is a
-finalize-*time* runtime error — the difference is that goto-count is a value-level property of the
-body, while the write-set is tracked in the type.
+the *same* slot do not compile. Contrast with the missing-`goto` diagnostic above, which is an eager
+structured builder defect — target count is a value-level property of the body, while the write-set
+is tracked in the type.
 </Callout>
 
 ## The three pragmas an author needs
@@ -277,8 +282,8 @@ Because the bottom layer is `QualifiedDo` and the verbs are operators, an aggreg
 You can confirm all three in the real worked example's pragma block and import list, which we open in
 the next chapter. The general structural facts — three layers, one indexed — are anchored across
 `keiki/test/Keiki/BuilderSpec.hs` (`describe "EP-15 M6: Keiki.Builder unit cases"`), whose cases walk
-each verb in isolation: single and sequential `(.=)`, `emit`/`solveOutput` round-trip, `noEmit`,
-`goto`, the goto diagnostics, `requireEq`, `onEpsilon`, and two `onCmd` blocks under one `from`.
+each verb in isolation: single and sequential `(.=)`, `emit`/`solveOutput` round-trip, required
+`noEmit`, every eager `BuilderDefect`, `requireEq`, `onEpsilon`, and duplicate `from` merging.
 
 Previous: [06 — Edges and step semantics](/docs/keiki/walkthrough/core-and-builder/06-edges-and-step-semantics).
 

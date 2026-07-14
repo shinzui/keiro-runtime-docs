@@ -65,13 +65,14 @@ instance Sym Integer where
     symDefault = 0
 ```
 
-Every *other* integer type — `Int` and the six fixed-width integers `Word8` / `Word16` / `Word32` /
-`Word64` / `Int32` / `Int64` — encodes as the unbounded mathematical `Integer`. The `Int` instance
-sets the pattern:
+Platform `Int` encodes as the unbounded mathematical `Integer` because SBV has no arbitrary-size
+`SInt`. That means `Int` overflow is not modelled:
 
 ```haskell
 {- | Encoded as 'Integer'. SBV does not provide an 'SInt'-of-arbitrary-
-size; using 'Integer' avoids overflow surprises during translation.
+size; using 'Integer' means machine-width 'Int' wraparound is not modeled.
+Guards whose truth depends on 'Int' overflow should use an explicit
+fixed-width type instead.
 -}
 instance Sym Int where
     type SymRep Int = Integer
@@ -80,47 +81,35 @@ instance Sym Int where
     symDefault = 0
 ```
 
-This is a deliberate **over-approximation**, and the source is explicit about the trade. The source
-comment above the fixed-width block is the one to read carefully:
+The six explicit fixed-width types take a different path. Their `SymRep` is the same fixed-width
+type, so SBV applies the same modular wraparound as Haskell:
 
 ```haskell
--- The fixed-width integer instances below all encode as the unbounded
--- mathematical 'Integer', exactly like 'Sym Int'. This is an
--- /over-approximation/: the modular wraparound of the Haskell @Word*@ /
--- @Int*@ type is not modeled. The consequence is sound for
--- satisfiability (every concrete model the solver finds is a real
--- witness once decoded through 'fromSym') but may miss an
--- unsatisfiability that depends on overflow (e.g. @x + 1 == 0@ over
--- 'Word64' is satisfiable at the type's wrap point but the 'Integer'
--- encoding reports it unsat). keiki's money and count guards are
--- equality and ordering checks against in-range literals, where the
--- over-approximation never bites.
+-- The fixed-width instances use SBV's matching bit-vector representations, so
+-- their arithmetic has exactly the same modular wraparound as Haskell.
 ```
 
-So `Sym Word64` and the rest are copy-paste of the `Int` shape with the relevant doc note — for
-example money:
+For example, money modelled as `Word64` remains a 64-bit unsigned value in the solver:
 
 ```haskell
-{- | Money and large counts. Encoded as 'Integer'; see the note above
-on the unbounded-'Integer' over-approximation.
--}
+-- | Money and large counts, modeled as an exact 64-bit unsigned value.
 instance Sym Word64 where
-    type SymRep Word64 = Integer
-    toSym = fromIntegral
-    fromSym = fromIntegral
+    type SymRep Word64 = Word64
+    toSym = id
+    fromSym = id
     symDefault = 0
 ```
 
 <Callout type="warn">
-The over-approximation runs in the **safe** direction. Every model the solver returns is a genuine
-witness once decoded; the only thing it can miss is an unsatisfiability that depends on modular
-wraparound. keiki's real guards compare in-range literals, so this never bites in practice — the
-motivating money type is jitsurei's `OrderCart` `Money = Word64`.
+Use an explicit fixed-width integer when overflow is part of the domain. Only platform `Int` is
+over-approximated by `Integer`; `Word8`/`Word16`/`Word32`/`Word64` and `Int32`/`Int64` preserve
+their concrete bit widths.
 </Callout>
 
 ### Text and time
 
-`Text` encodes through SBV's string theory, `UTCTime` as epoch seconds:
+`Text` encodes through SBV's string theory. `UTCTime` uses integer picoseconds since the Unix epoch,
+which preserves `NominalDiffTime`'s fixed-point precision:
 
 ```haskell
 -- | 'Text' is encoded as Haskell 'String' for SBV's 'SString' theory.
@@ -130,13 +119,18 @@ instance Sym Text where
     fromSym = T.pack
     symDefault = T.empty
 
-{- | 'UTCTime' is encoded as Unix epoch seconds (an 'Integer').
-The round-trip drops sub-second precision; this is intentional ...
--}
+-- | 'UTCTime' is encoded as picoseconds since the Unix epoch. The time
+-- library's 'NominalDiffTime' uses a fixed-point picosecond representation, so
+-- this 'Integer' encoding is lossless while remaining well supported by z3.
 instance Sym UTCTime where
     type SymRep UTCTime = Integer
-    toSym = round . utcTimeToPOSIXSeconds
-    fromSym = posixSecondsToUTCTime . fromIntegral
+    toSym t =
+        let MkFixed picoseconds =
+                nominalDiffTimeToSeconds (utcTimeToPOSIXSeconds t)
+         in picoseconds
+    fromSym picoseconds =
+        posixSecondsToUTCTime
+            (secondsToNominalDiffTime (MkFixed picoseconds))
     symDefault = posixSecondsToUTCTime 0
 ```
 
@@ -192,7 +186,7 @@ data SymNumDict r where
 ```
 
 Both registries are narrower than `discoverSym`. `discoverSymOrd` covers the numeric types and
-`UTCTime` (epoch seconds are orderable) but deliberately drops `Bool` and `Text` — ordering a boolean
+`UTCTime` (epoch picoseconds are orderable) but deliberately drops `Bool` and `Text` — ordering a boolean
 guard is meaningless and `SString` ordering is out of scope. `discoverSymNum` covers only the numeric
 types, dropping `Bool`, `Text`, and `UTCTime`. The source explains the philosophy of the miss case,
 which is the same one-directional fallback as `discoverSym`:

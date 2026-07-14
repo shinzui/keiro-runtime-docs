@@ -1,12 +1,12 @@
 ---
 title: "Model a saga with feedback"
-description: "Use feedback1 to model one round of an aggregate reacting to its own event through a policy — and understand why the fed-back aggregate must be stateless."
+description: "Use feedback1 for a finite two-copy aggregate-policy-aggregate cascade, and understand why it is not shared-state feedback."
 ---
 
-You want one external command to trigger an aggregate, have a policy observe the resulting event and
-emit a follow-up command, and have the aggregate consume that follow-up — all in a single composite
-step. That single-round reaction is what `feedback1` expresses. This guide shows the recipe and is
-honest about the one restriction that bites: the fed-back aggregate must carry no register state.
+You want one external command to trigger an aggregate-shaped transducer, have a policy observe the
+resulting event, and send a follow-up command into a second copy — all in one composite step. That
+finite cascade is what `feedback1` expresses. It does not send the command back into the state that
+handled the external command.
 
 <Callout type="info">
   Assumes you understand `compose` already — `feedback1` is defined in terms of it. Start with
@@ -28,9 +28,10 @@ feedback1 t f = compose t (compose f t)
 ```
 
 The composite vertex is `Composite s1 (Composite s2 s1)` — "outer t state, then (policy state, inner
-t state)". The two copies of t are independent dimensions of the composite vertex tuple; one
-external command drives the whole cascade exactly once. There is no loop, so the pure-core boundary
-holds.
+t state)". The two copies of `t` are independent dimensions of the composite vertex tuple. The
+follow-up command advances the inner copy from its own state, not the outer copy's new state. There
+is no loop, and there is deliberately no `feedback1Checked`: alignment checking cannot turn this
+two-copy construction into shared-state feedback.
 
 ## The stateless-aggregate restriction (read this first)
 
@@ -58,7 +59,7 @@ practice a feedback policy is a stateless reactor, so `rs2 = '[]` too.)
 <Callout type="warn">
   This is a type-level restriction, not a convention. A non-empty `rs1` fails at the `feedback1`
   call site with a slot-collision `TypeError`. It follows from the two-stacked-`compose` reduction:
-  t appears twice and keiki's register-file model gives each appearance its own copy of `rs1`, so
+  `t` appears twice and keiki's register-file model gives each appearance its own copy of `rs1`, so
   the names would collide. A "shared-state" variant is a documented future extension, not shipped.
 </Callout>
 
@@ -149,7 +150,7 @@ loop = feedback1 toggleAgg togglePolicy
 ## Verify it worked
 
 One external `TgFlip{42}` from the initial vertex `Composite Off (Composite Pol Off)` should advance
-*both* copies of t — proving the policy's emitted command reached the second t — and emit
+*both* copies of `t` — proving the policy's emitted command reached the second copy — and emit
 `TgFlipped{42}`:
 
 ```haskell
@@ -158,9 +159,11 @@ step loop (initial loop, initialRegs loop) (TgFlip (TgPayload 42))
 --                  ^^                 ^^   both toggles stepped Off → On
 ```
 
-The inner toggle stepping from `Off` to `On` is the observable proof the cascade ran. The composite
-is still single-valued (`isSingleValuedSym (withSymPred loop) == True`) and `checkHiddenInputs loop`
-is empty.
+The inner toggle stepping from `Off` to `On` is also the proof that this is **not shared-state
+feedback**: a shared toggle would consume the policy command from the outer copy's new `On` state and
+finish `Off`. Instead, the inner copy starts from its independent `Off` state and finishes `On`. The
+composite is still single-valued (`isSingleValuedSym (withSymPred loop) == True`) and
+`checkHiddenInputs loop` is empty.
 
 ## Workarounds and scaling up
 
@@ -180,8 +183,9 @@ is empty.
   twoRounds = feedback1 (feedback1 t f) f
   ```
 
-  This stays inside the pure core because each nesting is still a finite, bounded cascade — there is
-  no loop, the chain runs a fixed number of times per external command.
+  This stays inside the pure core because each nesting is still a finite, bounded cascade. It also
+  forces the original policy's `rs2` empty: the outer call duplicates the entire first result, whose
+  register file is `Append rs1 (Append rs2 rs1)`.
 </Accordion>
 
 <Accordion title="Run until quiescence (unbounded rounds)">

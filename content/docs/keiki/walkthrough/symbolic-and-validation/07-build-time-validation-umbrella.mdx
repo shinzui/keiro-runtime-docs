@@ -1,6 +1,6 @@
 ---
 title: "07 — The build-time validation umbrella"
-description: "validateTransducer: the pure, no-solver build-time check that bundles hidden-input, determinism, reachability, and opaque-guard audits into one list of structured warnings a unit test can assert."
+description: "validateTransducer: the pure 0.2 replay-safety, guarded-read, determinism, reachability, and opaque-guard umbrella."
 ---
 
 <Callout type="info">
@@ -42,6 +42,30 @@ data TransducerValidationWarning s
         , tvwMissingSlots :: [String]
         , tvwDetail :: String
         }
+    | HeadUnrecoverable
+        { tvwEdge :: EdgeRef s
+        , tvwInCtor :: Maybe String
+        , tvwTailOnlySlots :: [String]
+        , tvwDetail :: String
+        }
+    | InversionAmbiguity
+        { tvwSource :: s
+        , tvwEdgeA :: Int
+        , tvwEdgeB :: Int
+        , tvwWireCtor :: String
+        , tvwDetail :: String
+        }
+    | UnguardedInputRead
+        { tvwEdge :: EdgeRef s
+        , tvwInCtor :: Maybe String
+        , tvwDetail :: String
+        }
+    | StateChangingEpsilon
+        { tvwEdge :: EdgeRef s
+        , tvwChangesVertex :: Bool
+        , tvwWritesRegisters :: Bool
+        , tvwDetail :: String
+        }
     | {- | Two outgoing edges of the same vertex whose guards can both hold
       for one command — a runtime nondeterminism / single-valuedness
       violation (its dynamic witness is EP-55's @AmbiguousEdges@).
@@ -73,6 +97,10 @@ data TransducerValidationWarning s
 <TypeTable
   type={{
     HiddenInput: { type: "EdgeRef s, Maybe String, [String], String", description: "An edge reads command info its output never emits, so replay cannot reconstruct the command." },
+    HeadUnrecoverable: { type: "EdgeRef s, Maybe String, [String], String", description: "Only a tail event carries fields needed to invert the command; the head cannot select the edge." },
+    InversionAmbiguity: { type: "s, Int, Int, String, String", description: "Two outgoing edges share a head wire constructor and may both explain one event." },
+    UnguardedInputRead: { type: "EdgeRef s, Maybe String, String", description: "An input field is read before a matching top-level constructor guard establishes its schema." },
+    StateChangingEpsilon: { type: "EdgeRef s, Bool, Bool, String", description: "An output-free edge changes vertex or can write registers, so replay loses the transition." },
     NondeterministicPair: { type: "s, Int, Int, Maybe String, String", description: "Two outgoing guards of one vertex can both hold — the build-time mirror of the runtime AmbiguousEdges." },
     PossiblyDeadEdge: { type: "EdgeRef s, String", description: "An edge that can never fire: unreachable source vertex, or a statically-unsatisfiable (literal PBot) guard." },
     OpaqueGuard: { type: "EdgeRef s, String", description: "A guard branches on an opaque TApp term the symbolic analyses cannot see through. Advisory, opt-in." },
@@ -93,10 +121,14 @@ data ValidationOptions = ValidationOptions
     , checkDeterminism :: Bool         -- run the (pure, structural) determinism check
     , checkReachability :: Bool        -- run the (structural) dead-edge check
     , warnOpaqueGuards :: Bool         -- run the opaque-guard audit (opt-in; default off)
+    , checkHeadRecoverability :: Bool
+    , checkInversionAmbiguity :: Bool
+    , checkGuardImpliesInputRead :: Bool
+    , checkStateChangingEpsilon :: Bool
     }
     deriving stock (Eq, Show)
 
--- | The three soundness checks enabled; the opt-in opaque-guard audit off.
+-- | Replay-safety checks enabled; the advisory opaque-guard audit off.
 defaultValidationOptions :: ValidationOptions
 defaultValidationOptions =
     ValidationOptions
@@ -104,6 +136,10 @@ defaultValidationOptions =
         , checkDeterminism = True
         , checkReachability = True
         , warnOpaqueGuards = False
+        , checkHeadRecoverability = True
+        , checkInversionAmbiguity = True
+        , checkGuardImpliesInputRead = True
+        , checkStateChangingEpsilon = True
         }
 ```
 
@@ -113,11 +149,15 @@ defaultValidationOptions =
     checkDeterminism: { type: "Bool", default: "True", description: "Run the pure, structural determinism check." },
     checkReachability: { type: "Bool", default: "True", description: "Run the structural dead-edge check." },
     warnOpaqueGuards: { type: "Bool", default: "False", description: "Run the opaque-guard audit — opt-in, off by default for backward compatibility." },
+    checkHeadRecoverability: { type: "Bool", default: "True", description: "Require the first event to recover all consumed command fields." },
+    checkInversionAmbiguity: { type: "Bool", default: "True", description: "Flag edge pairs with the same head wire constructor." },
+    checkGuardImpliesInputRead: { type: "Bool", default: "True", description: "Require a matching constructor guard before every input-field read." },
+    checkStateChangingEpsilon: { type: "Bool", default: "True", description: "Flag output-free vertex changes and register writes." },
   }}
 />
 
-Three soundness checks default on; the opaque-guard audit defaults off so `defaultValidationOptions`
-keeps its meaning for existing consumers. We give the opaque audit its own chapter:
+All replay-safety and structural checks default on; the opaque-guard audit defaults off. Build option
+values by record-updating `defaultValidationOptions`, so newly added checks keep safe defaults. We give the opaque audit its own chapter:
 [08 — Opaque guards and the signpost](/docs/keiki/walkthrough/symbolic-and-validation/08-opaque-guards-and-the-signpost).
 
 ## The umbrella body
@@ -132,6 +172,10 @@ validateTransducer ::
 validateTransducer opts t =
     concat
         [ if failOnEpsilonReadsInput opts then hiddenInputWarnings t else []
+        , if checkHeadRecoverability opts then headRecoverabilityWarnings t else []
+        , if checkInversionAmbiguity opts then inversionAmbiguityWarnings t else []
+        , if checkGuardImpliesInputRead opts then guardImpliesInputReadWarnings t else []
+        , if checkStateChangingEpsilon opts then stateChangingEpsilonWarnings t else []
         , if checkDeterminism opts then determinismWarnings t else []
         , if checkReachability opts
             then
@@ -143,7 +187,8 @@ validateTransducer opts t =
         ]
 ```
 
-The body is a `concat` of four conditional lists. The signature pins the carrier to `HsPred` — this is
+The body is a `concat` of eight conditional lists. The first five align accepted transducers with
+head-first structured replay; the remainder cover determinism, reachability, and opaque guards. The signature pins the carrier to `HsPred` — this is
 the *pure* path. The Haddock is explicit about why:
 
 ```haskell
@@ -156,36 +201,55 @@ no external z3 process.
 
 The default path is deliberately specialised to the 'HsPred' carrier and is
 /cheap and pure/: the determinism component flags only structurally-provable
-overlaps (never a false positive, but it can miss overlaps it cannot prove
-syntactically), and the dead-edge component is structural reachability plus a
-literal-'PBot' check. For the exact, solver-backed answers use
+overlaps in conjunction spines containing constructor tests and
+variable-versus-literal comparisons. Integral intervals and concrete literal
+witnesses extend the accepted fragment without introducing false positives.
+The dead-edge component is structural reachability plus a literal-'PBot' check.
+For stronger, solver-backed answers over the supported encoding use
 'Keiki.Symbolic.checkTransitionDeterminismSym' and
 'Keiki.Symbolic.checkDeadEdgesSym' directly.
 -}
 ```
 
 The trade is stated in one breath: **microseconds, no z3, no false positives — but it can miss overlaps
-it cannot prove syntactically.** The exact answers cost a solver call and live in
+it cannot prove syntactically.** The stronger analysis costs a solver call and lives in
 [09 — Solver-backed diagnostics](/docs/keiki/walkthrough/symbolic-and-validation/09-solver-backed-diagnostics).
+
+## The 0.2 replay-safety checks
+
+Four default-on checks make the umbrella's empty result meaningful for persisted event streams.
+`HeadUnrecoverable` catches a multi-event edge when a command field appears only in its tail, because
+replay selects the edge from the head alone. `InversionAmbiguity` conservatively catches two edges
+with the same head wire kind. `UnguardedInputRead` follows the top-level guard conjunction from left
+to right and requires the matching `PInCtor` before a field read. `StateChangingEpsilon` rejects an
+output-free vertex change or register write because no event records that forward transition.
+
+Subject to honest `InCtor` and `WireCtor` implementations, an aggregate with no default warnings can
+replay every event log it produces. Disabling any of these four options weakens that guarantee. A
+truly in-memory transducer may intentionally accept `StateChangingEpsilon`; a durable aggregate
+should emit an event instead.
 
 ## The determinism component: `provablyOverlap`
 
-The pure determinism check never guesses. It emits a `NondeterministicPair` only when overlap is
-*structurally provable* — which is exactly two cases:
+The pure determinism check never guesses. Keiki 0.2 decomposes supported top-level conjunctions into
+constructor constraints and variable-versus-literal comparisons, then proves a shared witness:
 
 ```haskell
 -- src/Keiki/Core.hs
 provablyOverlap :: HsPred rs ci -> HsPred rs ci -> Bool
-provablyOverlap PTop PTop = True
-provablyOverlap (PInCtor a) (PInCtor b) = icName a == icName b
-provablyOverlap _ _ = False
+provablyOverlap PLeftArm PLeftArm = True
+provablyOverlap PRightArm PRightArm = True
+provablyOverlap a b = case (pureFragment a, pureFragment b) of
+  (PureKnown left, PureKnown right) -> pureGuardsOverlap left right
+  _ -> False
 ```
 
-Both guards are `PTop` (both always hold, so they certainly overlap), or both name the *same* input
-constructor (both fire on the same command). Every other shape returns `False` — not "no overlap", but
-"cannot prove overlap syntactically". This is an **under-approximation**: every warning it emits is a
-true positive, but its silence does not prove determinism. `determinismWarnings` wraps `provablyOverlap`
-in the per-vertex, per-pair `i < j` loop you saw in
+Integral comparisons use exact interval reasoning; supported non-integral literals use concrete
+witnesses. Disjunction, negation, arithmetic, opaque terms, variable-to-variable comparisons, and
+non-integral strict-bound density return `PureUnknown`. That means "cannot prove overlap", not "the
+guards are disjoint". This remains an **under-approximation**: every warning is a true positive, but
+silence outside the fragment does not prove determinism. `determinismWarnings` wraps `provablyOverlap`
+in the per-vertex, per-pair `i < j` loop from
 [chapter 06](/docs/keiki/walkthrough/symbolic-and-validation/06-the-single-valuedness-gate), and fills
 `tvwInCtor` with the shared constructor name in the same-`PInCtor` case.
 

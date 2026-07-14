@@ -29,8 +29,9 @@ validateTransducer ::
 ```
 
 It runs the enabled checks over the `HsPred` carrier and concatenates their structured warnings,
-in order: hidden-input, determinism, dead-edge, then the opt-in opaque-guard audit. The default
-path is deliberately specialised to `HsPred` and is **cheap and pure**.
+in order: hidden inputs, head recoverability, inversion ambiguity, guarded input reads,
+state-changing ε-output, determinism, dead edges, and the opt-in opaque-guard audit. The default path
+is deliberately specialised to `HsPred` and is **cheap and pure**.
 
 <Callout type="warn">
 **Gotcha — the pure path is under-approximating, the polymorphic path over-approximates.**
@@ -41,12 +42,14 @@ on the raw `HsPred` carrier (its `isBot` only recognises literal `PBot`, so it w
 every multi-edge vertex) and is only meaningful through
 [`checkTransitionDeterminismSym`](/docs/keiki/reference/symbolic), which routes `isBot` to z3. So:
 `validateTransducer` for a fast pure no-false-positive gate; `checkTransitionDeterminismSym` /
-`checkDeadEdgesSym` (need z3 on `PATH`) for the exact answer.
+`checkDeadEdgesSym` (need z3 on `PATH`) for the stronger supported-fragment analysis. It treats
+solver uncertainty conservatively rather than claiming a proof.
 </Callout>
 
 ## `ValidationOptions` and `defaultValidationOptions`
 
-Which checks run. All three soundness checks default on; the opaque-guard audit is opt-in.
+Construct options by record-updating `defaultValidationOptions`, so future fields retain their safe
+defaults. Every replay-safety and structural check is on; the advisory opaque-guard audit is opt-in.
 
 <TypeTable
   type={{
@@ -54,11 +57,15 @@ Which checks run. All three soundness checks default on; the opaque-guard audit 
     checkDeterminism: { type: "Bool", description: "Run the pure, structural determinism check", default: "True" },
     checkReachability: { type: "Bool", description: "Run the structural dead-edge check", default: "True" },
     warnOpaqueGuards: { type: "Bool", description: "Run the opaque-guard audit; off by default so defaultValidationOptions keeps its meaning for existing consumers", default: "False" },
+    checkHeadRecoverability: { type: "Bool", description: "Require the first event of a multi-event edge to recover every consumed command field", default: "True" },
+    checkInversionAmbiguity: { type: "Bool", description: "Conservatively flag edge pairs sharing a head wire constructor", default: "True" },
+    checkGuardImpliesInputRead: { type: "Bool", description: "Require a matching top-level constructor guard before every input-field read", default: "True" },
+    checkStateChangingEpsilon: { type: "Bool", description: "Flag output-free edges that change vertex or can write registers", default: "True" },
   }}
 />
 
 ```haskell
--- The three soundness checks enabled; the opt-in opaque-guard audit off.
+-- Replay-safety and structural checks enabled; opaque audit off.
 defaultValidationOptions :: ValidationOptions
 ```
 
@@ -75,6 +82,30 @@ data TransducerValidationWarning s
         , tvwInCtor       :: Maybe String   -- input constructor name, when known
         , tvwMissingSlots :: [String]       -- slot/field names left off the wire
         , tvwDetail       :: String         -- human-readable summary
+        }
+    | HeadUnrecoverable
+        { tvwEdge          :: EdgeRef s
+        , tvwInCtor        :: Maybe String
+        , tvwTailOnlySlots :: [String]
+        , tvwDetail        :: String
+        }
+    | InversionAmbiguity
+        { tvwSource   :: s
+        , tvwEdgeA    :: Int
+        , tvwEdgeB    :: Int
+        , tvwWireCtor :: String
+        , tvwDetail   :: String
+        }
+    | UnguardedInputRead
+        { tvwEdge   :: EdgeRef s
+        , tvwInCtor :: Maybe String
+        , tvwDetail :: String
+        }
+    | StateChangingEpsilon
+        { tvwEdge            :: EdgeRef s
+        , tvwChangesVertex   :: Bool
+        , tvwWritesRegisters :: Bool
+        , tvwDetail          :: String
         }
     | NondeterministicPair
         { tvwSource :: s
@@ -96,6 +127,15 @@ data TransducerValidationWarning s
 
 - **`HiddenInput`** — an edge consumes command information its output does not emit, so the command
   cannot be reconstructed on replay (the un-replayable-event mistake; the UserRegistrationV0 foil).
+- **`HeadUnrecoverable`** — later events carry command fields missing from the first event. Streaming
+  replay inverts only the head, so the produced chain cannot be replayed.
+- **`InversionAmbiguity`** — two outgoing edges use the same head wire constructor and may both
+  explain one observed event. It is conservative because this pure structural pass cannot prove
+  recovered-value guard disjointness.
+- **`UnguardedInputRead`** — a guard, update, or output reads an input constructor field without an
+  earlier matching top-level `PInCtor` conjunct. Another command could reach the read and throw.
+- **`StateChangingEpsilon`** — an output-free edge changes vertex, can write registers, or both, so
+  persisting only emitted events loses the forward transition.
 - **`NondeterministicPair`** — two outgoing edges of one vertex whose guards can both hold for one
   command: a single-valuedness violation whose *dynamic* witness is
   [`AmbiguousEdges`](/docs/keiki/reference/step-failure).
@@ -108,12 +148,32 @@ data TransducerValidationWarning s
 
 ## The per-component checks
 
-`validateTransducer` concatenates four components. The first and last are exposed directly:
+The replay checks are also exported individually for focused tests:
 
 ```haskell
 hiddenInputWarnings ::
     (Bounded s, Enum s) =>
     SymTransducer phi rs s ci co ->
+    [TransducerValidationWarning s]
+
+headRecoverabilityWarnings ::
+    (Bounded s, Enum s) =>
+    SymTransducer phi rs s ci co ->
+    [TransducerValidationWarning s]
+
+inversionAmbiguityWarnings ::
+    (Bounded s, Enum s, Show s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [TransducerValidationWarning s]
+
+guardImpliesInputReadWarnings ::
+    (Bounded s, Enum s, Show s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    [TransducerValidationWarning s]
+
+stateChangingEpsilonWarnings ::
+    (Bounded s, Enum s, Eq s, Show s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
     [TransducerValidationWarning s]
 
 opaqueGuardWarnings ::
@@ -122,26 +182,33 @@ opaqueGuardWarnings ::
     [TransducerValidationWarning s]
 ```
 
-`hiddenInputWarnings` is the structured form of the hidden-input check: per edge, it reports the
-input-constructor name and the slot names left off the wire — the UserRegistrationV0 foil where an
-edge reads a command field it never emits. `opaqueGuardWarnings` is the opt-in audit, walking the
-predicate AST via `predHasOpaqueTerm` / `termHasOpaqueApp` (`TArith` is transparent and recurses
-into its operands; only `TApp1`/`TApp2` count as opaque).
+`hiddenInputWarnings` covers fields omitted from the whole output chain; `headRecoverabilityWarnings`
+covers fields present only after its head. The guard-read check walks the top-level `PAnd` spine from
+left to right, matching lazy `(&&)`: a constructor guard to the right of a field read is too late.
+`stateChangingEpsilonWarnings` is exact for vertex changes and conservative for register writes.
+`opaqueGuardWarnings` is the opt-in audit; `TArith` is transparent, while `TApp1`/`TApp2` count as
+opaque.
 
 ### Determinism
 
-The determinism component is driven by the **pure** `provablyOverlap`, which is `True` only when
-overlap is certain — both guards `PTop`, or both naming the same input constructor:
+The determinism component is driven by the **pure** `provablyOverlap`, which is `True` only when a
+concrete overlap is structurally proved:
 
 ```haskell
 provablyOverlap :: HsPred rs ci -> HsPred rs ci -> Bool
-provablyOverlap PTop PTop = True
-provablyOverlap (PInCtor a) (PInCtor b) = icName a == icName b
-provablyOverlap _ _ = False
+provablyOverlap PLeftArm PLeftArm = True
+provablyOverlap PRightArm PRightArm = True
+provablyOverlap a b = case (pureFragment a, pureFragment b) of
+  (PureKnown left, PureKnown right) -> pureGuardsOverlap left right
+  _ -> False
 ```
 
-So `NondeterministicPair` is emitted **only when two guards provably overlap** — conservative, with
-**no false positives**. The two reusable forms:
+The accepted fragment walks top-level conjunctions containing constructor tests and
+variable-versus-literal comparisons. Integral bounds use exact interval reasoning; other supported
+types use concrete literal witnesses. Disjunction, negation, arithmetic, opaque applications,
+variable-versus-variable comparison, and non-integral strict-bound density remain unknown and
+produce no pure warning. `NondeterministicPair` therefore has **no false positives**, but silence
+outside the fragment is not proof of determinism. The reusable forms are:
 
 ```haskell
 data DeterminismWarning s = DeterminismWarning

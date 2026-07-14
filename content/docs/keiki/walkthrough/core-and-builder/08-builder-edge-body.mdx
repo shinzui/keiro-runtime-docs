@@ -1,6 +1,6 @@
 ---
 title: "08 — The builder edge body"
-description: "The verbs you type inside a B.do edge body — slot writes, emit, the require* guards, goto, and d.field projection — read against the real UserRegistration aggregate."
+description: "The 0.2 edge-body verbs — typed command pinning, explicit emit/noEmit intent, guarded reads, slot writes, and eager target validation."
 ---
 
 Chapter 07 read the builder's three-layer structure. This chapter reads the verbs you type *inside*
@@ -56,7 +56,10 @@ userReg = B.buildTransducer PotentialCustomer emptyRegs
 
     B.onCmd inCtorGdpr $ \d -> B.do
       B.slot @"deletedAt" .= d.at
-      B.noEmit
+      B.emit wireAccountDeleted AccountDeletedTermFields
+        { email = #email
+        , at    = d.at
+        }
       B.goto Deleted
 
   B.from Confirmed do
@@ -124,7 +127,7 @@ and keep both imports unqualified:
      ( KnownSymbol name, Disjoint '[name] w )
   => IndexN name rs r
   -> Term rs ci ifs r
-  -> EdgeBuilder rs ci co v w (Concat '[name] w) ()
+  -> EdgeBuilder rs ci co v pin w (Concat '[name] w) ()
 (=:) = (.=)
 infixr 6 =:
 ```
@@ -170,18 +173,20 @@ emit
      ToOutFields rec rs ci ifs fs
   => WireCtor co fs
   -> rec
-  -> EdgeBuilder rs ci co v w w ()
-emit wc rec = EdgeBuilder $ \pe -> case peInCtor pe of
-  Just (PeInCtor ic) ->
-    ((), pe { peOutput = peOutput pe
-                ++ [pack (reIndexPinnedInCtor @ci @_ @ifs ic) wc (toOutFields rec)] })
-  Nothing ->
-    error "Keiki.Builder.emit: no enclosing onCmd pinned an InCtor. …"
+  -> EdgeBuilder rs ci co v ('Just ifs) w w ()
+emit wc rec = EdgeBuilder $ \pe -> case pePinned pe of
+  PinCtor ic ->
+    ( (), pe
+        { peOutput = peOutput pe ++ [pack ic wc (toOutFields rec)]
+        , peOutputDecided = True
+        }
+    )
 ```
 
 Two things to read here. First, `emit` recovers the input `InCtor` from the enclosing `onCmd` (the
-`peInCtor` stash from chapter 07), so you do not repeat it; calling `emit` inside `onEpsilon` — where
-no `InCtor` is pinned — raises a finalize-time error directing you to `emitWith`. Second, `emit`
+`pePinned` witness from chapter 07), so you do not repeat it. Its `'Just ifs` index makes calling
+`emit` inside `onEpsilon` a compile-time error; use `emitWith` to provide an explicit schema there.
+Second, `emit`
 **snoc-appends** to `peOutput`: a single `emit` makes a letter edge (`output = [o]`), and *two or
 more* `emit`s in one body make a multi-event edge (`output = [o1, o2, …]` — chapter 06).
 
@@ -222,23 +227,21 @@ instance ToOutFields (OutFields rs ci ifs fs) rs ci ifs fs where
   toOutFields = id
 ```
 
-`emitWith` is the explicit-`InCtor` variant — the escape hatch for `onEpsilon` bodies (no pinned
-`InCtor`) or for overriding the one `onCmd` bound. `noEmit` marks the edge ε-output (no event); it is
-a documentation no-op, since a body with no `emit` is already an ε-edge by default. The GDPR-before-
-confirmation edge uses it to be explicit:
+`emitWith` is the explicit-`InCtor` variant — the escape hatch for `onEpsilon` bodies. Inside
+`onCmd`, eager validation requires its constructor name and slot names to equal the pinned schema.
+`noEmit` sets `peOutputDecided` without adding an event; it is mandatory when a body emits nothing.
+A replay-neutral self-loop can use it safely:
 
 ```haskell
--- keiki/jitsurei/src/Jitsurei/UserRegistration.hs
-    B.onCmd inCtorGdpr $ \d -> B.do
-      B.slot @"deletedAt" .= d.at
-      B.noEmit
-      B.goto Deleted
+B.onCmd inCtorAcknowledgeAgain $ \_d -> B.do
+  B.noEmit
+  B.goto Completed
 ```
 
-`BuilderSpec` anchors all three behaviours: case 4 ("emit then `solveOutput` round-trips
-delta/applyEvent"), case 5 ("noEmit yields `output = []`"), case 13 ("record-form emit on a 2-field
-event applies fields in order"), and case 14 ("emitWith with the record form produces the same
-omega").
+The 0.2 User Registration aggregate does **not** use silence for deletion: both deletion edges emit
+`AccountDeleted`, because a vertex/register change with no event is a `StateChangingEpsilon` and
+cannot be reconstructed. `BuilderSpec` anchors explicit `noEmit`, missing-intent rejection,
+constructor mismatch, and both payload forms.
 
 ## Guards: the `require*` verbs
 
@@ -247,7 +250,7 @@ A guard verb conjoins a predicate onto the edge's existing guard. The general on
 
 ```haskell
 -- keiki/src/Keiki/Builder.hs
-requireGuard :: HsPred rs ci -> EdgeBuilder rs ci co v w w ()
+requireGuard :: HsPred rs ci -> EdgeBuilder rs ci co v pin w w ()
 requireGuard p = EdgeBuilder $ \pe ->
   ((), pe { peGuard = PAnd (peGuard pe) p })
 
@@ -255,7 +258,7 @@ requireEq
   :: (Eq r, Typeable r)
   => Term rs ci ifs1 r
   -> Term rs ci ifs2 r
-  -> EdgeBuilder rs ci co v w w ()
+  -> EdgeBuilder rs ci co v pin w w ()
 requireEq a b = requireGuard (PEq a b)
 ```
 
@@ -288,14 +291,14 @@ makes that case.
 
 ```haskell
 -- keiki/src/Keiki/Builder.hs
-goto :: v -> EdgeBuilder rs ci co v w w ()
+goto :: v -> EdgeBuilder rs ci co v pin w w ()
 goto v = EdgeBuilder $ \pe ->
   ((), pe { peTargets = v : peTargets pe })
 ```
 
-It too leaves `w` unchanged. As chapter 07 read, `finalizeEdge` then demands `peTargets` have
-**exactly one** entry — a missing or duplicated `goto` raises a finalize-time runtime error naming
-the source vertex and edge index. Every edge body in `userReg` ends with exactly one `goto`; the
+It too leaves `w` unchanged. As chapter 07 read, `finalizeEdge` demands `peTargets` have
+**exactly one** entry. `buildTransducerEither` returns a located `DefectMissingGoto` or
+`DefectMultipleGoto`; `buildTransducer` renders that same error list as an exception. Every edge body in `userReg` ends with exactly one `goto`; the
 `inCtorResend` body even loops back to its own source vertex (`B.goto RequiresConfirmation`).
 
 ## Why it agrees with the hand-written AST

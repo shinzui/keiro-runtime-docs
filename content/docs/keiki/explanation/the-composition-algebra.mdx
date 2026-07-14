@@ -1,17 +1,18 @@
 ---
 title: "The composition algebra"
-description: "Why compose, alternative, and feedback1 form the minimal closed set of composition combinators — and how each preserves keiki's three core guarantees."
+description: "How checked sequential composition, disjoint Either arms, stateful path expansion, and the two-copy feedback1 cascade fit together."
 ---
 
-keiki composes transducers with exactly three combinators, all in `Keiki.Composition`:
+keiki constructs composites with three combinators, all in `Keiki.Composition`:
 
 - `compose` — sequential composition (A's output alphabet is B's input alphabet).
 - `alternative` — disjoint-input dispatch (`Either ci1 ci2` routes to one of two arms).
-- `feedback1` — one round of aggregate-policy feedback.
+- `feedback1` — a finite aggregate-policy-aggregate two-copy cascade.
 
-That is the entire public surface. This page explains why those three are the **minimal closed set**,
-how `compose` quietly subsumes the older combinators it replaced, and why composition **preserves the
-three guarantees** that make a single keiki transducer trustworthy. For the derivations themselves,
+Validated sequential pipelines add two public boundary tools: `checkComposeAlignment` diagnoses
+constructor/field drift, and `composeChecked` admits the composite only when that warning list is
+empty. `compose` remains the unchecked construction primitive. This page explains how the algebra
+fits together and where its experimental contract stops. For the derivations themselves,
 see [What gets derived](/docs/keiki/explanation/what-gets-derived) and the
 [shape reference](/docs/keiki/reference/shape); this page asserts the preservation rather than
 re-deriving it.
@@ -41,15 +42,24 @@ flowchart TD
 ```
 
 - **`compose`** pairs the two transducers' vertices: `Composite s1 s2`. The register file is
-  `Append rs1 rs2`; a composite edge fires t1's edge and t2's edge in lockstep.
+  `Append rs1 rs2`; a composite edge fires t1's edge and t2's edge in lockstep. Multi-event paths
+  symbolically thread downstream writes so later steps see the same state as sequential execution.
 - **`alternative`** uses the *same product* vertex `Composite s1 s2`, but the two arms have
   **independent state**: a `Left` input advances only `s1`, a `Right` input advances only `s2`. The
-  `Either` input alphabet keeps the arms apart. (An earlier sum-vertex design was tried and found
+  `PLeftArm`/`PRightArm` and the `Either` input alphabet keep the arms apart, including for
+  epsilon/register-only `PTop` guards. (An earlier sum-vertex design was tried and found
   degenerate — it could never leave the first arm — so the shipped form is the product vertex.)
 - **`feedback1`** is literally `compose t (compose f t)`, so its vertex is the nested
   `Composite s1 (Composite s2 s1)` — outer `t`, then (policy, inner `t`). Even though the inner and
-  outer `t` share a Haskell type, they occupy distinct dimensions of the tuple, so the symbolic
-  per-vertex enumeration walks all `|s1| * |s2| * |s1|` combinations independently.
+  outer `t` share a Haskell type, they occupy distinct dimensions of the tuple. The policy command
+  advances the inner copy from its own state; this is not shared-state feedback.
+
+<Callout type="warn">
+`Keiki.Composition` is experimental. Prefer `composeChecked` for aggregate pipelines. The checker
+reports structural alignment facts, but an empty result does not prove arbitrary opaque guard logic.
+Likewise, the profunctor/category wrapper rejects mapped boundaries and slot overlap at runtime; it is
+not an unqualified lawful category across every public value.
+</Callout>
 
 ## Why this is the minimal closed set
 
@@ -74,14 +84,17 @@ through each of t1's mid-symbols and re-collapses the path into one composite ed
 `alternative` dispatches on a disjoint input alphabet (`Either ci1 ci2`) to two arms with independent
 state. That is structurally different from sequential threading and cannot be expressed as a
 `compose` chain, so it earns its place. Its single-valuedness is automatic: the `Left`/`Right` arms'
-guards are pairwise mutually exclusive, so no new cross-transducer mutual-exclusion check is needed.
+guards are conjoined with explicit arm predicates, so no new cross-transducer mutual-exclusion check
+is needed.
 </Accordion>
 
-<Accordion title="feedback1 is the only pure feedback shape">
+<Accordion title="feedback1 is a finite two-copy shape">
 A general "iterate until quiescence" `feedback` needs an iteration model, and unbounded iteration can
 diverge — which keiki's pure formalism deliberately excludes. The non-trivial *pure* form is
-exactly one round, `feedback1 t f`, which is itself just two stacked `compose`s. Multi-round patterns
-nest `feedback1`s; unbounded loops are pushed to the runtime boundary. (Note: the
+exactly one finite cascade, `feedback1 t f`, which is itself just two stacked `compose`s. It does not
+feed the policy command into the outer copy's updated state, and there is no `feedback1Checked` that
+changes that fact. Multi-round patterns nest `feedback1`s; unbounded loops are pushed to the runtime
+boundary. (Note: the
 `Disjoint (Names rs1) (Names (Append rs2 rs1))` constraint forces `rs1 = '[]`, so `feedback1`'s
 aggregate must currently be stateless — a documented consequence of the two-stacked-`compose`
 reduction.)
@@ -102,11 +115,12 @@ process managers, sagas, policies, feedback loops (see
 — reduces to a chain of these three, and each combinator's output is itself a `SymTransducer` that
 the others accept as input.
 
-## The three preserved guarantees
+## Guarantees and admission checks
 
-A single keiki transducer earns trust from three mechanical analyses. The point of the composition
-algebra is that **all three survive composition**: a composite is trustworthy exactly when its parts
-are. We assert preservation here; the analyses themselves are documented in
+A single keiki transducer earns trust from mechanical analyses. On honestly aligned structural
+boundaries, the core transformations preserve the three original derivations. `composeChecked` is
+the admission check that detects name drift, positional-field mismatch, and poisoned mapped names
+before construction. The analyses themselves are documented in
 [What gets derived](/docs/keiki/explanation/what-gets-derived).
 
 <TypeTable
@@ -121,16 +135,15 @@ are. We assert preservation here; the analyses themselves are documented in
     },
     "single-valuedness (isSingleValuedSym)": {
       type: "preserved",
-      description: "The composite is single-valued whenever its parts are. Substitution is a syntactic rewrite that preserves unsatisfiability of guard conjunctions; for alternative the Either arms make cross-arm guards vacuously exclusive; feedback1 inherits from its two stacked composes.",
+      description: "Substitution preserves the supported structural guards; for alternative, PLeftArm and PRightArm make cross-arm guards vacuously exclusive. Solver uncertainty and opaque guards remain conservative limits.",
     },
   }}
 />
 
-In short: `solveOutput` still inverts events back to commands; `checkHiddenInputs` still flags any
-input field that fails to reach the output; and `isSingleValuedSym` still proves at most one edge
-fires per `(vertex, input)`. None of these become non-local checks under composition — each composite
-guarantee reduces to the corresponding guarantees of its parts, which is the compositionality property
-the algebra is designed to deliver.
+In short: on a checked, honest structural boundary, `solveOutput` still inverts events back to
+commands, `checkHiddenInputs` still flags fields that fail to reach the output, and the symbolic
+diagnostic remains conservative about overlap. Mapped profunctor boundaries are not honest structural
+boundaries: provenance marks them as poisoned and categorical composition rejects them.
 
 ## History and tests
 

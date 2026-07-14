@@ -1,6 +1,6 @@
 ---
 title: "08 — The existential wrapper and Profunctor"
-description: "SomeSymTransducer and its identity sentinel, the lmap/rmap/dimap variance combinators, the forward-only caveat that poisons inversion, and the internal AST rewriters that power them."
+description: "SomeSymTransducer, real slot witnesses and poison provenance, plus the forward-only lmap/rmap/dimap fragment and its composition boundary."
 ---
 
 <Callout type="info">
@@ -23,26 +23,31 @@ list `rs`, and the control vertex `s` — exposing only `ci` and `co`:
 ```haskell
 -- keiki/src/Keiki/Profunctor.hs
 data SomeSymTransducer ci co where
-  SomeSymTransducer
-    :: ( WeakenR rs
-       , KnownSlotNames rs
-       , Bounded s
-       , Enum s
-       )
-    => SymTransducer (HsPred rs ci) rs s ci co
+  SomeSymTransducerWith
+    :: (KnownSlots rs, Bounded s, Enum s)
+    => PoisonProvenance
+    -> SymTransducer (HsPred rs ci) rs s ci co
     -> SomeSymTransducer ci co
   SomeSymIdentity :: SomeSymTransducer a a
+
+pattern SomeSymTransducer t <- SomeSymTransducerWith _ t
+
+data PoisonProvenance = PoisonProvenance
+  { poisonedInput :: Bool
+  , poisonedOutput :: Bool
+  }
 ```
 
-The packed constraints are not decoration. `WeakenR rs` is what `compose` demands; `KnownSlotNames
-rs` lets the `Category` instance read slot names at the value level for its runtime overlap check
-(chapter 09); `Bounded s` and `Enum s` let pattern-matched-out transducers feed the symbolic analyses
-that enumerate the vertex type. Every keiki vertex type already derives `Bounded`/`Enum`, so packing
-the constraints does not restrict what can be wrapped.
+`KnownSlots rs` carries a real slot-list witness and bundles `WeakenR` plus slot-name reflection.
+Nested composition appends those real witnesses and re-derives the method-carrying dictionaries by
+induction. `Bounded s` and `Enum s` support analyses that enumerate vertices. `PoisonProvenance`
+records whether a lossy map rewrote the input or output boundary; the public compatibility pattern
+and `someSymTransducer` start with both flags clear.
 
 <TypeTable
   type={{
-    SomeSymTransducer: { type: "constructor", description: "Wraps a concrete SymTransducer, hiding rs and s behind the packed constraints." },
+    SomeSymTransducer: { type: "pattern", description: "Compatibility constructor/matcher for a clean concrete wrapper; hides rs, s, and internal provenance." },
+    SomeSymTransducerWith: { type: "internal constructor", description: "Carries the real KnownSlots witness and PoisonProvenance through instance operations." },
     SomeSymIdentity: { type: "constructor", description: "A sentinel for Cat.id with ci ~ co from its GADT signature; not a real transducer." },
   }}
 />
@@ -104,9 +109,9 @@ dimapTransducer
 dimapTransducer f g = rmapCo g . lmapCi f
 ```
 
-`lmapMaybeCi` is the one used in the jitsurei worked example (chapter 11) as a cross-context adapter:
-inputs for which `f` returns `Nothing` fail every guard's structural `PInCtor` check, so they are
-filtered out of the command stream:
+`lmapMaybeCi` is useful as a standalone forward router: inputs for which `f` returns `Nothing` fail
+every guard's structural `PInCtor` check and are filtered out of the command stream. It is not an
+honest replayable composition adapter; its input boundary is poisoned.
 
 ```haskell
 -- keiki/src/Keiki/Profunctor.hs
@@ -135,10 +140,12 @@ only ever consults `icMatch` (input) and `wcBuild` (output); the inversion path 
 `icBuild` and `wcMatch`, and those are exactly what the rewriters destroy.
 
 <Callout type="warn">
-Transducers produced by `lmapCi` / `lmapMaybeCi` / `rmapCo` / `dimapTransducer` do **not** preserve
+Concrete transducers produced by `lmapCi` / `lmapMaybeCi` / `rmapCo` / `dimapTransducer` do **not** preserve
 `Keiki.Core.solveOutput`. `lmapCi` **poisons `icBuild`** (it raises a runtime error if invoked);
 `rmapCo` sets **`wcMatch = const Nothing`** (so `solveOutput` returns `Nothing`). Forward processing
-is unaffected; only the inversion-from-event path is dropped on lmapped/rmapped edges.
+is unaffected; only the inversion-from-event path is dropped. On `SomeSymTransducer`, the corresponding
+instance operation also sets `poisonedInput` or `poisonedOutput`. Chapter 09 shows how category
+composition raises `PoisonedCompositionError` before crossing that boundary.
 </Callout>
 
 The spec pins both behaviours. The `lmapCi` inverse returns a `Just` whose inner thunk throws when

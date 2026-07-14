@@ -54,8 +54,10 @@ compose A (compose pm B)
 ```
 
 — A feeds its events to the process manager, the process manager feeds its commands to B. This is the
-shape `jitsurei`'s `loanWorkflow` takes — `loanApplication` composed with `coreBankingSync` composed
-with `loan` (with `lmapMaybeCi` adapters bridging the alphabets between legs).
+conceptual shape of a workflow pipeline. In 0.2, a replayable aggregate composition boundary must use
+honest structural constructors: `lmapMaybeCi`/`rmapCo` boundaries carry poison provenance and checked
+composition reports them. Keep filtering at the runtime router or author an explicit structural
+adapter transducer.
 
 ### Saga / compensation = a transducer with failure -> compensation edges
 
@@ -63,21 +65,22 @@ A **saga** is a long-running transaction that *compensates* rather than rolls ba
 emits undo-style commands (cancel, refund, release). In keiki a saga is **not a new primitive** — it
 is a process manager whose builder has edges from a failure event to a compensating command. "Saga"
 is the word we use when the process manager's job is compensation. A single-round compensation —
-"on this failure event, emit exactly one undo command" — also fits `feedback1`, where the policy
-maps the failure to its compensating command.
+"on this failure event, emit exactly one undo command" — can be represented as an explicit process
+manager edge. `feedback1` is only suitable when a finite two-copy cascade is actually intended.
 
 ### Policy / reactor = a one-vertex `Event -> Maybe Command`
 
 A **policy** (or **reactor**) is the degenerate, *stateless* process manager: one control vertex, an
-empty register file, and edges that map each event to at most one command. That is precisely the `f`
-argument to `feedback1` — a `SymTransducer` over a single vertex whose `co` alphabet is the
-aggregate's command alphabet. `feedback1 t f` runs the aggregate `t`, hands its event to the policy
-`f`, and feeds `f`'s command back into `t` for one more step.
+empty register file, and edges that map each event to at most one command. That is the usual shape of
+the `f` argument to `feedback1`: a `SymTransducer` over one vertex whose `co` alphabet is the
+aggregate command alphabet. `feedback1 t f` runs one copy of `t`, hands its event to `f`, and feeds
+the command into an independent second copy of `t`.
 
-### Feedback loop = one round of `feedback1`
+### `feedback1` = a finite two-copy cascade
 
-`feedback1 t f` is exactly *one* aggregate-policy round: external command in, aggregate steps, policy
-reacts, aggregate steps again, final event out. Multi-round patterns are expressed by **nesting** —
+`feedback1 t f` is exactly one aggregate-policy-aggregate cascade: external command in, outer copy
+steps, policy reacts, inner copy steps from its own state, final event out. It is not shared-state
+feedback. Multi-round patterns are expressed by **nesting** —
 `feedback1 (feedback1 t f) f` runs two rounds. An *unbounded* "iterate until quiescence" loop is
 deliberately **not** a keiki concern: keiki's pure formalism has no iteration-until-fixpoint
 construct (it could diverge). Unbounded reaction loops are a keiro runtime responsibility, driven
@@ -118,8 +121,9 @@ data SyncOutput
 `SyncToLegacyRequested` is an audit event the runtime adapter consumes to call the legacy
 core-banking system; the pure layer never makes that call. `LegacyAssignmentCommanded` is a
 single-field wrapper around an embedded `LoanCmd'` (`AssignLegacyLoanId`) — a *command* directed at
-the downstream `Loan` aggregate. The wrapper keeps the output type composable with `Loan`'s input
-alphabet through the `lmapMaybeCi` adapter.
+the downstream `Loan` aggregate. A runtime adapter unwraps it before dispatch. Using
+`lmapMaybeCi` inside a composite would create a forward-only, poison-stamped boundary rather than a
+replay-safe pipeline.
 </Step>
 
 <Step>
@@ -159,7 +163,7 @@ at-least-once delivery.
 ## The catch: `compose` is lockstep, real flows are async
 
 <Callout type="warn">
-**The composite is largely a type-level wiring diagram, not a runtime engine.**
+**The legacy mapped composite is topology-only, not a validated runtime engine.**
 
 `Keiki.Composition.compose` is **lockstep**: every non-ε composite edge fires *both* legs in one
 transition. There is no single command that drives the whole `loanWorkflow` chain in one composite
@@ -169,13 +173,13 @@ sync stream, *then later still* the legacy callback channel delivers `LegacyCall
 the `Maybe` results of the adapter functions, the all-legs-aligned composite edges essentially never
 fire.
 
-So the value of the composite is the **verification artifact** it is: the type-level wiring proves the
-alphabets line up, and keiki's analyses (`solveOutput`, `checkHiddenInputs`, `isSingleValuedSym`) run
-over it. You **run** an async process manager by driving the individual aggregates through the adapter
-functions — exactly what `jitsurei/test/Jitsurei/LoanWorkflowSpec.hs` does: it steps `loanApplication`,
+The old `loanWorkflow` value illustrates the intended topology, but its `lmapMaybeCi` seams are
+forward-only and poison-stamped. `composeChecked` reports those names; categorical wrapper composition
+rejects them. You **run** an async process manager by driving the individual replayable aggregates
+through the adapter functions — exactly what `jitsurei/test/Jitsurei/LoanWorkflowSpec.hs` does: it steps `loanApplication`,
 adapts the event with `loanEventToSyncInput`, steps `coreBankingSync`, adapts with
 `syncOutputToLoanCmd`, and steps `loan`, one transactional jump at a time. That test mirrors the
-runtime's actual behaviour; the `loanWorkflow` composite exists for the wiring it expresses.
+runtime's actual behaviour; the `loanWorkflow` composite is retained only for the topology it expresses.
 </Callout>
 
 <Cards>

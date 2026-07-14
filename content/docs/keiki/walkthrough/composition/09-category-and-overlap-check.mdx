@@ -1,6 +1,6 @@
 ---
 title: "09 — Category and the overlap check"
-description: "The Category instance on SomeSymTransducer: the identity sentinel short-circuited in (.), and composeWrappers performing the runtime slot-overlap check that compose's hidden rs makes necessary."
+description: "The partial Category instance: identity short-circuiting, poison rejection, runtime slot-overlap checks, and real slot-witness induction."
 ---
 
 <Callout type="info">
@@ -10,10 +10,10 @@ This chapter is part of the composition source tour. Start at
 
 The previous chapter read the wrapper and its variance combinators. This chapter reads the
 `Control.Category.Category` instance on `SomeSymTransducer` in `keiki/src/Keiki/Profunctor.hs`. The
-instance is small, but it surfaces a real tension: `compose` demands a *static* `Disjoint (Names rs1)
-(Names rs2)` constraint, and the wrapper has thrown `rs` away. The resolution is a **runtime**
-overlap check, plus an `unsafeCoerce`-backed dictionary smuggle. We read both halves and the
-identity short-circuit.
+instance is small, but it is deliberately partial. Mapped boundaries raise
+`PoisonedCompositionError`; overlapping hidden register files raise `CategoryOverlapError`. Only the
+methodless `Disjoint` fact is fabricated after the value-level check; real slot-list witnesses derive
+the composite's working dictionaries by induction.
 
 ## `id` is the sentinel; `(.)` short-circuits it
 
@@ -24,8 +24,9 @@ instance Cat.Category SomeSymTransducer where
 
   SomeSymIdentity              . t                            = t
   t                            . SomeSymIdentity              = t
-  SomeSymTransducer t2         . SomeSymTransducer t1         =
-    composeWrappers t1 t2
+  SomeSymTransducerWith provenance2 t2
+    . SomeSymTransducerWith provenance1 t1 =
+      composeWrappers provenance1 t1 provenance2 t2
 ```
 
 `Cat.id` is the `SomeSymIdentity` sentinel — not a real transducer. `Cat..` matches on it in the
@@ -53,43 +54,55 @@ The third clause — two real transducers — is where the work happens. It dele
 variables usable in `TypeApplications` (the instance method's pattern signatures cannot name them on
 their own).
 
-## `composeWrappers`: the runtime overlap check
+## `composeWrappers`: poison first, overlap second
 
 ```haskell
 -- keiki/src/Keiki/Profunctor.hs
-composeWrappers t1 t2 =
+composeWrappers provenance1 t1 provenance2 t2 =
   let names1  = slotNames @rs1
       names2  = slotNames @rs2
       overlap = filter (`elem` names2) names1
-  in if not (null overlap)
-       then throw (CategoryOverlapError overlap)
-       else case unsafeCoerceDisjointness @(Names rs1) @(Names rs2) of
-              DictDisjoint ->
-                case unsafeCoerceWrapperDict @(Append rs1 rs2) of
-                  DictWrapper -> SomeSymTransducer (compose t1 t2)
+      boundaryPoison
+        | poisonedOutput provenance1 =
+            Just (PoisonedCompositionError "upstream output" "...")
+        | poisonedInput provenance2 =
+            Just (PoisonedCompositionError "downstream input" "...")
+        | otherwise = Nothing
+  in case boundaryPoison of
+       Just err -> throw err
+       Nothing | not (null overlap) -> throw (CategoryOverlapError overlap)
+       Nothing -> case unsafeCoerceDisjointness @(Names rs1) @(Names rs2) of
+         DictDisjoint ->
+           withKnownSlots
+             (appendWitness (slotWitness @rs1) (slotWitness @rs2))
+             (SomeSymTransducerWith
+                (PoisonProvenance
+                  { poisonedInput = poisonedInput provenance1
+                  , poisonedOutput = poisonedOutput provenance2 })
+                (compose t1 t2))
 ```
 
 Read it top to bottom:
 
 <Steps>
 <Step>
-Read each transducer's slot names at the **value level** via `slotNames` (available because the
-wrapper packed `KnownSlotNames rs`). This is the runtime stand-in for the type-level `Names rs` that
-`compose` would have demanded.
+Check the boundary provenance. A mapped upstream output or mapped downstream input is not
+replay-invertible, so throw `PoisonedCompositionError` before substitution can bypass the map.
 </Step>
 <Step>
-Compute the `overlap` — the slot names present in both. If it is **non-empty**, throw
+Read the slot names from each real `KnownSlots` witness and compute their overlap. If it is
+**non-empty**, throw
 `CategoryOverlapError overlap`, carrying the colliding names so the message points at the actual
 offender.
 </Step>
 <Step>
-If the slot lists are disjoint, fabricate the static evidence `compose` wants with
-`unsafeCoerceDisjointness`, and fabricate the wrapper's structural constraints for the composite slot
-list with `unsafeCoerceWrapperDict`, then call `compose t1 t2` and re-wrap.
+If the boundary is clean and the slot lists are disjoint, fabricate only the methodless static
+`Disjoint` evidence that `compose` wants. Append the real slot-list witnesses and let
+`withKnownSlots` re-derive weakening and name reflection for the result.
 </Step>
 </Steps>
 
-### Why the `unsafeCoerce` is sound here
+### The narrow `unsafeCoerce` boundary
 
 The wrapper hides `rs`, so GHC cannot reduce `compose`'s `Disjoint (Names rs1) (Names rs2)` — the
 spines are skolems. `unsafeCoerceDisjointness` smuggles the constraint dictionary in:
@@ -111,18 +124,18 @@ about that:
 
 ```haskell
 -- keiki/src/Keiki/Profunctor.hs
--- The only safe call site is the body of 'Cat..' on
--- 'SomeSymTransducer', after the value-level check has confirmed
--- the slot lists are disjoint. The 'CategoryOverlapError' exception
--- raised on overlap is the *only* safety net; calling this without
--- a prior check can produce a semantically broken composite.
+-- This is the only fabricated dictionary in this module, and its only call
+-- site is the body of 'Cat..' after the value-level check has confirmed the
+-- slot lists are disjoint. Composite wrappers carry real 'KnownSlots'
+-- witnesses, so the checked names remain accurate under arbitrary nesting.
 ```
 
-`unsafeCoerceWrapperDict` does the analogous job for the *output* side: it fabricates `WeakenR (Append
-rs1 rs2)` and `KnownSlotNames (Append rs1 rs2)`, which are structural facts provable by induction on
-`rs1`'s spine — an induction GHC cannot run without a value-level witness.
+No `unsafeCoerceWrapperDict` exists in 0.2. `KnownSlots` carries a `SlotListWitness`; `appendWitness`
+builds the actual appended spine, and `withKnownSlots` derives the method-carrying dictionaries by
+structural induction. Nested compositions therefore keep accurate slot names instead of fabricating
+reflection evidence.
 
-## The exception
+## The exceptions
 
 `CategoryOverlapError` is an ordinary `Exception` carrying the colliding slot names:
 
@@ -132,6 +145,19 @@ data CategoryOverlapError = CategoryOverlapError
   { coeSlots :: [String]
   } deriving stock (Eq, Show)
 ```
+
+`PoisonedCompositionError` rejects a lossy mapped boundary before the overlap check:
+
+```haskell
+data PoisonedCompositionError = PoisonedCompositionError
+  { pceSide :: String
+  , pceDetail :: String
+  } deriving stock (Eq, Show)
+```
+
+An upstream `rmap`/`dimap`/`first'`/`arr` poisons the output side; a downstream
+`lmap`/`dimap`/`first'` poisons the input side. This makes the `Category` instance explicitly partial
+instead of letting name substitution silently discard a forward-only map.
 
 Because the throw is buried inside a lazy value, the spec forces it with `evaluate` and inspects the
 slot list. Composing `adaptedEmail . someEmail` — two copies of `emailDelivery` that both carry the
@@ -165,18 +191,20 @@ it "does NOT raise when one half is the empty-slot identity" $ do
 flowchart TD
   start["t2 . t1"] --> id1{"either<br/>SomeSymIdentity?"}
   id1 -->|yes| short["return the other arg<br/>(law holds by definition)"]
-  id1 -->|no| check{"slot names<br/>overlap?"}
+  id1 -->|no| poison{"boundary<br/>poisoned?"}
+  poison -->|yes| perr["throw<br/>PoisonedCompositionError"]
+  poison -->|no| check{"slot names<br/>overlap?"}
   check -->|yes| err["throw<br/>CategoryOverlapError"]
-  check -->|no| coerce["unsafeCoerceDisjointness<br/>+ unsafeCoerceWrapperDict"]
-  coerce --> comp["compose t1 t2<br/>re-wrap as SomeSymTransducer"]
+  check -->|no| coerce["unsafeCoerceDisjointness<br/>+ append real witnesses"]
+  coerce --> comp["compose t1 t2<br/>retain outer provenance"]
 ```
 
 <Callout type="warn">
-Unlike `compose`'s static check, the `Category` instance's slot-overlap guard fires at **runtime**, as
-a synchronous exception when the composite is forced. Wrapping a transducer in `SomeSymTransducer`
-trades a compile-time `Disjoint` error for a `CategoryOverlapError` you only see when you `evaluate`
-the result. Keep register slot names prefixed per aggregate (as the jitsurei aggregates do in chapter
-11) so the check always passes.
+Unlike `compose`'s static check, the `Category` instance's poison and slot-overlap guards fire at
+**runtime**, as synchronous exceptions when the composite is forced. Wrapping a transducer trades a
+compile-time `Disjoint` error for `CategoryOverlapError`, and mapped boundaries add
+`PoisonedCompositionError`. Concrete `composeChecked` is the supported validation boundary for
+aggregate pipelines.
 </Callout>
 
 The spec also confirms `isSingleValuedSym` survives `id . t` — the symbolic guarantee passes straight

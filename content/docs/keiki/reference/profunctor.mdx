@@ -3,38 +3,42 @@ title: "Keiki.Profunctor"
 description: "An existential wrapper that lets a SymTransducer join the Profunctor / Category / Strong / Choice / Arrow ecosystem, plus standalone variance combinators on the concrete type."
 ---
 
-`Keiki.Profunctor` exposes a `SymTransducer` to the standard `profunctor` / `arrow` ecosystem. The
+`Keiki.Profunctor` exposes an experimental forward fragment of `SymTransducer` to the standard
+`profunctor` / `arrow` ecosystem. The
 wrapper `SomeSymTransducer ci co` hides the register-file slot list and the control vertex, leaving
 only the input alphabet `ci` and the output alphabet `co` — the shape those typeclasses expect. The
 module also ships standalone **variance combinators** on the concrete `SymTransducer`.
 
 <Callout type="warn">
 Forward-only variance contract. The variance combinators (`lmapCi`, `lmapMaybeCi`, `rmapCo`,
-`dimapTransducer`) and the `Strong` / `Arrow` machinery rewrite edges in a way that is **lossy for
-`solveOutput`**: `lmapCi` poisons `icBuild` (it raises a runtime error if invoked) and `rmapCo` sets
-`wcMatch = const Nothing`. Forward processing — `delta`, `omega`, `evalPred`, `evalTerm` — only ever
-consults `icMatch` / `wcBuild` and is **unaffected**; only the inversion-from-event path is dropped on
-rewritten edges. Two consequences fall out of this, covered under [Choice](#choice-instance) and
-[Arrow](#arrow-instance).
+`dimapTransducer`) and the `Strong` / `Arrow` machinery are lossy for inversion and replay. The
+existential wrapper records that loss as `PoisonProvenance`. Categorical composition refuses to
+cross a poisoned upstream-output or downstream-input boundary and raises
+`PoisonedCompositionError` before name substitution can silently bypass the map. Concrete checked
+composition through `composeChecked` is the supported validation boundary for aggregate pipelines.
 </Callout>
 
 ## `SomeSymTransducer`
 
-The existential wrapper. It hides `rs` and `s`, exposing only `ci` / `co`. The packed constraints let
-pattern-matched-out transducers participate in `compose` (`WeakenR`), the runtime slot-overlap check
-(`KnownSlotNames`), and the symbolic analyses, which enumerate the vertex (`Bounded` / `Enum`).
+The existential wrapper hides `rs` and `s`, exposing only `ci` / `co`. `KnownSlots` carries a real
+slot-list witness and bundles the weakening/name evidence needed for nested composition. Internal
+construction also carries poison provenance; the public compatibility pattern starts clean.
 
 ```haskell
 data SomeSymTransducer ci co where
-  SomeSymTransducer
-    :: ( WeakenR rs
-       , KnownSlotNames rs
-       , Bounded s
-       , Enum s
-       )
-    => SymTransducer (HsPred rs ci) rs s ci co
+  SomeSymTransducerWith
+    :: (KnownSlots rs, Bounded s, Enum s)
+    => PoisonProvenance
+    -> SymTransducer (HsPred rs ci) rs s ci co
     -> SomeSymTransducer ci co
   SomeSymIdentity :: SomeSymTransducer a a
+
+pattern SomeSymTransducer t <- SomeSymTransducerWith _ t
+
+data PoisonProvenance = PoisonProvenance
+  { poisonedInput :: Bool
+  , poisonedOutput :: Bool
+  }
 ```
 
 `SomeSymIdentity` is a **sentinel** for `Cat.id`. A generic identity transducer cannot satisfy
@@ -44,17 +48,15 @@ constraint `ci ~ co` comes from the GADT signature. A smart constructor mirrors 
 
 ```haskell
 someSymTransducer
-  :: ( WeakenR rs
-     , KnownSlotNames rs
-     , Bounded s
-     , Enum s
-     )
+  :: (KnownSlots rs, Bounded s, Enum s)
   => SymTransducer (HsPred rs ci) rs s ci co
   -> SomeSymTransducer ci co
 ```
 
-When you pattern-match the wrapper, `rs` and `s` come into scope as skolem types that may not escape
-the match; handle `SomeSymIdentity` explicitly when traversing arbitrary values.
+When you pattern-match the compatibility pattern, `rs` and `s` come into scope as skolem types that
+may not escape the match; handle `SomeSymIdentity` explicitly when traversing arbitrary values.
+Profunctor operations preserve or set the internal provenance flags even though the compatibility
+pattern hides them.
 
 ## Variance combinators
 
@@ -72,9 +74,10 @@ lmapCi
   -> SymTransducer (HsPred rs ci') rs s ci' co
 ```
 
-`lmapMaybeCi` is **the workflow bridge**: a partial contramap that both renames/upcasts **and
-filters**. An input mapped to `Nothing` fails every guard's structural `PInCtor` check and is dropped,
-so a process manager wired through `lmapMaybeCi` observes only the events it cares about.
+`lmapMaybeCi` is a standalone **forward router**: a partial contramap that both renames/upcasts and
+filters. An input mapped to `Nothing` fails every guard's structural `PInCtor` check and is dropped.
+Its rewritten input boundary is not replay-invertible, so do not use it as a replayable composition
+bridge.
 
 ```haskell
 lmapMaybeCi
@@ -156,6 +159,24 @@ data CategoryOverlapError = CategoryOverlapError
 instance Exception CategoryOverlapError
 ```
 
+## `PoisonedCompositionError`
+
+Raised before categorical composition crosses a boundary rewritten by a non-invertible map. The
+exception names the rejected side and gives a repair hint.
+
+```haskell
+data PoisonedCompositionError = PoisonedCompositionError
+  { pceSide :: String
+  , pceDetail :: String
+  } deriving stock (Eq, Show)
+
+instance Exception PoisonedCompositionError
+```
+
+An upstream wrapper produced by `rmap`/`dimap`/`first'`/`arr` poisons its output boundary. A
+downstream wrapper produced by `lmap`/`dimap`/`first'` poisons its input boundary. Move a lossy map
+outside the composed replay boundary, or replace it with an honest structural transducer.
+
 ## Typeclass instances
 
 All six instances are on `SomeSymTransducer`.
@@ -171,13 +192,15 @@ alphabet without rebuilding edges. The `SomeSymIdentity` sentinel is materialise
 </Card>
 <Card title="Category">
 `id = SomeSymIdentity`. `(.)` short-circuits when either side is the sentinel (so `id . t = t` and
-`t . id = t` hold by definition); otherwise `composeWrappers` does a runtime slot-overlap check,
-raising `CategoryOverlapError` on a collision or proceeding via `unsafeCoerceDisjointness` and
-`compose`.
+`t . id = t` hold by definition); otherwise `composeWrappers` first rejects poisoned boundaries,
+then performs a runtime slot-overlap check. Clean, disjoint wrappers compose through a fabricated
+methodless `Disjoint` witness while real slot-list witnesses re-derive the composite dictionaries.
 </Card>
 <Card title="Choice">
 `left' = alternative t identityTransducer`, `right' = alternative identityTransducer t`. Routes one
 `Either` arm through `t` and passes the other straight through. **Preserves `solveOutput`** (see below).
+`alternative` adds `PLeftArm`/`PRightArm`, so routing stays disjoint even when the underlying guard is
+epsilon/register-only and contains no constructor atom.
 </Card>
 <Card title="Strong">
 `first' = firstSym t` — thread an unrelated value (e.g. a correlation id) alongside the transducer.
@@ -185,8 +208,8 @@ raising `CategoryOverlapError` on a collision or proceeding via `unsafeCoerceDis
 sets `wcMatch = const Nothing`).
 </Card>
 <Card title="Arrow">
-`arr = arrTransducer`; `first` / `second` delegate to `Strong`. `(>>>)` / `(<<<)` inherit the
-`Category` instance's overlap check and sentinel short-circuit.
+`arr = arrTransducer`; `first` / `second` delegate to `Strong`. These operations poison the relevant
+boundaries, so `(>>>)` / `(<<<)` rejects a non-identity crossing with `PoisonedCompositionError`.
 </Card>
 </Cards>
 
@@ -211,18 +234,16 @@ additional loss. On the `SomeSymIdentity` sentinel, both `left'` and `right'` re
 no inverse for an arbitrary function), so it inherits the forward-only variance contract.
 
 <Callout type="warn">
-Consequence 2: `arr f >>> arr g` does **not** fuse. `compose` substitutes the downstream stage's
-`TInpCtorField` against the upstream `WireCtor` and demands `icName == wcName`. An `arrTransducer`
-output's `WireCtor` is named `"arr"`, but the next stage's read uses `identityInCtor` named
-`"Identity"` — the names never match, so substitution collapses the composed guard to `PBot` and the
-composite never fires. Use `arr` standalone for adapter purposes; for actual composition, build one
-transducer that wraps the combined function. (The symbolic `Term` AST has no constructor for arbitrary
-function application by design, so there is no general fusion to recover here.)
+Consequence 2: `arr f >>> arr g` does **not** fuse. `arr` marks its output provenance as poisoned, so
+the `Category` instance raises `PoisonedCompositionError` before unchecked name substitution. Use
+`arr` standalone for forward adapter purposes; for actual composition, build one transducer that
+wraps the combined function. The symbolic `Term` AST has no constructor for arbitrary function
+application, so there is no general replay-safe fusion to recover.
 </Callout>
 
 ## See also
 
-- [Composition](/docs/keiki/reference/composition) — `compose` / `alternative` and the substitution
+- [Composition](/docs/keiki/reference/composition) — `composeChecked` / `compose` / `alternative` and the substitution
   machinery the `Category` / `Choice` instances delegate to.
 - [Core](/docs/keiki/reference/core) — `SymTransducer`, `InCtor`, `WireCtor`, `OutTerm`, and the
   `solveOutput` inversion the variance caveat refers to.

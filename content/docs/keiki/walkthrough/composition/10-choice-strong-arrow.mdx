@@ -1,6 +1,6 @@
 ---
 title: "10 — Choice, Strong, Arrow"
-description: "The remaining ecosystem instances: Choice built on alternative, Strong built on firstSym, Arrow built on arrTransducer, and why arr does not fuse through compose."
+description: "Choice arm exclusion, Strong/Arrow poison provenance, and why categorical composition rejects lossy mapped boundaries."
 ---
 
 <Callout type="info">
@@ -26,12 +26,12 @@ instance Choice SomeSymTransducer where
   left' :: forall a b c. SomeSymTransducer a b
         -> SomeSymTransducer (Either a c) (Either b c)
   left' SomeSymIdentity        = SomeSymIdentity
-  left' (SomeSymTransducer t)  = leftWrap t
+  left' (SomeSymTransducerWith provenance t) = leftWrap provenance t
 
   right' :: forall a b c. SomeSymTransducer a b
          -> SomeSymTransducer (Either c a) (Either c b)
   right' SomeSymIdentity       = SomeSymIdentity
-  right' (SomeSymTransducer t) = rightWrap t
+  right' (SomeSymTransducerWith provenance t) = rightWrap provenance t
 ```
 
 The `leftWrap` helper is `alternative t identityTransducer`; `rightWrap` is `alternative
@@ -48,7 +48,8 @@ there is **no `CategoryOverlapError` path** here (unlike `Cat..` in chapter 09).
 reduce a type family over a skolem `rs`; the underlying claim `Disjoint xs '[]` is genuinely vacuously
 true.
 
-Crucially, `Choice` **preserves `solveOutput`**. Unlike the `lmapCi`/`rmapCo` combinators (which
+Crucially, `Choice` **preserves `solveOutput`** and retains the underlying wrapper's provenance.
+Unlike the `lmapCi`/`rmapCo` combinators (which
 poison inversion), the edges `left'`/`right'` produce run the underlying `alternative`'s
 `leftInCtor`/`rightInCtor` wrappers, which round-trip correctly. The module haddock makes the
 contrast:
@@ -75,27 +76,22 @@ omega t (initial t) (initialRegs t) (Right (42 :: Int))
 And the sentinel law `left' Cat.id == Cat.id` holds by construction — the first clause returns
 `SomeSymIdentity`.
 
-### Why `identityTransducer` guards with `PInCtor`, not `PTop`
+### Explicit arm exclusion
 
-A subtlety worth quoting. `identityTransducer`'s single edge guards on `PInCtor identityInCtor`, not
-`PTop`, even though `identityInCtor`'s `icMatch` always succeeds standalone:
+A lifted left edge is conjoined with `PLeftArm`; a lifted right edge with `PRightArm`. These are real
+predicate constructors with independent concrete and symbolic interpretations, so even a
+register-only underlying `PTop` guard cannot fire on the wrong arm. `identityTransducer` also keeps
+its structural `PInCtor identityInCtor` guard, but arm safety no longer relies on finding a
+constructor atom inside every underlying guard.
 
 ```haskell
--- keiki/src/Keiki/Profunctor.hs
--- EP-29 M1 discovered that the simpler @PTop@ guard fires on every input,
--- including the *wrong arm* of an 'Keiki.Composition.alternative'
--- composite. 'liftRPredAlt PTop = PTop' ... so an
--- @alternative t identityTransducer@ composite at @Left _@ inputs
--- would see *both* arms' edges fire ... Replacing 'PTop' with
--- 'PInCtor identityInCtor' is semantically a no-op standalone ...
--- but becomes arm-discriminating after 'liftLPredAlt' / 'liftRPredAlt'
--- wraps the InCtor in 'leftInCtor' / 'rightInCtor'.
+-- keiki/src/Keiki/Composition.hs
+guard = PAnd PLeftArm (liftLPredAlt (weakenLPred (guard e1)))
+-- right arm: PAnd PRightArm (...)
 ```
 
-`PTop` lifts to `PTop` (the lift has no `PInCtor` to re-tag), so a `PTop`-guarded identity would fire
-on *both* arms. A `PInCtor`-guarded one becomes arm-discriminating once lifted, because
-`leftInCtor`/`rightInCtor`'s `icMatch` returns `Nothing` on the wrong arm. This is what keeps `Choice`
-single-valued — `isSingleValuedSym` survives `left'`/`right'` in the spec.
+The regression suite includes epsilon/register-only guards specifically to pin this property;
+`isSingleValuedSym` survives `left'`/`right'` because `PLeftArm .&& PRightArm` is unsatisfiable.
 
 ## `Strong`: threading a value, built on `firstSym`
 
@@ -108,14 +104,18 @@ instance Strong SomeSymTransducer where
             SomeSymTransducer a b
          -> SomeSymTransducer (a, c) (b, c)
   first' SomeSymIdentity        = SomeSymIdentity
-  first' (SomeSymTransducer t)  = SomeSymTransducer (firstSym t)
+  first' (SomeSymTransducerWith provenance t) =
+    SomeSymTransducerWith
+      provenance { poisonedInput = True, poisonedOutput = True }
+      (firstSym t)
 
   second' :: forall a b c.
              SomeSymTransducer a b
           -> SomeSymTransducer (c, a) (c, b)
   second' SomeSymIdentity       = SomeSymIdentity
-  second' (SomeSymTransducer t) =
-    SomeSymTransducer
+  second' (SomeSymTransducerWith provenance t) =
+    SomeSymTransducerWith
+      provenance { poisonedInput = True, poisonedOutput = True }
       (lmapCi swap (rmapCo swap (firstSym t)))
     where
       swap :: forall x y. (x, y) -> (y, x)
@@ -130,7 +130,8 @@ symmetry obvious.
 
 `Strong` inherits `firstSym`'s **lossy-`solveOutput`** contract — the threaded-value `WireCtor`'s
 `wcMatch` is `const Nothing` and the contramapped `InCtor`'s `icBuild` is poisoned. Forward processing
-is unaffected, which the `StrongSpec` (`keiki/test/Keiki/StrongSpec.hs`) confirms by threading a
+is unaffected. The wrapper marks both boundaries poisoned, so a later non-identity categorical
+composition rejects the crossing. `StrongSpec` confirms the standalone forward behavior by threading a
 `RequestId`:
 
 ```haskell
@@ -150,7 +151,7 @@ delegate to `Strong`; `>>>`/`<<<` inherit `Category`:
 ```haskell
 -- keiki/src/Keiki/Profunctor.hs
 instance Arr.Arrow SomeSymTransducer where
-  arr    f = SomeSymTransducer (arrTransducer f)
+  arr f = SomeSymTransducerWith (PoisonProvenance False True) (arrTransducer f)
   first    = first'
   second   = second'
 ```
@@ -172,31 +173,26 @@ The `ArrowSpec` (`keiki/test/Keiki/ArrowSpec.hs`) reads forward eval and the doc
 `arr id` is **not** detected as `Cat.id` — Haskell function identity is unobservable at the value
 level, so `arr id` materialises a real `SomeSymTransducer`, not the sentinel.
 
-## The limitation: `arr` does not fuse through `compose`
+## The limitation: `arr` does not fuse through `Category`
 
 This is the one place the abstraction leaks, and it is documented rather than worked around. `arr f
 >>> arr g` does **not** produce `arr (g . f)`:
 
 <Callout type="warn">
-`arr f >>> arr g` does not fuse to `arr (g . f)`. `compose` substitutes the second stage's
-`TInpCtorField` against the first stage's emitted `WireCtor`, demanding `icName ic2 == wcName wc1`. An
-`arrTransducer`'s `WireCtor` is named `"arr"`, but the next stage's `TInpCtorField` reads through
-`identityInCtor`, named `"Identity"`. The names do not match, so substitution turns the composed
-guard into `PBot` and the composite **never fires**.
+`arr f >>> arr g` does not fuse to `arr (g . f)`. `arr` marks its output boundary poisoned, so
+`Category` raises `PoisonedCompositionError` before unchecked constructor-name substitution can
+silently bypass a non-invertible map.
 </Callout>
 
-The module haddock gives the root cause — the symbolic `Term` AST has no `TPure`-style constructor for
-arbitrary function application, by design:
+The root cause is unchanged: the symbolic `Term` AST has no `TPure`-style constructor for arbitrary
+function application, by design. Build one `arr (g . f)` for standalone forward use, or author an
+honest structural transducer when replay and composition matter.
 
 ```haskell
 -- keiki/src/Keiki/Profunctor.hs
--- This is documented rather than worked
--- around because the symbolic 'Term' AST has no
--- 'TPure'-style constructor for arbitrary function application
--- (intentional; see 'Keiki.Symbolic.translateTermSym' for why
--- function applications would be untranslatable). Use 'Arr.arr'
--- standalone for adapter purposes; for actual composition, build
--- one transducer that wraps the combined function.
+-- Standalone 'Arr.arr' has forward function behavior but is not
+-- replay-invertible. Fusion fails: @arr f >>> arr g@ raises
+-- 'PoisonedCompositionError' rather than equalling @arr (g . f)@.
 ```
 
 The spec exercises the *working* `arr`-through-`Category` paths — `arr f >>> Cat.id` and `Cat.id <<<

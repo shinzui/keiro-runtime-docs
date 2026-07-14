@@ -23,17 +23,18 @@ symIsBot p = unsafePerformIO $ do
     res <- SBV.sat $ do
         env <- mkSymEnv
         translatePred env p
-    pure (not (SBV.modelExists res))
+    pure (satResultIsProvablyUnsat res)
 ```
 
 The body is small but every word is deliberate:
 
 - It builds a fresh `SymEnv` (new tag, new memo cache), translates the predicate, and asks `SBV.sat`
-  whether **any** model exists. The predicate is bot exactly when none does — hence
-  `not (SBV.modelExists res)`.
+  whether z3 can prove it unsatisfiable. `satResultIsProvablyUnsat` returns `True` only for the
+  `Unsatisfiable` constructor.
 - The result is `True` only when the solver says unsat. An `Unknown` answer (the solver gave up within
   budget) falls under "a model might exist," so it reads as `False` — the **conservative** direction.
-  A guard is only declared empty when the solver positively proves it so.
+  `ProofError`, `DeltaSat`, and `SatExtField` are conservative `False` answers too. A guard is only
+  declared empty when the solver positively proves it so.
 - `unsafePerformIO` presents the solver call as a pure `Bool`. That is sound because an SBV query is
   deterministic for a given predicate and side-effect-free outside the solver process. The `NOINLINE`
   pragma stops GHC from duplicating or floating the effectful call.

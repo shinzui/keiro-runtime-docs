@@ -66,7 +66,7 @@ below — it answers `False`. So the worst the symbolic gate does is fail when t
 -- symIsBot is True only when no model exists; every other case is False.
 symIsBot p = unsafePerformIO $ do
     res <- SBV.sat (mkSymEnv >>= \env -> translatePred env p)
-    pure (not (SBV.modelExists res))
+    pure (satResultIsProvablyUnsat res)
 ```
 
 The two checks are complementary, not redundant. The syntactic check
@@ -119,36 +119,27 @@ registry to cover it rather than reaching for an opaque `TApp`. See
 
 ## Caveat 2 — the Unknown/timeout rule
 
-z3 can return a third answer: `unknown`, when it cannot decide within its budget. keiki collapses
-this into the sound direction. `symIsBot` is defined as `not (modelExists res)`, and a
-non-`sat`, non-decided result does not count as "a model was found to *not* exist" — it is
-treated as **possibly overlapping**. Concretely, an `unknown`/timeout makes `isBot` answer
-`False`: the gate assumes a possible overlap and fails closed rather than open. You may see a
-spurious failure on a pathological guard; you will never see a timeout silently pass an
-overlapping pair as single-valued.
+z3 can return `Unknown`, `ProofError`, or another non-definitive result. Keiki collapses every one
+into the sound direction through `satResultIsProvablyUnsat`: only SBV's `Unsatisfiable` constructor
+returns `True`. An unknown, timeout, proof failure, satisfiable, or delta-satisfiable result makes
+`isBot` answer `False`, so the gate assumes possible overlap and fails closed. You may see a
+spurious failure on a pathological guard; solver uncertainty never certifies a pair as disjoint.
 
-## Caveat 3 — integers are modelled unbounded
+## Caveat 3 — use explicit widths when overflow matters
 
-Every numeric carrier — `Int`, and all the fixed-width `Word*`/`Int*` types — encodes to the
-unbounded mathematical `Integer` in SBV, not to a bit-vector:
+Keiki 0.2 models `Word8`/`Word16`/`Word32`/`Word64` and `Int32`/`Int64` with exact fixed-width SBV
+values. Their symbolic arithmetic therefore preserves modular wraparound. `UTCTime` also keeps its
+native picosecond resolution.
 
 ```haskell
 instance Sym Word64 where
-    type SymRep Word64 = Integer
-    toSym = fromIntegral
-    fromSym = fromIntegral
+    type SymRep Word64 = Word64
 ```
 
-This is an **over-approximation of the type's value set**: the modular wraparound of a `Word*`
-or `Int*` is not modelled. The consequence is one-directional and stays sound for the gate. Any
-concrete model z3 finds is a real witness once decoded through `fromSym`, so `symSatExt` never
-fabricates a phantom breaking input. What it *can* miss is an unsatisfiability that depends on
-wraparound — for example `x + 1 == 0` over `Word64` is satisfiable at the type's wrap point, but
-the `Integer` encoding reports it `unsat`. In keiki's money and count guards this never bites:
-they are equality and ordering checks against in-range literals. The motivating money type is
-`OrderCart`'s `Money = Word64` (fixed-point minor units), exercised in
-`jitsurei/test/Jitsurei/OrderCartSymbolicSpec.hs`, where `10 < 5` over `Money` is correctly
-`symIsBot` and a `ConfirmPayment` guard with `amountPaid >= 1000` reconstructs a real witness.
+Platform-sized `Int` remains modeled as unbounded `Integer`, because its width varies by target.
+If a proof depends on `Int` overflow, use an explicitly sized type instead. The OrderCart money
+guards use `Word64`, so both ordinary comparisons and wraparound-sensitive formulas now match the
+concrete runtime domain.
 
 ## Memoization — one variable per slot
 

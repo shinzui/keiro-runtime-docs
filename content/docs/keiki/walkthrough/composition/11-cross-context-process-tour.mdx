@@ -1,6 +1,6 @@
 ---
 title: "11 — A cross-context process, end to end"
-description: "The jitsurei loan workflow: a process manager turning events into commands, a downstream aggregate, and the three-stage compose that wires them — ending on why the composite is a verification artifact, not a runtime."
+description: "The jitsurei loan workflow as an async runtime choreography, and why its legacy mapped composite is topology-only rather than a validated replay pipeline."
 ---
 
 <Callout type="info">
@@ -11,8 +11,8 @@ This chapter is part of the composition source tour. Start at
 Every previous chapter read a combinator in isolation. This final chapter reads a *worked example*
 that uses several of them together: the jitsurei loan workflow, which spans three bounded contexts. We
 read the process manager that turns events into commands (`CoreBankingSync`), the downstream aggregate
-it drives (`Loan`), and the three-stage `compose` that wires the whole chain (`LoanWorkflow`) — then
-end on the most important caveat in the entire tour: what the composite *is not*.
+it drives (`Loan`), and the legacy mapped `loanWorkflow` topology value. The important 0.2 lesson is
+why the durable flow runs as separate runtime dispatches rather than through that composite.
 
 ## The process manager: events in, commands out
 
@@ -94,12 +94,11 @@ It is `CreateLoan`d into `LoanAwaiting` (recording its fields, emitting `LoanCre
 `loanLegacyLoanId` slot and emitting `LegacyLoanIdAssigned`. The `AssignLegacyLoanId` command is
 precisely the one the process emits — that is the seam the workflow stitches.
 
-## The three-stage compose
+## The legacy topology value
 
-`jitsurei/src/Jitsurei/LoanWorkflow.hs` wires `LoanApplication`, `CoreBankingSync`, and `Loan` into a
-single `SymTransducer`. The seams between contexts are bridged by two `lmapMaybeCi` adapters (chapter
-08) — partial contramaps that translate one context's output alphabet into the next context's input
-alphabet, returning `Nothing` for the irrelevant cases so those inputs are filtered out.
+`jitsurei/src/Jitsurei/LoanWorkflow.hs` retains a single `SymTransducer` value that draws the intended
+three-stage topology. Its seams use two `lmapMaybeCi` adapters. In 0.2 those partial contramaps are
+explicitly forward-only: they poison inversion and stamp their rewritten boundary names.
 
 The two adapters are plain functions:
 
@@ -141,9 +140,10 @@ Read the type first. The register file is `Append LoanAppRegs (Append SyncRegs L
 `compose`, associated the other way). The vertex is the matching `Composite LoanAppVertex (Composite
 SyncVertex LoanVertex)`. The input is `LoanApplication`'s command; the output is `Loan`'s event. The
 three `loan`-prefixed, `sync`-prefixed, and `app`-prefixed slot namespaces are exactly what let
-`compose`'s `Disjoint` constraint discharge at each step.
+`compose`'s `Disjoint` constraint discharge at each step. Slot disjointness alone does not validate
+the mapped alphabet boundaries.
 
-Read the body next. The inner `compose` wires `CoreBankingSync` to `Loan` through
+Read the body next as intended routing. The inner `compose` places `CoreBankingSync` before `Loan` through
 `lmapMaybeCi syncOutputToLoanCmd` — the process's `SyncOutput` is filtered to just the
 `LegacyAssignmentCommanded` arm and unwrapped into a `LoanCmd'`. The outer `compose` wires
 `LoanApplication` to that pipeline through `lmapMaybeCi loanEventToSyncInput` — the application's
@@ -156,7 +156,7 @@ flowchart LR
   sync -->|"lmapMaybeCi<br/>syncOutputToLoanCmd"| loan["Loan<br/>(LoanCmd' → LoanEvent')"]
 ```
 
-## What the composite is — and is not
+## Why it is not an admitted replay pipeline
 
 Now the caveat the whole jitsurei module is built around, and the most important takeaway of this
 tour.
@@ -167,20 +167,19 @@ But real cross-context flows are **async** — the runtime observes `LoanApplica
 `ApplicationApproved` event, *then* (in a separate transactional step) issues a command on the
 `CoreBankingSync` stream, *then later* the legacy callback channel delivers a
 `LegacyCallbackReceivedIn` event. There is no single `LoanCmd` input that fires the entire chain in
-one composite firing. `loanWorkflow` is therefore largely a **type-level wiring / verification
-artifact** — it proves the alphabets and slot namespaces line up — not a runtime that executes the
-flow. The durable, async reaction loop runs through **keiro**, not through the composite.
+one composite firing. In addition, `lmapMaybeCi` is poison-stamped: `composeChecked` reports
+`PoisonedNameInComposition`, and the existential `Category` wrapper raises
+`PoisonedCompositionError` before crossing the mapped input boundary. `loanWorkflow` is therefore an
+illustrative topology value, not a validated replay pipeline. The durable reaction loop runs through
+**keiro**.
 </Callout>
 
 The module haddock states it directly:
 
 ```haskell
 -- jitsurei/src/Jitsurei/LoanWorkflow.hs
--- the composite is therefore largely a *type-
--- level wiring diagram* whose firing semantics are restricted to
--- the (Compose t1 t2 t3) edges where all three legs happen to
--- align — which, given the adapter functions' 'Maybe' results, is
--- essentially never.
+-- | The three-aggregate composition. Type-level only — see the
+-- module's variance caveat.
 ```
 
 This is why `jitsurei/test/Jitsurei/LoanWorkflowSpec.hs` does **not** fire the composite. It drives

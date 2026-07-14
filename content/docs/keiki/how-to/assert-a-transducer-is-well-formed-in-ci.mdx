@@ -79,8 +79,8 @@ cases of that immediately.
 <Step>
 
 **Toggle individual checks when you need to scope a failure.** `ValidationOptions` has one `Bool`
-per check; `defaultValidationOptions` enables the three soundness checks and leaves the opaque-guard
-audit off:
+per check; `defaultValidationOptions` enables every replay-safety and structural check and leaves
+only the advisory opaque-guard audit off:
 
 ```haskell
 -- defaultValidationOptions, spelled out:
@@ -89,6 +89,10 @@ ValidationOptions
   , checkDeterminism        = True   -- structural (pure) determinism
   , checkReachability       = True   -- structural dead-edge check
   , warnOpaqueGuards        = False  -- opt-in opaque-guard audit
+  , checkHeadRecoverability = True   -- recover command data from the first event
+  , checkInversionAmbiguity = True   -- reject ambiguous first-event inversion
+  , checkGuardImpliesInputRead = True -- guard constructor before reading its fields
+  , checkStateChangingEpsilon = True -- reject output-free state changes
   }
 ```
 
@@ -101,14 +105,19 @@ is the *only* thing firing:
           defaultValidationOptions
             { failOnEpsilonReadsInput = False
             , checkReachability = False
+            , checkHeadRecoverability = False
+            , checkInversionAmbiguity = False
+            , checkGuardImpliesInputRead = False
+            , checkStateChangingEpsilon = False
             }
     validateTransducer onlyDeterminism overlapT
       `shouldSatisfy` all isNondeterministicPair
 ```
 
-Each warning is a typed constructor — `HiddenInput`, `NondeterministicPair`, `PossiblyDeadEdge`,
-`OpaqueGuard` — carrying the `EdgeRef` locator (or `tvwSource`/`tvwEdgeA`/`tvwEdgeB` for a pair), so
-you pattern-match the kind you expect rather than parsing a string.
+Each warning is a typed constructor — including `HiddenInput`, `HeadUnrecoverable`,
+`InversionAmbiguity`, `UnguardedInputRead`, `StateChangingEpsilon`, `NondeterministicPair`,
+`PossiblyDeadEdge`, and `OpaqueGuard` — carrying edge locators and structured detail, so you
+pattern-match the kind you expect rather than parsing a string.
 
 </Step>
 
@@ -137,13 +146,14 @@ never flagged even with the audit on. See the opaque-collection fixture in
 
 **Optionally escalate to the z3-backed checks.** The pure determinism component is an
 *under-approximation*: it flags only structurally-provable overlaps (both guards `PTop`, or both
-naming the same input constructor), so its silence does *not* prove single-valuedness. For the exact
-answer, call the solver-backed analyses from `Keiki.Symbolic` directly:
+naming the same input constructor), so its silence does *not* prove single-valuedness. For the
+stronger supported-fragment analysis, call the solver-backed diagnostics from `Keiki.Symbolic`
+directly. An uncertain solver result never blesses a pair as disjoint:
 
 ```haskell
 import Keiki.Symbolic (checkTransitionDeterminismSym, checkDeadEdgesSym)
 
-  it "orderAggregate is single-valued (exact, z3-backed)" $
+  it "orderAggregate is single-valued (z3-backed)" $
     checkTransitionDeterminismSym orderAggregate `shouldBe` []
 
   it "orderAggregate has no isolated-unsatisfiable edges (z3-backed)" $

@@ -3,8 +3,9 @@ title: "04 — compose"
 description: "epsilonEdge / productEdge, the composite guard / update / output, ε-edge handling, and the multi-event chain expansion via PartialPath / expandPaths / stepPath / finalizePath."
 ---
 
-This chapter reads `compose` itself — the one user-facing combinator the whole tour has been building
-toward. It assembles the weakening (chapter 02) and substitution (chapter 03) helpers into a transducer
+This chapter reads the unchecked `compose` construction primitive and its checked aggregate-pipeline
+entry point, `composeChecked`. The implementation assembles the weakening (chapter 02) and
+substitution (chapter 03) helpers into a transducer
 whose edges thread `t1`'s output through `t2`. Read
 [00 — Start here](/docs/keiki/walkthrough/composition/00-start-here) for the overview.
 
@@ -30,6 +31,26 @@ The two constraints are the algebra's preconditions: `WeakenR rs1` supplies the 
 register reads (chapter 02), and `Disjoint (Names rs1) (Names rs2)` is the *documented precondition* that
 the two register files have disjoint slot-name domains. The result consumes `t1`'s input (`ci1`),
 produces `t2`'s output (`co`), has the product vertex `Composite s1 s2`, and the appended register file.
+
+Validated aggregate pipelines should enter through `composeChecked`, which adds enumerable ordered
+vertex constraints and returns structural alignment warnings rather than constructing a known-drifted
+boundary:
+
+```haskell
+composeChecked
+  :: ( WeakenR rs1, Disjoint (Names rs1) (Names rs2)
+     , Bounded s1, Enum s1, Ord s1, Bounded s2, Enum s2, Ord s2 )
+  => SymTransducer (HsPred rs1 ci1) rs1 s1 ci1 mid
+  -> SymTransducer (HsPred rs2 mid) rs2 s2 mid co
+  -> Either [ComposeAlignmentWarning s1 s2]
+       (SymTransducer (HsPred (Append rs1 rs2) ci1)
+                      (Append rs1 rs2) (Composite s1 s2) ci1 co)
+```
+
+`checkComposeAlignment` reports `UnconsumedWireOutput`, `UnmatchedInCtorExpectation`,
+`FieldArityMismatch`, and `PoisonedNameInComposition`. Its reachability walk is conservative, so an
+empty result is not a proof about opaque guard logic; it is the structural admission check for this
+experimental composition boundary.
 
 The transducer record wires the four fields exactly as you'd expect:
 
@@ -164,11 +185,13 @@ data PartialPath rs1 rs2 ci1 co s2 = forall w.
     !(HsPred (Append rs1 rs2) ci1)         -- accumulated guard
     !(Update (Append rs1 rs2) w ci1)       -- chained update (existential w)
     ![OutTerm (Append rs1 rs2) ci1 co]     -- accumulated outputs in order
+    ![PendingWrite (Append rs1 rs2) ci1]   -- earlier t2 writes, newest first
     !s2                                    -- t2-state after consuming so far
 ```
 
-The existential `w` hides the chained update's growing slot-set index — each step extends the chain with
-another `UCombine`, so `w` grows but stays hidden from the surrounding code.
+The existential `w` hides the chained update's growing slot-set index. The `PendingWrite` environment
+is equally important: it lets later downstream steps see the symbolic values written by earlier
+steps, matching sequential execution before the whole path is collapsed into one edge.
 
 Four functions drive it:
 
@@ -186,6 +209,7 @@ initialPath e1 s2 = case e1 of
       (weakenLPred   @rs1 @rs2 (guard e1))
       (weakenLUpdate @rs1 @rs2 u1)
       []
+      []
       s2
 ```
 </Step>
@@ -199,26 +223,32 @@ rest. The `concatMap` over `edgesOut t2 s2` is the per-step branching that makes
 expandPaths []         path = [path]
 expandPaths (o : rest) path =
   case path of
-    PartialPath g u outs s2 ->
-      concatMap (\e2 -> expandPaths rest (stepPath g u outs o s2 e2))
+    PartialPath g u outs env s2 ->
+      concatMap (\e2 -> expandPaths rest (stepPath g u outs env o s2 e2))
                 (edgesOut t2 s2)
 ```
 </Step>
 <Step>
-**`stepPath g u outs o s2 e2`** extends a path by one `t2`-edge consuming one `mid` symbol `o`. It
-conjoins the substituted guard, chains the substituted update, appends the substituted outputs, and
-advances to `e2`'s target. This is `productEdge`'s body, but accumulating into the path instead of
-building a finished edge:
+**`stepPath g u outs env o s2 e2`** extends a path by one `t2`-edge consuming one `mid` symbol `o`.
+It first substitutes the current mid value, then applies earlier writes from `env` to the new guard,
+update, and outputs. Finally it adds the current writes to a newest-first environment. This is what
+makes a later chain step observe the register snapshot produced by the preceding step:
 
 ```haskell
 -- src/Keiki/Composition.hs
-stepPath g u outs o _s2 e2 = case e2 of
+stepPath g u outs env o _s2 e2 = case e2 of
   Edge { update = u2 } ->
-    PartialPath
-      (PAnd g (substPred   @rs1 @rs2 (guard e2) o))
-      (UCombine u (substUpdate @rs1 @rs2 u2 o))
-      (outs ++ map (\o2 -> substOut @rs1 @rs2 o2 o) (output e2))
-      (target e2)
+    let stepGuard = applyEnvPred env (substPred @rs1 @rs2 (guard e2) o)
+        stepUpdate = applyEnvUpdate env (substUpdate @rs1 @rs2 u2 o)
+        stepOutputs =
+          map (applyEnvOut env . (\o2 -> substOut @rs1 @rs2 o2 o)) (output e2)
+        nextEnv = pendingWrites stepUpdate ++ env
+    in PartialPath
+         (PAnd g stepGuard)
+         (UCombine u stepUpdate)
+         (outs ++ stepOutputs)
+         nextEnv
+         (target e2)
 ```
 </Step>
 <Step>
@@ -227,7 +257,7 @@ for the `s1` axis and the path's end-state for the `s2` axis.
 
 ```haskell
 -- src/Keiki/Composition.hs
-finalizePath e1 (PartialPath g u outs s2End) = Edge
+finalizePath e1 (PartialPath g u outs _env s2End) = Edge
   { guard  = g
   , update = u
   , output = outs
@@ -236,6 +266,11 @@ finalizePath e1 (PartialPath g u outs s2End) = Edge
 ```
 </Step>
 </Steps>
+
+The resulting edge still follows core update semantics: every final update RHS is evaluated against
+the edge-entry register snapshot, and repeated writes in the collapsed chain apply in order so the
+last downstream step wins. The symbolic environment performs the sequential read-after-write
+substitution before that final edge exists; it does not mutate the entry snapshot.
 
 <Callout type="info">
 The single-output case `[o1]` is exactly the depth-1 specialization of this machinery — one `mid` symbol,

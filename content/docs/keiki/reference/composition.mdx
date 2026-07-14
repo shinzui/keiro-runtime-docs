@@ -1,6 +1,6 @@
 ---
 title: "Keiki.Composition"
-description: "Sequential composition, disjoint-input dispatch, and single-step feedback for SymTransducers, plus the index/term weakening and substitution machinery they are built on."
+description: "Checked sequential composition, explicit Either-arm dispatch, and the finite two-copy feedback1 cascade, plus their weakening and substitution machinery."
 ---
 
 `Keiki.Composition` builds bigger transducers out of smaller ones. Every combinator on this page
@@ -13,7 +13,8 @@ type Guarded rs s ci co = SymTransducer (HsPred rs ci) rs s ci co
 See [The SymTransducer](/docs/keiki/explanation/the-symtransducer) for what each parameter means
 (`rs` the register-file slot list, `s` the control vertex, `ci`/`co` the input/output alphabets).
 
-The three user-facing combinators are [`compose`](#compose) (sequential / pipeline),
+For validated pipelines, start with [`composeChecked`](#checked-alignment). The three construction
+combinators are [`compose`](#compose) (sequential / pipeline),
 [`alternative`](#alternative) (disjoint-input dispatch), and [`feedback1`](#feedback1) (single-step
 reaction). Each one **preserves the three keiki derivations** — see
 [Preservation of the derivations](#preservation-of-the-derivations). Everything else exported here is
@@ -101,9 +102,57 @@ through `t1`'s structural reads and rebuild the original `ci1`.
 Structural-alignment precondition: substitution matches `t2`'s `TInpCtorField` reads against `t1`'s
 emitted `WireCtor` by `icName == wcName` string equality and positional field reads. `t1`'s outputs
 must be `OPack`, `t2`'s mid-side guards must be structural, and both must avoid the v1 escape hatches.
-When a constructor name fails to align, the substitution makes the composite edge guard unsatisfiable
-(`PBot`) before evaluation reaches the term.
+When a constructor name fails to align, comparison leaves become unsatisfiable; mismatched reads in
+other positions become inspectable poison terms. Prefer `composeChecked` so drift is reported before
+the unchecked substitution path is constructed.
 </Callout>
+
+### Checked alignment
+
+`checkComposeAlignment` walks conservatively reachable vertex pairs and reports structural boundary
+facts. `composeChecked` returns the same warnings in `Left`, or the composite in `Right` when the list
+is empty. `compose` remains the unchecked primitive for internal and experimental use.
+
+```haskell
+data ComposeAlignmentWarning s1 s2
+  = UnconsumedWireOutput
+      { cawT1Edge :: EdgeRef s1, cawWireName :: String, cawT2Vertex :: s2 }
+  | UnmatchedInCtorExpectation
+      { cawT2Edge :: EdgeRef s2, cawInCtorName :: String, cawT1Vertex :: s1 }
+  | FieldArityMismatch
+      { cawT1EdgeA :: EdgeRef s1, cawT2EdgeA :: EdgeRef s2
+      , cawSharedName :: String, cawReadPosition :: Int, cawAvailableFields :: Int }
+  | PoisonedNameInComposition
+      { cawName :: String, cawSide :: String }
+
+checkComposeAlignment
+  :: (Bounded s1, Enum s1, Ord s1, Bounded s2, Enum s2, Ord s2)
+  => SymTransducer (HsPred rs1 ci1) rs1 s1 ci1 mid
+  -> SymTransducer (HsPred rs2 mid) rs2 s2 mid co
+  -> [ComposeAlignmentWarning s1 s2]
+
+composeChecked
+  :: ( WeakenR rs1, Disjoint (Names rs1) (Names rs2)
+     , Bounded s1, Enum s1, Ord s1, Bounded s2, Enum s2, Ord s2 )
+  => SymTransducer (HsPred rs1 ci1) rs1 s1 ci1 mid
+  -> SymTransducer (HsPred rs2 mid) rs2 s2 mid co
+  -> Either [ComposeAlignmentWarning s1 s2]
+       (SymTransducer (HsPred (Append rs1 rs2) ci1)
+                      (Append rs1 rs2) (Composite s1 s2) ci1 co)
+```
+
+The checker catches emitted constructors with no consumer, downstream expectations with no producer,
+out-of-range positional field reads, and boundary names stamped by lossy profunctor maps. Its
+reachability walk is conservative: every warning is a reviewable structural fact, but `Right` is not
+a proof about arbitrary opaque Boolean guard logic.
+
+### Stateful update semantics
+
+Every final composite edge evaluates update right-hand sides against the edge-entry register snapshot,
+matching `runUpdate`. During multi-event expansion, however, each downstream step must observe the
+writes made by earlier downstream steps. `compose` therefore carries a newest-first symbolic write
+environment and substitutes those writes into later guards, updates, and outputs before collapsing the
+path. Repeated internal writes follow sequential stepping: later chain steps win.
 
 ## `alternative`
 
@@ -129,20 +178,21 @@ alternative
 
 The composite uses the same `Composite s1 s2` product vertex as `compose`; the initial state is
 `Composite (initial t1) (initial t2)` and `isFinal` requires **both** arms to be final. `t1`'s edges
-are lifted to fire only on `Left _` (via `leftInCtor` / `liftLPredAlt`), `t2`'s only on `Right _`.
+are lifted to fire only on `Left _` (via `PLeftArm`, `leftInCtor`, and `liftLPredAlt`); `t2`'s are
+symmetrically conjoined with `PRightArm`.
 
 <Callout type="info">
-Cross-arm single-valuedness is **vacuous**: at any `Composite s1 s2`, every `t1` edge guard requires
-`Left _` and every `t2` edge guard requires `Right _`, so the two families are pairwise mutually
-exclusive by construction. No cross-transducer mutual-exclusion check is needed — within each arm,
-single-valuedness reduces to the underlying sub-aggregate's check.
+Cross-arm single-valuedness is **vacuous**: the concrete evaluator and SBV translation use an arm
+discriminator for `PLeftArm` and `PRightArm`, so the families remain mutually exclusive even when an
+underlying edge has an epsilon/register-only `PTop` guard. Within an arm, single-valuedness reduces
+to the underlying transducer.
 </Callout>
 
 ## `feedback1`
 
-Single-step feedback: one round of an aggregate ↔ stateless-policy reaction. The aggregate `t` consumes
-an external command, the policy `f` observes `t`'s emitted event and emits a follow-up command, and `t`
-consumes that follow-up. The composite emits `t`'s **second** event.
+Single-step **two-copy cascade**: the first copy of an aggregate-shaped `t` consumes an external
+command, policy `f` observes its event and emits a follow-up command, and a second copy of `t`
+consumes that follow-up. The composite emits the second copy's event.
 
 ```haskell
 feedback1
@@ -171,14 +221,23 @@ The inner `compose f t` chains the policy's output (a command for `t`) into a se
 the outer `compose t _` feeds `t`'s first event into that inner pipeline. The composite vertex is
 `Composite s1 (Composite s2 s1)` — "outer t state, then (policy state, inner t state)".
 
+This is not shared-state aggregate feedback. The two occurrences of `t` occupy independent vertex
+dimensions and, when constraints admit them, distinct register segments. The follow-up command
+updates the inner copy, not the copy that handled the external command. There is deliberately no
+`feedback1Checked`: constructor alignment cannot turn two copies into one shared state machine.
+
 <Callout type="warn">
-The fed-back aggregate must be **stateless**. The hard constraint
+The aggregate-shaped `t` must have an **empty register file**. The hard constraint
 `Disjoint (Names rs1) (Names (Append rs2 rs1))` is the outer `compose`'s slot-disjointness check
 applied to `rs1` versus `Append rs2 rs1`. Because `rs1` appears on **both** sides, the constraint
 reduces to "rs1 disjoint from itself" — satisfiable **only** when `rs1 ~ '[]`. For a non-empty `rs1`
 the call site fails with a slot-collision `TypeError`. This follows from the two-stacked-`compose`
 reduction: `t` appears twice, and keiki's register-file model gives each appearance its own copy of
 `rs1`.
+
+For one unnested call, an empty `rs2` policy is a recommendation rather than a type-level requirement.
+Nesting `feedback1` forces both the original `rs1` and `rs2` empty because the first composite becomes
+the duplicated outer argument.
 </Callout>
 
 Multi-round patterns are expressed by **nesting** — there is no `feedbackN`:
@@ -308,9 +367,11 @@ the human-facing contract — keep them unique across summed families.
 The pattern generalizes to any arity by composing one more `right…` per extra family; the arity-3
 helpers are the worked common case.
 
-## Preservation of the derivations
+## Preservation on honest structural boundaries
 
-`compose`, `alternative`, and `feedback1` each **preserve** the three keiki derivations:
+On aligned, structural inputs, `compose`, `alternative`, and `feedback1` preserve the three original
+keiki derivations. Use `composeChecked` to reject known constructor/field drift before relying on
+these properties:
 
 - **Mechanical inversion** — `solveOutput`. The composite `OPack` walks the output wire form back to
   the original `ci`. `compose` achieves this by re-tagging with `t1`'s input constructor; `alternative`
@@ -318,9 +379,12 @@ helpers are the worked common case.
 - **Hidden-input check** — `checkHiddenInputs`. Surfaces transitively-hidden fields (a field of `ci1`
   that `t1` keeps in `mid` but `t2` drops on the wire is flagged at the composite level). Each side's
   per-edge check inherits via the weakeners / lifters, which preserve `TInpCtorField` slot reads.
-- **Symbolic single-valuedness** — `isSingleValuedSym`. The composite is single-valued when its
-  components are: substitution is a syntactic rewrite that preserves unsatisfiability, and
-  `alternative`'s arms are mutually exclusive by construction.
+- **Symbolic single-valuedness** — `isSingleValuedSym`. Substitution preserves the supported
+  structural fragment, and `alternative`'s `PLeftArm`/`PRightArm` guards are mutually exclusive.
+  Opaque guards and solver uncertainty remain conservative limits.
+
+Mapped profunctor boundaries are outside this preservation claim. Concrete alignment checking flags
+their stamped names, while categorical wrapper composition raises `PoisonedCompositionError`.
 
 See [Shape](/docs/keiki/reference/shape) for the derivation surface (EP-22) and
 [What gets derived](/docs/keiki/explanation/what-gets-derived) for why these hold. The preservation

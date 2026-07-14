@@ -46,26 +46,22 @@ unreferenced slot is unconstrained and any value satisfies the predicate.
     Bool: { type: "SymRep = Bool", description: "Identity round-trip; symDefault = False" },
     Integer: { type: "SymRep = Integer", description: "Identity round-trip; symDefault = 0" },
     Int: { type: "SymRep = Integer", description: "Encoded as unbounded Integer (no SInt of arbitrary size)" },
-    Word8: { type: "SymRep = Integer", description: "Encoded as unbounded Integer" },
-    Word16: { type: "SymRep = Integer", description: "Quantities, basis points" },
-    Word32: { type: "SymRep = Integer", description: "Item counts and 32-bit unsigned registers" },
-    Word64: { type: "SymRep = Integer", description: "Money and large counts" },
-    Int32: { type: "SymRep = Integer", description: "32-bit signed (completeness)" },
-    Int64: { type: "SymRep = Integer", description: "64-bit signed (completeness)" },
+    Word8: { type: "SymRep = Word8", description: "Exact 8-bit unsigned modular arithmetic" },
+    Word16: { type: "SymRep = Word16", description: "Exact 16-bit unsigned modular arithmetic" },
+    Word32: { type: "SymRep = Word32", description: "Exact 32-bit unsigned modular arithmetic" },
+    Word64: { type: "SymRep = Word64", description: "Exact 64-bit unsigned modular arithmetic" },
+    Int32: { type: "SymRep = Int32", description: "Exact 32-bit signed modular arithmetic" },
+    Int64: { type: "SymRep = Int64", description: "Exact 64-bit signed modular arithmetic" },
     Text: { type: "SymRep = String", description: "SBV's SString theory" },
-    UTCTime: { type: "SymRep = Integer", description: "Unix epoch seconds; sub-second precision dropped" },
+    UTCTime: { type: "SymRep = Integer", description: "Picoseconds since the Unix epoch; lossless round-trip" },
   }}
 />
 
 <Callout type="warn">
-Every fixed-width integer (`Int`, `Word8`/`Word16`/`Word32`/`Word64`, `Int32`/`Int64`) encodes
-as the **unbounded mathematical `Integer`** — machine-word wraparound is **not modelled**. This
-is a deliberate, sound **over-approximation**: every concrete model the solver finds is a real
-witness once decoded through `fromSym`, but an unsatisfiability that depends on overflow (e.g.
-`x + 1 == 0` at the `Word64` wrap point) is reported satisfiable. keiki's money and count guards
-are equality and ordering checks against in-range literals, where the over-approximation never
-bites. `UTCTime` encodes as epoch seconds (at-second granularity), so the round-trip drops
-sub-second precision.
+`Int` alone uses the unbounded mathematical `Integer`, so guards whose truth depends on platform
+`Int` overflow should use an explicit fixed-width type. `Word8`/`Word16`/`Word32`/`Word64` and
+`Int32`/`Int64` use SBV's matching bit-vector representations, including modular wraparound.
+`UTCTime` is encoded losslessly as picoseconds since the Unix epoch.
 </Callout>
 
 ## The runtime registry: `SymDict` and `discoverSym`
@@ -226,6 +222,8 @@ instance
 {-# NOINLINE symIsBot #-}
 symIsBot :: HsPred rs ci -> Bool
 
+satResultIsProvablyUnsat :: SBV.SatResult -> Bool
+
 {-# NOINLINE symSatExt #-}
 symSatExt ::
     forall rs ci.
@@ -237,10 +235,11 @@ Both are pure-API wrappers around an SBV solver call via `unsafePerformIO`, mark
 This is justified because every SBV query is deterministic for a given predicate and
 side-effect-free outside the solver process.
 
-`symIsBot` translates the predicate and asks z3 whether any model exists: `True` when none does
-(the predicate is bot), `False` otherwise — **including the conservative `Unknown`/timeout
-fallback**, so an undecided query is treated as "possibly non-empty". A warm `isBot` query runs in
-roughly ~10ms.
+`symIsBot` translates the predicate and asks z3 whether any model exists.
+`satResultIsProvablyUnsat` returns `True` only for SBV's definitive `Unsatisfiable` result. It returns
+`False` for `Satisfiable`, `DeltaSat`, `Unknown`, `ProofError`, and every other solver failure or
+uncertainty. `symIsBot` uses that helper, so an undecided query is treated as "possibly non-empty",
+never as proof that two guards are disjoint. A warm query runs in roughly ~10ms.
 
 `symSatExt` is full **witness extraction**: on a satisfiable predicate it returns
 `Just (regs, cmd)` where both are concrete values reconstructed from the SBV model, and
@@ -311,9 +310,10 @@ checkDeadEdgesSym ::
 These are the z3-backed escalations of the pure checks in
 [`Keiki.Core`](/docs/keiki/reference/validate) (they require z3 on `PATH`).
 `checkTransitionDeterminismSym` lifts the transducer with `withSymPred` and runs the
-`BoolAlg`-polymorphic `checkTransitionDeterminism` at the `SymPred` carrier, whose `isBot` is the
-exact z3 decision — so it catches register-value-dependent overlaps the pure path cannot prove
-syntactically. `checkDeadEdgesSym` flags edges whose guard is unsatisfiable **in isolation** (via
+`BoolAlg`-polymorphic `checkTransitionDeterminism` at the `SymPred` carrier, whose `isBot` accepts
+only a definitive z3 unsatisfiable result. It catches register-value-dependent overlaps the pure
+path cannot prove syntactically and conservatively reports possible overlap on solver uncertainty.
+`checkDeadEdgesSym` flags edges whose guard is unsatisfiable **in isolation** (via
 `symIsBot`), which the structural `checkDeadEdges` misses unless the guard is literally `PBot`. It
 does **not** compute the register configurations reachable at each vertex, so it still cannot catch
 a guard satisfiable in isolation but never under the registers reachable there; that needs a full
