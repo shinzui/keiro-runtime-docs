@@ -18,15 +18,24 @@ the pinned commit to `HEAD`, update the affected pages, then bump the pointer be
 ## Last reviewed commit
 
 ```
-4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a  (4312aa8)
-2026-06-14T19:50:51-07:00
-feat(kiroku-store): add eventExistsInStream point lookup
+dac1a0b5ff39f400ad512e826265a0d24553b4a9  (dac1a0b)
+2026-07-05T08:40:32-07:00
+chore(migrations): rename SQL migrations to real commit-date timestamps
 ```
 
-> **Note.** The `0a39598..4312aa8` range is the June hardening refresh. It updated the store write
-> path, stream/category validation, subscriptions, adapter behavior, observability, and operator
-> docs; this documentation repo folded those changes into the Kiroku reference, how-to, walkthrough,
-> integration, FAQ, and source-sync pages.
+> **Note.** The `4312aa8..dac1a0b` range is the July lifecycle refresh. It added the
+> reversible per-stream `truncateBefore` marker plus `setStreamTruncateBefore` /
+> `clearStreamTruncateBefore`, documented here as close-the-book logical compaction.
+> Ordered per-stream reads honor the marker; `$all`, category reads, subscriptions,
+> causation/correlation queries, and existence probes still see the full append-only log.
+> `StreamInfo` now exposes `truncateBefore`, and the migration set adds
+> `2026-06-24-09-42-22-stream-truncate-before.sql` while renaming older SQL migrations to
+> real commit-date timestamps.
+>
+> **Note (prior range).** The `0a39598..4312aa8` range is the June hardening refresh. It updated the
+> store write path, stream/category validation, subscriptions, adapter behavior, observability, and
+> operator docs; this documentation repo folded those changes into the Kiroku reference, how-to,
+> walkthrough, integration, FAQ, and source-sync pages.
 >
 > - **Store/write path:** stream/category constructors, oversize stream-name rejection, typed
 >   append/link failures, empty-batch rejection, backward-read fixes, `eventExistsInStream`,
@@ -50,6 +59,10 @@ feat(kiroku-store): add eventExistsInStream point lookup
 
 ### Previous pointers (for traceability)
 
+- `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a` (`4312aa8`, 2026-06-14, event existence lookup) —
+  baseline before the July lifecycle refresh. The `4312aa8..dac1a0b` range added close-the-book
+  stream compaction via `truncateBefore`, `setStreamTruncateBefore`, and
+  `clearStreamTruncateBefore`, plus the SQL migration timestamp rename.
 - `0a39598a4a9614528316f6c9c63842cc1d55d313` (`0a39598`, 2026-06-01, released versions) — the
   baseline before the June hardening refresh. The `0a39598..4312aa8` range updated the store write
   path, validation, subscription/consumer-group behavior, shibuya adapter behavior, observability,
@@ -72,8 +85,8 @@ feat(kiroku-store): add eventExistsInStream point lookup
 1. List what changed since the pointer:
    ```sh
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 4312aa8..HEAD
-   git -C "$KIROKU" diff --stat 4312aa8..HEAD
+   git -C "$KIROKU" log --oneline dac1a0b..HEAD
+   git -C "$KIROKU" diff --stat dac1a0b..HEAD
    ```
    Kiroku also keeps its own `docs/`, `CHANGELOG.md` files, and `docs/plans|masterplans`
    entries — the prose diff there is the fastest way to understand intent before touching

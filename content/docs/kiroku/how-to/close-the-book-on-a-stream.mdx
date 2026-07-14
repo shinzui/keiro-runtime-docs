@@ -1,0 +1,73 @@
+---
+title: "Close the book on a stream"
+description: "Use a logical truncate-before marker to bound aggregate rehydration while preserving the global event log."
+---
+
+Use close-the-book compaction when a single stream has grown large enough that replaying it from
+version `1` is no longer the cheapest way to rebuild current state. The pattern is: append a
+snapshot event, then tell Kiroku that direct stream reads can start from that snapshot.
+
+<Callout type="warn">
+  This is logical compaction, not deletion. It hides a prefix only from ordered per-stream reads.
+  `$all`, category reads, subscriptions, and causation/correlation queries still see the full
+  immutable history.
+</Callout>
+
+## Goal
+
+After this recipe, `readStreamForward name (StreamVersion 0) ...` returns the snapshot event and
+newer events, while projections and audit consumers can still rebuild from the complete global log.
+
+## Steps
+
+1. **Append a snapshot event.** Store enough state in the snapshot payload for your aggregate to
+   resume from it.
+
+   ```haskell
+   snapshot <- mkSnapshotEvent currentState
+   result <- appendToStream orderStream (ExactVersion currentVersion) [snapshot]
+   let snapshotVersion = result.streamVersion
+   ```
+
+2. **Set the truncate-before marker to the snapshot version.**
+
+   ```haskell
+   marked <- setStreamTruncateBefore orderStream snapshotVersion
+   ```
+
+   `marked` is `Just streamId` when the stream exists and is live. It is `Nothing` when the stream is
+   missing or soft-deleted. The reserved `$all` stream is rejected with `ReservedStreamName`.
+
+3. **Read normally.** Direct ordered reads now hide events before the marker:
+
+   ```haskell
+   events <- readStreamForward orderStream (StreamVersion 0) 256
+   ```
+
+   The first returned event is the snapshot when the marker equals the snapshot's version. Versions
+   are 1-based; `StreamVersion 0` and `StreamVersion 1` keep the whole stream visible.
+
+## Reversing It
+
+The marker is absolute and reversible:
+
+```haskell
+clearStreamTruncateBefore orderStream
+```
+
+That is equivalent to `setStreamTruncateBefore orderStream (StreamVersion 0)`. You can also lower
+the marker to expose more history. `getStream` reports the current marker in `StreamInfo.truncateBefore`.
+
+## Retry Safety
+
+The close-the-book sequence is intentionally retryable. If the process crashes after appending the
+snapshot but before setting the marker, retry the marker update with the same snapshot version. If it
+crashes after the marker update, repeating the same `setStreamTruncateBefore` call is a no-op.
+
+## Related
+
+<Cards>
+  <Card title="The Store effect" href="/docs/kiroku/reference/store-effect#lifecycle" description="Exact lifecycle operation signatures." />
+  <Card title="Core types" href="/docs/kiroku/reference/core-types#result-and-info-types" description="StreamInfo and the truncateBefore field." />
+  <Card title="The append-only log" href="/docs/kiroku/explanation/append-only-log" description="Why close-the-book compaction preserves global history." />
+</Cards>

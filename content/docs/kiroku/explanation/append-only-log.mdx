@@ -34,10 +34,23 @@ erasure request? kiroku separates two very different operations:
   `protect_deletion()` / `protect_truncation()` triggers reject it unless an operator has
   explicitly enabled the setting for that session. You cannot hard-delete by accident.
 
+## Logical compaction: close the book
+
+Long-lived streams can become expensive to rehydrate because direct stream reads replay from the
+beginning. Kiroku's close-the-book operation is a logical truncate-before marker:
+`setStreamTruncateBefore stream version`. After it is set, ordered per-stream reads return only
+events whose per-stream version is greater than or equal to the marker.
+
+No rows are deleted. `$all`, category reads, subscriptions, causation/correlation queries, and
+existence probes keep seeing the full immutable history, so projections and audit remain reproducible. The marker is
+reversible with `clearStreamTruncateBefore`, and `getStream` reports the current value as
+`truncateBefore`.
+
 ## Trade-offs
 
 Append-only storage grows monotonically — you keep history rather than overwriting it. In
 exchange you get an audit trail by construction, time-travel debugging (replay to any past
-point), and the ability to build new read models from old events. When genuine erasure is
-required, hard delete exists, but it is deliberately awkward to reach so that the default — keep
-everything, immutably — is the easy path.
+point), and the ability to build new read models from old events. When you only need bounded
+aggregate rehydration, prefer the logical close-the-book marker. When genuine erasure is required,
+hard delete exists, but it is deliberately awkward to reach so that the default — keep everything,
+immutably — is the easy path.

@@ -28,6 +28,7 @@ data Store :: Effect where
   SoftDeleteStream    :: StreamName -> Store m (Maybe StreamId)
   HardDeleteStream    :: StreamName -> Store m (Maybe StreamId)
   UndeleteStream      :: StreamName -> Store m (Maybe StreamId)
+  SetStreamTruncateBefore :: StreamName -> StreamVersion -> Store m (Maybe StreamId)
   RunTransaction        :: Tx.Transaction a -> Store m a
   RunTransactionNoRetry :: Tx.Transaction a -> Store m a
 type instance DispatchOf Store = Dynamic
@@ -60,12 +61,12 @@ call is rejected before the transaction opens. The result list mirrors input ord
 ## Read
 
 ```haskell
-readStreamForward       :: (Store :> es) => StreamName -> StreamVersion -> Int32 -> Eff es (Vector RecordedEvent)
-readStreamForwardStream :: (Store :> es) => StreamName -> StreamVersion -> Int32 -> Stream (Eff es) RecordedEvent
-readStreamBackward      :: (Store :> es) => StreamName -> StreamVersion -> Int32 -> Eff es (Vector RecordedEvent)
-readAllForward          :: (Store :> es) => GlobalPosition -> Int32 -> Eff es (Vector RecordedEvent)
-readAllBackward         :: (Store :> es) => GlobalPosition -> Int32 -> Eff es (Vector RecordedEvent)
-readCategory            :: (Store :> es) => CategoryName -> GlobalPosition -> Int32 -> Eff es (Vector RecordedEvent)
+readStreamForward       :: (HasCallStack, Store :> es) => StreamName -> StreamVersion -> Int32 -> Eff es (Vector RecordedEvent)
+readStreamForwardStream :: (HasCallStack, Store :> es) => StreamName -> StreamVersion -> Int32 -> Stream (Eff es) RecordedEvent
+readStreamBackward      :: (HasCallStack, Store :> es) => StreamName -> StreamVersion -> Int32 -> Eff es (Vector RecordedEvent)
+readAllForward          :: (HasCallStack, Store :> es) => GlobalPosition -> Int32 -> Eff es (Vector RecordedEvent)
+readAllBackward         :: (HasCallStack, Store :> es) => GlobalPosition -> Int32 -> Eff es (Vector RecordedEvent)
+readCategory            :: (HasCallStack, Store :> es) => CategoryName -> GlobalPosition -> Int32 -> Eff es (Vector RecordedEvent)
 ```
 
 Cursors are **exclusive**: `StreamVersion 0` / `GlobalPosition 0` read from the start (for
@@ -73,19 +74,24 @@ backward reads, `0` means "after everything"), and the `$all` seed row (position
 returned. The final `Int32` is the batch/page size. `readStreamForwardStream` is a Streamly
 constant-memory paging variant (suggested page size 256).
 
+Ordered per-stream reads honor the stream's logical `truncateBefore` marker: events whose
+per-stream version is lower than the marker are hidden from `readStreamForward`,
+`readStreamBackward`, and `readStreamForwardStream`. `$all`, category reads, subscriptions,
+causation/correlation queries, and existence probes ignore the marker and keep seeing full history.
+
 ## Stream lookups
 
 ```haskell
-getStream         :: (Store :> es) => StreamName -> Eff es (Maybe StreamInfo)
-lookupStreamId    :: (Store :> es) => StreamName -> Eff es (Maybe StreamId)
-lookupStreamNames :: (Store :> es) => [StreamId] -> Eff es (Map StreamId StreamName)
-lookupStreamName  :: (Store :> es) => StreamId   -> Eff es (Maybe StreamName)
-eventExistsInStream :: (Store :> es) => StreamName -> EventId -> Eff es Bool
+getStream         :: (HasCallStack, Store :> es) => StreamName -> Eff es (Maybe StreamInfo)
+lookupStreamId    :: (HasCallStack, Store :> es) => StreamName -> Eff es (Maybe StreamId)
+lookupStreamNames :: (HasCallStack, Store :> es) => [StreamId] -> Eff es (Map StreamId StreamName)
+lookupStreamName  :: (HasCallStack, Store :> es) => StreamId   -> Eff es (Maybe StreamName)
+eventExistsInStream :: (HasCallStack, Store :> es) => StreamName -> EventId -> Eff es Bool
 ```
 
-`getStream` returns `StreamInfo` (id, name, version, timestamps) for live and soft-deleted streams,
-or `Nothing` if the stream never existed or was hard-deleted. `lookupStreamNames` is the **batch**
-inverse used by fan-in reads (see ADR 0001).
+`getStream` returns `StreamInfo` (id, name, version, timestamps, and `truncateBefore`) for live and
+soft-deleted streams, or `Nothing` if the stream never existed or was hard-deleted.
+`lookupStreamNames` is the **batch** inverse used by fan-in reads (see ADR 0001).
 `eventExistsInStream` is the point lookup for idempotency checks: it returns `True` only when the
 event id is linked into the supplied live stream, and `False` for another stream, a missing event, a
 missing stream, or a soft-deleted stream.
@@ -103,15 +109,22 @@ advance `$all`.
 ## Lifecycle
 
 ```haskell
-softDeleteStream :: (Store :> es) => StreamName -> Eff es (Maybe StreamId)
-hardDeleteStream :: (Store :> es) => StreamName -> Eff es (Maybe StreamId)
-undeleteStream   :: (Store :> es) => StreamName -> Eff es (Maybe StreamId)
+softDeleteStream :: (HasCallStack, Store :> es) => StreamName -> Eff es (Maybe StreamId)
+hardDeleteStream :: (HasCallStack, Store :> es) => StreamName -> Eff es (Maybe StreamId)
+undeleteStream   :: (HasCallStack, Store :> es) => StreamName -> Eff es (Maybe StreamId)
+setStreamTruncateBefore   :: (HasCallStack, Store :> es) => StreamName -> StreamVersion -> Eff es (Maybe StreamId)
+clearStreamTruncateBefore :: (HasCallStack, Store :> es) => StreamName -> Eff es (Maybe StreamId)
 ```
 
 All return `Nothing` when the stream is not found (a no-op) and reject `$all`. `softDeleteStream`
 keeps events in `$all`; `hardDeleteStream` is GUC-gated (`kiroku.enable_hard_deletes`),
-irreversible, and intended for GDPR erasure; `undeleteStream` reverses a soft delete. See
-[the append-only log](/docs/kiroku/explanation/append-only-log).
+irreversible, and intended for GDPR erasure; `undeleteStream` reverses a soft delete.
+
+`setStreamTruncateBefore name version` sets a reversible logical marker for close-the-book
+compaction. Future ordered per-stream reads hide events below `version`, while `$all`, category
+reads, subscriptions, and projections still see full history. `clearStreamTruncateBefore` sets the
+marker back to `StreamVersion 0`. See [the append-only log](/docs/kiroku/explanation/append-only-log)
+and [Close the book on a stream](/docs/kiroku/how-to/close-the-book-on-a-stream).
 
 ## Causation / correlation
 
