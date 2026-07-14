@@ -27,11 +27,18 @@ and navigation integrity.
 
 ## Progress
 
-
+- [x] (2026-07-14T19:29:05Z) Milestone 1: build the announcement-facing discovery and
+  compatibility path.
+- [ ] Milestone 2: reconcile integrations and example-status language.
+- [ ] Milestone 3: update repository metadata and source ledgers.
+- [ ] Milestone 4: establish and run the whole-site release gate.
 
 ## Surprises & Discoveries
 
-(None yet.)
+- `shibuya-message-db-adapter 0.1.0.0` remains bounded to `shibuya-core ^>=0.5.0.0`; it is not a
+  compatible member of the current 0.8 adapter set. Its behavior documentation remains source-backed
+  at the unchanged reviewed commit, but announcement pages must label the release-line mismatch
+  rather than imply it can be selected alongside Shibuya 0.8.
 
 
 ## Decision Log
@@ -59,7 +66,12 @@ and navigation integrity.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+- Milestone 1 rebuilt the landing and onboarding path around five runtime libraries plus pg-migrate,
+  with direct choose → compatibility → installation routes. The compatibility page records exact
+  package releases and source SHAs, current adapter pairings, breaking source changes, database
+  cutover order, pre-1.0 stability limits, the Message DB/Shibuya mismatch, and the excluded example
+  status. Typecheck, formatting, production build, whitespace checks, and the 506-file internal-link
+  scan pass.
 
 
 ## Context and Orientation

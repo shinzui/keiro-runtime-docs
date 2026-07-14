@@ -87,7 +87,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 | EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Complete |
 | EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Complete |
 | EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | Complete |
-| EP-7 | Prepare announcement navigation compatibility and whole-site release gate | `docs/plans/46-prepare-announcement-navigation-compatibility-and-whole-site-release-gate.md` | EP-1, EP-2, EP-3, EP-4, EP-5, EP-6 | None | Not Started |
+| EP-7 | Prepare announcement navigation compatibility and whole-site release gate | `docs/plans/46-prepare-announcement-navigation-compatibility-and-whole-site-release-gate.md` | EP-1, EP-2, EP-3, EP-4, EP-5, EP-6 | None | In Progress |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -204,7 +204,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T19:11:40Z) EP-6 Milestone 2: refresh Kiroku 0.3 user and operator behavior.
 - [x] (2026-07-14T19:19:04Z) EP-6 Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
 - [x] (2026-07-14T19:23:08Z) EP-6 Milestone 4: reconcile cross-package operations.
-- [ ] EP-7 Milestone 1: build the announcement discovery and compatibility path.
+- [x] (2026-07-14T19:29:05Z) EP-7 Milestone 1: build the announcement discovery and compatibility
+  path.
 - [ ] EP-7 Milestone 2: reconcile integrations and example-status language.
 - [ ] EP-7 Milestone 3: update repository metadata and source ledgers.
 - [ ] EP-7 Milestone 4: establish and run the whole-site release gate.
@@ -272,6 +273,10 @@ interactions between child plans. Provide concise evidence.
   stop gate. Release 0.12 reverses those stages, so an empty source terminates on the next returned
   poll chunk and Shibuya can drain. Kafka's only committed drift is 0.8.0.1 release metadata;
   Shibuya core and the Message DB adapter remain aligned at their existing pins.
+- EP-7 found that “no committed drift” does not imply current cross-package compatibility:
+  `shibuya-message-db-adapter 0.1.0.0` still bounds `shibuya-core` to the 0.5 line and cannot be
+  selected with the reviewed 0.8 core. The announcement matrix now distinguishes source-reviewed
+  behavior from a compatible release pairing.
 
 
 ## Decision Log
@@ -410,3 +415,7 @@ Compare the result against the original vision.
   cross-package schema table now correctly places Keiro framework objects in `keiro`. Final source
   boundaries and intentionally excluded dirty files are recorded in EP-6; the production build and
   505-file internal-link scan pass.
+- EP-7 Milestone 1 rebuilt public discovery around the five runtime libraries and pg-migrate, added
+  an exact release/source matrix and upgrade order, and made adapter incompatibilities and the stale
+  example boundary visible before installation. The production build and 506-file internal-link
+  scan pass.

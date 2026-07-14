@@ -1,67 +1,86 @@
 ---
 title: The keiro family
-description: The five libraries of the keiro runtime and how they relate.
+description: The five runtime libraries, companion packages, and pg-migrate schema toolkit.
 ---
 
-"keiro runtime" is an umbrella name for a family of five Haskell libraries — there
-is no single `keiro-runtime` package. Two of them are "the foundation" in different
-senses: kiroku is the foundation for _persistence_, and keiki is the foundation for
-_pure semantics_.
+“keiro runtime” is an umbrella name, not a package. The family has five runtime
+libraries with distinct ownership boundaries, plus pg-migrate for database
+schema deployment.
 
-## The five libraries
+## The five runtime libraries
 
-- **kiroku** (記録, "record") — an append-only PostgreSQL event store. The
-  persistence foundation everything else writes through.
-- **keiro** (経路, "route/path") — an event-sourcing framework and workflow engine.
-  The top of the stack; depends on the other three.
-- **keiki** (継起, "successive occurrence") — a pure, dependency-free mathematical
-  core (a symbolic-register transducer). The pure-semantics foundation.
-- **shibuya** (渋谷, "the Tokyo district") — a supervised, Broadway-style
-  queue-processing framework with backpressure, batching, and rate limiting.
-- **pgmq** — a PostgreSQL-native message queue (the queue substrate), used from
-  Haskell through `pgmq-hs` and consumed by shibuya via the
-  [shibuya ⇄ pgmq adapter](/docs/integrations/shibuya-pgmq-adapter).
+- **keiro** (経路, “route/path”) is the highest-level framework. It owns typed
+  command execution, read models, integration messaging, process managers,
+  timers, and durable workflows.
+- **kiroku** (記録, “record”) is the PostgreSQL event store. It owns streams,
+  optimistic concurrency, global positions, transactions, and durable
+  subscriptions.
+- **keiki** (継起, “successive occurrence”) is the pure core. It owns
+  symbolic-register transducers, replay validation, composition, shape
+  identity, and JSON codec derivation.
+- **shibuya** (渋谷) is the supervised worker runtime. It owns bounded inboxes,
+  handler and acknowledgement contracts, ordering/concurrency policy, batching,
+  shutdown, metrics, and tracing.
+- **pgmq-hs** is the Haskell client family for the PostgreSQL-native PGMQ queue.
+  It owns queue operations, topology reconciliation, topics, FIFO reads, and an
+  optional extension-free schema component.
 
-## How they depend on each other
+## Dependency direction
 
 ```mermaid
 flowchart TD
-    keiro[keiro — framework + workflow engine]
-    kiroku[(kiroku — event store)]
-    keiki[keiki — pure core]
-    shibuya[shibuya — queue processing]
-    pgmq[(pgmq — queue substrate)]
-    keiro --> kiroku
-    keiro --> keiki
-    keiro --> shibuya
-    shibuya -. via shibuya-pgmq-adapter .-> pgmq
+  App["Application"]
+  Keiro["keiro"]
+  Kiroku[("kiroku")]
+  Keiki["keiki"]
+  Shibuya["shibuya"]
+  Pgmq[("pgmq-hs / PGMQ")]
+  Migrate["pg-migrate"]
+
+  App --> Keiro
+  Keiro --> Kiroku
+  Keiro --> Keiki
+  Keiro --> Shibuya
+  Shibuya -. shibuya-pgmq-adapter .-> Pgmq
+  Migrate -. component plan .-> Kiroku
+  Migrate -. component plan .-> Keiro
+  Migrate -. component plan .-> Pgmq
 ```
 
-keiro sits on top and depends on kiroku for durable storage, keiki for pure
-semantics, and shibuya for queue processing. shibuya, in turn, reads a pgmq queue
-through the shibuya-pgmq-adapter when a project needs a general-purpose work queue.
+Keiro applications commonly use Kiroku and keiki, and use Shibuya where a
+worker surface needs supervision. PGMQ is optional: choose it for PostgreSQL
+work queues or use another Shibuya adapter. pg-migrate is a deployment tool,
+not a runtime dependency of every process; it composes the schemas selected by
+the application before pools and workers start.
 
-## A note on `keiro-pgmq`
+## Companion packages
 
-The keiro repository also ships a small companion package, **`keiro-pgmq`** (module
-`Keiro.PGMQ`), that wraps the pgmq + shibuya stack above into a typed **background-job
-queue** — declare a `Job` and write a `p -> Eff es JobOutcome` handler instead of wiring
-the adapter by hand. It is not a sixth family member; it is an integration layer that lives
-with keiro. See [Background jobs with
+`keiro-pgmq` turns PGMQ plus Shibuya into typed Keiro background jobs. It owns
+the `Job`, producer, codec, DLQ, and job-runner ergonomics while leaving PGMQ
+leases and Shibuya supervision beneath it. See [Background jobs with
 PGMQ](/docs/keiro/explanation/background-jobs-with-pgmq).
 
-## A note on `keiro-dsl`
+`keiro-dsl` is the `.keiro` authoring and evolution toolchain. It checks a
+service specification, plans/scaffolds deterministic modules plus typed holes,
+runs conformance harnesses, and classifies spec diffs. It is not required by a
+running service. See [The keiro-dsl service
+toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain).
 
-The keiro repository also ships **`keiro-dsl`**, an *authoring* package and CLI (not a runtime
-dependency). A `.keiro` file is a typed **specification** of a keiro service; `keiro-dsl` checks it,
-scaffolds the symbol-free deterministic layer (domain ADTs, codecs, stream/projection wiring) plus
-typed holes for the behaviour-bearing code, and gates schema evolution. The code it emits depends only
-on keiro/keiki. See [The keiro-dsl service toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain).
+The Shibuya adapter packages bridge source-specific progress and finalization
+into one `Message`/`AckDecision` handler contract. Compare their compatibility
+and durability boundaries in the [adapter
+guide](/docs/integrations/shibuya-adapters).
 
-## See the whole family working together
-
-Once the per-library pages make sense in isolation, see them all at once in a real application:
+## Where to go next
 
 <Cards>
-  <Card title="keiro-runtime-jitsurei" href="/docs/example-app" description="A standalone, runnable reference app — two emergency-response microservices — that exercises nearly the whole family (keiki + keiro + kiroku + shibuya + pgmq + Kafka + OpenTelemetry) end-to-end across a service boundary, under one trace." />
+  <Card title="Choose a starting package" href="/docs/getting-started/choosing-a-library" description="Select the highest useful abstraction for your problem." />
+  <Card title="Check release compatibility" href="/docs/getting-started/compatibility-and-upgrades" description="Current reviewed lines, adapter constraints, and upgrade order." />
+  <Card title="Compose runtime schemas" href="/docs/pg-migrate/cookbook/compose-runtime-components" description="Kiroku, Keiro, PGMQ, and application components in one plan." />
 </Cards>
+
+<Callout type="warn">
+  `keiro-runtime-jitsurei` has not yet been modernized for this release set.
+  Its example-app pages remain an older architecture tour, not current API or
+  compatibility evidence.
+</Callout>

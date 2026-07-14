@@ -1,34 +1,46 @@
 ---
 title: Choosing a library
-description: Which library of the keiro runtime solves which problem.
+description: Pick the smallest useful keiro runtime package or integration layer for your problem.
 ---
 
-You usually do not pick just one — the libraries compose — but each owns a distinct
-problem. Use this page to find the right starting point.
+Choose the highest layer that owns your problem. Its documentation will point
+downward when you need lower-level control; you do not need to begin at every
+foundation package.
 
-## Match the problem to the library
+## Match the problem to the surface
 
-- **"I need to durably store an ordered log of events."** → **kiroku** (記録, an
-  append-only PostgreSQL event store). Start at [kiroku](/docs/kiroku).
-- **"I need to handle commands and run workflows over those events."** → **keiro**
-  (経路, the event-sourcing framework). Start at [keiro](/docs/keiro).
-- **"I need pure, law-abiding stream/transducer composition with no IO."** →
-  **keiki** (継起, the pure core). Start at [keiki](/docs/keiki).
-- **"I need to reliably consume a message queue with backpressure and batching."**
-  → **shibuya** (渋谷, queue processing). Start at [shibuya](/docs/shibuya), then compare
-  [shibuya adapters](/docs/integrations/shibuya-adapters) when choosing a backend.
-- **"I need a durable work queue to enqueue and lease jobs."** → **pgmq** (a
-  PostgreSQL message queue via `pgmq-hs`), consumed by shibuya through the
-  [shibuya ⇄ pgmq adapter](/docs/integrations/shibuya-pgmq-adapter). Start at
-  [pgmq](/docs/pgmq).
-- **"I want a typed background-job queue for my keiro app — declare a job, write a
-  handler."** → **keiro-pgmq** (`Keiro.PGMQ`), keiro's typed `Job` layer over pgmq +
-  shibuya. Start at [Background jobs with
-  PGMQ](/docs/keiro/explanation/background-jobs-with-pgmq).
-- **"I want to specify a keiro service as a typed spec and scaffold its boilerplate."**
-  → **keiro-dsl**, the `.keiro` authoring toolchain (check / scaffold / diff). Start at
-  [The keiro-dsl service toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain).
+| Need | Start with | Why |
+| --- | --- | --- |
+| A full event-sourced service with commands, projections, orchestration, or workflows | [keiro](/docs/keiro) | It is the application framework and already integrates the pure and persistence layers. |
+| An append-only PostgreSQL event store without the Keiro framework | [Kiroku](/docs/kiroku) | It exposes streams, expected versions, transactions, subscriptions, and operations directly. |
+| Pure state-machine/transducer modeling, validation, or codec derivation without IO | [keiki](/docs/keiki) | It has no persistence or worker responsibility. |
+| Supervised consumption with backpressure, batching, explicit acknowledgements, and metrics | [Shibuya](/docs/shibuya) | Choose a [source adapter](/docs/integrations/shibuya-adapters) separately. |
+| A PostgreSQL-native queue, topics, FIFO groups, or queue topology | [pgmq-hs](/docs/pgmq) | It owns queue mechanics; add the Shibuya adapter when you want supervised handlers. |
+| Typed background jobs inside a Keiro application | [keiro-pgmq](/docs/integrations/keiro-with-pgmq) | It wraps PGMQ and Shibuya behind `Job` and `JobOutcome`. |
+| Manifest-backed PostgreSQL migrations, component composition, deployment, or predecessor cutover | [pg-migrate](/docs/pg-migrate) | Libraries export components; the application owns the final plan and migration executable. |
+| A typed `.keiro` service specification, scaffolding, conformance harness, or evolution diff | [keiro-dsl](/docs/keiro/explanation/the-keiro-dsl-toolchain) | It is the authoring toolchain, not a runtime service dependency. |
+
+## Common combinations
+
+- **Keiro service:** `keiro` + Kiroku, with keiki semantics through Keiro's
+  validated event-stream boundary.
+- **Keiro service with jobs:** add `keiro-pgmq`, the pgmq 0.4 family, and
+  `shibuya-pgmq-adapter 0.12`.
+- **Standalone event consumer:** Kiroku + `shibuya-kiroku-adapter`, or Shibuya
+  with the adapter for an existing Kafka/PGMQ/Message DB source.
+- **PostgreSQL deployment:** add the migration components for every selected
+  library to one application-owned pg-migrate plan.
 
 <Callout type="info">
-  New to event sourcing? Begin with kiroku — it is the foundation the rest of the family builds on.
+  If you are building a complete event-sourced application, begin with Keiro.
+  Begin with Kiroku only when you specifically want the store without Keiro's
+  domain/runtime abstractions, and with keiki only for pure modeling.
 </Callout>
+
+## Before installing
+
+<Cards>
+  <Card title="Compatibility and upgrades" href="/docs/getting-started/compatibility-and-upgrades" description="Confirm package lines and adapter pairings before selecting constraints." />
+  <Card title="Installation" href="/docs/getting-started/installation" description="Add packages, run the complete schema plan, then start runtime resources." />
+  <Card title="Integrations" href="/docs/integrations" description="See which layer owns schema, progress, retry, dead letters, and shutdown." />
+</Cards>

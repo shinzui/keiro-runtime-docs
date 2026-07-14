@@ -1,0 +1,102 @@
+---
+title: Compatibility and upgrades
+description: Reviewed July 2026 release lines, adapter pairings, breaking changes, database cutovers, and pending modernization work.
+---
+
+This matrix records the exact committed releases reviewed by this documentation
+pass. It is an evidence boundary, not a promise that arbitrary newer versions
+are compatible. Pin package versions, read upstream release notes, and rerun your
+own build, migration, and integration tests before upgrading.
+
+## Reviewed release lines
+
+| Surface | Reviewed packages | Reviewed source |
+| --- | --- | --- |
+| keiki | `keiki 0.2.0.0`, `keiki-codec-json 0.2.0.0` | `ce5748b5f2311de1355e648db564da8b404e42f2` |
+| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, and `keiro-migrations` at `0.3.0.0` | `c68dcc7b9cea8d9c180d1c04254a72aa43804cac` |
+| Kiroku | `kiroku-store 0.3.0.1`, migrations `0.3.0.0`, CLI `0.2.0.0`, OTel `0.2.0.1`, metrics `0.1.0.1` | `58aff77b3a6d6093e3613753a0543aab62db9fac` |
+| Shibuya | `shibuya-core 0.8.0.1`, `shibuya-metrics 0.8.0.1` | `172df245f40a454af46dd7f4cde855eaa4414c5a` |
+| pgmq-hs | `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and `pgmq-migration` at `0.4.0.1` | `f4a101843ea6f5c055277fd84859ece02865eff4` |
+| pg-migrate | All six public packages at `1.1.0.0` | `f39d64e354818999667d345a1452f33eb4857fc1` |
+
+Keiro's substantive 0.2 surface was followed by a 0.3.0.0 package release whose
+later keiro-dsl change is metadata-only. The exported `Keiro.version` constant
+still reports a legacy value and must not be used as the package release source.
+
+## Adapter compatibility
+
+| Adapter | Reviewed release | Required line | Status in these docs |
+| --- | --- | --- | --- |
+| Shibuya ⇄ Kiroku | `shibuya-kiroku-adapter 0.4.0.0` | Kiroku store 0.3, Shibuya core 0.8 | Current reviewed pairing. |
+| Shibuya ⇄ PGMQ | `shibuya-pgmq-adapter 0.12.0.0` | pgmq-hs 0.4, Shibuya core 0.8.0.1 | Current reviewed pairing; uses the native pg-migrate schema component. |
+| Shibuya ⇄ Kafka | `shibuya-kafka-adapter 0.8.0.1` | Shibuya core 0.8.0.1 | Current reviewed pairing; 0.8.0.1 is a metadata/bounds patch. |
+| Shibuya ⇄ Message DB | `shibuya-message-db-adapter 0.1.0.0` | Shibuya core `^>=0.5.0.0` | Behavior is source-reviewed, but this release is **not compatible with the 0.8 core line**. Wait for or produce an upstream compatibility release before combining them. |
+
+The adapter comparison explains source-specific retry, progress, and
+finalization semantics. The matrix above decides whether the package bounds can
+be combined in the first place.
+
+## Breaking source upgrades
+
+Treat every pre-1.0 minor line as potentially breaking.
+
+- **keiki 0.2:** the `Keiki.Decider` facade is removed; builders require
+  explicit output intent; replay failures are structured; pinned shape names
+  intentionally cause one cache miss and full replay for non-empty 0.1
+  snapshots. See [persist a register
+  snapshot](/docs/keiki/how-to/persist-a-register-snapshot#upgrading-from-keiki-01).
+- **Keiro 0.3 line:** command, replay, worker, read-model, and workflow outcomes
+  are typed more precisely; framework tables live in `keiro`; public event
+  streams require replay validation. For `.keiro` specs, follow [migrate a spec
+  to 0.2](/docs/keiro/how-to/migrate-a-keiro-spec-to-0-2).
+- **Kiroku 0.3:** update cursor, validation, store-error, subscription-source,
+  CLI, and adapter handling using the [0.3 upgrade
+  matrix](/docs/kiroku/how-to/upgrade-to-0-3).
+- **Shibuya 0.8:** handlers receive `Message`, application runners take
+  `AppConfig`, batching is first-class, and adapter finalizers must be
+  idempotent. Start with the [Shibuya landing page](/docs/shibuya).
+- **pgmq-hs 0.4:** `pgmq-migration` exports a component instead of its removed
+  standalone runner. Compose it through pg-migrate and use the explicit
+  predecessor-history path for existing databases.
+
+## Database upgrade order
+
+For an existing PostgreSQL deployment, do not deploy the new runtime first and
+hope startup repairs history:
+
+1. Build the complete application migration plan and inspect `plan`, `status`,
+   and `verify` output against a backup or rehearsal database.
+2. Quiesce old migration writers and back up the production database.
+3. If upgrading Keiro 0.1, follow the [framework-table relocation
+   procedure](/docs/keiro/how-to/upgrade-a-0-1-database).
+4. Import verified Kiroku/Keiro Codd history and PGMQ
+   `public.schema_migrations` history where those predecessor ledgers exist.
+   Imports adopt evidence without replaying schema DDL.
+5. Run the complete native Kiroku → Keiro → PGMQ → application plan, then run
+   strict verification.
+6. Deploy runtime processes, reconcile additive queue topology, and monitor the
+   typed failure and durable-worker outcomes described by each package.
+
+Fresh databases skip the predecessor imports. Use the [runtime composition
+recipe](/docs/pg-migrate/cookbook/compose-runtime-components) and [deployment
+runbook](/docs/pg-migrate/how-to/deploy-a-migration-plan) for the executable and
+operator gates.
+
+## Stability and pending work
+
+- Keiki, Keiro, Kiroku, Shibuya, PGMQ client packages, and adapters are pre-1.0.
+  This documentation does not promise API stability beyond each package's
+  release notes and bounds.
+- pg-migrate is reviewed at 1.1.0.0, but its compatibility page remains the
+  authority for compiler, PostgreSQL, Hasql, and ledger-version support.
+- The Message DB adapter is not on the Shibuya 0.8 compatibility line, as noted
+  above.
+- `keiro-runtime-jitsurei` and `content/docs/example-app/` remain pending
+  modernization. They are an older architecture tour, not proof of the current
+  package matrix.
+
+<Cards>
+  <Card title="Install the selected stack" href="/docs/getting-started/installation" description="Package selection, migration components, and runtime startup order." />
+  <Card title="pg-migrate compatibility" href="/docs/pg-migrate/reference/compatibility" description="Compiler, PostgreSQL, Hasql, manifest, ledger, and predecessor-adapter support." />
+  <Card title="Compare Shibuya adapters" href="/docs/integrations/shibuya-adapters" description="Backend semantics after package compatibility is established." />
+</Cards>
