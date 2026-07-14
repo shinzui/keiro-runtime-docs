@@ -4,10 +4,9 @@ description: Why keiro-pgmq exists — a typed Job abstraction over PGMQ and shi
 ---
 
 <Callout type="info">
-  **Seen in a real service.** The `hospital-capacity` proving-ground queue described here is part of
-  `keiro-runtime-jitsurei` — see
-  [the pgmq reservation work queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
-  for it wired into a running two-service application.
+  The executable evidence for this page lives with the libraries: `keiro-pgmq-test` exercises queue
+  provisioning, FIFO delivery, producers, retries, dead letters, and both run cadences; the
+  keiro-dsl queue conformance suites compile generated policy against the same public types.
 </Callout>
 
 `keiro-pgmq` is a separate package in the keiro repository that gives an application a **typed
@@ -28,10 +27,8 @@ turns a queue into a supervised worker loop, and the [shibuya ⇄ pgmq
 adapter](/docs/integrations/shibuya-pgmq-adapter) bridges the two and translates a handler's
 `AckOk`/`AckRetry`/`AckDeadLetter` into PGMQ operations.
 
-That stack works, but every application that wanted a background queue wrote the *same* skeleton by
-hand. Two real keiro apps proved it independently — `rei` (four queues: git sync, reminders,
-reflections, agent scheduling) and the `hospital-capacity` service (one reservation-work queue with a
-dead-letter queue) — and both arrived at byte-for-byte the same boilerplate:
+That stack works, but applications that want a background queue otherwise write the *same* skeleton
+by hand:
 
 - derive a PGMQ-legal queue name from a logical one (dots and length are footguns);
 - construct a `PgmqAdapterConfig`;
@@ -110,7 +107,7 @@ consumers:
 | Shape | Supervise N processors forever | Drain up to `n` messages, then stop |
 | Returns | An `AppHandle` (you decide when to block / shut down) | `()` after the drain |
 | Driven by | A long-lived worker process | An external scheduler (`pg_cron`, a [Router](/docs/keiro/reference/router) fan-out) |
-| Proving ground | `rei` — four queues under one supervisor | `hospital-capacity` — one queue, drained per tick |
+| Typical deployment | several queues under one supervisor | one queue, drained per scheduler tick |
 
 `runJobWorkers` is for a process you start once and leave running; it builds every processor with
 `jobProcessor` and supervises them with shibuya's `runApp`, and you can `stopAppGracefully` the
@@ -118,6 +115,21 @@ handle on a shutdown signal. `runJobOnce` is for a "drain a little, then exit" c
 from the adapter's stream, processes each, and returns — ideal when something *else* (a cron tick, a
 fan-out) decides when work should be picked up. See [Choose a job run
 cadence](/docs/keiro/how-to/choose-a-job-run-cadence).
+
+## What a `.keiro` workqueue owns
+
+When a service is authored with keiro-dsl, its `workqueue` node can capture the queue's stable
+logical/physical/DLQ/table names, payload wire fields, retry/disposition table, delivery ordering,
+FIFO group derivation, and initial storage provision. The scaffold lowers those decisions into
+generated `Queue` and `QueuePolicy` modules; handler behavior and deployment tuning such as batch
+size, visibility timeout, polling, and concurrency remain hand-owned.
+
+The ordering vocabulary is `unordered`, `fifo-throughput`, and `fifo-roundrobin`. FIFO is
+per-group, remains at-least-once, and requires one resolvable group key. Provision is `standard`,
+`unlogged`, or `partitioned(interval="…", retention="…")`; changing an already-created queue still
+requires an operational migration. See [Configure FIFO queue ordering and
+provisioning](/docs/keiro/how-to/configure-fifo-queue-ordering-and-provisioning) for the complete
+checked vertical and conformance commands.
 
 ## Payload versioning is opt-in
 
@@ -156,6 +168,7 @@ first.
 <Cards>
   <Card title="Background jobs reference" href="/docs/keiro/reference/pgmq-jobs" description="The Job, JobOutcome, RetryPolicy, the producers, the run shapes, JobCodec, and the QueueRef / JobRuntime plumbing." />
   <Card title="Your first background job" href="/docs/keiro/tutorials/your-first-background-job" description="Declare a Job, enqueue a message, drain it, and watch Done / Retry / Dead." />
+  <Card title="Configure FIFO ordering and provisioning" href="/docs/keiro/how-to/configure-fifo-queue-ordering-and-provisioning" description="Capture queue identity, ordering groups, storage provision, generated policy, and cold-start proof in a .keiro workqueue." />
   <Card title="The outbox pattern" href="/docs/keiro/explanation/the-outbox-pattern" description="When the thing you are sending is a domain event, not a transient job." />
   <Card title="shibuya ⇄ pgmq adapter" href="/docs/integrations/shibuya-pgmq-adapter" description="The lower-level bridge keiro-pgmq is built on." />
 </Cards>

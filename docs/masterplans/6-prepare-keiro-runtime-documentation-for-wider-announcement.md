@@ -84,7 +84,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 | EP-1 | Refresh keiki 0.2 correctness replay and persistence documentation | `docs/plans/40-refresh-keiki-0-2-correctness-replay-and-persistence-documentation.md` | None | None | Complete |
 | EP-2 | Refresh keiro command replay snapshot and read-model reliability documentation | `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md` | None | EP-1 | Complete |
 | EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Complete |
-| EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | In Progress |
+| EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Complete |
 | EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Not Started |
 | EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | Not Started |
 | EP-7 | Prepare announcement navigation compatibility and whole-site release gate | `docs/plans/46-prepare-announcement-navigation-compatibility-and-whole-site-release-gate.md` | EP-1, EP-2, EP-3, EP-4, EP-5, EP-6 | None | Not Started |
@@ -194,7 +194,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T17:54:30Z) EP-4 Milestone 1: create the keiro-dsl 0.2 learning and upgrade path.
 - [x] (2026-07-14T18:02:54Z) EP-4 Milestone 2: make the notation reference complete and navigable.
 - [x] (2026-07-14T18:12:28Z) EP-4 Milestone 3: add task-oriented authoring and evolution guides.
-- [ ] EP-4 Milestone 4: reconcile keiro-dsl across the keiro documentation.
+- [x] (2026-07-14T18:19:23Z) EP-4 Milestone 4: reconcile keiro-dsl across the keiro documentation.
 - [ ] EP-5 Milestone 1: create the pg-migrate section and fresh-database spine.
 - [ ] EP-5 Milestone 2: document authoring, composition, and CLI integration.
 - [ ] EP-5 Milestone 3: document production execution and recovery.
@@ -326,6 +326,10 @@ Compare the result against the original vision.
   workflow store-error, and correlation contracts; EP-6 inherits the framework-schema correction;
   EP-7 inherits at-least-once announcement language, explicit-skip caveats, the two dead-letter
   domains, and the durable-worker outcome checklist.
+- EP-4 found that the released Keiro Cabal package is `0.3.0.0` while the exported
+  `Keiro.version` constant still returns legacy `"0.1.0.0"`. The Keiro landing and selection docs
+  now use the package release and label the constant honestly; EP-7 must preserve that distinction
+  in announcement compatibility language unless upstream changes the constant.
 - EP-4 Milestone 1 rebuilt the keiro-dsl learning spine around the current
   aggregate/read-model/router cold-start fixture, documented the six authoring and upgrade gates,
   and added an explicit 0.1-to-0.2 migration checklist. The upstream check and newsurface
@@ -339,3 +343,12 @@ Compare the result against the original vision.
   placement, and diff procedures now teach current diagnostics, transactional writes, ownership
   boundaries, scaffold records, and all three compatibility tiers. Nine upstream runtime-family
   conformance suites, the docs build, and the 459-file link scan passed.
+- EP-4 Milestone 4 reconciled the Keiro landing/FAQ, read-model/router/snapshot/workflow/PGMQ
+  explanations, and their task/reference/cookbook links. Stale release and unshipped-workflow claims
+  are corrected; Keiro pages no longer use the excluded example application as current evidence;
+  and runtime concepts link to the source-backed 0.2 authoring guides. The stale-form scans,
+  formatting, MDX/TypeScript checks, production build, and 459-file link scan passed.
+- EP-4 is complete against committed Keiro `c68dcc7`. EP-7 inherits the complete twelve-node
+  notation/CLI registry, the current generated-versus-hand-owned scaffold contract, three-tier diff
+  language, conformance-suite evidence boundary, and the package-version caveat. The shared Keiro
+  source pointer remains intentionally unchanged for EP-7.

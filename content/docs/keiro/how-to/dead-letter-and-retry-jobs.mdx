@@ -1,14 +1,7 @@
 ---
 title: "Dead-letter and retry jobs"
-description: "Set a RetryPolicy, map domain failures to JobOutcome (Done / Retry / Dead), understand when a message goes to the dead-letter queue, and inspect the DLQ — with the hospital-capacity failure mapping as the reference."
+description: "Set a RetryPolicy, map domain failures to JobOutcome (Done / Retry / Dead), understand when a message goes to the dead-letter queue, and inspect the DLQ."
 ---
-
-<Callout type="info">
-  **Seen in a real service.** The `reservationWorkFailureOutcome` mapping used here as the reference
-  is `hospital-capacity`'s, from `keiro-runtime-jitsurei` — see
-  [the pgmq reservation work queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
-  for it wired into a running two-service application.
-</Callout>
 
 A background job fails in three different ways, and each wants a different fate: a *transient* failure
 should retry, a *poison* failure should stop retrying and be parked, and a *malformed* payload should
@@ -28,11 +21,11 @@ data RetryPolicy = RetryPolicy
 `defaultRetryPolicy` is `{ 5, RetryDelay 60, True }`. Override it to match the queue:
 
 ```haskell
--- hospital-capacity: a DLQ, 3 deliveries, 5-second retry.
+-- Reservation work: a DLQ, 3 deliveries, 5-second retry.
 reservationPolicy = RetryPolicy { maxRetries = 3, defaultRetryDelay = RetryDelay 5, useDeadLetter = True }
 
--- rei: NO DLQ (reproducing shibuya's old defaultConfig), 3 deliveries.
-reiQueuePolicy    = RetryPolicy { maxRetries = 3, defaultRetryDelay = RetryDelay 60, useDeadLetter = False }
+-- A regenerable best-effort queue: no DLQ, 3 deliveries.
+bestEffortPolicy  = RetryPolicy { maxRetries = 3, defaultRetryDelay = RetryDelay 60, useDeadLetter = False }
 ```
 
 - **`maxRetries`** is the number of deliveries the adapter allows before it dead-letters a message.
@@ -47,7 +40,7 @@ reiQueuePolicy    = RetryPolicy { maxRetries = 3, defaultRetryDelay = RetryDelay
 Your handler returns a `JobOutcome`. Translate each *kind* of failure deliberately:
 
 ```haskell
--- hospital-capacity's mapping:
+-- Application policy for reservation work:
 reservationWorkFailureOutcome :: ReservationWorkFailure -> JobOutcome
 reservationWorkFailureOutcome = \case
   ReservationWorkStoreFailed _err  -> Retry (RetryDelay 5)   -- transient: the DB hiccuped

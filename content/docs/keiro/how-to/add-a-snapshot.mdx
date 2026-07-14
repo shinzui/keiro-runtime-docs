@@ -51,11 +51,10 @@ cabal test keiro-dsl-conformance-snapshot
 
 ## Steps
 
-1. **Set a `stateCodec` and a `snapshotPolicy`.** The jitsurei order stream does exactly this — it
-   reuses the base stream but enables snapshotting:
+1. **Set a `stateCodec` and a `snapshotPolicy`.** For hand-authored wiring, derive a snapshot-enabled
+   definition from the same aggregate stream definition:
 
    ```haskell
-   -- jitsurei/src/Jitsurei/OrderStream.hs (re-exported by Jitsurei/Snapshots.hs)
    snapshotOrderEventStreamDef :: OrderEventStream
    snapshotOrderEventStreamDef = orderEventStreamDef
      { snapshotPolicy = Every 2
@@ -64,7 +63,7 @@ cabal test keiro-dsl-conformance-snapshot
 
    snapshotOrderEventStream :: ValidatedOrderEventStream
    snapshotOrderEventStream =
-     mkEventStreamOrThrow "jitsurei-order-snapshot" snapshotOrderEventStreamDef
+     mkEventStreamOrThrow "orders-with-snapshots" snapshotOrderEventStreamDef
    ```
 
    `defaultStateCodec` encodes the joint `(state, registers)`; its `Int` argument is the
@@ -118,8 +117,16 @@ causing misses without corrupting event state.
 
 ## Verify it worked
 
-Run `just jitsurei-snapshots`. Append past the policy threshold and confirm a row appears in
-`keiro.keiro_snapshots`. Then test these scenarios with `RunCommandOptions.metrics` installed:
+For a `.keiro` aggregate, run its generated harness; the checked source fixture uses:
+
+```bash
+cabal test keiro-dsl-conformance-snapshot
+```
+
+For hand-authored wiring, append past the policy threshold in your integration test and confirm a row
+appears in `keiro.keiro_snapshots`. Keiro's own `keiro-test` component covers the same threshold,
+tail-hydration, corrupt-cache, strict-encode, and store-failure paths. Test these scenarios with
+`RunCommandOptions.metrics` installed:
 
 - corrupt the row's JSON and confirm the command succeeds through full replay while
   `keiro.snapshot.read.misses` and `keiro.snapshot.decode.failures` increase;

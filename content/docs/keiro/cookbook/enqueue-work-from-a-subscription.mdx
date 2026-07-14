@@ -92,8 +92,7 @@ Both hops are at-least-once, so guard both:
 - **Enqueue once.** A subscription can re-deliver the source event, so the handler can run twice.
   `enqueue` is a plain send with no dedupe of its own — derive a stable key from the source event (an
   id, a correlation key) and skip the enqueue if that work is already decided or already on the queue.
-  The hospital-capacity dispatcher does exactly this, querying both its read model and the live queue
-  table before sending:
+  One dispatcher shape queries both its read model and the live queue table before sending:
 
   ```sql
   SELECT EXISTS (SELECT 1 FROM transfer_decisions WHERE reservation_id = $1)
@@ -116,11 +115,9 @@ with the producer-side dedupe above; the transactional form below is the excepti
 </Callout>
 
 <Callout type="info">
-This is the shape of the hospital-capacity **reservation work queue**: an accepted transfer need is
-not turned into a reservation synchronously — the dispatcher enqueues a `keiro-pgmq` job and a worker
-drains it to run the command, with store failures mapped to `Retry` and domain rejections to `Dead`.
-See [the pgmq reservation work queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
-for the same pattern in a running service.
+Keep this pattern's two proofs separate: the subscription's durable checkpoint/redelivery proves the
+producer loop, while the queue worker's retry/dead-letter behavior proves job disposal. The
+`keiro-pgmq-test` integration suite exercises the latter against an isolated database.
 </Callout>
 
 ## When *not* to use this

@@ -35,7 +35,8 @@ holes, running the harness, and classifying a changed spec with commands and out
 - [x] (2026-07-14T18:12:28Z) Milestone 3: added task-oriented read-model/router, FIFO queue,
   inbox persistence, snapshot, and workflow-evolution guides and rebuilt the authoring safety
   procedures.
-- [ ] Milestone 4: reconcile keiro-dsl across the keiro documentation.
+- [x] (2026-07-14T18:19:23Z) Milestone 4: reconciled keiro-dsl and its runtime handoffs across the
+  Keiro landing, FAQ, explanations, task pages, references, cookbook, and walkthrough navigation.
 
 
 ## Surprises & Discoveries
@@ -48,6 +49,9 @@ holes, running the harness, and classifying a changed spec with commands and out
 - `WqFifoRoundRobin` is printed and parsed as `fifo-roundrobin`; the changelog calls it
   `fifo-round-robin`. The reference follows `Parser.hs` and `PrettyPrint.hs`, and representative
   committed fixtures confirm the spelling used by the live CLI.
+- The released Cabal package is `0.3.0.0`, while `Keiro.version` in committed source still returns
+  `"0.1.0.0"`. Announcement-facing docs now use the package release for compatibility and label the
+  exported constant as legacy instead of silently presenting it as the release version.
 
 
 ## Decision Log
@@ -94,6 +98,16 @@ holes, running the harness, and classifying a changed spec with commands and out
   families, transactional plan-before-write behavior, generated/create-once ownership, scaffold
   records, and the additive/warning/breaking registry. Nine upstream conformance suites covering
   the new runtime families pass, as do the docs build and 459-file internal-link scan.
+- Milestone 4 reconciled the Keiro landing page, FAQ, read-model/router/snapshot/workflow/PGMQ
+  explanations, related task/reference/cookbook pages, and version statements. It removed Keiro-doc
+  links that treated the excluded example application as current evidence, replaced them with
+  in-repository runtime and conformance suites, corrected the stale “durable execution is not
+  shipped” claim, and connected the runtime pages to the new 0.2 task guides. The stale-form scans,
+  formatting, MDX/TypeScript checks, production build, `git diff --check`, and 459-file link scan
+  pass.
+- EP-4 is complete against committed Keiro `c68dcc7`. EP-7 inherits the package-version versus
+  legacy `Keiro.version` distinction and the current conformance corpus as the announcement-facing
+  evidence boundary; this plan does not advance the shared source pointer.
 
 
 ## Context and Orientation
@@ -219,7 +233,7 @@ fixture path may be chosen from `keiro-dsl/test/fixtures/`:
 ```bash
 cd "$KEIRO"
 nix develop -c cabal run keiro-dsl -- check keiro-dsl/test/fixtures/<selected-fixture>.keiro
-nix develop -c cabal run keiro-dsl -- pretty keiro-dsl/test/fixtures/<selected-fixture>.keiro
+nix develop -c cabal run keiro-dsl -- parse keiro-dsl/test/fixtures/<selected-fixture>.keiro
 ```
 
 Return to the docs repository and run after each milestone:
