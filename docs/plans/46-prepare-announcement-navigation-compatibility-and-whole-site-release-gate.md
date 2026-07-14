@@ -34,7 +34,8 @@ and navigation integrity.
 - [x] (2026-07-14T19:41:48Z) Milestone 3: update repository metadata and source
   ledgers.
 - [ ] Milestone 4: establish and run the whole-site release gate. The automated gate is complete;
-  the required manual preview remains pending because this session exposes no browser backend.
+  the required manual preview remains pending after two browser-backed attempts both found no
+  available browser backend.
 
 ## Surprises & Discoveries
 
@@ -56,6 +57,11 @@ and navigation integrity.
 - The in-app browser runtime reported no available browser backend after its required setup and
   troubleshooting checks. Automated prerendering and search-index generation succeed, but the plan's
   manual sidebar/search/component inspection cannot be claimed until a browser is available.
+- A continuation attempt at 2026-07-14T19:56:58Z repeated the complete browser setup and required
+  troubleshooting flow; browser discovery again returned an empty list. The accompanying completion
+  audit reconfirmed all prerequisite plans closed, all nine upstream HEADs equal their ledgers, the
+  two excluded dirty upstream files unchanged, and no initiative diff under `content/docs/example-app/`
+  or `docs/keiro-runtime-jitsurei-source-sync.md`.
 
 
 ## Decision Log
@@ -110,6 +116,10 @@ and navigation integrity.
   the same four pre-existing lint warnings plus the existing production chunk-size warning.
   `git diff --check` is clean and `mori show --full` resolves seven dependencies and ten docs. The
   milestone remains open solely for the required rendered preview and six-product search check.
+- The continuation audit reran the exact current-tree gate successfully: navigation still covers 62
+  metadata files and 506 pages, internal links remain unbroken, source pointers still match current
+  upstream commits, and the repository worktree remains clean. This strengthens every non-visual
+  acceptance claim but does not substitute for the outstanding rendered preview.
 
 
 ## Context and Orientation
@@ -297,3 +307,10 @@ The site interfaces are Fumadocs MDX, nearest-directory `meta.json` navigation, 
 build output, the source link checker, and mori's project/doc registry. No upstream production API
 changes are authorized. The completed coordination interface is a single `pnpm run check` quality
 gate and a consistent public discovery path over all completed domain docs.
+
+
+## Revision Note
+
+2026-07-14T19:56:58Z — Recorded the second unavailable-browser result and the accompanying
+requirement-by-requirement completion audit. Milestone 4 remains open because automated evidence
+cannot prove the explicitly required rendered sidebar, search, and MDX-component behavior.

@@ -211,7 +211,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T19:41:48Z) EP-7 Milestone 3: update repository metadata and
   source ledgers.
 - [ ] EP-7 Milestone 4: establish and run the whole-site release gate. Automated validation is
-  complete; rendered preview validation is pending because this session exposes no browser backend.
+  complete; rendered preview validation remains pending after two browser-backed attempts both found
+  no available backend.
 
 ## Surprises & Discoveries
 
@@ -287,6 +288,11 @@ interactions between child plans. Provide concise evidence.
 - The required rendered-preview check is the only remaining EP-7 acceptance item. Browser setup and
   troubleshooting completed, but the runtime listed no available browser backend, so sidebars,
   six-product search results, and visible MDX rendering could not be inspected in this session.
+- A continuation attempt at 2026-07-14T19:56:58Z again found an empty browser inventory after the
+  required setup and troubleshooting flow. A fresh completion audit independently reconfirmed every
+  non-visual requirement: child-plan closure, current source boundaries, excluded-tree invariants,
+  stale-claim classifications, navigation coverage, the full site gate, whitespace, and mori
+  resolution.
 
 
 ## Decision Log
@@ -448,3 +454,14 @@ Compare the result against the original vision.
   `mori show --full` resolves seven dependencies and ten docs. EP-7 remains in progress until the
   manual browser preview confirms sidebars, search hits for all six products, and visible MDX
   components.
+- The continuation audit reran the complete current-tree gate and source-boundary checks without
+  finding additional gaps. EP-7 and the MasterPlan remain open solely because no available browser
+  can supply the required direct evidence for rendered navigation, six-product search, and visible
+  component/diagram integrity.
+
+
+## Revision Note
+
+2026-07-14T19:56:58Z — Recorded the second unavailable-browser result and the fresh full-scope
+completion audit. EP-7 remains In Progress; the initiative is not marked complete until its manual
+rendered-preview acceptance criteria are directly verified.
