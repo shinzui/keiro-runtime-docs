@@ -3,8 +3,8 @@ title: "Enqueue work from a subscription"
 description: "A subscription reacts to an event by handing a slow, retryable side effect — an external HTTP call — to a keiro-pgmq job, so the call's retries and back-off never block the subscription drain."
 ---
 
-A subscription drains its category **in order**: a slow or failing handler holds up every event
-behind it. So when an event should trigger an external side effect that is slow and *needs retries* —
+A subscription member handles one event at a time: a slow or failing handler holds up later events
+in that member. So when an event should trigger an external side effect that is slow and *needs retries* —
 calling a third-party HTTP API, pushing to a webhook, talking to a flaky service — do not make the
 call inline. Have the subscription **enqueue a [`keiro-pgmq`](/docs/keiro/explanation/background-jobs-with-pgmq)
 job** and return immediately; a job worker makes the call, on the queue's retry/dead-letter policy.
@@ -16,10 +16,11 @@ subscription handler is wrong on three counts:
 
 - **It blocks the drain.** The HTTP round-trip (and every retry) stalls every later event in the
   category behind it.
-- **Retries land in the wrong place.** A subscription's only recovery is to *re-deliver the source
-  event*, which re-runs **all** of that event's other effects — not just the call that failed.
-- **A poison target wedges the worker.** A permanently-failing endpoint either spins forever or halts
-  the subscription, instead of being parked out of the way.
+- **Retries land in the wrong place.** `ShardAckRetry` re-delivers the **source event**, which re-runs
+  all of that event's effects — not just the remote call that failed.
+- **A poison target consumes source-delivery policy.** Bounded subscription retry can eventually park
+  the whole source event in `kiroku.dead_letters`, but that is broader evidence than “this HTTP call
+  failed.” The job queue isolates and records the actual side effect.
 
 ## Solution
 
@@ -71,6 +72,18 @@ The distinction in that `case` is the whole point, and the same rule the
 failure (a 5xx, a timeout) `Retry`s on the policy's back-off; a **deterministic** one (a 4xx, an
 unroutable URL) goes straight to `Dead` rather than burning all five attempts on a call that will fail
 identically every time.
+
+For an acknowledgment-aware sharded subscription, acknowledge the **enqueue**, not the eventual HTTP
+call:
+
+| Enqueue outcome | `ShardAck` |
+| --- | --- |
+| The idempotent job decision is already present or was persisted now | `ShardAckOk` |
+| A transient database/store error prevented deciding the job | `ShardAckRetry delay` |
+| The source event cannot be decoded into valid work | `ShardAckDeadLetter (DeadLetterInvalid detail)` |
+
+Only return `ShardAckOk` after the enqueue decision is durable. If the worker is shed before that
+reply, Kiroku leaves the member checkpoint behind the event and the next owner redelivers it.
 
 ## Idempotency on both ends
 
@@ -129,3 +142,4 @@ for the same pattern in a running service.
 - [Idempotent fan-out](/docs/keiro/cookbook/idempotent-fan-out) — the same at-least-once discipline when a subscription dispatches a *command* instead of a job.
 - [Dead-letter and retry jobs](/docs/keiro/how-to/dead-letter-and-retry-jobs) — mapping outcomes to `Retry` vs `Dead`.
 - [Run a process manager as a subscription](/docs/keiro/how-to/run-a-process-manager-as-a-subscription) — wiring the producing subscription to a live adapter.
+- [Run sharded subscriptions](/docs/keiro/how-to/run-sharded-subscriptions) — acknowledgment-coupled checkpoint, retry, and dead-letter behavior.

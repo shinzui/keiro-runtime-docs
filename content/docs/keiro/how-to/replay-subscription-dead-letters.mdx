@@ -1,0 +1,83 @@
+---
+title: "Replay subscription dead letters"
+description: "Inspect one Kiroku subscription member, repair the cause, and replay retained source-event dead letters with an idempotent domain handler."
+---
+
+`replaySubscriptionDeadLetters` replays source events parked in `kiroku.dead_letters`. It is for
+Kiroku subscription failures, including sharded-worker retry exhaustion. It is not the replay path
+for Keiro target-dispatch rows in `keiro.keiro_dead_letters`.
+
+## 1. Select the subscription member
+
+Kiroku dead letters are keyed by subscription name and consumer-group member. A sharded
+subscription's bucket number is that member number.
+
+```haskell
+import Keiro.DeadLetter.Replay
+
+rows <- listSubscriptionDeadLetters
+          (SubscriptionName "orders-projector")
+          3
+```
+
+Rows are returned newest first. Record the event ID, global position, reason, attempt count, and
+creation time before changing code or data.
+
+## 2. Repair and make replay idempotent
+
+Fix the decode, domain, configuration, or infrastructure fault first. The replay handler owns
+domain decoding and classification; Keiro cannot infer whether a successful call wrote new state or
+collapsed to a deterministic duplicate.
+
+```haskell
+classifyReplay recorded = do
+  result <- reapplySourceEvent recorded
+  pure $ case result of
+    AppliedFresh       -> Right ReplayedFresh
+    AlreadyApplied     -> Right ReplayedDuplicate
+    ApplyFailed detail -> Left detail
+```
+
+Use the original source identity when the handler emits commands or writes a projection. A repeat
+operator run and an uncertain client disconnect must converge safely.
+
+## 3. Run the member replay
+
+```haskell
+outcomes <- replaySubscriptionDeadLetters
+              (SubscriptionName "orders-projector")
+              3
+              classifyReplay
+```
+
+Each `ReplayOutcome` retains the row's global position and event ID and reports one result:
+
+| Result | Meaning |
+| --- | --- |
+| `ReplayedFresh` | The handler applied work that was not already present. |
+| `ReplayedDuplicate` | The original or an earlier replay had already applied the work. |
+| `ReplayFailed detail` | This row failed; the batch continues with later rows. |
+| `ReplaySourceMissing` | The source event could not be found at the recorded identity and position, for example after hard deletion. |
+
+The implementation scans `$all` backward once for the batch. Global positions are opaque Kiroku
+cursors: it starts at `0` and follows positions returned by `readAllBackward`; it never subtracts
+from a position.
+
+## 4. Retain and reconcile evidence
+
+Replay neither deletes nor marks `kiroku.dead_letters`. This is intentional: a partial failure or
+lost client response can be retried without guessing which rows were consumed. Store the returned
+outcomes in your operator audit trail, verify the domain-side effects, and apply your own retention
+policy separately.
+
+<Callout type="warn">
+  Do not replay a `keiro.keiro_dead_letters` target row with this function. That table records a
+  rejected process-manager or router dispatch, not a parked source delivery. Use the domain-specific
+  repair path in [Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch).
+</Callout>
+
+<Cards>
+  <Card title="Run sharded subscriptions" href="/docs/keiro/how-to/run-sharded-subscriptions" />
+  <Card title="Inspect a rejected dispatch" href="/docs/keiro/how-to/inspect-a-rejected-dispatch" />
+  <Card title="Subscription sharding reference" href="/docs/keiro/reference/subscription-sharding" />
+</Cards>

@@ -1,94 +1,154 @@
 ---
 title: "Run sharded subscriptions"
-description: "Scale a high-volume category subscription across a pool of identical workers with Keiro.Subscription.Shard: start N copies of one binary, let them lease consumer-group buckets cooperatively, and get coordinator-free failover — with an idempotent handler."
+description: "Run an acknowledgment-aware sharded worker pool with bounded retry, atomic dead-letter advancement, and safe rebalance behavior."
 ---
 
-One subscription worker reading a busy category in order is a throughput ceiling, and you cannot just
-run two copies — both would process every event. **Consumer-group sharding** lets a pool of identical
-workers drain the category *disjointly*: every event processed by exactly one worker, with automatic
-failover when a worker dies and no external coordinator. This guide wires it up. For the concept, see
-[Scaling the workers](/docs/keiro/explanation/scaling-the-workers); for the API, the
-[subscription-sharding reference](/docs/keiro/reference/subscription-sharding).
+Use `runShardedSubscriptionGroupAck` when a high-volume category needs several workers and the
+handler can fail. The worker will not checkpoint past an in-flight event: the handler must return
+success, request retry, or explicitly park the source event.
 
-## Goal
+## 1. Apply the schema
 
-Drain a high-volume category across `N` worker processes so each handles a disjoint slice of the
-keyspace, and a crashed worker's slice is taken over within one lease TTL.
+Run Keiro's migrations before starting the pool. Sharding uses
+`keiro.keiro_subscription_shards`; terminal source failures use Kiroku's `kiroku.dead_letters`.
 
-## Steps
+See [Run the migrations](/docs/keiro/how-to/run-migrations).
 
-1. **Run the shards migration.** Sharding needs the `keiro_subscription_shards` lease table. It ships
-   in keiro's embedded set, so a normal `keiro-migrate` (or `allKeiroMigrations`) creates it — see
-   [Run the migrations](/docs/keiro/how-to/run-migrations).
+## 2. Choose and validate the fixed shard count
 
-2. **Write an idempotent handler.** A sharded subscription is **at-least-once**: a brief overlap is
-   possible while a bucket changes owners. Key your effect on `eventId` and make redelivery a no-op,
-   exactly as for an [async projection](/docs/keiro/how-to/make-an-async-projection-idempotent):
+Every process using one `SubscriptionName` must agree on `shardCount`. The table rejects a later
+count mismatch, so choose for peak useful parallelism and change it only through an operator-led
+cutover.
 
-   ```haskell
-   handle :: RecordedEvent -> IO ()
-   handle ev = upsertProjection (eventId ev) (decodePayload ev)   -- ON CONFLICT DO NOTHING
-   ```
+```haskell
+import Keiro.Subscription.Shard.Worker
+import Kiroku.Store.Subscription.Types
+import Kiroku.Store.Types (CategoryName (..))
 
-3. **Pick `N` and the options.** `N` (the bucket count) is fixed per subscription name — **every
-   worker must pass the same `N`**. Start from the defaults (30 s lease, 10 s renew, batch 100, buffer
-   256) and supply the category target and `N`:
+let candidate =
+      (defaultShardedWorkerOptions (Category (CategoryName "orders")) 8)
+        { leaseTtl = 30
+        , renewInterval = 10
+        , handlerRetryDelay = RetryDelay 1
+        , retryPolicy = RetryPolicy 5
+        }
 
-   ```haskell
-   import Keiro.Subscription.Shard.Worker (defaultShardedWorkerOptions, runShardedSubscriptionGroup)
+opts <- either (fail . show) pure (mkShardedWorkerOptions candidate)
+```
 
-   let opts = defaultShardedWorkerOptions (Category "orders") 8   -- 8 buckets
-   ```
+`RetryPolicy 5` means at most five **total deliveries**: the first plus up to four
+redeliveries. `handlerRetryDelay` is used for a synchronous exception that escapes the handler.
 
-4. **Start the same binary `N` (or more) times.** Each process calls `runShardedSubscriptionGroup`
-   with the same `SubscriptionName` and options. It mints its own worker id, ensures the shard rows,
-   and runs the reconcile loop forever:
+## 3. Return an explicit acknowledgment
 
-   ```haskell
-   runShardedSubscriptionGroup store (SubscriptionName "orders-projector") opts handle
-   ```
+Make the durable effect idempotent on the source `eventId`, then classify failures.
 
-   Run as many copies as you like up to `N`; the pool converges to an even split over a few reconcile
-   intervals. (More than `N` workers is allowed — the surplus simply own nothing until a peer dies.)
+```haskell
+handleOrder :: ShardDelivery -> IO ShardAck
+handleOrder delivery =
+  case decodeOrderEvent (delivery ^. #event) of
+    Left detail ->
+      pure (ShardAckDeadLetter (DeadLetterInvalid detail))
 
-<Callout type="info">
-**Why a pool of identical processes, not one process forking N readers?** Identical processes are what
-your orchestrator already scales (a Deployment replica count, an autoscaling group). The lease table
-makes them cooperate without leader election, and a process that dies stops renewing — so failover is
-just "its leases expire and a survivor re-claims them", with no health-checking to wire up.
-</Callout>
+    Right orderEvent -> do
+      let recorded = delivery ^. #event
+      result <- applyProjectionIdempotently (recorded ^. #eventId) orderEvent
+      pure $ case result of
+        Applied          -> ShardAckOk
+        AlreadyApplied   -> ShardAckOk
+        TransientFailure -> ShardAckRetry (RetryDelay 2)
+        Permanent detail -> ShardAckDeadLetter (DeadLetterPoison detail)
+```
 
-## What happens on failure
-
-A worker renews its leases every `renewInterval` (default 10 s), several times per `leaseTtl` (default
-30 s). When a worker crashes it stops renewing; within one TTL its buckets' leases expire and a
-surviving worker claims them on its next pass, resuming each bucket at kiroku's per-bucket checkpoint —
-**no event is dropped or reprocessed beyond the at-least-once overlap**. On a *clean* shutdown the
-worker relinquishes its buckets immediately (via a `finally`), so failover is instant rather than
-waiting out the TTL.
-
-## Observe and tune
-
-- **Watch ownership.** `ownershipSnapshot` (or a `SELECT bucket, owner_worker_id, lease_expires_at FROM
-  kiroku.keiro_subscription_shards WHERE subscription_name = …`) shows who owns what and when each lease
-  expires — a quick health read.
-- **Lease vs renew.** Keep `renewInterval` comfortably under `leaseTtl` (the default 10 s / 30 s gives
-  ~3 renews per TTL) so a single slow pass never drops a bucket. A shorter TTL means faster failover but
-  less slack; a longer one is more forgiving but slower to reclaim a dead worker's buckets.
-- **Choosing `N`.** `N` caps useful parallelism (at most `N` workers do work) and is fixed once chosen
-  — pick it for your peak, not today's load. Changing `N` later means draining and re-seeding the shard
-  rows.
+The `attempt` field is zero-based and useful for logging: `0` is the first delivery, `1` the first
+redelivery. Do not build a second unbounded retry loop inside this handler; return
+`ShardAckRetry` and let Kiroku enforce the configured ceiling.
 
 <Callout type="warn">
-**Disjointness does not depend on the liveness estimate.** A worker's count of "how many of us are
-live" only tunes how aggressively it claims; the `FOR UPDATE SKIP LOCKED` claim is the real exclusion,
-so two workers can never both own the same bucket even with a stale estimate. What you *must* get right
-is the **idempotent handler** — that is what makes the at-least-once overlap harmless.
+  A synchronous exception is treated as transient and retried after `handlerRetryDelay`. Classify
+  known invalid or permanently unprocessable inputs as `ShardAckDeadLetter` yourself so they do not
+  consume the whole retry budget. Asynchronous exceptions from shutdown or bucket shedding are
+  rethrown and produce no acknowledgment.
 </Callout>
 
+## 4. Start identical pool members
+
+Every replica runs the same call with the same name and options:
+
+```haskell
+runShardedSubscriptionGroupAck
+  store
+  (SubscriptionName "orders-projector")
+  opts
+  handleOrder
+```
+
+The pool converges over reconcile intervals. At most `N` replicas own work; surplus replicas wait.
+On graceful shutdown, the worker cancels its readers and relinquishes its current leases
+immediately. On a process crash, another replica can claim after `leaseTtl`.
+
+The older `runShardedSubscriptionGroup` accepts `RecordedEvent -> IO ()`. It is a compatibility
+wrapper that returns `ShardAckOk` after the handler completes. Escaping synchronous exceptions still
+use the bounded retry ladder, but the wrapper cannot express an immediate domain dead letter.
+
+## 5. Verify the acknowledgment/rebalance timeline
+
+```mermaid
+sequenceDiagram
+  participant A as Worker A
+  participant K as Kiroku member checkpoint
+  participant B as Worker B
+  A->>A: receive event E (attempt 0)
+  Note over A,K: no acknowledgment; checkpoint remains before E
+  Note over A: lease lost or reader cancelled mid-handler
+  B->>B: claim bucket and receive E
+  alt handler succeeds
+    B->>K: ShardAckOk
+    Note over B,K: checkpoint saves at batch tail
+  else handler requests retry
+    B->>B: wait, then redeliver E with attempt + 1
+    Note over B,K: checkpoint still before E
+  else handler parks E
+    B->>K: insert dead letter + advance checkpoint atomically
+  end
+```
+
+This is the safety property: an event is either acknowledged and eventually covered by the batch
+checkpoint, held for another attempt, or atomically dead-lettered and advanced. Bucket shedding does
+not checkpoint first. A stale worker can overlap a successor, so duplicate execution remains
+possible; monotonic checkpoint writes prevent the stale worker from moving progress backward.
+
+## 6. Observe ownership and terminal outcomes
+
+Inspect ownership:
+
+```sql
+SELECT bucket, owner_worker_id, lease_expires_at, heartbeat_at
+FROM keiro.keiro_subscription_shards
+WHERE subscription_name = 'orders-projector'
+ORDER BY bucket;
+```
+
+Inspect source-event dead letters by member:
+
+```sql
+SELECT consumer_group_member, global_position, event_id,
+       reason_summary, attempt_count, created_at
+FROM kiroku.dead_letters
+WHERE subscription_name = 'orders-projector'
+ORDER BY created_at DESC;
+```
+
+Wire `Keiro.Telemetry.kirokuEventBridge` into Kiroku's store `eventHandler` to increment
+`keiro.subscription.deadlettered` on the terminal event. The counter is cumulative; query the table
+for current durable rows.
+
+Use [Replay subscription dead letters](/docs/keiro/how-to/replay-subscription-dead-letters) after
+repairing the cause. Replay does not delete or mark the row.
+
 <Cards>
-  <Card title="Scaling the workers" href="/docs/keiro/explanation/scaling-the-workers" />
-  <Card title="Subscription sharding" href="/docs/keiro/reference/subscription-sharding" />
+  <Card title="Subscription sharding reference" href="/docs/keiro/reference/subscription-sharding" />
+  <Card title="Replay subscription dead letters" href="/docs/keiro/how-to/replay-subscription-dead-letters" />
+  <Card title="Enable OpenTelemetry" href="/docs/keiro/how-to/enable-opentelemetry" />
   <Card title="Make an async projection idempotent" href="/docs/keiro/how-to/make-an-async-projection-idempotent" />
-  <Card title="The scaling walkthrough" href="/docs/keiro/walkthrough/scaling/00-start-here" />
 </Cards>

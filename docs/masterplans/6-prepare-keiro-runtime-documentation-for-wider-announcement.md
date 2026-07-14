@@ -189,7 +189,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T17:05:09Z) EP-2 Milestone 3: refresh read models, projections, and rebuild
   operations.
 - [x] (2026-07-14T17:16:13Z) EP-3 Milestone 1: refresh process-manager and router delivery.
-- [ ] EP-3 Milestone 2: refresh sharded delivery and dead-letter operations.
+- [x] (2026-07-14T17:26:57Z) EP-3 Milestone 2: refresh sharded delivery and dead-letter operations.
 - [ ] EP-3 Milestone 3: refresh workflow and cross-worker operations.
 - [ ] EP-4 Milestone 1: create the keiro-dsl 0.2 learning and upgrade path.
 - [ ] EP-4 Milestone 2: make the notation reference complete and navigable.
@@ -237,6 +237,10 @@ interactions between child plans. Provide concise evidence.
   stream, including the router's legacy positional-ID probe. Announcement guidance must avoid a
   global exactly-once claim: resolver drift can grow the durable target union, and simultaneous
   code/output changes can cross the legacy compatibility boundary.
+- EP-3 found that shard leases exclude simultaneous valid claims but do not fence a stale reader
+  after expiry. Announcement guidance must say at-least-once: the ack-coupled Kiroku bridge prevents
+  rebalance cancellation from checkpointing first, while idempotency absorbs lease overlap and
+  batch-tail replay.
 - EP-2 established the runtime schema split consumed by EP-5 and EP-6: application projection data
   is schema-qualified outside both Keiro's `keiro` framework schema and Kiroku's `kiroku` store
   schema. The later migration plans own how those schemas are composed and deployed.
@@ -295,3 +299,7 @@ Compare the result against the original vision.
   now agree on transaction boundaries, target-scoped duplicate confirmation, deterministic current
   and legacy router IDs, explicit rejected-command policy, and the distinction between handled
   failures and durable dispatch-dead-letter evidence.
+- EP-3 Milestone 2 completed the sharded source-delivery path. The docs now center `ShardDelivery` and
+  `ShardAck`, bounded exception retry, batch-tail checkpoint semantics, atomic Kiroku dead-letter
+  advancement, the store-level terminal metric bridge, and non-destructive operator replay. All
+  milestone checks passed, including the 450-file internal-link scan.

@@ -1,6 +1,6 @@
 ---
 title: "Enable OpenTelemetry"
-description: "Configure a Tracer and a KeiroMetrics meter and thread them into keiro's command, outbox, inbox, timer, and projection surfaces so the framework emits distributed-tracing spans and worker metrics."
+description: "Configure a Tracer and KeiroMetrics, including the Kiroku event bridge that records terminal subscription dead letters."
 ---
 
 You want keiro to emit OpenTelemetry **spans** — a command run, an outbox publish, an inbox consume —
@@ -95,6 +95,32 @@ Kafka hop so a consumer's span becomes a child of the producer's span.
    metered simply keeps passing `Nothing`. The full catalogue (wire names, kinds, units) is in the
    [Telemetry reference](/docs/keiro/reference/telemetry#metric-catalogue).
 
+6. **Bridge terminal subscription outcomes from Kiroku.** Sharded subscription retry and dead-letter
+   mechanics run inside Kiroku. Wrap the application's Kiroku event callback when constructing the
+   store so the terminal event increments `keiro.subscription.deadlettered`:
+
+   ```haskell
+   import Keiro.Telemetry qualified as Telemetry
+
+   let observeKiroku =
+         Telemetry.kirokuEventBridge
+           (Just metrics)
+           applicationKirokuEventHandler
+
+   let storeSettings =
+         defaultConnectionSettings
+           & #eventHandler .~ Just observeKiroku
+   ```
+
+   Pass `const (pure ())` as the delegate when the application has no existing callback. The bridge
+   forwards every Kiroku event after handling the terminal dead-letter event, so it composes rather
+   than replaces existing observation.
+
+   This counter covers an explicit source `DeadLetter` and retry exhaustion. It is monotonic; query
+   `kiroku.dead_letters` for current durable rows, and use
+   [Replay subscription dead letters](/docs/keiro/how-to/replay-subscription-dead-letters) for
+   operator recovery.
+
 ## Verify it worked
 
 Point your collector (or a console exporter) at the service and run a command that publishes through
@@ -103,7 +129,8 @@ id**: an `Internal` command span, a `Producer` `send …` span, and — in the d
 `Consumer` `process …` span whose parent is the producer span. With `tracer = Nothing` (the
 default), no spans are emitted at all. On the metrics side, confirm the `keiro.outbox.backlog` /
 `keiro.timer.backlog` gauges and the published/processed counters appear on your metrics exporter
-once you pass `Just metrics`.
+once you pass `Just metrics`. For a bounded subscription failure, also confirm the
+`keiro.subscription.deadlettered` counter increments and a matching `kiroku.dead_letters` row exists.
 
 ## Related
 

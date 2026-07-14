@@ -32,12 +32,20 @@ workflow snapshot failure does not undo durable journal progress.
   Keiro `c68dcc7b9cea8d9c180d1c04254a72aa43804cac`. As in EP-2, the two commits after the planned
   boundary only release the dependency-realigned 0.3.0.0 package set and do not change `keiro` or
   `keiro-core` orchestration source.
+- [x] (2026-07-14T17:26:57Z) Pin Milestone 2 dependency evidence to clean committed Kiroku
+  `58aff77b3a6d6093e3613753a0543aab62db9fac` and Shibuya
+  `172df245f40a454af46dd7f4cde855eaa4414c5a` after resolving both through mori.
 - [x] (2026-07-14T17:16:13Z) Milestone 1: refresh process-manager and router delivery. Reconciled
   target-scoped duplicate proof, current and legacy router command identities, rejected-command
   policy, transaction boundaries, and dispatch-dead-letter inspection across reference, task,
   explanation, cookbook, and walkthrough pages. Formatting, types, production build/prerender,
   the 449-file internal-link scan, and focused stale-term scans passed.
-- [ ] Milestone 2: refresh sharded delivery and subscription dead-letter operations.
+- [x] (2026-07-14T17:26:57Z) Milestone 2: refresh sharded delivery and subscription dead-letter
+  operations. Replaced exactly-once/plain-stream claims with `ShardDelivery`/`ShardAck`, bounded
+  retry, acknowledgment-coupled checkpointing, rebalance cancellation, atomic terminal evidence,
+  telemetry wiring, and retained operator replay across reference, task, explanation, recipe, FAQ,
+  roadmap, and walkthrough pages. Formatting, MDX/types, production build/prerender, the 450-file
+  internal-link scan, and focused stale-term scans passed.
 - [ ] Milestone 3: refresh workflow and cross-worker operations.
 - [ ] Run final EP-3 validation and record EP-4/EP-7 handoffs.
 
@@ -52,6 +60,16 @@ workflow snapshot failure does not undo durable journal progress.
   transition, but this is not a permanent exactly-once bridge when resolver output and deployed
   code change at the same time. The docs now state that boundary instead of promising global
   exactly-once fan-out.
+- Sharded delivery uses Kiroku's `subscriptionAckStream`, not the old plain pull bridge. The worker
+  blocks for a per-event disposition, so losing a lease or cancelling a reader does not manufacture
+  a successful acknowledgment.
+- `ShardAckOk` does not necessarily persist a per-event checkpoint immediately: ordinary successful
+  events are covered at the batch tail. A crash can therefore replay already successful effects even
+  without lease overlap, which makes event-ID idempotency part of the baseline delivery contract.
+- A synchronous shard-handler exception becomes a retry at `handlerRetryDelay`, while
+  `SomeAsyncException` escapes without a reply. Retry exhaustion and explicit source dead letters
+  share Kiroku's atomic dead-letter/checkpoint statement; if that statement fails, progress does not
+  advance.
 
 
 ## Decision Log
@@ -71,6 +89,12 @@ workflow snapshot failure does not undo durable journal progress.
   Rationale: The source defaults do not silently discard rejected target commands. Documentation
   must not make a convenience example less safe than the shipped default.
   Date: 2026-07-14
+- Decision: Teach sharded delivery from the acknowledgment/checkpoint timeline, not from lease
+  ownership alone.
+  Rationale: Lease claims exclude simultaneous valid owners but cannot fence a stale reader after
+  expiry. Only the ack-coupled Kiroku disposition proves whether work can advance, retry, or enter
+  durable terminal evidence.
+  Date: 2026-07-14
 
 
 ## Outcomes & Retrospective
@@ -80,6 +104,11 @@ workflow snapshot failure does not undo durable journal progress.
   and durable inspection are separated explicitly. Benign late commands are modeled as successful
   same-state transitions rather than rejections, while genuine domain rejection retains the safe
   `RejectedHalt` default.
+- Milestone 2 now gives deployers a truthful at-least-once worker model. The primary path exposes
+  attempt and bucket context, bounds synchronous failures, never acknowledges rebalance
+  cancellation, and proves terminal source failure with an atomic `kiroku.dead_letters` row plus
+  member-checkpoint advance. The new replay guide makes retained rows repeatable operator evidence
+  rather than implying destructive queue consumption.
 
 
 ## Context and Orientation

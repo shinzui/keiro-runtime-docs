@@ -1,48 +1,29 @@
 ---
 title: "Subscription sharding"
-description: "Reference for the Keiro.Subscription.Shard module family: cooperative consumer-group ownership for category subscriptions — the lease descriptor and ownership operations, the sharded worker and its options, the keiro_subscription_shards table, and runShardedSubscriptionGroup."
+description: "Reference for leased consumer-group ownership, acknowledgment-coupled delivery, bounded retry, and source-event dead letters."
 ---
 
-The types and functions on this page live in the **`Keiro.Subscription.Shard`** module family. They
-add **consumer-group sharding** for a high-volume [category subscription](/docs/keiro/reference/read-model):
-a pool of identical worker processes cooperatively partitions the category among themselves so every
-event is processed by exactly one worker, none twice, none skipped — with automatic, **coordinator-free**
-failover when a worker dies.
+`Keiro.Subscription.Shard` and `Keiro.Subscription.Shard.Worker` let identical worker processes
+share a Kiroku consumer group. Keiro leases bucket assignment; Kiroku owns event delivery,
+per-member checkpoints, bounded retry, and `kiroku.dead_letters`.
 
-For the concept, read [Scaling the workers](/docs/keiro/explanation/scaling-the-workers); for the task,
-[Run sharded subscriptions](/docs/keiro/how-to/run-sharded-subscriptions).
+The guarantee is **at-least-once**, not exactly-once. A lease handoff can briefly overlap readers,
+and a crash can replay successful work whose batch-tail checkpoint was not saved. Make every handler
+idempotent on the source `eventId`.
 
 ```haskell
-import Keiro.Subscription.Shard         -- WorkerId, ShardLease, the ownership operations
-import Keiro.Subscription.Shard.Worker  -- ShardedWorkerOptions, runShardedSubscriptionGroup
--- Keiro.Subscription.Shard.Schema       -- the Transaction-level lease statements (rarely imported directly)
+import Keiro.Subscription.Shard
+import Keiro.Subscription.Shard.Worker
 ```
 
-## What kiroku provides, and what this adds
+For deployment steps, see [Run sharded subscriptions](/docs/keiro/how-to/run-sharded-subscriptions).
+For the design, see [Scaling the workers](/docs/keiro/explanation/scaling-the-workers).
 
-kiroku already partitions a category into `N` **buckets** (consumer-group member indices in `[0, N)`)
-by a stable hash of the originating stream id, and keeps a per-member checkpoint — so `N` disjoint
-readers can drain a busy category in parallel. What kiroku leaves to the operator is *membership*:
-"exactly one live process must own each bucket at a time" is otherwise a manual `[0..N-1]` wiring.
+## Ownership API
 
-This module supplies the missing operability layer — a **lease** over each bucket so a pool of
-identical workers agree, with no external coordinator (no etcd/ZooKeeper/Consul), on who owns which
-bucket right now, and re-divide the buckets automatically when a worker joins, leaves, or dies.
-Coordination lives entirely in the `keiro_subscription_shards` lease table.
-
-<Callout type="info">
-The lease — a renewable `lease_expires_at` timestamp — is the ownership mechanism, **not** a held lock.
-A transaction-scoped advisory lock auto-releases at transaction end (so it cannot span a worker's
-multi-transaction lifetime) and a session-scoped lock has no connection affinity through kiroku's
-pooled `Store` — the same finding the [resume worker](/docs/keiro/reference/durable-workflows#the-resume-worker)
-records. A renewable lease gives lifetime ownership and automatic failover without depending on
-connection affinity; disjointness rests on the `FOR UPDATE SKIP LOCKED` claim, not on the liveness
-estimate being exact.
-</Callout>
-
-## The lease descriptor and ownership operations
-
-`Keiro.Subscription.Shard` is the typed `Eff`-level surface over kiroku's `Store`.
+Kiroku partitions a category into `N` consumer-group members by a stable hash of the originating
+stream id. It stores one checkpoint per `(subscription_name, member)`. Keiro adds membership: one
+renewable lease row for every member index in `[0, N)`.
 
 ```haskell
 newtype WorkerId = WorkerId UUID
@@ -50,149 +31,172 @@ newtype WorkerId = WorkerId UUID
 data ShardLease = ShardLease
   { subscriptionName :: SubscriptionName
   , workerId         :: WorkerId
-  , shardCount       :: Int              -- N; fixed per subscription name (every worker must agree)
-  , leaseTtl         :: NominalDiffTime  -- how long a claim/renew keeps a bucket before it expires
+  , shardCount       :: Int
+  , leaseTtl         :: NominalDiffTime
   }
 
-freshWorkerId      :: (IOE :> es) => Eff es WorkerId
-ensureShards       :: (Store :> es) => ShardLease -> Eff es ()
+freshWorkerId       :: (IOE :> es) => Eff es WorkerId
+ensureShards        :: (Store :> es) => ShardLease -> Eff es ()
 acquireOwnedBuckets :: (IOE :> es, Store :> es) => ShardLease -> Int -> Eff es (Set Int)
-renewOwnedBuckets  :: (IOE :> es, Store :> es) => ShardLease -> Eff es (Set Int)
-relinquish         :: (Store :> es) => ShardLease -> Set Int -> Eff es ()
-ownershipSnapshot  :: (Store :> es) => ShardLease -> Eff es [(Int, Maybe WorkerId, Maybe UTCTime)]
-fairShareTarget    :: Int -> Int -> Int   -- ceil(N / liveWorkers)
+renewOwnedBuckets   :: (IOE :> es, Store :> es) => ShardLease -> Eff es (Set Int)
+relinquish          :: (Store :> es) => ShardLease -> Set Int -> Eff es ()
+ownershipSnapshot   :: (Store :> es) => ShardLease -> Eff es [(Int, Maybe WorkerId, Maybe UTCTime)]
+fairShareTarget     :: Int -> Int -> Int
 ```
 
-<TypeTable
-  type={{
-    freshWorkerId: { type: "Eff es WorkerId", description: "Mint a fresh per-process owner id (a random UUID). Two restarts of the same binary get different ids, so a restarted process never inherits the dead process's leases — it claims afresh once they expire." },
-    ensureShards: { type: "ShardLease -> Eff es ()", description: "Idempotently populate the N shard rows (ON CONFLICT DO NOTHING). Safe to call on every worker startup." },
-    acquireOwnedBuckets: { type: "ShardLease -> Int -> Eff es (Set Int)", description: "One reconcile pass, in a single transaction: renew the leases this worker holds, then — if below its fair share — claim ONE more bucket (unowned or expired). Returns the buckets owned after the pass. The Int is the caller's estimate of live workers." },
-    renewOwnedBuckets: { type: "ShardLease -> Eff es (Set Int)", description: "Heartbeat only — write a fresh expiry for every bucket this worker still holds, and return them." },
-    relinquish: { type: "ShardLease -> Set Int -> Eff es ()", description: "Graceful release of the given buckets (clean shutdown) so they become claimable immediately instead of after lease expiry." },
-    ownershipSnapshot: { type: "ShardLease -> Eff es [(Int, Maybe WorkerId, Maybe UTCTime)]", description: "Read every bucket's (bucket, owner, lease_expires_at). The worker uses it to estimate liveWorkers (distinct non-expired owners) before a pass." },
-    fairShareTarget: { type: "Int -> Int -> Int", description: "ceil(N / liveWorkers): when k workers are live they collectively claim all N buckets and no single worker hogs them. Non-positive liveWorkers is treated as one." },
-  }}
-/>
+| Operation | Contract |
+| --- | --- |
+| `ensureShards` | Idempotently creates the `N` rows. It raises `ShardCountMismatch` when the same subscription name already has another configured count. |
+| `acquireOwnedBuckets` | In one transaction, renews buckets still held and claims at most one unowned or expired bucket when below `ceil(N / liveWorkers)`. |
+| `renewOwnedBuckets` | Renews held leases without claiming. A bucket taken after expiry is absent from the result. |
+| `relinquish` | Clears leases still owned by this worker so another worker can claim immediately. |
+| `ownershipSnapshot` | Lists bucket, owner, and expiry for health and liveness estimation. |
 
-<Callout type="info">
-**Claiming one bucket per pass is deliberate.** If a cold worker grabbed its whole fair share at once
-it could, racing alone before its peers' first pass, monopolise every bucket and then never see the
-idle peers (they own nothing, so they are invisible in the lease table). Taking one bucket per pass
-means concurrently-starting workers each grab one, become visible after the first pass, and climb to an
-even share together. Ownership spreads over up to `N` reconcile intervals — a deliberate trade of
-spin-up latency for coordinator-free fairness. A stale `liveWorkers` estimate only changes how
-aggressively a worker claims, never whether ownership stays disjoint.
+Claiming one bucket per pass prevents a cold-starting worker from monopolizing all buckets before its
+peers become visible. The liveness count tunes only the fair-share target. `FOR UPDATE SKIP LOCKED`
+over claimable lease rows is the actual exclusion mechanism.
+
+<Callout type="warn">
+  Exclusion applies to valid lease claims, not to a stale process after its lease expires. A paused
+  or partitioned worker can keep its old reader alive briefly while a successor claims the bucket.
+  Both may deliver the same event; idempotency makes that overlap safe.
 </Callout>
 
-## The sharded worker
+## Delivery API
 
-`Keiro.Subscription.Shard.Worker` turns leased bucket ownership into running kiroku consumer-group
-readers. Start the **same** worker binary `N` times — on `N` hosts, in `N` containers, in an
-autoscaling group — each calling `runShardedSubscriptionGroup` with the same `SubscriptionName` and
-options, and the workers cooperatively partition the category.
+Use the acknowledgment-aware entry point when the handler can fail.
+
+```haskell
+data ShardDelivery = ShardDelivery
+  { event   :: RecordedEvent
+  , attempt :: Word
+  , bucket  :: Int
+  }
+
+data ShardAck
+  = ShardAckOk
+  | ShardAckRetry RetryDelay
+  | ShardAckDeadLetter DeadLetterReason
+
+type ShardEventHandler = ShardDelivery -> IO ShardAck
+
+runShardedSubscriptionGroupAck
+  :: KirokuStore
+  -> SubscriptionName
+  -> ShardedWorkerOptions
+  -> ShardEventHandler
+  -> IO ()
+
+runShardedSubscriptionGroup
+  :: KirokuStore
+  -> SubscriptionName
+  -> ShardedWorkerOptions
+  -> (RecordedEvent -> IO ())
+  -> IO ()
+```
+
+`attempt` is zero-based: `0` is the first delivery and `1` the first redelivery. `bucket` is the
+Kiroku consumer-group member. The acknowledgment maps directly to Kiroku:
+
+| Keiro result | Kiroku result | Durable consequence |
+| --- | --- | --- |
+| `ShardAckOk` | `Continue` | The worker may continue. Ordinary successful events are checkpointed at the batch tail, so a crash before then can replay them. |
+| `ShardAckRetry delay` | `Retry delay` | The same event is redelivered after `delay`; its checkpoint has not advanced. |
+| `ShardAckDeadLetter reason` | `DeadLetter reason` | Kiroku atomically inserts `kiroku.dead_letters` and advances this member's checkpoint past the event. |
+
+The worker uses Kiroku's `subscriptionAckStream`. That bridge blocks until the consumer supplies one
+of these results. If a reader is shed or shut down while the handler is in flight, the asynchronous
+exception supplies no acknowledgment; the next owner reads again from the unadvanced checkpoint.
+
+`runShardedSubscriptionGroup` is a compatibility wrapper. It passes only the event to the handler
+and returns `ShardAckOk` when that handler completes. A synchronous exception is still caught by the
+acknowledgment-aware layer and converted to a bounded retry. New handlers that need to distinguish a
+transient failure from poison data should use `runShardedSubscriptionGroupAck` directly.
+
+## Retry and exception policy
 
 ```haskell
 data ShardedWorkerOptions = ShardedWorkerOptions
-  { shardCount    :: Int              -- N buckets, fixed per subscription name
-  , leaseTtl      :: NominalDiffTime  -- claim/renew validity (default 30 s)
-  , renewInterval :: NominalDiffTime  -- gap between reconcile passes (default 10 s)
-  , target        :: SubscriptionTarget  -- the category (or AllStreams) to shard
-  , batchSize     :: Int32            -- events per DB fetch per bucket reader (default 100)
-  , bufferSize    :: Natural          -- per-reader bounded-queue capacity (default 256)
-  , onShardError  :: Maybe (ShardWorkerError -> IO ())
+  { shardCount        :: Int
+  , leaseTtl          :: NominalDiffTime
+  , renewInterval     :: NominalDiffTime
+  , target            :: SubscriptionTarget
+  , batchSize         :: Int32
+  , bufferSize        :: Natural
+  , handlerRetryDelay :: RetryDelay
+  , retryPolicy       :: RetryPolicy
+  , onShardError      :: Maybe (ShardWorkerError -> IO ())
   }
-
-data ShardWorkerError
-  = ShardSnapshotFailed Text | ShardAcquireFailed Text | ShardReaderDied Int Text | ShardEnsureFailed Text
-
-data ShardedWorkerConfigError
-  = InvalidShardCount Int | InvalidShardLeaseTtl NominalDiffTime
-  | InvalidShardRenewInterval NominalDiffTime | InvalidShardLeaseRenewInterval NominalDiffTime NominalDiffTime
-  | InvalidShardBatchSize Int32 | InvalidShardBufferSize Natural
-
-defaultShardedWorkerOptions :: SubscriptionTarget -> Int -> ShardedWorkerOptions
-mkShardedWorkerOptions :: ShardedWorkerOptions -> Either ShardedWorkerConfigError ShardedWorkerOptions
-
-reconcileShardsOnce :: KirokuStore -> ShardLease -> ShardedWorkerOptions
-                    -> IORef (Map Int RunningReader) -> (RecordedEvent -> IO ()) -> IO (Set Int)
-runShardedSubscriptionGroup :: KirokuStore -> SubscriptionName -> ShardedWorkerOptions
-                            -> (RecordedEvent -> IO ()) -> IO ()
 ```
 
-<TypeTable
-  type={{
-    leaseTtl: { type: "NominalDiffTime", default: "30 s", description: "How long a claim/renew keeps a bucket before it expires. A dead worker loses every bucket within one TTL." },
-    renewInterval: { type: "NominalDiffTime", default: "10 s", description: "Gap between reconcile passes; well under leaseTtl so a live worker renews several times per TTL (~3 renews per 30 s). A single missed renewal does not lose ownership." },
-    batchSize: { type: "Int32", default: "100", description: "Events per database fetch, per bucket reader." },
-    bufferSize: { type: "Natural", default: "256", description: "Per-reader bounded-queue capacity — backpressure." },
-    onShardError: { type: "Maybe (ShardWorkerError -> IO ())", default: "Nothing", description: "Optional hook for lease, ensure, snapshot, and reader-thread errors." },
-  }}
-/>
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `leaseTtl` | 30 seconds | How long a claim remains valid without renewal. |
+| `renewInterval` | 10 seconds | Delay between reconcile passes. Keep it below the TTL. |
+| `batchSize` | 100 | Events fetched per bucket reader. |
+| `bufferSize` | 256 | Capacity of each acknowledgment bridge; one event can also be in flight. |
+| `handlerRetryDelay` | 1 second | Delay used when a synchronous handler exception is converted to retry. |
+| `retryPolicy` | `RetryPolicy 5` | Maximum **total deliveries**, including the first. After the last retry result, Kiroku dead-letters with `DeadLetterMaxAttempts`. |
+| `onShardError` | `Nothing` | Reports snapshot, acquisition, ensure, and reader-stream failures. Ordinary synchronous handler failures use retry and do not become `ShardReaderDied`. |
 
-`reconcileShardsOnce` is the single testable unit (the analogue of `resumeWorkflowsOnce`). One pass:
+`mkShardedWorkerOptions` validates all positive bounds, requires `leaseTtl > renewInterval`, rejects a
+negative handler retry delay, and requires at least one total delivery. Call it during application
+startup; the loop entry points accept the options record directly.
 
-1. **Estimate** how many workers are live (distinct non-expired owners in the lease table, plus self).
-2. **`acquireOwnedBuckets`** — renew held leases and claim up to a fair share more (taking over expired
-   leases).
-3. **Shed** any buckets held beyond the fair share when more than one worker is live, so a worker that
-   over-claimed on a cold start gives the excess back and the pool converges to an even split. A lone
-   worker never sheds — it must own every bucket.
-4. **Reconcile readers** — open a kiroku consumer-group reader for each newly-owned bucket, stop the
-   reader for each newly-lost bucket. A bucket that moves owners resumes at its own kiroku per-member
-   checkpoint, so no event is dropped.
+A synchronous `SomeException` from the handler becomes `ShardAckRetry handlerRetryDelay`.
+`SomeAsyncException` is rethrown so shedding and shutdown do not invent a handler decision. An
+explicit `ShardAckDeadLetter` bypasses remaining retries. Repeated `ShardAckRetry` results exhaust at
+`retryMaxAttempts`; Kiroku then records `DeadLetterMaxAttempts attempts` and continues with the next
+event.
 
-`runShardedSubscriptionGroup` is the loop driver: mint a `WorkerId`, `ensureShards`, then
-`reconcileShardsOnce` every `renewInterval` forever. On shutdown (the loop thread is killed) a `finally`
-stops every reader this worker holds; its leases then expire and a surviving worker re-claims its
-buckets (failover).
+## Reconciliation and lifecycle
 
-`mkShardedWorkerOptions` rejects invalid pools before startup: shard count, TTL, renew interval,
-batch size, and buffer size must be positive, and `leaseTtl` must be greater than `renewInterval`.
-Reader failures no longer silently remove throughput: the worker removes the dead reader from its
-local map, calls `onShardError` when configured, and the next reconcile pass can restart it for any
-bucket the worker still owns. Lease snapshot/acquire failures are reported through the same hook and
-do not make the process exit.
+```haskell
+reconcileShardsOnce
+  :: KirokuStore
+  -> ShardLease
+  -> ShardedWorkerOptions
+  -> IORef (Map Int RunningReader)
+  -> ShardEventHandler
+  -> IO (Set Int)
+```
 
-<Callout type="warn">
-**A sharded subscription delivers at-least-once.** A brief overlap is possible while a bucket changes
-owners, so the `RecordedEvent -> IO ()` handler **must be idempotent** — keyed on `eventId` — exactly
-as keiro's [async-projection guidance](/docs/keiro/how-to/make-an-async-projection-idempotent) already
-requires. The lease table governs *assignment only*; event positions stay in kiroku's per-member
-checkpoints (`(subscription_name, consumer_group_member)`), so a re-homed bucket resumes where its
-previous owner left off.
-</Callout>
+One pass:
+
+1. estimates live workers from non-expired owners plus self;
+2. renews held buckets and claims toward the fair share;
+3. sheds excess buckets when peers are visible; and
+4. starts readers for newly owned buckets and cancels readers for lost buckets.
+
+An acquisition failure preserves the prior local ownership set and reports `ShardAcquireFailed`.
+Each dead reader removes itself from the map, reports `ShardReaderDied`, and can be restarted by a
+later pass if the lease is still owned.
+
+`runShardedSubscriptionGroupAck` mints a fresh worker ID, ensures rows, and reconciles forever. Its
+`finally` block stops current readers and relinquishes their leases. A graceful stop therefore makes
+them immediately claimable; a process crash relies on lease expiry.
+
+Kiroku's member checkpoint upsert is monotonic. A late acknowledgment from a stale reader cannot
+move a checkpoint backward, though it can duplicate work already performed by a successor.
 
 ## The lease table
 
-One table in the **`kiroku` schema**, added by the `keiro-subscription-shards` migration.
+`keiro.keiro_subscription_shards` stores assignment only: subscription name, bucket, fixed shard
+count, owner, lease expiry, heartbeat, and update time. It never stores event positions.
 
-```sql
-CREATE TABLE keiro_subscription_shards (
-  subscription_name  TEXT        NOT NULL,
-  bucket             INT         NOT NULL,   -- kiroku consumer-group member index
-  shard_count        INT         NOT NULL,   -- N; fixed per subscription_name
-  owner_worker_id    UUID,                   -- NULL = unowned / claimable
-  lease_expires_at   TIMESTAMPTZ,            -- NULL when unowned
-  heartbeat_at       TIMESTAMPTZ,            -- last renewal (observability)
-  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (subscription_name, bucket),
-  CONSTRAINT keiro_subscription_shards_bucket_range_chk CHECK (bucket >= 0 AND bucket < shard_count),
-  CONSTRAINT keiro_subscription_shards_count_chk        CHECK (shard_count >= 1)
-);
-```
+### Terminal source-event evidence
 
-One row per `(subscription_name, bucket)` records *who owns each bucket right now*, as a renewable
-lease. A live worker renews `lease_expires_at` on a heartbeat; a dead worker stops renewing, its lease
-expires, and another worker re-claims the bucket. The table does **not** re-hash anything and does
-**not** store event positions. The `Schema` module's `claimShardsTx` uses `FOR UPDATE SKIP LOCKED` over
-the claimable rows (exactly as the [timer worker's claim](/docs/keiro/reference/timers)), so two workers
-racing the same bucket can never both win. See [Migrations and schema](/docs/keiro/reference/migrations-and-schema)
-for the full table map.
+`kiroku.dead_letters` stores source deliveries parked explicitly or after retry exhaustion. Its
+insert and member-checkpoint advance are one database statement: if the insert fails, the checkpoint
+does not advance and the reader fails, so the source event reappears after restart.
+
+Use [Replay subscription dead letters](/docs/keiro/how-to/replay-subscription-dead-letters) for the
+operator path. Replay retains these rows; they are durable evidence, not a work queue whose items are
+deleted on success.
 
 <Cards>
-  <Card title="Scaling the workers" href="/docs/keiro/explanation/scaling-the-workers" />
   <Card title="Run sharded subscriptions" href="/docs/keiro/how-to/run-sharded-subscriptions" />
-  <Card title="Push delivery (Keiro.Wake)" href="/docs/keiro/reference/push-delivery" />
+  <Card title="Replay subscription dead letters" href="/docs/keiro/how-to/replay-subscription-dead-letters" />
+  <Card title="Scaling the workers" href="/docs/keiro/explanation/scaling-the-workers" />
   <Card title="The scaling walkthrough" href="/docs/keiro/walkthrough/scaling/00-start-here" />
 </Cards>

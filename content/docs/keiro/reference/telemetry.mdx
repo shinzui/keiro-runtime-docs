@@ -293,6 +293,45 @@ call on its drain loop. Command runners use `RunCommandOptions.metrics` for conf
 duplicates, snapshot lookup, strict encode/write failures, and replay divergence. See
 [Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) for the end-to-end wiring.
 
+### Kiroku subscription dead-letter bridge
+
+Subscription retry and dead-letter decisions execute inside Kiroku, so a `KeiroMetrics` field on the
+sharded worker would be too late to observe the terminal write. Install the exported bridge in the
+Kiroku store's `ConnectionSettings.eventHandler` when constructing the store:
+
+```haskell
+kirokuEventBridge
+  :: Maybe KeiroMetrics
+  -> (KirokuEvent -> IO ())
+  -> KirokuEvent
+  -> IO ()
+
+let observeKiroku =
+      kirokuEventBridge (Just metrics) applicationKirokuEventHandler
+
+let settings = defaultConnectionSettings
+      & #eventHandler .~ Just observeKiroku
+```
+
+On `KirokuEventSubscriptionDeadLettered`, the bridge increments
+`keiro.subscription.deadlettered`, then delegates **every** event to the application's existing
+handler. Keep that delegate fast and non-blocking.
+
+The event is emitted after Kiroku has atomically inserted `kiroku.dead_letters` and advanced the
+subscription member's checkpoint. It covers both an explicit `DeadLetter` disposition and
+`DeadLetterMaxAttempts` after bounded retry exhaustion. The counter is cumulative, not current
+queue depth; query durable state for the latter:
+
+```sql
+SELECT count(*)
+FROM kiroku.dead_letters
+WHERE subscription_name = $1;
+```
+
+The acknowledgment bridge exposes the current delivery attempt to the handler, but it cannot tell
+the handler whether one more retry reply will exhaust the policy. Treat
+`KirokuEventSubscriptionDeadLettered` and the durable table row as the terminal proof.
+
 ### Workflow instruments
 
 The nine `keiro.workflow.*` instruments cover the [durable-workflow runtime](/docs/keiro/reference/durable-workflows).

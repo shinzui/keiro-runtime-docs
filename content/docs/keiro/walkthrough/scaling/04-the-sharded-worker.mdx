@@ -1,126 +1,165 @@
 ---
 title: "04 — The sharded worker"
-description: "Reading Keiro.Subscription.Shard.Worker: reconcileShardsOnce as the single testable unit (estimate live workers, acquire, shed excess, reconcile readers), startReader's kiroku consumer-group config, runShardedSubscriptionGroup's loop and finally-on-shutdown failover, and the rebalance-signal seam."
+description: "Read the ownership reconcile, acknowledgment bridge, bounded retry, rebalance cancellation, and dead-letter checkpoint boundary."
 ---
 
-The [lease layer](/docs/keiro/walkthrough/scaling/03-the-shard-lease) decides *which* buckets a worker
-owns. `Keiro.Subscription.Shard.Worker` turns that ownership into *running kiroku readers*. You start the
-**same** binary `N` times and they partition the category among themselves — every event processed by
-exactly one worker, with coordinator-free failover.
+The [lease layer](/docs/keiro/walkthrough/scaling/03-the-shard-lease) decides which buckets this
+process currently owns. `Keiro.Subscription.Shard.Worker` turns that set into Kiroku readers without
+ever acknowledging an in-flight event merely because ownership changed.
 
-## One pass: estimate, acquire, shed, reconcile readers
+## One reconcile pass
 
-`reconcileShardsOnce` is the single testable unit (the analogue of `resumeWorkflowsOnce`): one call
-claims/renews/sheds leases and starts/stops readers once, with no loop of its own.
+`reconcileShardsOnce` is the testable ownership unit:
 
 ```haskell
-reconcileShardsOnce store lease opts readers handler = do
-  now <- getCurrentTime
-  -- 1. Estimate live workers: distinct non-expired owners, plus self.
-  snap <- either (const []) id <$> runStoreIO store (ownershipSnapshot lease)
-  let liveOwners  = Set.fromList [w | (_, Just w, Just expiresAt) <- snap, expiresAt > now]
-      liveWorkers = Set.size (Set.insert (lease ^. #workerId) liveOwners)
-      shareTarget = fairShareTarget (lease ^. #shardCount) liveWorkers
-  -- 2. Renew held + claim up to fair share (one bucket per pass).
-  claimed <- either (const Set.empty) id <$> runStoreIO store (acquireOwnedBuckets lease liveWorkers)
-  -- 3. Shed any excess above the fair share — but never when alone.
-  owned <-
-    if liveWorkers > 1 && Set.size claimed > shareTarget
-      then do
-        let excess = Set.fromList (drop shareTarget (sort (Set.toList claimed)))
-        _ <- runStoreIO store (relinquish lease excess)
-        pure (claimed `Set.difference` excess)
-      else pure claimed
-  -- 4. Bring readers in line with `owned`: start newly-owned, stop newly-lost.
-  ...
-  pure owned
+reconcileShardsOnce
+  :: KirokuStore
+  -> ShardLease
+  -> ShardedWorkerOptions
+  -> IORef (Map Int RunningReader)
+  -> ShardEventHandler
+  -> IO (Set Int)
 ```
 
-The four steps read as one idea — *converge my running readers to my fair share of buckets*:
+It estimates live owners, calls `acquireOwnedBuckets`, sheds buckets above the fair share, then diffs
+the owned set against the running-reader map. New buckets start readers; lost buckets run
+`stopReader`.
 
-- **Estimate** counts distinct owners whose lease has not expired, plus self. It is only an estimate, and
-  that is fine: the [`FOR UPDATE SKIP LOCKED` claim](/docs/keiro/walkthrough/scaling/03-the-shard-lease)
-  is the real exclusion, so a stale count never causes double ownership — it only tunes how aggressively
-  this worker claims.
-- **Acquire** renews held leases and claims one more bucket if below the fair share (chapter 03).
-- **Shed** is the counterpart to one-bucket-per-pass claiming. A worker that over-claimed on a cold start
-  (when it briefly believed it was alone) gives the excess back so the pool converges to an even split.
-  The guard `liveWorkers > 1` is load-bearing: **a lone worker never sheds — it must own every bucket**,
-  or events would stop being read.
-- **Reconcile readers** diffs `owned` against the currently-running readers, starts a reader for each
-  newly-owned bucket, and stops the reader for each newly-lost one. A bucket that moves owners resumes at
-  its own kiroku per-member checkpoint, so no event is dropped.
+Two failure choices are deliberate:
 
-## Each reader is a kiroku consumer-group member
+- an ownership-snapshot error reports `ShardSnapshotFailed` and estimates from an empty snapshot;
+- an acquisition error reports `ShardAcquireFailed` and preserves the **previous** local ownership
+  set rather than pretending every bucket was lost.
 
-`startReader` opens one kiroku consumer-group reader for a bucket and forks a drain thread:
+A reader that ends unexpectedly removes itself from the map and reports `ShardReaderDied`; a later
+pass can restart it while the lease remains owned. Ordinary synchronous handler exceptions do not
+kill the reader, because they enter the delivery retry path below.
+
+## `startReader` couples handler outcome to Kiroku
+
+Each bucket becomes a Kiroku consumer-group member. The important fields are the member, the bounded
+retry policy, and the bridge choice:
 
 ```haskell
-startReader store lease opts handler bucket = do
-  let subConfig =
-        (defaultSubscriptionConfig (lease ^. #subscriptionName) (opts ^. #target) (\_ -> pure Continue))
-          { Sub.batchSize = opts ^. #batchSize
-          , Sub.consumerGroup =
-              Just (ConsumerGroup{ member = fromIntegral bucket, size = fromIntegral (opts ^. #shardCount) })
-          }
-  (stream, cancelAction) <- subscriptionStream store subConfig (opts ^. #bufferSize)
-  tid <- forkIO (Stream.fold (Fold.drainMapM handler) stream)
-  pure (RunningReader (cancelAction >> killThread tid))
+let subConfig =
+      (defaultSubscriptionConfig subName target (\_ -> pure Continue))
+        { Sub.batchSize = opts ^. #batchSize
+        , Sub.consumerGroup =
+            Just (ConsumerGroup
+              { member = fromIntegral bucket
+              , size = fromIntegral (opts ^. #shardCount)
+              })
+        , Sub.retryPolicy = opts ^. #retryPolicy
+        }
+
+(stream, cancelAction) <-
+  subscriptionAckStream store subConfig (opts ^. #bufferSize)
 ```
 
-The `ConsumerGroup{member = bucket, size = N}` is what ties keiro's `bucket` to kiroku's hash partition —
-the same `(member, size)` kiroku uses to route a stream id to a bucket. The returned `RunningReader`
-captures the stop action (cancel the subscription, which terminates the drain, then kill the thread), so
-the reconcile loop can stop a lost bucket cleanly.
-
-## The loop, and why a crash is just failover
-
-`runShardedSubscriptionGroup` mints a worker id, ensures the `N` rows exist, then reconciles every
-`renewInterval` forever — with a `finally` that stops every reader on the way out:
+`subscriptionAckStream` yields an `AckItem` and waits on its one-shot reply. Keiro presents a smaller
+domain to the application:
 
 ```haskell
-runShardedSubscriptionGroup store subName opts handler = do
-  worker <- WorkerId <$> UUIDv4.nextRandom
-  let lease = ShardLease { subscriptionName = subName, workerId = worker
-                         , shardCount = opts ^. #shardCount, leaseTtl = opts ^. #leaseTtl }
-  _ <- runStoreIO store (ensureShards lease)
-  readers <- newIORef Map.empty
-  loop lease readers `finally` stopAll readers
- where
-  loop lease readers = forever $ do
-    _ <- reconcileShardsOnce store lease opts readers handler
-    threadDelay delayMicros
-  stopAll readers = readIORef readers >>= \m -> for_ (Map.elems m) stopReader
+data ShardDelivery = ShardDelivery
+  { event   :: RecordedEvent
+  , attempt :: Word
+  , bucket  :: Int
+  }
+
+data ShardAck
+  = ShardAckOk
+  | ShardAckRetry RetryDelay
+  | ShardAckDeadLetter DeadLetterReason
 ```
 
-On shutdown — the loop thread killed, simulating a crash — the `finally` stops every reader this worker
-holds, so its buckets stop being read immediately; its leases then expire and a surviving worker re-claims
-them on its next pass. **Failover needs no health-checking and no coordinator** — it is just "stop
-renewing, and someone else claims the expired lease". A fresh `WorkerId` per process start (chapter 03)
-is why a restarted binary never inherits the dead process's leases.
+`attempt` comes from the bridge and is zero-based. `toSubscriptionResult` maps the three
+constructors to Kiroku's `Continue`, `Retry`, and `DeadLetter`.
 
-Like the [push resume worker](/docs/keiro/walkthrough/scaling/02-the-push-aware-resume-loop), this worker
-lives in `IO`: it manages long-lived `forkIO` reader threads and holds the `KirokuStore` directly, running
-each lease pass through `runStoreIO`. The handler is a plain `RecordedEvent -> IO ()`, and because a
-sharded subscription delivers **at-least-once** (a brief overlap while a bucket changes owners), the
-handler must be idempotent — keyed on `eventId` — exactly as keiro's async-projection guidance already
-requires.
+Before replying, `handleItem` distinguishes exceptions:
 
-## The rebalance-signal seam
+```haskell
+handlerException err =
+  case fromException err of
+    Just async -> throwIO (async :: SomeAsyncException)
+    Nothing    -> pure (ShardAckRetry (opts ^. #handlerRetryDelay))
+```
 
-The fixed `threadDelay` between passes is a deliberate, documented seam (EP-51 Milestone 6). The shipped
-default is a pure poll: correctness — disjointness and failover — rests entirely on the lease table and
-needs no notification. But the [`Keiro.Wake`](/docs/keiro/walkthrough/scaling/01-the-wake-signal) channel
-wakes on event *appends* (`kiroku.events`), which is a *different* event from a shard ownership *change*.
-Signalling a prompt rebalance on a worker join or a voluntary relinquish would ride a dedicated
-`keiro_shard_rebalance` `NOTIFY` fired on claim/release — and the swap is local to this one `threadDelay`
-(replace it with a bounded wait on that channel, exactly as `runPollLoopWith` does for appends). It is left
-as the poll default because it is a latency optimisation, not a correctness requirement — the same
-discipline that governs push delivery throughout this tour.
+A synchronous exception becomes bounded retry. An asynchronous exception from cancellation,
+shedding, or shutdown escapes without filling the reply. Kiroku therefore cannot checkpoint an
+event merely because Keiro stopped its reader.
+
+## The Kiroku disposition ladder
+
+Kiroku owns the durable consequences:
+
+```text
+ShardAckOk
+  -> Continue
+  -> continue through the batch
+  -> save the member checkpoint at the batch tail
+
+ShardAckRetry delay
+  -> Retry delay
+  -> leave checkpoint before this event
+  -> redeliver with attempt + 1
+
+ShardAckDeadLetter reason
+  -> DeadLetter reason
+  -> INSERT kiroku.dead_letters + checkpoint advance in one statement
+
+Retry on the final allowed delivery
+  -> DeadLetterMaxAttempts totalDeliveries
+  -> the same atomic insert-and-advance
+```
+
+If the atomic dead-letter statement fails, Kiroku throws and leaves the checkpoint unadvanced. The
+reader may die and be restarted, but the event was not silently skipped.
+
+Successful events before a batch tail may replay after a crash. That is expected at-least-once
+behavior, so application effects still need event-ID idempotency even when no rebalance occurs.
+
+## Rebalance while a handler is running
+
+When reconciliation sheds a bucket, `stopReader` cancels the Kiroku subscription and kills its drain
+thread. If its handler had not replied, there is no acknowledgment. The new owner starts from the
+member checkpoint and sees that event again.
+
+A stale worker can also miss renewals and keep reading after its lease expires. The new owner may
+then deliver the same event concurrently. Kiroku checkpoint updates are monotonic, so the stale
+worker cannot move the cursor backward; only an idempotent handler prevents duplicated effects.
+
+This is the tested acceptance boundary: a batch-tail handler killed in flight is redelivered, a
+bucket shed mid-drain loses no event, and a zombie overlap may duplicate delivery without losing
+progress.
+
+## Loop and compatibility wrapper
+
+`runShardedSubscriptionGroupAck` mints a worker ID, calls `ensureShards`, and runs reconciliation
+every `renewInterval`. Its `finally` stops current readers and calls `relinquish`, so graceful
+shutdown exposes buckets immediately; a process crash falls back to lease expiry.
+
+`runShardedSubscriptionGroup` wraps the explicit API:
+
+```haskell
+runShardedSubscriptionGroup store subName opts handler =
+  runShardedSubscriptionGroupAck store subName opts $ \delivery -> do
+    handler (delivery ^. #event)
+    pure ShardAckOk
+```
+
+It remains source-compatible for always-successful handlers. Escaping synchronous exceptions are
+still retried, but only the explicit entry point can return an immediate poison dead letter.
+
+## The rebalance signal remains a seam
+
+The delay between reconcile passes is a poll. `Keiro.Wake` signals Kiroku event appends, not shard
+claims or releases. A dedicated `keiro_shard_rebalance` notification could shorten voluntary
+handoff, but it would be a latency optimization; lease expiry and the bounded poll remain the
+durable recovery path.
 
 <Cards>
   <Card title="03 — The shard lease" href="/docs/keiro/walkthrough/scaling/03-the-shard-lease" />
   <Card title="Run sharded subscriptions" href="/docs/keiro/how-to/run-sharded-subscriptions" />
-  <Card title="Subscription sharding (reference)" href="/docs/keiro/reference/subscription-sharding" />
-  <Card title="Scaling the workers" href="/docs/keiro/explanation/scaling-the-workers" />
+  <Card title="Replay subscription dead letters" href="/docs/keiro/how-to/replay-subscription-dead-letters" />
+  <Card title="Subscription sharding reference" href="/docs/keiro/reference/subscription-sharding" />
 </Cards>

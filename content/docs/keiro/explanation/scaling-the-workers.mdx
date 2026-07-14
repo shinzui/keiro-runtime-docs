@@ -1,91 +1,107 @@
 ---
 title: "Scaling the workers"
-description: "Two ways keiro scales its background workers without changing the durable model: LISTEN/NOTIFY push delivery cuts latency (react in sub-second instead of polling), and consumer-group sharding scales throughput (a pool of workers drains a busy category disjointly). Both keep correctness in the durable layer, not in the optimization."
+description: "How push-aware polling reduces latency and leased, acknowledgment-aware consumer groups increase throughput without weakening durability."
 ---
 
-keiro's background workers — the [resume worker](/docs/keiro/explanation/durable-execution#who-turns-the-crank-the-resume-worker),
-the [timer worker](/docs/keiro/explanation/durable-timers), the [outbox publisher](/docs/keiro/explanation/the-outbox-pattern),
-and [async-projection subscriptions](/docs/keiro/explanation/projections-read-models-and-snapshots) —
-all share one shape: poll the database, do a batch of idempotent work, commit, repeat. That shape is
-correct and operable, but at scale two pressures show up: **latency** (a fixed poll interval is also
-the worst-case reaction time) and **throughput** (one worker draining a busy category is a bottleneck).
+Keiro has two separate scaling tools:
 
-keiro answers each with an additive primitive that leaves the durable model untouched. The throughline:
-**correctness stays in the durable poll/lease layer; the optimization only changes *when* and *how
-many* workers run.**
+- [`Keiro.Wake`](/docs/keiro/reference/push-delivery) reduces the idle latency of durable poll loops.
+- [`Keiro.Subscription.Shard`](/docs/keiro/reference/subscription-sharding) spreads a busy category
+  across a leased Kiroku consumer group.
 
-## Latency: push delivery
+Both are coordination mechanisms. Neither replaces durable state or idempotent work.
 
-A poll loop sleeps a fixed interval between passes — the resume worker's default is a full second — so
-a workflow whose timer just fired can wait up to that interval before anything notices. You could
-shorten the interval, but that trades latency for wasted database round-trips on an idle system.
+## Push changes when a pass runs
 
-**Push delivery** ([`Keiro.Wake`](/docs/keiro/reference/push-delivery)) lets a worker instead *wait to
-be woken*. kiroku already fires a Postgres `NOTIFY` on every append and already runs **one** dedicated
-listener connection per store, fanning notifications to an in-process channel. A keiro worker
-subscribes to that channel (an in-memory `dupTChan`, **not** a new database connection) and blocks
-until either a notification arrives or a fallback timeout elapses — whichever first. So the system
-reacts within sub-second of real work, yet costs nothing on an idle one.
+A fixed poll is correct but turns its interval into worst-case reaction time. A push-aware loop waits
+on Kiroku's in-process broadcast of PostgreSQL `NOTIFY` events or on a fallback timeout, whichever
+happens first. It reuses the store's listener connection.
 
-The discipline that makes this safe: **push is an optimization over a durable poll, never a
-replacement.** A `NOTIFY` is best-effort — drop the listener for a moment and the notification is gone.
-So correctness never depends on a notification arriving. A missed wake only delays the next pass to the
-fallback interval, exactly as the old fixed poll did; the durable, idempotent pass is still the unit of
-work. In the worst case (every notification dropped) a push-aware worker behaves identically to the
-fixed-poll baseline. That is why the resume worker's `pollInterval` is simply *repurposed* as the
-fallback timeout: strictly better for latency, identical in the worst case.
+`NOTIFY` is best-effort, so a wake never carries correctness. The durable poll remains the unit of
+work, and the fallback guarantees another pass even if every notification is missed. Push changes
+latency, not truth.
 
-## Throughput: consumer-group sharding
+## Sharding changes how many readers run
 
-A single subscription worker reads a category's events in order, one batch at a time. For a busy
-category that is a throughput ceiling — and you cannot just run two copies of the same worker, because
-both would process every event.
+Kiroku assigns every originating stream to one of `N` consumer-group members and keeps a checkpoint
+for each member. Keiro adds dynamic membership: identical processes lease those member indices from
+`keiro.keiro_subscription_shards`, then open or close Kiroku readers to match their current leases.
 
-kiroku already solves the *partitioning* half: it can split a category into `N` **buckets**
-(consumer-group member indices) by a stable hash of the originating stream id, and keeps a per-bucket
-checkpoint, so `N` readers can each drain a disjoint slice. What it leaves to the operator is
-*membership* — "exactly one live process owns each bucket right now" — which by hand is fragile
-`[0..N-1]` wiring that breaks the moment a worker dies.
+The lease table solves assignment, not delivery. A reconcile pass:
 
-**Consumer-group sharding** ([`Keiro.Subscription.Shard`](/docs/keiro/reference/subscription-sharding))
-supplies that membership layer as a **lease**. You start the *same* worker binary `N` times; each mints
-a worker id and, every few seconds, runs one reconcile pass against a small `keiro_subscription_shards`
-table: renew the buckets it holds, claim up to its fair share of unowned-or-expired ones, shed any
-excess, and open/close kiroku readers to match. The result is a pool that partitions the category among
-itself — every event processed by exactly one worker — with **no external coordinator** (no
-etcd/ZooKeeper/Consul): coordination lives entirely in the lease table.
+1. estimates the current live worker count;
+2. renews existing leases and claims at most one bucket toward a fair share;
+3. sheds excess buckets after peers become visible; and
+4. reconciles live readers with that ownership set.
 
-Two design choices carry the weight:
+`FOR UPDATE SKIP LOCKED` ensures two valid claims cannot win the same lease row. Claiming only one
+bucket per pass lets concurrently starting workers become visible and converge instead of allowing
+the first process to monopolize the pool.
 
-- **A lease, not a held lock.** A renewable `lease_expires_at` timestamp gives lifetime ownership that
-  survives across the many transactions a worker's life spans — which neither a transaction-scoped
-  advisory lock (auto-released at commit) nor a session-scoped one (no connection affinity through a
-  pool) can do. When a worker dies it simply stops renewing; its leases expire and a survivor re-claims
-  the buckets. **Failover is automatic and coordinator-free.**
-- **Claim one bucket per pass.** Disjointness rests on a `FOR UPDATE SKIP LOCKED` claim, so two workers
-  racing the same bucket can never both win regardless of how stale their "how many of us are live"
-  estimate is. Claiming a single bucket per pass (rather than a whole fair share at once) keeps a
-  cold-starting worker from monopolising every bucket before its peers become visible; the pool climbs
-  to an even split together over a few intervals.
+## Why overlap still exists
 
-Because a bucket can briefly overlap owners while it changes hands, a sharded subscription is
-**at-least-once** — so its handler must be idempotent (keyed on `eventId`), exactly as keiro's
-[async-projection guidance](/docs/keiro/how-to/make-an-async-projection-idempotent) already requires.
-The lease governs *assignment only*; event positions stay in kiroku's per-bucket checkpoints, so a
-re-homed bucket resumes exactly where its previous owner left off.
+Lease exclusion does not stop code in a stale process. A worker can pause past `leaseTtl` while its
+reader remains alive; a successor then claims the expired bucket and starts from the durable member
+checkpoint. Until the stale reader stops, both can deliver the same event.
 
-## They compose
+This is why the real guarantee is at-least-once:
 
-Push and sharding are orthogonal and stack cleanly. Each sharded reader is still a poll/lease loop, so
-the same `Keiro.Wake` channel can shorten *its* idle gap; the rebalance interval is itself a documented
-seam where a dedicated rebalance `NOTIFY` could replace the fixed wait. Neither primitive changes what
-is durable — the journal, the checkpoints, the leases — so you can adopt either, both, or neither, and
-the worst case is always the plain fixed-poll, single-worker behaviour you started with.
+- make handler effects idempotent on `eventId`;
+- keep checkpoint writes monotonic; and
+- couple each event's handler outcome to Kiroku before allowing progress.
+
+Kiroku's checkpoint upsert cannot move backward, so a late stale acknowledgment does not regress
+progress. It can still repeat an external effect unless the handler deduplicates it.
+
+## Acknowledgment is the safety boundary
+
+The sharded worker uses Kiroku's `subscriptionAckStream`, not the plain pull bridge. The reader emits
+one `ShardDelivery` and blocks for a `ShardAck`:
+
+| Handler outcome | Delivery behavior | Checkpoint behavior |
+| --- | --- | --- |
+| `ShardAckOk` | Continue to later events. | Successful events are covered when the batch-tail checkpoint is saved. |
+| `ShardAckRetry delay` | Redeliver the same event after the delay. | Remains before the event. |
+| `ShardAckDeadLetter reason` | Park the source event and continue. | Dead-letter insert and member-checkpoint advance happen atomically. |
+| Shedding, shutdown, or another asynchronous interruption | No handler decision is written. | Remains before any unacknowledged event, which the next owner receives again. |
+
+This separates a **lease handoff** from a **delivery decision**. Losing assignment cancels the reader;
+it does not invent success. The next owner resumes from Kiroku's durable position.
+
+Ordinary `Continue` events use batch-tail checkpointing. If a crash happens after their idempotent
+effects but before the tail is saved, they replay. That is another normal source of at-least-once
+delivery, independent of lease overlap.
+
+## Bounded failure isolation
+
+`runShardedSubscriptionGroupAck` lets the handler choose retry or dead letter. A synchronous handler
+exception is converted to retry using `handlerRetryDelay`; an asynchronous exception is rethrown so
+shutdown cannot be mistaken for failure policy. `retryPolicy` bounds total deliveries (five by
+default). Exhaustion records `DeadLetterMaxAttempts` in `kiroku.dead_letters` and advances atomically,
+allowing later events in the member to drain.
+
+The compatibility `runShardedSubscriptionGroup` handler returns only `IO ()`. Completion maps to
+success, while synchronous exceptions use the same bounded retry ladder. Use the acknowledgment-aware
+entry point when the application knows that invalid input should be parked immediately.
+
+Dead letters are durable operator evidence. `replaySubscriptionDeadLetters` re-runs an idempotent,
+domain-specific handler and reports fresh, duplicate, failed, or missing outcomes. It deliberately
+does not delete or mark the source rows.
+
+## How the two tools compose
+
+Push and sharding are orthogonal today. The shard worker's ownership reconcile loop uses a fixed
+`renewInterval`; `Keiro.Wake` signals event appends, not lease changes. A future dedicated rebalance
+notification could reduce handoff latency, but lease expiry and polling would remain the correctness
+path.
+
+Choose push for idle reaction time. Choose sharding for category throughput. In both cases, verify
+the durable proof: workflow journal or worker tables for completed work, Kiroku member checkpoints
+for progress, and `kiroku.dead_letters` for terminal source-event failure.
 
 <Cards>
-  <Card title="Push delivery (Keiro.Wake)" href="/docs/keiro/reference/push-delivery" />
-  <Card title="Subscription sharding" href="/docs/keiro/reference/subscription-sharding" />
   <Card title="Enable push delivery" href="/docs/keiro/how-to/enable-push-delivery" />
   <Card title="Run sharded subscriptions" href="/docs/keiro/how-to/run-sharded-subscriptions" />
+  <Card title="Replay subscription dead letters" href="/docs/keiro/how-to/replay-subscription-dead-letters" />
   <Card title="The scaling walkthrough" href="/docs/keiro/walkthrough/scaling/00-start-here" />
 </Cards>
