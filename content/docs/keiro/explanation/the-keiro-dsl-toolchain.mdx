@@ -1,147 +1,131 @@
 ---
 title: "The keiro-dsl service toolchain"
-description: "Why a .keiro file is a typed specification of a keiro service, the firewall invariant that keeps it tractable, and how the checker, scaffolder, harness, and differ split safe boilerplate from dangerous decisions."
+description: "How a typed service specification, validation gate, transactional scaffolder, hand-owned holes, harnesses, and exhaustive diff divide service authoring safely."
 ---
 
-A keiro **service** — a bounded context using event sourcing, process managers, durable timers,
-durable workflows, and Kafka/PGMQ integration — is today hand-written as a large amount of highly
-regular Haskell. `keiro-dsl` is a separate package (and CLI) that makes that regularity explicit: a
-`.keiro` file becomes the **typed specification** of the service, the permanent machine-checkable
-source of truth, and the toolchain turns it into compiling Haskell.
+`keiro-dsl` makes a `.keiro` file the machine-checkable source of truth for a Keiro service. The
+toolchain derives regular Haskell wiring, forces persistence and delivery decisions into reviewable
+notation, and leaves behavior-bearing code in typed hand-owned seams.
 
-<Callout type="warn">
-keiro-dsl is **new** and in active development alongside keiro `0.1.0.0`. It is an *authoring* tool,
-not a runtime dependency: the code it scaffolds compiles against the ordinary keiro/keiki libraries
-and has no dependency on keiro-dsl. The spec extension is `.keiro`.
-</Callout>
+It is an authoring tool, not an application runtime dependency. Generated modules compile against
+Keiro and Keiki; an application does not import `keiro-dsl`.
 
-## The observation it is built on
+## One source, six gates
 
-An empirical audit of two real services found that **67%–96% of the code per feature is a
-deterministic template** — domain ADTs, ids, codecs, `EventStream`/projection wiring, register lists,
-the Template-Haskell splices, the process/timer/contract plumbing. The non-derivable remainder
-collapses into a small, closed set of **hole-kinds**: the transducer body, a projection's `apply` SQL,
-an upcaster body, a process `handle`, a fan-out body, and so on.
+The lifecycle has six distinct jobs:
 
-Two things follow. First, the deterministic 67–96% should never be hand-written — typos and drift
-there create silent bugs (an orphan stream category, a codec that no longer round-trips). Second, the
-genuinely dangerous decisions — inverted error semantics, opaque id derivations, fields whose names
-lie about their semantics — are *exactly* the ones a human or a coding agent gets wrong when left
-implicit. The spec's job is to **force each dangerous decision to be stated explicitly** and reject
-the spec before any Haskell is written if one is missing or stated the unsafe way.
+1. `new <kind>` prints a minimal valid starter for one supported node family.
+2. `parse` proves the notation parses and prints the canonical representation.
+3. `check` resolves references and rejects unsafe, incomplete, or contradictory decisions.
+4. `scaffold` plans and verifies the entire output set before writing generated and create-once files.
+5. The generated harness compiles with hand-filled behavior and proves facts, codecs, replay safety,
+   and selected runtime contracts.
+6. `diff --since <ref>` classifies later persistence and identity changes as `ADDITIVE`, `WARNING`,
+   or `BREAKING`; only breaking changes block the command.
 
-## What you do with a `.keiro` file
+That separation matters. Parsing does not imply semantic validity, scaffolding does not prove a
+hand-written guard or resolver, and a green current spec does not prove that an upgrade preserves
+durable identity.
 
-A developer (or a coding agent planning a feature) runs a five-step loop (optionally bootstrapping
-from `keiro-dsl new <kind>`, which prints a minimal valid skeleton for any node kind):
+## What the specification can own
 
-1. **Write** a service spec in terse notation covering keiro's full node surface: `aggregate`,
-   `process` + `timer`, `contract`/`intake`/`emit`/`publisher`, `workqueue`/`dispatch`, `workflow`,
-   and `operation`.
-2. **`keiro-dsl check`** the spec — rejecting any missing required decision *before any Haskell
-   exists* (add `--emit` to pretty-print the parsed spec on success).
-3. **`keiro-dsl scaffold`** the spec — emitting the symbol-free deterministic layer into
-   `-- @generated` modules, precisely-typed **holes** in hand-owned modules, and a verification
-   **harness**. It validates the spec first (never emits an invalid one), self-checks the firewall,
-   prints a report of what it wrote, and emits a Cabal-pasteable build manifest. Module placement is
-   configurable (`--module-root`/`--collocate`, or `module`/`layout` spec clauses) so the generated
-   layer can sit next to your domain code.
-4. **Fill** the transducer body and the holes (by hand or with a coding agent) against the generated
-   signatures, then run the harness to confirm behavior matches the spec.
-5. **`keiro-dsl diff --since <ref>`** to classify each later spec change as safe (additive) or
-   breaking (needs an upcaster or a deprecation).
+The top-level node inventory is closed and source-checked:
 
-The [notation reference](/docs/keiro/reference/keiro-dsl-notation) is the complete grammar and CLI;
-the [tutorial](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) walks the whole loop end to end
-on one aggregate.
+- domain and read side: `aggregate`, aggregate `projection`, first-class `readmodel`, and `snapshot`;
+- orchestration: `process` with one `timer`, and `router`;
+- integration: `contract`, `intake`, `emit`, and `publisher`;
+- background work: `workqueue` and `dispatch`;
+- durable execution: `workflow` and `operation`.
 
-## The load-bearing scope decision: the firewall
+Shared `id`, `enum`, and `rule` declarations supply generated types and total domain rules. Optional
+`module` and `layout` clauses control placement. The spec captures identities, schemas, policies,
+bindings, and typed topology. Arbitrary SQL, effectful fan-out, workflow bodies, symbolic aggregate
+transitions, and deployment tuning remain hand-owned.
 
-keiro-dsl is deliberately **not** a full code generator. It does **not** emit the symbolic transducer
-logic — the part that lowers guards and register writes to keiki's `./=` / `lit` / `B.slot` /
-`B.requireGuard` operators against Template-Haskell-produced identifiers. That is the most brittle,
-most framework-coupled code in a service, and it is exactly what a coding agent writes well from a
-spec plus examples. So it is left as a **hole** and pinned by the harness.
+## Why validation is the first semantic boundary
 
-This is enforced as a tested invariant — the **firewall**:
+Many plausible-looking defaults are wrong for durable systems, so `check` makes them explicit:
 
-<Callout type="info">
-**No `-- @generated` line ever contains a keiki symbolic operator.** The symbolic operators (`./=`,
-`.==`, `.||`, `lit`, `B.slot`, `B.requireGuard`) appear *only* in the hand-owned hole modules you
-write. `scaffold` checks this on its own output and exits non-zero on a breach (reporting `firewall:
-OK …` when it holds), so it is a tested invariant on every run — a breach is a scaffolder bug, not
-something to "fix" in place.
-</Callout>
+- time comes from typed input fields, never a sampled wall clock;
+- a process saga names a validated category, and process/router rejection and poison policies are
+  mandatory;
+- a timer has a separate `on-ambiguous` outcome, which cannot be `Fired`;
+- inbox duplicate delivery is success, prior failure and decode poison dead-letter, and transient
+  store failure retries;
+- workqueue store failure retries while decode failure dead-letters;
+- a router acknowledges resolver stability and uses target-based deterministic dispatch identity;
+- read-model table shape, consistency, feed, scope, and subscription identity agree;
+- event versions have contiguous upcasters and workflow signals match awaits;
+- Haskell-facing identifiers are ASCII, namespace-safe, non-keyword, and collision-free.
 
-The firewall is what makes the whole design tractable: the generated layer is pure boilerplate that is
-safe to overwrite on every scaffold, and the dangerous, framework-coupled logic lives in one place
-you own and the harness verifies. It also draws a clean line for the two writers — re-running
-`scaffold` overwrites every `-- @generated` module unconditionally but **never** clobbers a filled
-hole module (those are create-if-absent).
+Diagnostics are located and coded. Warnings remain visible but do not fail `check`; errors do.
 
-Also out of scope by design: read-model table migrations (delegated to `codd`) and arbitrary in-body
-computation — branching, raw SQL, string surgery, inter-step data flow. Those are agent-written,
-harness-checked holes, not things the spec expresses.
+## The ownership firewall
 
-## Where the value concentrates: the dangerous-decision checks
+Scaffolding produces two kinds of files:
 
-The bulk of the payoff is `check` rejecting an unsafe spec before any Haskell exists. The checker
-forces each dangerous decision to be present *and* flags the inversion if it is stated the
-unsafe-but-plausible way:
+| Ownership | Lifecycle | Typical contents |
+|---|---|---|
+| Generated, marked `-- @generated` | overwritten on re-scaffold | ADTs, codecs, event streams, tables, policies, harnesses |
+| Hand-owned holes | created only when absent | symbolic transitions, SQL, resolvers, fan-out, worker/body assembly |
 
-- **Time is injected, never sampled.** A deadline or sleep is computed from a timestamp carried in the
-  input (e.g. `observedAt`), never from a wall-clock read — otherwise replay would compute a different
-  time. The checker rejects a sampled clock (`ClockSampled`, `ProcessFireAtNotInjected`).
-- **The inbox disposition inversions.** An intake's disposition table must be **complete**, and two
-  outcomes are dangerously counter-intuitive: `duplicate => ackOk` (a replay is *success*, not a
-  retry) and `previouslyFailed => deadLetter` (a prior failure is *not* retried). A third:
-  `decodeFailed => deadLetter` (poison, not unbounded retry). State them correctly; the checker flags
-  the wrong way.
-- **Dangerous timer defaults.** A timer with no `max-attempts` ping-pongs forever; an unknown timer
-  status silently cancels; dispatch-ids are runtime-owned and must be un-overridable. The spec forces
-  an explicit ceiling and forbids a user-supplied dispatch-id (`ProcessDispatchIdSupplied`).
-- **The pgmq inversions.** A workqueue's `storeFailure => retry` (transient) must retry while
-  `decodeFailure => deadLetter` (poison) must dead-letter; and the physical queue/table names are
-  re-derived and checked against the captured fixture so a hand-typed name cannot drift
-  (`WqPhysicalDivergence`).
-- **Await ↔ signal coupling.** Every `signal <label> of <workflow>` must match an `await <label>` of
-  that workflow — otherwise the deterministic awakeable id never matches and the workflow waits
-  forever (`AwaitSignalMismatch`).
-- **Codec evolution.** A versioned event (`vN`, N > 1) needs a contiguous upcaster hole; a status-map
-  projection must be total. `diff --since` then classifies a later field-add-without-bump as
-  **BREAKING**.
+Generated aggregate event streams expose a raw definition and a public validated value built with
+`mkEventStreamOrThrow`. The generated harness checks `validateTransducer`; application and worker
+wiring consumes the validated value.
 
-## The harness — not the scaffold — pins behaviour
+The firewall is mechanical: generated modules may not contain Keiki symbolic operators such as
+`./=`, `.==`, `lit`, `B.slot`, or `B.requireGuard`. Those operators belong in hand-owned aggregate
+holes, where the generated types constrain them and the harness tests them.
 
-Two agents can fill the holes differently but correctly and both pass; one wrong guard, mapping, or
-disposition fails a *specific* named harness test. The scaffolder emits, alongside the generated layer,
-a harness that asserts `validateTransducer == []` (the [replay-safety
-check](/docs/keiro/reference/event-stream-and-stream#validatedeventstream-and-replay-safety-validation)),
-codec round-trips, the time-injection / disposition / id decisions, and a behavioural accept. So the
-guarantee that your fill matches the spec is *behavioral and tested*, not textual. This is also why the
-scaffold can safely omit the symbolic logic: the harness, not the generator, is what proves the filled
-service is correct.
+Before the first write, scaffold validates the spec, detects exact and case-folded module collisions,
+checks faithful lowering and the firewall, and protects any existing generated target without its
+banner. `--force-generated-overwrite` bypasses only that last banner protection. It is an explicit
+adoption tool, not a general "ignore safety" switch.
 
-The generated `EventStream` module follows the same runtime boundary as hand-written code. It keeps a
-raw `<node>EventStreamDef` record for construction, exports `<node>EventStream ::
-ValidatedEventStream …`, and builds that value with `mkEventStreamOrThrow` after the generated
-harness has a validation proof. Downstream generated process/router wiring therefore receives
-validated streams, not bare records.
+## Manifests and stale output
 
-## When to reach for it
+A successful scaffold emits a manifest with Cabal-ready module/dependency blocks and a per-context
+scaffold record. On the next run, paths that are no longer planned appear under `stale:`. Nothing is
+deleted automatically: generated entries are reviewable deletion candidates; hole entries are
+hand-owned code and require inspection.
 
-Use keiro-dsl when you are building or evolving a keiro service and want the spec to be the source of
-truth — especially when a coding agent is doing the filling, because the spec is what keeps it from
-quietly choosing the unsafe inversion. For a one-off aggregate with no registers, guards, process
-managers, or integration, hand-writing is fine; the DSL earns its keep on the regular, dangerous,
-multi-node services it was audited against.
+The pair prevents two common upgrade failures: forgetting a newly generated module in Cabal and
+silently leaving an obsolete generated module in the build.
 
-## Where to go next
+## Why the harness is the behavioral proof
 
-- [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — the full
-  write → check → scaffold → fill → harness → diff loop on one aggregate.
-- [keiro-dsl notation](/docs/keiro/reference/keiro-dsl-notation) — the complete grammar for every node
-  family and the CLI.
-- [Check a service spec](/docs/keiro/how-to/check-a-service-spec),
-  [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes), and
-  [Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff).
+Two implementations can satisfy the same typed hole in different ways. Text generation cannot prove
+which implementation matches the service decision. Harnesses therefore assert observable facts:
+codec round-trips, replay-safety validation, aggregate accepts/rejects, process/timer dispositions,
+router identity and policy, read-model declarations, queue policy, and workflow facts.
+
+A scaffold report proves the generated half is coherent. A green harness proves the generated and
+hand-owned halves agree.
+
+## Why `diff` is a separate upgrade gate
+
+`check` validates one snapshot of a service. `diff` compares two snapshots over an exhaustive
+node-family registry and asks whether stored bytes or durable identities survive the change.
+
+- `ADDITIVE` is safe to introduce.
+- `WARNING` changes forward behavior or policy and exits zero, but demands review.
+- `BREAKING` can strand persisted data, cursors, jobs, or retry identity and exits nonzero.
+
+The output is deliberately regular:
+
+```text
+<tier>: <node> <facet> <subject>: <detail> [optional-code]
+```
+
+Versioning an event and supplying a contiguous upcaster can turn an otherwise breaking payload
+change into an additive one. Renaming a stable workflow, router, process category, queue, read-model
+table/subscription, or identifier prefix remains breaking because code cannot migrate the old
+identity implicitly.
+
+## Continue by task
+
+- [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl)
+- [Migrate a keiro spec to 0.2](/docs/keiro/how-to/migrate-a-keiro-spec-to-0-2)
+- [Check a service spec](/docs/keiro/how-to/check-a-service-spec)
+- [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes)
+- [Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff)

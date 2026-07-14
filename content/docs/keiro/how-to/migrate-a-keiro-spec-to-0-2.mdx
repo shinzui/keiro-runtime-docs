@@ -1,0 +1,153 @@
+---
+title: "Migrate a keiro spec to 0.2"
+description: "Update 0.1 process syntax, worker policies, identifiers, scaffold ownership, and diff gates to the 0.2 contract."
+---
+
+Upgrade the spec before regenerating application code. Keiro-dsl 0.2 intentionally rejects several
+0.1 forms at parse or validation time; it does not silently choose new worker or persistence policy.
+
+## 1. Save a durable baseline
+
+Commit the last known-good 0.1 `.keiro` files and their hand-owned modules. Do not edit generated
+modules during the upgrade. You need a Git baseline for `diff --since` and a clean distinction
+between generated and hand-owned files.
+
+## 2. Replace raw saga stream construction
+
+The 0.1 form concatenated a raw prefix:
+
+```keiro-dsl
+saga Surge stream="hospital-surge-" <> correlationId
+```
+
+The 0.2 form names a validated stream category:
+
+```keiro-dsl
+saga Surge category "hospitalSurge"
+```
+
+Categories are non-empty and may not contain `-`, `:`, whitespace, control characters, or equal
+`$all`; use camel case for compound names. Generated fills use the category constant with
+`entityStream` or `entityStreamId`, never text concatenation.
+
+Changing the category changes persistent saga identity. After the syntax migration, preserve the
+old category value where possible and let `diff` classify any intentional identity change.
+
+## 3. State node-level failure policy
+
+Every process and router now declares both policies:
+
+```keiro-dsl
+rejected => halt
+poison => halt
+```
+
+Each value is `halt`, `deadLetter`, or `skip`. Ordinary `CommandRejected` and
+`CommandAmbiguous` dispatch failures follow `rejected`; decode/unrecoverable input follows `poison`.
+Align dispatch `on-failed` arms with the node policy or `check` reports `PolicyContradiction`.
+
+## 4. Separate timer ambiguity from rejection
+
+Add the mandatory `on-ambiguous` arm to each timer fire table:
+
+```keiro-dsl
+on-ok Fired ; on-reject Fired ; on-ambiguous Retry ; on-error Retry ; not-mine Retry
+```
+
+`on-reject Fired` may describe a benign business race. `CommandAmbiguous` means multiple aggregate
+edges matched and is a definition bug; `on-ambiguous Fired` is rejected. Use `Retry` with the timer's
+declared `max-attempts` so the defect produces a durable dead-letter witness at the ceiling.
+
+## 5. Fix hardened identifiers and literals
+
+Run `check` and repair every located name error. Identifiers are ASCII; type/node/constructor names
+must be Haskell-safe `PascalCase`; field/register names start lowercase or `_`; Haskell keywords and
+generated constructor collisions are rejected. Duplicate node, enum, command, event, singleton
+`wire`/`projection`, and transition `goto` declarations are no longer tolerated.
+
+Numeric literals are parsed through unbounded `Integer` and then checked against the target `Int`.
+Replace an out-of-range literal instead of relying on wraparound.
+
+## 6. Re-check all mandatory policy tables
+
+The hardened validator resolves the entire topology and complete disposition tables. In particular:
+
+- inbox: `duplicate => ackOk`, `previouslyFailed => deadLetter`, and `decodeFailed => deadLetter`;
+- workqueue: `storeFailure -> retry` and `decodeFailure -> deadLetter`;
+- emit: a mandatory `_ => skip` arm;
+- workflow signal: label and value type match the target `await`;
+- register initial values, read-model references/columns, and aggregate status-map keys resolve
+  exactly.
+
+Use `check --emit` to see the canonical accepted spec:
+
+```bash
+keiro-dsl check service.keiro --emit
+```
+
+The committed `hospital-surge.keiro` fixture is the current process/timer example:
+
+```bash
+keiro-dsl check keiro-dsl/test/fixtures/hospital-surge.keiro
+# OK
+```
+
+## 7. Re-scaffold without crossing ownership
+
+Scaffold now plans and validates all output before it writes. An existing generated target must
+contain `-- @generated`; otherwise the command exits 1 and leaves every file untouched.
+
+```bash
+keiro-dsl scaffold service.keiro --out gen
+```
+
+If a protected path is actually hand-owned, move it. Use `--force-generated-overwrite` only when
+you have reviewed that exact file and intend to adopt it as generated code. The switch bypasses only
+the missing-banner guard.
+
+Review the new manifest and scaffold record. Resolve every later `stale:` entry manually; scaffold
+never deletes a generated or hole file.
+
+## 8. Recompile the generated and hand-owned halves
+
+Generated process and router modules now expose worker options that must be passed to
+`runProcessManagerWorkerWith` or `runRouterWorkerWith`. Saga fills use generated category constants.
+Reconcile your old holes with the newly generated signatures, then run the relevant conformance or
+application harness.
+
+## 9. Gate the upgrade with the three-tier diff
+
+Keiro-dsl 0.2 prints every change as:
+
+```text
+ADDITIVE: <node> <facet> <subject>: <detail>
+WARNING: <node> <facet> <subject>: <detail> [Code]
+BREAKING: <node> <facet> <subject>: <detail> [Code]
+```
+
+Only a `BREAKING` line makes the command exit nonzero:
+
+```bash
+keiro-dsl diff --since <last-0.1-ref> service.keiro
+```
+
+A process name, correlation derivation, saga category, timer ID prefix, or fired-event-ID prefix
+change is reported as a breaking `derived-identity` change. A timer-window change is a `WARNING` and
+exits zero because already-scheduled rows retain their persisted deadline. Review warnings even
+though they do not block CI.
+
+<Callout type="warn">
+Passing `check` proves the new spec is internally valid. Passing `diff` proves no classified
+persistence or identity change is breaking. You need both gates during an upgrade.
+</Callout>
+
+## Upgrade checklist
+
+- [ ] Raw saga prefixes are replaced with validated categories.
+- [ ] Every process/router has `rejected` and `poison`.
+- [ ] Every timer has `on-ambiguous Retry` and an attempt ceiling.
+- [ ] Hardened identifiers, literals, references, and tables pass `check --emit`.
+- [ ] No hand-owned file sits at a generated path.
+- [ ] Manifest additions and stale records are reconciled.
+- [ ] Generated worker options/category constants replace hand-retyped values.
+- [ ] Harnesses pass and `diff --since <last-0.1-ref>` has no unapproved breaking line.

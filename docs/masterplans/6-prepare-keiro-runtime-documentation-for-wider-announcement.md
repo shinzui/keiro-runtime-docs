@@ -84,7 +84,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 | EP-1 | Refresh keiki 0.2 correctness replay and persistence documentation | `docs/plans/40-refresh-keiki-0-2-correctness-replay-and-persistence-documentation.md` | None | None | Complete |
 | EP-2 | Refresh keiro command replay snapshot and read-model reliability documentation | `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md` | None | EP-1 | Complete |
 | EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Complete |
-| EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Not Started |
+| EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | In Progress |
 | EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Not Started |
 | EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | Not Started |
 | EP-7 | Prepare announcement navigation compatibility and whole-site release gate | `docs/plans/46-prepare-announcement-navigation-compatibility-and-whole-site-release-gate.md` | EP-1, EP-2, EP-3, EP-4, EP-5, EP-6 | None | Not Started |
@@ -191,7 +191,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T17:16:13Z) EP-3 Milestone 1: refresh process-manager and router delivery.
 - [x] (2026-07-14T17:26:57Z) EP-3 Milestone 2: refresh sharded delivery and dead-letter operations.
 - [x] (2026-07-14T17:42:25Z) EP-3 Milestone 3: refresh workflow and cross-worker operations.
-- [ ] EP-4 Milestone 1: create the keiro-dsl 0.2 learning and upgrade path.
+- [x] (2026-07-14T17:54:30Z) EP-4 Milestone 1: create the keiro-dsl 0.2 learning and upgrade path.
 - [ ] EP-4 Milestone 2: make the notation reference complete and navigable.
 - [ ] EP-4 Milestone 3: add task-oriented authoring and evolution guides.
 - [ ] EP-4 Milestone 4: reconcile keiro-dsl across the keiro documentation.
@@ -254,6 +254,9 @@ interactions between child plans. Provide concise evidence.
 - EP-2 established the runtime schema split consumed by EP-5 and EP-6: application projection data
   is schema-qualified outside both Keiro's `keiro` framework schema and Kiroku's `kiroku` store
   schema. The later migration plans own how those schemas are composed and deployed.
+- EP-4 confirmed that Keiro 0.3.0.0 changes only keiro-dsl release metadata after the planned source
+  boundary. The authoring grammar, validators, scaffolder, fixtures, and 0.2 user surface remain
+  unchanged at committed `c68dcc7`.
 
 
 ## Decision Log
@@ -323,3 +326,7 @@ Compare the result against the original vision.
   workflow store-error, and correlation contracts; EP-6 inherits the framework-schema correction;
   EP-7 inherits at-least-once announcement language, explicit-skip caveats, the two dead-letter
   domains, and the durable-worker outcome checklist.
+- EP-4 Milestone 1 rebuilt the keiro-dsl learning spine around the current
+  aggregate/read-model/router cold-start fixture, documented the six authoring and upgrade gates,
+  and added an explicit 0.1-to-0.2 migration checklist. The upstream check and newsurface
+  conformance suite, docs build, and 452-file link scan all passed.

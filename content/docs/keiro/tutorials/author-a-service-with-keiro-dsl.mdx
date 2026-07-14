@@ -1,172 +1,197 @@
 ---
 title: "Author a service with keiro-dsl"
-description: "Walk the full write → check → scaffold → fill → harness → diff loop on one aggregate, with the agent never touching a generated module."
+description: "Build an aggregate, registered read model, and stable router through the write, check, scaffold, fill, harness, and diff loop."
 ---
 
-This tutorial closes the full keiro-dsl loop on a real captured fixture, the `Reservation` aggregate,
-end to end. By the end you will have written a typed spec, had it rejected and accepted, scaffolded the
-deterministic layer plus typed holes, filled one hole, run the harness that pins your fill, and gated a
-later change. For the concepts behind each step — the firewall, the dangerous-decision checks — read
-[The keiro-dsl service toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain) first; for the full
-grammar, keep the [notation reference](/docs/keiro/reference/keiro-dsl-notation) open.
+This tutorial builds the `transfer-routing` service from the current conformance corpus. It is a
+small but realistic vertical: a registered read model selects hospitals, a router turns an accepted
+transfer need into one command per selected hospital, and an aggregate records each routed need.
+
+The finished source is `keiro-dsl/test/fixtures/transfer-routing.keiro` in the Keiro repository. Its
+filled proof lives under `keiro-dsl/test/conformance-newsurface/`; it does not depend on the separate
+example application.
 
 <Callout type="info">
-Run everything from the keiro repo root. The CLI is `cabal run keiro-dsl --` (shown as `keiro-dsl`
-below). The fixtures referenced live under `keiro-dsl/test/fixtures/` and the reference fills under
-`keiro-dsl/test/conformance/`.
+Run from the Keiro repository root. The installed command is shown as `keiro-dsl`; in the source tree
+use `cabal run keiro-dsl --`, or put `keiro-dsl/bin` on `PATH`.
 </Callout>
 
-## 1. Write the spec
+## 1. Start with the service topology
 
-`keiro-dsl/test/fixtures/reservation.keiro` declares one `aggregate Reservation`: a few id types and
-enums, a `rule`, four registers, six states (three terminal), two commands, two events, and two
-transitions — the first carrying a guard and a register write — plus a `wire` line and a `projection`
-with a `status-map`. The decision-bearing core of it:
+Create `transfer-routing.keiro`:
 
 ```keiro-dsl
-aggregate Reservation
+context transfer-routing
+
+readmodel hospital_load {
+  table = "hospital_load"
+  schema = "hospital_transfer"
+  columns {
+    hospital_id text required
+    region text required
+    available_beds int required
+  }
+  version = 1
+  shape = "fnv1a:977395d28f254ddb"
+  consistency = Eventual
+  feed = subscription
+  subscription = "transfer-routing-hospital-load-sub"
+}
+
+router HospitalTransferRouter
+  name "hospital-transfer-router"
+  input AcceptedHospitalTransferNeed { transferNeedId region }
+  key input.transferNeedId via idText
+  resolve stable via read-model hospital_load row { hospitalId }
+  target Hospital
+  projections [ ]
+  dispatch-each RouteAcceptedTransferNeed {
+    transferNeedId=input.transferNeedId hospitalId=resolved.hospitalId
+  }
+    on-appended AckOk ; on-duplicate AckOk ; on-failed Retry
+  dispatch-id strategy=uuidv5 from=(name, key, sourceEventId, targetStreamName, occurrence)
+  rejected => deadLetter
+  poison => halt
+
+aggregate Hospital
   regs
-    reservationState ReservationVertex = Unrequested
-  states Unrequested Held Confirmed Expired!
+  states Accepting
 
-  command RequestTransferReservation { reservationId hospitalId commandId divertStatus lifeCriticalOverride:Bool }
-  event   TransferReservationCreated = fields(RequestTransferReservation)
+  command RouteAcceptedTransferNeed { transferNeedId hospitalId }
+  event AcceptedTransferNeedRouted = fields(RouteAcceptedTransferNeed)
 
-  Unrequested -- RequestTransferReservation -->
-    guard divertStatus != TotalDivert || lifeCriticalOverride
-    write reservationState := Held
-    emit  TransferReservationCreated
-    goto  Held
-
-  wire kind=ctorName fields=camelCase schemaVersion=1
-  projection transfer_decisions consistency=Strong key=reservationId
-    status-map { Created=>held Confirmed=>confirmed }
+  Accepting -- RouteAcceptedTransferNeed -->
+    emit AcceptedTransferNeedRouted
+    goto Accepting
 ```
 
-Write the smallest spec that captures the decisions; the deterministic boilerplate is derived, so do
-not hand-write it.
+The spec states the persistence and delivery decisions, not arbitrary application code. In
+particular:
 
-## 2. Parse (sanity)
+- the read-model table is schema-qualified and its ordered column surface is captured by `shape`;
+- `resolve stable` acknowledges that retrying a source event must not discover a drifting recipient
+  set when exact fan-out matters;
+- the router identity includes its stable name, source key, source event, target stream, and
+  occurrence, so two selected hospitals receive distinct deterministic dispatch IDs;
+- rejection and poison handling are explicit worker policies; and
+- the aggregate transition is durable because it emits an event before returning to `Accepting`.
+
+## 2. Parse and check before generating Haskell
+
+Normalize the syntax, then run the semantic gate:
 
 ```bash
-keiro-dsl parse keiro-dsl/test/fixtures/reservation.keiro
-```
-
-It echoes the spec pretty-printed (round-trips). A parse error is line-numbered — fix the notation.
-
-## 3. Check (the gate — before any Haskell)
-
-```bash
-keiro-dsl check keiro-dsl/test/fixtures/reservation.keiro ; echo "exit=$?"
+keiro-dsl parse transfer-routing.keiro
+keiro-dsl check transfer-routing.keiro
 # OK
-# exit=0
 ```
 
-`OK` / exit 0 means every required decision is present and no dangerous inversion is stated the wrong
-way. Warnings (e.g. benign-inversion notices) are informational and pass. To see a rejection, try a
-sibling fixture: `reservation-no-statusmap.keiro` reports `StatusMapNotTotal`,
-`reservation-clock.keiro` reports `ClockSampled`. Each `error[Code]` names the rule and line — fix the
-**spec**, not the generated code.
+`parse` proves the file is valid notation and prints its canonical form. `check` resolves the router,
+read-model, aggregate, command, input, row, and binding references. It also verifies the captured
+read-model shape and the router's policy table. Either command exits nonzero on failure.
 
-## 4. Scaffold (emit generated layer + holes)
+Use `check --emit` when you want both steps in one command:
 
 ```bash
-keiro-dsl scaffold keiro-dsl/test/fixtures/reservation.keiro --out /tmp/gen
-find /tmp/gen -name '*.hs' | sort
+keiro-dsl check transfer-routing.keiro --emit
 ```
 
-You get four `-- @generated` modules (`Domain`, `Codec`, `EventStream`, `Projection`) + a `Harness` +
-a create-if-absent `HospitalCapacity/Reservation/Holes.hs`. The `Domain` module has the state-vertex
-enum, the command/event records and sums, the `ReservationRegs` type-list, `initialReservationRegs`,
-and the two TH splices — and **no** keiki symbolic operator.
+Fix a failure in the `.keiro` file. Do not compensate for a rejected spec in generated Haskell.
 
-`scaffold` validates the spec first (it refuses to emit anything for an invalid spec), then prints a
-report to stderr and **self-checks the firewall** — no manual `grep` needed. It exits non-zero on a
-breach; on success you'll see the `firewall: OK …` line plus what it wrote and where the manifest
-landed:
+## 3. Scaffold the two ownership domains
 
-```text
-firewall: OK (5 generated modules scanned, 0 forbidden operators)
-harness:  run `cabal test <your-component>` over Generated.HospitalCapacity.Reservation.Harness
-manifest: /tmp/gen/keiro-dsl-manifest.hospital-capacity.txt
+Generate into a disposable directory first:
+
+```bash
+keiro-dsl scaffold transfer-routing.keiro --out gen
 ```
 
-That `keiro-dsl-manifest.<context>.txt` carries paste-ready `other-modules:`/`build-depends:` blocks
-for wiring the modules into a Cabal stanza. (To place the generated layer next to your domain code
-instead of a parallel `Generated.*` tree, add `--module-root <Prefix> --collocate`.)
+The output is intentionally split:
 
-The guard you must encode is annotated in `Holes.hs`:
+| Node | Overwritable generated modules | Create-once, hand-owned modules |
+|---|---|---|
+| `Hospital` | `Domain`, `Codec`, `EventStream`, `Projection`, `Harness` | `Hospital/Holes.hs` |
+| `hospital_load` | `ReadModelTable`, `ReadModel`, `ReadModelHarness` | `Hospital_load/ReadModelHoles.hs` |
+| `HospitalTransferRouter` | `Router`, `RouterHarness` | `HospitalTransferRouter/RouterHoles.hs` |
 
-```text
--- HOLE guard: divertStatus != TotalDivert || lifeCriticalOverride
-```
+Every generated file carries `-- @generated`. Before writing, the scaffolder validates the whole
+output plan: module paths, type and policy lowering, firewall cleanliness, and existing generated
+file banners. If a target exists without the banner, scaffold exits 1 and writes nothing. Move the
+hand-owned file, or use `--force-generated-overwrite` only when deliberately adopting that path as
+generated code.
 
-<Callout type="warn">
-Re-running `scaffold` overwrites every `-- @generated` module but **never** clobbers a filled hole
-module. Never edit a `-- @generated` line — change the `.keiro` and re-scaffold instead.
-</Callout>
+A successful report also names the harnesses, confirms `firewall: OK …`, and writes:
 
-## 5. Fill the transducer hole
+- `keiro-dsl-manifest.transfer-routing.txt`, with Cabal `other-modules:` and `build-depends:` blocks;
+- `keiro-dsl-scaffold-record.transfer-routing.txt`, used on later runs to report stale paths.
 
-Open `Holes.hs` and fill the body against the **generated** names (the TH-produced
-`inCtor…`/`wire…`/`…TermFields`, the `Keiro.Codec`, the `ProcessManager` wiring). The committed
-reference fill lives at `keiro-dsl/test/conformance/HospitalCapacity/Reservation/Holes.hs`; it encodes
-the guard with keiki operators:
+Re-scaffolding never deletes stale files. Review `stale: generated` candidates before deleting them,
+and treat every `stale: hole` entry as hand-owned code.
+
+## 4. Fill the behavior-bearing seams
+
+Never edit a generated file. Fill the aggregate transducer in `Hospital/Holes.hs`, the qualified SQL
+and projection behavior in `Hospital_load/ReadModelHoles.hs`, and the resolver/runtime assembly in
+`HospitalTransferRouter/RouterHoles.hs` (the corpus keeps the completed router value in
+`RouterValue.hs`).
+
+The read-model hole imports the generated table constant:
 
 ```haskell
-B.requireGuard (d.divertStatus ./= lit TotalDivert .|| d.lifeCriticalOverride .== lit True)
-B.slot @"reservationState" =: lit ReservationHeld
-B.emit wireTransferReservationCreated TransferReservationCreatedTermFields { … }
-B.goto ReservationHeld
+import Generated.TransferRouting.Hospital_load.ReadModelTable
+  (hospitalLoadQualifiedTable)
 ```
 
-These symbolic operators live **only** here, never in a `-- @generated` module — that is the firewall.
-Use the [conformance corpus](/docs/keiro/cookbook/inbox-disposition-the-three-inversions) and the
-in-repo `docs/corpus/keiro-dsl-corpus.md` index to see how a real spec's holes were filled.
+Use that value in SQL instead of relying on PostgreSQL `search_path`. The router fill queries the
+read model, constructs one `PMCommand` per row, builds targets with the generated `hospitalCategory`,
+and passes the generated `hospitalTransferRouterWorkerOptions` to `runRouterWorkerWith`.
 
-## 6. Run the harness (pin behaviour)
+`on-duplicate AckOk` is safe only because the generated runtime confirms the attempted event ID in
+the intended target stream. A hand-written dispatch path must call `confirmBenignDuplicate`; a bare
+`DuplicateEvent` match is not evidence of success.
 
-The scaffolder emits a harness plus golden round-trips. Compile and run it via the relevant `cabal
-test` component:
+## 5. Run the cold-start proof
+
+The checked-in proof compiles the generated and hand-owned sides together:
 
 ```bash
-cabal test keiro-dsl-conformance
-# PASS  validateTransducer is empty
-# PASS  clock-free: spec samples no wall clock
-# PASS  golden round-trip: TransferReservationCreated
-# PASS  golden round-trip: TransferReservationConfirmed
-# PASS  accepts RequestTransferReservation from ReservationUnrequested
+cabal test keiro-dsl-conformance-newsurface
 ```
 
-The harness — not the scaffold — is what guarantees your fill matches the spec. To prove it, run
-`bash keiro-dsl/test/mutation-test.sh`: it flips the filled guard `./=` to `.==` and shows the specific
-`accepts RequestTransferReservation …` assertion turn **red**. Restoring returns it to green. Two
-agents can fill the holes differently but correctly and both stay green; one wrong guard reddens a
-named test.
+It asserts the aggregate harness, validated event-stream construction, read-model facts, router
+name/key/policy, stable resolver source, selected target stream, and dispatched command. A green
+scaffold alone does not prove your fills; the harness does.
 
-## 7. Diff (gate evolution over time)
+After any spec change, re-scaffold and rerun the same component. Generated modules are refreshed;
+filled holes remain in place.
 
-When you later change the spec, gate the change against history:
+## 6. Gate evolution with `diff`
+
+Commit a known-good spec, then compare the working copy with it:
 
 ```bash
-keiro-dsl diff --since <git-ref> keiro-dsl/test/fixtures/reservation.keiro ; echo "exit=$?"
+keiro-dsl diff --since HEAD transfer-routing.keiro
 ```
 
-`reservation-v2.keiro` evolves `TransferReservationConfirmed` to v2 with `upcast from v1 = HOLE`.
-`bash keiro-dsl/test/diff-test.sh` shows that adding a field **without** the version bump is `BREAKING`
-(exit non-zero), while the v2 + upcaster form is `ADDITIVE` (exit 0) — the merge gate. The
-`keiro-dsl-conformance-v2` component then proves the v2 codec (`schemaVersion = 2`, `upcasters`)
-compiles and the filled upcaster migrates a v1-tagged payload through the chain.
+Each line has this shape:
 
-## What you did
+```text
+<ADDITIVE|WARNING|BREAKING>: <node> <facet> <subject>: <detail> [optional-code]
+```
 
-You wrote → checked → scaffolded → filled → ran the harness → diffed, and never touched a generated
-module. The spec rejected the unsafe shapes before any Haskell existed; the scaffold emitted the
-symbol-free 67–96%; the harness pinned your one filled hole to behaviour; and `diff` gated the next
-change. Next, apply it to a non-aggregate node — see the [notation
-reference](/docs/keiro/reference/keiro-dsl-notation) for `process`/`timer`, `intake`/`emit`,
-`workqueue`/`dispatch`, and `workflow`/`operation`, and the how-tos for each CLI step:
+Only `BREAKING` makes the command exit nonzero. For this service, changing the router `name`, key
+derivation, read-model identity/table/subscription, target aggregate, or aggregate wire identity is
+breaking because durable rows or retries still refer to the old identity. A forward-policy change
+may be a visible `WARNING`; a safe new surface is `ADDITIVE`.
 
-- [Check a service spec](/docs/keiro/how-to/check-a-service-spec)
-- [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes)
-- [Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff)
+## You now own the loop
+
+The repeatable lifecycle is:
+
+```text
+new/write → parse/check → scaffold → fill → harness → diff → re-scaffold
+```
+
+Keep the [notation and CLI reference](/docs/keiro/reference/keiro-dsl-notation) nearby. If you are
+upgrading an older spec, use
+[Migrate a keiro spec to 0.2](/docs/keiro/how-to/migrate-a-keiro-spec-to-0-2) before scaffolding.

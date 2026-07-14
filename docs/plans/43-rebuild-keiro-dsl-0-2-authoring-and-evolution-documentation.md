@@ -28,11 +28,20 @@ holes, running the harness, and classifying a changed spec with commands and out
 
 ## Progress
 
+- [x] (2026-07-14T17:54:30Z) Milestone 1: rebuilt the 0.2 learning and upgrade path around the
+  source-valid aggregate/read-model/router cold-start fixture.
+- [ ] Milestone 2: make the notation reference complete and navigable.
+- [ ] Milestone 3: add task-oriented authoring and evolution guides.
+- [ ] Milestone 4: reconcile keiro-dsl across the keiro documentation.
 
 
 ## Surprises & Discoveries
 
-(None yet.)
+- The current committed Keiro source is `c68dcc7`, not the planned `87bf3ff` boundary. The only
+  later keiro-dsl change is the 0.3.0.0 release metadata in its Cabal file and changelog; the
+  changelog explicitly records no user-facing changes, so the documented 0.2 surface is unchanged.
+- The upstream source tree acquired an untracked `mori.automation.dhall` during the audit. It is
+  excluded from evidence and left untouched; all documentation claims come from committed files.
 
 
 ## Decision Log
@@ -53,11 +62,21 @@ holes, running the harness, and classifying a changed spec with commands and out
   Rationale: The 0.2 scaffold firewall and `@generated` banner are core safety contracts. Examples
   that blur ownership teach users to overwrite their own code.
   Date: 2026-07-14
+- Decision: Review committed Keiro `c68dcc7` while continuing to describe the DSL surface introduced
+  in 0.2.
+  Rationale: The 0.3.0.0 release changes package metadata only and explicitly has no user-facing
+  changes. Using current committed fixtures avoids documenting a stale test inventory without
+  conflating the untracked upstream file with released behavior.
+  Date: 2026-07-14
 
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+- Milestone 1 replaced the stale aggregate-only tutorial with the checked
+  `transfer-routing.keiro` vertical, rebuilt the toolchain explanation around its six distinct
+  gates and transactional scaffold plan, and added a 0.1-to-0.2 migration guide. The current CLI
+  accepts the documented fixture (with its intended policy warnings), and
+  `keiro-dsl-conformance-newsurface` passes all aggregate, read-model, and router assertions.
 
 
 ## Context and Orientation
