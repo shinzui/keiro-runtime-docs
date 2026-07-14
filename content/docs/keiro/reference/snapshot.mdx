@@ -1,103 +1,165 @@
 ---
 title: "Snapshot"
-description: "Keiro.Snapshot: SnapshotSeed, hydrateWithSnapshot, writeSnapshot, defaultStateCodec, SnapshotPolicy, shouldSnapshot, and the keiro_snapshots table."
+description: "Keiro.Snapshot: observable lookup outcomes, strict post-commit encoding, compatibility gates, rollback replacement, policies, telemetry, and the keiro_snapshots table."
 ---
 
 The types and functions on this page span `Keiro.Snapshot`, `Keiro.Snapshot.Codec`,
-`Keiro.Snapshot.Policy` (in `keiro-core`), and `Keiro.Snapshot.Schema`. A snapshot is an **advisory
-cache** of folded aggregate state that accelerates hydration; it is never queried by application
-code. See [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots).
+`Keiro.Snapshot.Policy` (in `keiro-core`), and `Keiro.Snapshot.Schema`. A snapshot is a disposable,
+advisory cache of folded aggregate state. The event log remains durable truth.
 
-## `SnapshotSeed`
-
-What hydration reads from a snapshot: a state, its registers, and the version it was taken at
-(replay resumes from here).
-
-<TypeTable
-  type={{
-    state: { type: "s", description: "The folded control state at the snapshot version" },
-    registers: { type: "RegFile rs", description: "The folded register file at the snapshot version" },
-    streamVersion: { type: "StreamVersion", description: "Version the snapshot was taken at; replay resumes after it" },
-  }}
-/>
-
-## Read and write
+## Lookup results and hydration seeds
 
 ```haskell
--- Nothing means "replay from the beginning". A decode failure is a benign miss.
-hydrateWithSnapshot :: (Store :> es) => StreamName -> StateCodec (s, RegFile rs) -> Eff es (Maybe (SnapshotSeed rs s))
-writeSnapshot       :: (Store :> es) => StreamId -> StreamVersion -> StateCodec state -> state -> Eff es ()
+data SnapshotSeed rs s = SnapshotSeed
+  { state :: !s
+  , registers :: !(RegFile rs)
+  , streamVersion :: !StreamVersion
+  }
+
+data SnapshotMissReason
+  = SnapshotNoStream
+  | SnapshotNotFound
+  | SnapshotDecodeFailed !Text
+
+data SnapshotLookup rs s
+  = SnapshotUnavailable !SnapshotMissReason
+  | SnapshotHit !(SnapshotSeed rs s)
+
+lookupSnapshotSeed ::
+  (Store :> es) =>
+  StreamName ->
+  StateCodec (s, RegFile rs) ->
+  Eff es (SnapshotLookup rs s)
+
+hydrateWithSnapshot ::
+  (Store :> es) =>
+  StreamName ->
+  StateCodec (s, RegFile rs) ->
+  Eff es (Maybe (SnapshotSeed rs s))
 ```
 
-<Callout type="info">
-`hydrateWithSnapshot` returning `Nothing` — a miss, a stale row, or an undecodable payload — is
-benign: hydration falls back to a full replay. The snapshot write is **synchronous**, performed by
-`writeSnapshotIfNeeded` after the command append has committed. If that write fails, the command
-still succeeds and the failure is recorded on the optional metrics handle (see the
-[Command reference](/docs/keiro/reference/command)).
-</Callout>
+`SnapshotNoStream` means Kiroku has no stream id for the name. `SnapshotNotFound` means the stream
+exists but no row matches both the running codec version and shape hash; a missing row and an
+incompatible row intentionally share this outcome. `SnapshotDecodeFailed message` means a compatible
+row existed but its JSON did not decode. `SnapshotHit seed` returns the joint state/register pair and
+the version after which hydration reads.
 
-## The state codec and the policy
+`hydrateWithSnapshot` is the compatibility helper that collapses every unavailable result to
+`Nothing`. The command runner uses `lookupSnapshotSeed` so it can record a read hit or miss and count
+decode failures separately. Every unavailable result falls back to full event replay.
 
-`StateCodec` (`stateCodecVersion`, `shapeHash`, `encode`, `decode`) is defined in `Keiro.EventStream`
-and documented on the
-[Event stream and Stream handle reference](/docs/keiro/reference/event-stream-and-stream). The
-default codec encodes the joint `(state, registers)`:
+## Encoding and writing
 
 ```haskell
--- Keiro.Snapshot.Codec — JSON {state, registers}; shapeHash = SHA-256 over the register-file SHAPE.
--- The Int is the explicit stateCodecVersion.
+encodeSnapshotStrict ::
+  StateCodec state -> state -> IO (Either ErrorCall Value)
+
+writeSnapshotEncoded ::
+  (Store :> es) =>
+  StreamId -> StreamVersion -> StateCodec state -> Value -> Eff es ()
+
+writeSnapshot ::
+  (Store :> es) =>
+  StreamId -> StreamVersion -> StateCodec state -> state -> Eff es ()
+```
+
+`encodeSnapshotStrict` forces the complete JSON value. It returns an `ErrorCall` from a partial
+encoder or an uninitialized keiki register; other exception types remain visible. The production
+post-commit path calls it before `writeSnapshotEncoded`, so a lazy thunk cannot fail later while the
+store consumes it. `writeSnapshot` preserves the older lazy helper contract; new advisory
+post-commit code should use strict encode plus `writeSnapshotEncoded`.
+
+Stream validation also forces the codec over `(initialState, initialRegisters)`. A snapshot-enabled
+stream whose initial register file still contains an `uninit: <slot>` thunk is rejected by
+`mkEventStream` before it can accept commands.
+
+## Default codec and compatibility gates
+
+```haskell
 defaultStateCodec ::
-  forall rs s. (FromJSON s, KnownRegFileShape rs, RegFileToJSON rs, ToJSON s) =>
+  forall rs s.
+  (FromJSON s, KnownRegFileShape rs, RegFileToJSON rs, ToJSON s) =>
   Int -> StateCodec (s, RegFile rs)
 ```
 
-`SnapshotPolicy` (also defined in `Keiro.EventStream`) decides *when* to snapshot; `shouldSnapshot`
-evaluates a single post-append version and `shouldSnapshotSpan` evaluates the half-open span
-`(preVersion, postVersion]` that a multi-event append covered. `Every n` fires when the version is a
-positive multiple of `n`; over a span, it fires when any positive multiple was crossed:
+The default codec writes JSON shaped as `{ "state": ..., "registers": ... }`. Its caller-supplied
+`Int` becomes `stateCodecVersion`; its `shapeHash` comes from keiki's stable register-file shape.
+A stored snapshot is eligible only when **both** values match the running codec. Bump the explicit
+version when state encoding changes in a way the register shape cannot capture.
+
+Keiki 0.2 intentionally changed every non-empty 0.1 register shape hash once by replacing
+module-qualified built-in names with pinned stable names. On upgrade, let the old row miss, replay
+events from the beginning, and write a fresh snapshot. The empty `regfile:0` hash is unchanged. Never
+relabel old snapshot bytes with a new hash.
+
+## Policy
+
+`SnapshotPolicy` decides when the post-command folded pair is cached:
 
 ```haskell
-shouldSnapshot :: SnapshotPolicy state -> Terminality -> state -> StreamVersion -> Bool
-shouldSnapshot Never              _ _ _ = False
-shouldSnapshot (Every interval)   _ _ (StreamVersion version) = ...   -- positive multiple of interval
-shouldSnapshot OnTerminal terminal _ _ = terminal == Terminal
-shouldSnapshot (Custom decide)    terminal state version = decide terminal state version
+data SnapshotPolicy state
+  = Never
+  | Every !Int
+  | OnTerminal
+  | Custom !(Terminality -> state -> StreamVersion -> Bool)
+
+shouldSnapshot ::
+  SnapshotPolicy state -> Terminality -> state -> StreamVersion -> Bool
 
 shouldSnapshotSpan ::
-  SnapshotPolicy state -> Terminality -> state -> StreamVersion -> StreamVersion -> Bool
+  SnapshotPolicy state -> Terminality -> state ->
+  StreamVersion -> StreamVersion -> Bool
 ```
 
-An `EventStream` with `stateCodec = Nothing` disables snapshotting regardless of policy.
+The command path uses `shouldSnapshotSpan` over `(preVersion, postVersion]`, so a multi-event append
+that crosses a positive `Every n` boundary fires even if its final version is not itself a multiple.
+`OnTerminal` and `Custom` see the post-append state and terminality. `stateCodec = Nothing` disables
+snapshotting; stream validation rejects that setting when the policy is not `Never`.
 
-## The schema layer
+## Storage and version replacement
 
 ```haskell
--- Keiro.Snapshot.Schema
-lookupSnapshot   :: (Store :> es) => StreamId -> Int -> Text -> Eff es (Maybe SnapshotRow)
-writeSnapshotRow :: (Store :> es) => SnapshotWrite -> Eff es ()
+lookupSnapshot ::
+  (Store :> es) => StreamId -> Int -> Text -> Eff es (Maybe SnapshotRow)
+
+writeSnapshotRow ::
+  (Store :> es) => SnapshotWrite -> Eff es ()
 ```
 
-`lookupSnapshot` filters by `stream_id` + `state_codec_version` + `regfile_shape_hash` and orders
-`stream_version DESC LIMIT 1` (newest compatible row). `writeSnapshotRow` upserts with a monotonicity
-guard (`WHERE stream_version <= EXCLUDED.stream_version`) so a stale write cannot clobber a fresher
-row.
+`keiro.keiro_snapshots` holds one row per stream, with `state`, `stream_version`,
+`state_codec_version`, `regfile_shape_hash`, and timestamps. Lookup filters on stream id, codec
+version, and shape hash before decoding.
 
-## The `keiro_snapshots` table
+The upsert's version rule is conditional:
 
-```sql
-CREATE TABLE IF NOT EXISTS keiro_snapshots (
-  stream_id           BIGINT PRIMARY KEY,
-  stream_version      BIGINT NOT NULL,
-  state               JSONB NOT NULL,
-  state_codec_version BIGINT NOT NULL,
-  regfile_shape_hash  TEXT NOT NULL,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS keiro_snapshots_compat_idx
-  ON keiro_snapshots (stream_id, state_codec_version, regfile_shape_hash, stream_version DESC);
-```
+- With the **same** codec version and shape hash, a lower stream version is ignored. Late work cannot
+  regress a compatible snapshot.
+- With a **different** codec version or shape hash, the row may be replaced even at a lower stream
+  version. That permits a rolled-back deployment to reclaim the single snapshot slot.
 
-One row per stream (PK `stream_id`); the compat index backs the `lookupSnapshot` filter and ordering.
-See [Add a snapshot](/docs/keiro/how-to/add-a-snapshot).
+During a mixed-version rollout, incompatible writers can therefore replace each other's rows and
+cause repeated misses/full replays. That is performance thrash, not state corruption. Avoid a long
+mixed window and monitor snapshot misses.
+
+## Caller-visible and operational outcomes
+
+All command-path snapshot work occurs after the event append has committed, except validation of the
+initial state at stream construction.
+
+| Condition | Event append committed? | Caller-visible result | Fallback / next step | Metric with `KeiroMetrics` |
+|---|---:|---|---|---|
+| No stream, no compatible row, version mismatch, or shape mismatch | Not applicable during lookup | Hydration continues | Full event replay | `keiro.snapshot.read.misses` |
+| Compatible row does not decode | Not applicable during lookup | Hydration continues | Full event replay; inspect or discard the row | `keiro.snapshot.read.misses` + `keiro.snapshot.decode.failures` |
+| Snapshot-seeded tail replay fails | No new append yet | Seed is abandoned | Full replay determines the authoritative result | Lookup was already counted as a hit; no separate seed-tail counter |
+| Just-appended batch cannot replay | **Yes** | Successful `CommandResult` | Stop further writes and investigate the poisoned stream | `keiro.snapshot.apply.divergence`; span attribute `keiro.replay.divergence` |
+| Post-commit snapshot encode raises `ErrorCall` | **Yes** | Successful `CommandResult` | No snapshot written; a later command may try again | `keiro.snapshot.encode.failures` |
+| Post-commit snapshot store write fails | **Yes** | Successful `CommandResult` | Existing row remains; a later command may try again | `keiro.snapshot.write.failures` |
+| Initial snapshot encode fails during `mkEventStream` | No | `Left [EventStreamWarning]` | Initialize all persisted registers or fix the codec before startup | None |
+
+`verifyReplayOnAppend` defaults to `True`. Setting it to `False` skips the post-append replay only for
+a stream without a state codec; snapshot-enabled streams always need the fold to compute snapshot
+state.
+
+See [Add a snapshot](/docs/keiro/how-to/add-a-snapshot) for setup and recovery, and
+[Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots) for why these failures
+are advisory rather than alternate sources of truth.

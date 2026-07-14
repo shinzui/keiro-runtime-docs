@@ -1,25 +1,26 @@
 ---
 title: "02 — Snapshots in the command and hydration path"
-description: "Reading hydrate and writeSnapshotIfNeeded in Keiro.Command: how a snapshot seeds the replay-forward, why the write is synchronous, and the keiro_snapshots schema with its compatibility filter and monotonicity guard."
+description: "Reading lookupSnapshotSeed and verifyAndSnapshot: observable misses, full-replay fallback, append-time replay evidence, strict advisory writes, and rollback-aware storage."
 ---
 
-This chapter follows where the codec from chapter 01 actually fires: hydration's fast path and the
-synchronous write in `keiro/src/Keiro/Command.hs`, then the `keiro_snapshots` table in
-`keiro/src/Keiro/Snapshot/Schema.hs` and the policy in `keiro-core/src/Keiro/Snapshot/Policy.hs`.
-Read [01 — The snapshot codec and the register pair](/docs/keiro/walkthrough/read-side/01-the-snapshot-codec-and-the-register-pair)
+This chapter follows where the codec from chapter 01 fires: hydration's fast path,
+`verifyAndSnapshot` after a committed append, and the storage statements in
+`Keiro.Snapshot.Schema`. Read
+[01 — The snapshot codec and the register pair](/docs/keiro/walkthrough/read-side/01-the-snapshot-codec-and-the-register-pair)
 first.
 
-## `hydrate`: seed if you can, else replay from zero
-
-Hydration tries a snapshot seed first and falls back to a full replay on any miss:
+## `hydrate`: observe the lookup, trust full replay
 
 ```haskell
--- keiro/src/Keiro/Command.hs
 hydrate options eventStream targetStream =
   snapshotSeed >>= \case
     Nothing -> hydrateFull options eventStream targetStream
     Just seed -> do
-      replayed <- replayFrom seed
+      replayed <-
+        hydrateSeeded options eventStream targetStream
+          (seed ^. #state)
+          (seed ^. #registers)
+          (seed ^. #streamVersion)
       case replayed of
         Left _ -> hydrateFull options eventStream targetStream
         Right hydrated -> pure (Right hydrated)
@@ -28,208 +29,112 @@ hydrate options eventStream targetStream =
       case eventStream ^. #stateCodec of
         Nothing -> pure Nothing
         Just codec ->
-          hydrateWithSnapshot ((eventStream ^. #resolveStreamName) targetStream) codec
+          lookupSnapshotSeed resolvedName codec >>= \case
+            SnapshotHit seed -> do
+              recordSnapshotReadHits (options ^. #metrics) 1
+              pure (Just seed)
+            SnapshotUnavailable reason -> do
+              recordSnapshotReadMisses (options ^. #metrics) 1
+              case reason of
+                SnapshotDecodeFailed _ ->
+                  recordSnapshotDecodeFailures (options ^. #metrics) 1
+                _ -> pure ()
+              pure Nothing
 ```
 
-Three layers make snapshots **advisory**. If `stateCodec = Nothing`, `snapshotSeed` is `Nothing` and
-the code replays from zero. If `hydrateWithSnapshot` finds no compatible row (or cannot decode one —
-the three benign-miss cases from chapter 01), it too returns `Nothing`. And even with a usable seed,
-if `replayFrom seed` returns `Left` for any reason, the code *silently falls back* to `hydrateFull`.
-**A snapshot can never make hydration wrong; at worst it is ignored.**
+`SnapshotNoStream`, `SnapshotNotFound`, and `SnapshotDecodeFailed` all mean "replay events from the
+initial pair", but they remain distinct at the API boundary and decode failure has a dedicated
+counter. A hit seeds state, registers, and version; `hydrateSeeded` reads only later events.
 
-## `replayFrom`: fold only the *newer* events forward
+Even a decoded seed is advisory. If replaying its tail returns any error, keiro drops it and calls
+`hydrateFull`. If full replay succeeds, the cache was wrong; if it returns the same typed replay or
+gap failure, history is the problem. The event log resolves the ambiguity.
 
-The result of hydration is a `Hydrated rs s` — and, like the snapshot seed, it carries the **pair**:
+## A snapshot must cover a hidden prefix
+
+Kiroku's per-stream truncation marker hides old events from stream reads without deleting them from
+`$all`. Hydration still checks contiguous versions. A retained snapshot is sufficient only when its
+version covers every hidden event—equivalently, it is at least `truncate_before - 1`. Otherwise the
+first visible version is higher than expected and full replay returns
+`HydrationGapDetected expected observed`.
+
+That failure is not a snapshot decode problem. Restore visibility with
+`clearStreamTruncateBefore`, or install a trusted covering snapshot as part of an operator-controlled
+repair.
+
+## `verifyAndSnapshot`: one post-commit fold
+
+Every runner calls `verifyAndSnapshot` after a successful append or transaction:
 
 ```haskell
--- keiro/src/Keiro/Command.hs
-data Hydrated rs s = Hydrated
-  { state :: !s
-  , registers :: !(RegFile rs)
-  , streamVersion :: !StreamVersion
-  , globalPosition :: !(Maybe GlobalPosition)
-  }
+verifyAndSnapshot options mSpan eventStream current events appendResult
+  | not (options ^. #verifyReplayOnAppend)
+  , Nothing <- eventStream ^. #stateCodec = pure ()
+  | otherwise =
+      case Keiki.applyEventsEither transducer
+             (state current, registers current) events of
+        Left failure -> do
+          recordSnapshotApplyDivergence (options ^. #metrics) 1
+          for_ mSpan $ \sp ->
+            addAttribute sp keiro_replay_divergence
+              (renderReplayFailure failure)
+        Right finalState ->
+          case eventStream ^. #stateCodec of
+            Nothing -> pure ()
+            Just codec -> do
+              let finalVersion = appendResult ^. #streamVersion
+                  terminality = ...
+              when (shouldSnapshotSpan policy terminality finalState
+                      (current ^. #streamVersion) finalVersion) $ do
+                encoded <- liftIO (encodeSnapshotStrict codec finalState)
+                case encoded of
+                  Left _ -> recordSnapshotEncodeFailures (options ^. #metrics) 1
+                  Right value -> do
+                    outcome <- tryError @StoreError
+                      (writeSnapshotEncoded streamId finalVersion codec value)
+                    case outcome of
+                      Left _ -> recordSnapshotWriteFailures (options ^. #metrics) 1
+                      Right () -> pure ()
 ```
 
-When a seed is usable, `replayFrom` resumes the transducer from the seed's `(state, registers,
-streamVersion)` and folds **only the events after `streamVersion`** forward, via keiki's streaming
-replay `Keiki.applyEventStreaming`. It finishes only if the machine ends `Settled` (at a stable
-vertex); a machine left `InFlight` (mid-chain through a multi-event edge) at the end yields
-`HydrationReplayFailed`, which trips the `Left _ -> hydrateFull` fallback. `hydrateFull` replays from
-`StreamVersion 0` using the stream's `initialState`/`initialRegisters`. So the fast path reads at most
-one snapshot and the *tail* of the log; the slow path reads the whole log; both produce the same
-`(state, registers)`.
+The fold serves two purposes. With the default `verifyReplayOnAppend = True`, it witnesses a batch
+that cannot replay at the exact append that poisoned the stream. With a state codec, its successful
+result is also the state that may be snapshotted. Setting the option to `False` can skip the fold
+only for a snapshot-less stream.
 
-## `writeSnapshotIfNeeded`: synchronous, after the append
+Everything in this function is post-commit. Replay divergence, strict-encode failure, and snapshot
+store failure therefore cannot turn the append into `Left`: they are counted and the successful
+`CommandResult` is preserved. A divergence also adds `keiro.replay.divergence` to the command span;
+its compact value includes the failed event index and reason. The next hydration will report the
+corresponding typed replay failure.
 
-After a successful append, the runner may write a snapshot — inline, in the command's own effect, not
-as a background task:
+## Policy spans, not only final versions
 
-```haskell
--- keiro/src/Keiro/Command.hs
-writeSnapshotIfNeeded eventStream current events appendResult =
-  case eventStream ^. #stateCodec of
-    Nothing -> pure ()
-    Just codec ->
-      case Keiki.applyEvents (eventStream ^. #transducer) (state current, registers current) events of
-        Nothing -> pure ()
-        Just finalState -> do
-          let finalVersion = appendResult ^. #streamVersion
-              terminal = Keiki.isFinal (eventStream ^. #transducer) (Prelude.fst finalState)
-          when (shouldSnapshot (eventStream ^. #snapshotPolicy) terminal finalState finalVersion) $
-            writeSnapshot (appendResult ^. #streamId) finalVersion codec finalState
-```
+The command path calls `shouldSnapshotSpan policy terminality finalState preVersion postVersion`.
+For `Every n`, it fires when any positive multiple lies in `(preVersion, postVersion]`. A two-event
+append from version 2 to 4 therefore satisfies `Every 3`. `OnTerminal` and `Custom` see the final pair
+and terminality.
 
-Walk it carefully, because every piece is the register pair in motion:
+This avoids missing a policy boundary simply because one accepted command emitted several events.
 
-- `current` is the **pre-append** `Hydrated rs s`: its `state` and `registers` are the pair *before*
-  this command's events.
-- `Keiki.applyEvents (eventStream ^. #transducer) (state current, registers current) events` re-folds
-  the just-emitted `events` forward over that pre-append pair, producing the **post-append pair**
-  `finalState :: (s, RegFile rs)`. (`applyEvents` returns `Nothing` if the log cannot replay, in
-  which case the code simply skips the snapshot.)
-- `Prelude.fst finalState` is the post-append *control state*, fed to `Keiki.isFinal` to compute the
-  `terminal` flag.
-- `shouldSnapshot` decides; `writeSnapshot` persists the **whole pair** at `finalVersion`.
+## Compatibility lookup and rollback-aware upsert
 
-This is called inline from both `appendOnce` (in `runCommand`) and `appendWithSqlOnce` (in
-`runCommandWithSqlEvents`), each immediately after a `Right appendResult`. The `runCommand` call site:
-
-```haskell
--- keiro/src/Keiro/Command.hs
-case appended of
-  Right appendResult -> do
-    writeSnapshotIfNeeded eventStream current events appendResult
-    pure (Right (appendedResult targetStream appendResult (Prelude.length encoded)))
-  Left (_, storeError) ->
-    retryOrFail options attempt remaining storeError
-```
-
-<Callout type="info">
-**The write is synchronous, on the command's own effect** — not a post-commit background task. That
-matters operationally: a slow snapshot write adds latency to the command, a deliberate trade for
-simplicity and no fire-and-forget races. (The keiro research notes describe a fire-and-forget
-post-commit write; the shipped code at the pinned commit does **not** do that — it writes inline.)
-</Callout>
-
-For the `Keiki.step` evaluation that produced those `events` in the first place — the **Transduce**
-phase of the command cycle — see `evaluateCommand`, which threads the same pre-append pair:
-
-```haskell
--- keiro/src/Keiro/Command.hs
-evaluateCommand eventStream current command =
-  case Keiki.step (eventStream ^. #transducer) (state current, registers current) command of
-    Nothing -> Left CommandRejected
-    Just (_, _, events) -> Right events
-```
-
-The command cycle is **Hydrate → Transduce → Append**; this chapter sits at the boundary where Append
-finishes and the snapshot cache is refreshed. For the surrounding write-path mechanics — the
-transactional append the snapshot write rides behind — see
-[The transactional write path](/docs/keiro/walkthrough/command-cycle/04-the-transactional-write-path),
-and for hydration in the command cycle see
-[Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration).
-
-## `shouldSnapshot`: the policy
-
-`writeSnapshotIfNeeded` defers the decision to `shouldSnapshot` in `Keiro.Snapshot.Policy`:
-
-```haskell
--- keiro-core/src/Keiro/Snapshot/Policy.hs
-shouldSnapshot :: SnapshotPolicy state -> Bool -> state -> StreamVersion -> Bool
-shouldSnapshot Never _ _ _ = False
-shouldSnapshot (Every interval) _ _ (StreamVersion version)
-  | interval <= 0 = False
-  | otherwise = version `Prelude.mod` Prelude.fromIntegral interval == 0
-shouldSnapshot OnTerminal terminal _ _ = terminal
-shouldSnapshot (Custom decide) _ state version = decide state version
-```
-
-The second argument (`Bool`) is the **terminality flag** that `writeSnapshotIfNeeded` computed from
-`Keiki.isFinal`. The four constructors:
-
-- `Never` — never snapshot.
-- `Every n` — snapshot when the post-append stream version is a *positive* multiple of `n` (a
-  non-positive `interval` is treated as off).
-- `OnTerminal` — snapshot exactly when the machine reached a final state (mirrors the flag).
-- `Custom f` — an arbitrary predicate over the folded `state` and the version.
-
-## The `keiro_snapshots` schema
-
-A snapshot row and a write payload are defined in `Keiro.Snapshot.Schema`:
-
-```haskell
--- keiro/src/Keiro/Snapshot/Schema.hs
-data SnapshotRow = SnapshotRow
-  { streamId :: !StreamId
-  , streamVersion :: !StreamVersion
-  , state :: !Value
-  , stateCodecVersion :: !Int
-  , regfileShapeHash :: !Text
-  , createdAt :: !UTCTime
-  , updatedAt :: !UTCTime
-  }
-
-data SnapshotWrite = SnapshotWrite
-  { streamId :: !StreamId
-  , streamVersion :: !StreamVersion
-  , state :: !Value
-  , stateCodecVersion :: !Int
-  , regfileShapeHash :: !Text
-  }
-
-lookupSnapshot   :: (Store :> es) => StreamId -> Int -> Text -> Eff es (Maybe SnapshotRow)
-writeSnapshotRow :: (Store :> es) => SnapshotWrite -> Eff es ()
-```
-
-The table is one row per stream (`stream_id` is the primary key). Its DDL:
+`lookupSnapshot` filters before decoding:
 
 ```sql
--- keiro-migrations/.../2026-05-17-00-00-00-keiro-bootstrap.sql
-CREATE TABLE IF NOT EXISTS keiro_snapshots (
-  stream_id           BIGINT PRIMARY KEY,
-  stream_version      BIGINT NOT NULL,
-  state               JSONB NOT NULL,
-  state_codec_version BIGINT NOT NULL,
-  regfile_shape_hash  TEXT NOT NULL,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS keiro_snapshots_compat_idx
-  ON keiro_snapshots (stream_id, state_codec_version, regfile_shape_hash, stream_version DESC);
-```
-
-`state` is `JSONB` — it holds the `{ "state", "registers" }` object from chapter 01. The two gate
-columns, `state_codec_version` and `regfile_shape_hash`, are exactly the codec's two gates.
-
-## The two statements: compatibility filter and monotonicity guard
-
-`lookupSnapshot` selects the **newest compatible** row:
-
-```sql
--- lookupSnapshotStmt
-SELECT stream_id, stream_version, state, state_codec_version, regfile_shape_hash, created_at, updated_at
-FROM keiro_snapshots
+SELECT stream_id, stream_version, state, state_codec_version,
+       regfile_shape_hash, created_at, updated_at
+FROM keiro.keiro_snapshots
 WHERE stream_id = $1
   AND state_codec_version = $2
   AND regfile_shape_hash = $3
 ORDER BY stream_version DESC
-LIMIT 1
+LIMIT 1;
 ```
 
-The filter is on `state_codec_version` **and** `regfile_shape_hash`, so an incompatible snapshot is
-simply *not found* — the gating happens **in SQL, before any decode**. The
-`keiro_snapshots_compat_idx` index above backs this filter and the `ORDER BY stream_version DESC
-LIMIT 1` exactly.
-
-`writeSnapshotRow` upserts the single per-stream row with a **monotonicity guard**:
+The one-row-per-stream upsert has three ways to permit replacement:
 
 ```sql
--- writeSnapshotStmt
-INSERT INTO keiro_snapshots
-  (stream_id, stream_version, state, state_codec_version, regfile_shape_hash)
-VALUES
-  ($1, $2, $3, $4, $5)
 ON CONFLICT (stream_id) DO UPDATE
   SET stream_version = EXCLUDED.stream_version,
       state = EXCLUDED.state,
@@ -237,61 +142,27 @@ ON CONFLICT (stream_id) DO UPDATE
       regfile_shape_hash = EXCLUDED.regfile_shape_hash,
       updated_at = now()
   WHERE keiro_snapshots.stream_version <= EXCLUDED.stream_version
+     OR keiro_snapshots.state_codec_version <> EXCLUDED.state_codec_version
+     OR keiro_snapshots.regfile_shape_hash <> EXCLUDED.regfile_shape_hash;
 ```
 
-The `WHERE keiro_snapshots.stream_version <= EXCLUDED.stream_version` on the `DO UPDATE` is the
-**monotonicity guard**: a late or replayed write whose version is *older* than the stored one is a
-no-op, so the snapshot never regresses to an earlier point in the stream.
+The first clause prevents version regression only for a compatible codec/shape. Either discriminant
+changing permits a lower version to replace a higher one, which makes codec rollback possible.
+Incompatible binaries can therefore thrash the cache row during a mixed deployment; they cannot
+change event history.
 
-## Observable proof: `just jitsurei-snapshots`
+## Read the signals together
 
-The jitsurei order domain wires snapshotting on a dedicated stream (`Jitsurei/OrderStream.hs`,
-re-exported by `Jitsurei/Snapshots.hs`):
+- Rising `keiro.snapshot.read.misses` after a planned codec or keiki 0.2 upgrade is expected while
+  rows repopulate. Sustained misses suggest mixed versions or a policy that never fires.
+- `keiro.snapshot.decode.failures` means the compatibility keys matched but bytes did not. Full
+  replay protects correctness; inspect or evict the row.
+- `keiro.snapshot.encode.failures` and `keiro.snapshot.write.failures` mean the events committed but
+  the cache did not advance.
+- `keiro.snapshot.apply.divergence` is more serious: the events committed and the aggregate can no
+  longer replay them. Stop further commands for the affected stream and investigate immediately.
 
-```haskell
--- jitsurei/src/Jitsurei/OrderStream.hs
-type OrderRegs = '[]   -- this order machine carries an empty register file
-
-snapshotOrderEventStreamDef :: OrderEventStream
-snapshotOrderEventStreamDef =
-  orderEventStreamDef
-    { snapshotPolicy = Every 2
-    , stateCodec = Just (defaultStateCodec @OrderRegs @OrderState 1)
-    }
-
-snapshotOrderEventStream :: ValidatedOrderEventStream
-snapshotOrderEventStream =
-  mkEventStreamOrThrow "jitsurei-order-snapshot" snapshotOrderEventStreamDef
-```
-
-(`orderEventStreamDef` is the non-snapshotting raw base in the same module — it sets
-`snapshotPolicy = Never` and `stateCodec = Nothing`; `snapshotOrderEventStreamDef` is a record update
-that turns snapshotting on. The exported `snapshotOrderEventStream` is the validated wrapper the
-command path accepts.)
-
-Run the demo from the keiro repo root:
-
-```bash
-just jitsurei-snapshots     # depends on `just jitsurei-migrate`; runs the snapshot demo
-```
-
-It appends `PlaceOrder` then `ApprovePayment` through `snapshotOrderEventStream`. Because the policy
-is `Every 2`, the second append lands at stream version 2 — a multiple of 2 — so `shouldSnapshot`
-fires and a row is written to `keiro_snapshots`. The console banner is literally:
-
-```text
-[jitsurei:snapshots] appending ApprovePayment; Every 2 writes keiro_snapshots at stream version 2
-```
-
-<Callout type="warn">
-**Honesty note.** jitsurei's order machine declares `type OrderRegs = '[]` — an *empty* register
-file — so its snapshots serialize `{ "state": …, "registers": [] }`. Use jitsurei to see the
-*mechanism* (the codec runs over the pair; the policy fires `Every 2`), but the *reason both halves
-are serialized* is the general non-empty case from chapter 01: a populated `RegFile` is independent
-runtime that must be persisted. jitsurei does not demonstrate a populated register bank.
-</Callout>
-
-For the full lookup table of snapshot signatures, see the
-[Snapshot reference](/docs/keiro/reference/snapshot).
+The [Snapshot reference](/docs/keiro/reference/snapshot#caller-visible-and-operational-outcomes)
+puts these cases in one committed-state/result/fallback table.
 
 Next: [03 — The read-model query path](/docs/keiro/walkthrough/read-side/03-the-read-model-query-path).

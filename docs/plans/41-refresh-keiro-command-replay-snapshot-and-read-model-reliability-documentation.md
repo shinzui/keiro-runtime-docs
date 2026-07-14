@@ -35,7 +35,10 @@ and finding the same types and defaults in the reviewed keiro source.
   failures. Documented keiro's forced validation floor, unchecked boundary, typed replay reasons,
   truncation gaps, command ambiguity, no-op positions, post-commit replay evidence, and resource-aware
   transactional enrichment; added the command/replay diagnosis how-to.
-- [ ] Milestone 2: refresh snapshot correctness and recovery behavior.
+- [x] (2026-07-14T16:56:24Z) Milestone 2: refresh snapshot correctness and recovery behavior.
+  Documented observable lookup reasons, forced initial/post-command encoding, advisory failure
+  outcomes, rollback-aware row replacement, the keiki 0.2 one-time shape miss, and the complete
+  snapshot/replay telemetry surface.
 - [ ] Milestone 3: refresh read models, projections, and rebuild operations.
 - [ ] Run the complete EP-2 validation and stale-claim scans, then record the EP-7 handoff.
 
@@ -49,6 +52,10 @@ and finding the same types and defaults in the reviewed keiro source.
   only `runCommandWithSql` and `runCommandWithSqlEvents` require `KirokuStoreResource`. The guide now
   shows `withKirokuStore` plus `runStoreResource` without incorrectly adding the resource to the
   append-only signature.
+- Snapshot stream-version non-regression is not global. The upsert ignores a lower version only when
+  codec version and shape hash are unchanged; an incompatible row may replace a newer one so a
+  rolled-back binary can reclaim the single cache slot. Mixed-version deployments can therefore
+  thrash cache rows while preserving event-log correctness.
 
 
 ## Decision Log
@@ -81,6 +88,11 @@ and finding the same types and defaults in the reviewed keiro source.
   gap coordinates; and append-time divergence is explicitly post-commit telemetry evidence.
 - Milestone 1 validation passed `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the
   448-file internal-link scan, and `git diff --check`.
+- Milestone 2 added a committed-state/result/fallback/metric matrix and made the distinction between
+  benign lookup fallback, post-commit snapshot failure, and poisoned-stream replay divergence
+  consistent across reference, explanation, how-to, FAQ, telemetry, and source walkthrough pages.
+  Validation again passed typecheck, formatting, production build, the 448-file link scan, and
+  `git diff --check`.
 
 
 ## Context and Orientation

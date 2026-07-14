@@ -1,6 +1,6 @@
 ---
 title: "Telemetry"
-description: "Reference for Keiro.Telemetry: the three span helpers, the W3C TraceContext bridge, the attribute keys keiro sets, and the opt-in worker metrics surface."
+description: "Reference for Keiro.Telemetry: span helpers, the W3C TraceContext bridge, command replay evidence, and the opt-in runtime and worker metrics surface."
 ---
 
 The types and functions on this page live in `Keiro.Telemetry`. This is the **single** module where
@@ -60,7 +60,8 @@ withCommandSpan
 
 Opens an `Internal`-kind span named after the resolved stream. Sets `keiro.stream.name` and, when the
 `Maybe Int64` retry attempt is given, `keiro.retry.attempt`. The caller adds `keiro.events.appended`
-on the returned span after a successful append.
+on success, `error.type` on failure, and `keiro.replay.divergence` when the just-committed batch fails
+post-append replay verification.
 
 ### `withWorkflowSpan`
 
@@ -115,6 +116,7 @@ bespoke to keiro.
 | `keiro.stream.name` | command | the resolved stream name |
 | `keiro.retry.attempt` | command | the 1-based retry attempt, when given |
 | `keiro.events.appended` | command | events appended (added by the caller after append) |
+| `keiro.replay.divergence` | command | compact failed event index and replay reason when a committed batch cannot replay |
 | `keiro.workflow.name` | workflow | the workflow definition name |
 | `keiro.workflow.id` | workflow | the workflow instance id |
 | `keiro.workflow.step` | workflow | the step name, when a per-step span is opened |
@@ -147,6 +149,7 @@ Only the bespoke `keiro.*` keys have no upstream equivalent, so they are **defin
 keiro_stream_name                  -- "keiro.stream.name"
 keiro_retry_attempt                -- "keiro.retry.attempt"
 keiro_events_appended              -- "keiro.events.appended"
+keiro_replay_divergence            -- "keiro.replay.divergence"
 keiro_workflow_name                -- "keiro.workflow.name"
 keiro_workflow_id                  -- "keiro.workflow.id"
 keiro_workflow_step                -- "keiro.workflow.step"
@@ -166,9 +169,9 @@ even though they emit no spans. The durable-workflow runtime carries both a span
 ## Metrics surface
 
 Alongside the span helpers, `Keiro.Telemetry` exposes an OpenTelemetry **metrics** instrument set for
-the four background workers. Like tracing, it is opt-in: workers accept a `Maybe KeiroMetrics`, and
-every `record*` helper is a no-op under `Nothing`, so an application that has not wired a `Meter` is
-unaffected.
+command/snapshot integrity and the background workers. It is opt-in: options and workers accept a
+`Maybe KeiroMetrics`, and every `record*` helper is a no-op under `Nothing`, so an application that
+has not wired a `Meter` is unaffected.
 
 ### `Meter` and the instrumentation library
 
@@ -208,12 +211,26 @@ data KeiroMetrics = KeiroMetrics
   , timerRequeued          :: Counter Int64
   , projectionLag          :: Gauge Int64
   , projectionWaitTimeouts :: Counter Int64
+  , commandConflicts       :: Counter Int64
+  , commandRetries         :: Counter Int64
+  , commandDuplicates      :: Counter Int64
+  , snapshotDecodeFailures :: Counter Int64
+  , snapshotEncodeFailures :: Counter Int64
+  , snapshotReadHits       :: Counter Int64
+  , snapshotReadMisses     :: Counter Int64
+  , snapshotWriteFailures  :: Counter Int64
+  , snapshotApplyDivergence :: Counter Int64
   , dispatchFailed         :: Counter Int64
+  , dispatchDeadlettered   :: Counter Int64
+  , subscriptionDeadlettered :: Counter Int64
   , dispatchDuplicates     :: Counter Int64
   , dispatchPoison         :: Counter Int64
   , workflowStepsExecuted     :: Counter Int64
   , workflowStepsReplayed     :: Counter Int64
   , workflowResumed           :: Counter Int64
+  , workflowFailed            :: Counter Int64
+  , workflowResumeErrors      :: Counter Int64
+  , workflowLeaseSkipped      :: Counter Int64
   , workflowActive            :: Gauge Int64
   , workflowJournalLength     :: Histogram
   , workflowAwakeablesPending :: Gauge Int64
@@ -250,7 +267,18 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 | `keiro.timer.requeued` | Counter | `{timer}` | `recordTimerRequeued` | Timer worker — stale `firing` rows moved back to `scheduled`. |
 | `keiro.projection.lag` | Gauge | `{event}` | `recordProjectionLag` | `recordProjectionLag` (application-driven) — events between the log head and a projection's checkpoint. |
 | `keiro.projection.wait.timeouts` | Counter | `{timeout}` | `recordProjectionWaitTimeouts` | Read-model `waitFor` — calls that timed out before the projection caught up. |
+| `keiro.command.conflicts` | Counter | `{conflict}` | `recordCommandConflicts` | Command runners — optimistic-concurrency conflicts observed. |
+| `keiro.command.retries` | Counter | `{retry}` | `recordCommandRetries` | Command runners — retry attempts started after a conflict. |
+| `keiro.command.duplicates` | Counter | `{event}` | `recordCommandDuplicates` | Command runners — appends rejected as duplicate deterministic event ids. |
+| `keiro.snapshot.read.hits` | Counter | `{read}` | `recordSnapshotReadHits` | Hydration — lookups that yielded a usable seed. |
+| `keiro.snapshot.read.misses` | Counter | `{read}` | `recordSnapshotReadMisses` | Hydration — lookups that fell back to full replay. |
+| `keiro.snapshot.decode.failures` | Counter | `{failure}` | `recordSnapshotDecodeFailures` | Hydration — compatible rows whose bytes failed to decode; also counted as a read miss. |
+| `keiro.snapshot.encode.failures` | Counter | `{failure}` | `recordSnapshotEncodeFailures` | Command runners — post-commit strict snapshot encodes that failed and were swallowed. |
+| `keiro.snapshot.write.failures` | Counter | `{failure}` | `recordSnapshotWriteFailures` | Command runners — post-commit snapshot store writes that failed and were swallowed. |
+| `keiro.snapshot.apply.divergence` | Counter | `{failure}` | `recordSnapshotApplyDivergence` | Command runners — just-appended batches that failed replay from pre-command state. The append is committed and the next hydration will fail. |
 | `keiro.dispatch.failed` | Counter | `{command}` | `recordDispatchFailed` | Process-manager/router workers — dispatched commands or source reactions that failed. |
+| `keiro.dispatch.deadlettered` | Counter | `{command}` | `recordDispatchDeadlettered` | Process-manager/router workers — rejected dispatches handled by explicit dead-letter or skip policy. |
+| `keiro.subscription.deadlettered` | Counter | `{event}` | `recordSubscriptionDeadlettered` | Subscription workers — source events dead-lettered by disposition or retry exhaustion. |
 | `keiro.dispatch.duplicates` | Counter | `{command}` | `recordDispatchDuplicate` | Process-manager/router workers — deterministic command ids skipped as duplicates. |
 | `keiro.dispatch.poison` | Counter | `{message}` | `recordDispatchPoison` | Process-manager/router workers — messages classified as poison by the decode seam. |
 
@@ -261,8 +289,9 @@ records the backlog, stuck, fire-lag, and attempts instruments inside each pass;
 [inbox](/docs/keiro/reference/inbox) helpers record per-message result counters while
 `sampleInboxBacklog` records the backlog gauge; and the projection path exposes
 [`recordProjectionLag`](/docs/keiro/reference/projection#recordprojectionlag) for the application to
-call on its drain loop. See [Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) for the
-end-to-end wiring.
+call on its drain loop. Command runners use `RunCommandOptions.metrics` for conflicts, retries,
+duplicates, snapshot lookup, strict encode/write failures, and replay divergence. See
+[Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) for the end-to-end wiring.
 
 ### Workflow instruments
 

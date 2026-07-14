@@ -37,30 +37,66 @@ Turn on snapshotting for a stream and know how to invalidate old snapshots.
 
    `defaultStateCodec` encodes the joint `(state, registers)`; its `Int` argument is the
    `stateCodecVersion`. `Every 2` writes a snapshot whenever the stream version is a positive multiple
-   of 2. Leaving `stateCodec = Nothing` disables snapshotting regardless of policy, and
-   `mkEventStream` rejects that incoherent configuration when the policy is not `Never`.
+   of 2; a multi-event append also fires when its version span crosses such a boundary. Leaving
+   `stateCodec = Nothing` disables snapshotting, and `mkEventStream` rejects that incoherent
+   configuration when the policy is not `Never`.
 
-2. **Invalidate when needed.** Old snapshot rows are ignored automatically when their identity no
-   longer matches (a register-shape change bumps `regfile_shape_hash`; a codec-version change bumps
-   `state_codec_version`). To force a clean slate, truncate the table:
+2. **Validate the initial pair at startup.** For hand-authored wiring, handle `mkEventStream`
+   explicitly:
 
-   ```sql
-   TRUNCATE keiro_snapshots;
+   ```haskell
+   snapshotOrderEventStream =
+     case mkEventStream "orders" snapshotOrderEventStreamDef of
+       Left warnings -> error (show warnings) -- replace with your startup-error path
+       Right validated -> validated
    ```
 
+   Validation forces the codec over `(initialState, initialRegisters)`. If `emptyRegFile` left an
+   `uninit: <slot>` thunk in a persisted register, startup fails before the first command. Initialize
+   every persisted slot or use a codec whose initial state is total.
+
+3. **Invalidate by changing compatibility, not by relabelling bytes.** A register-layout change
+   automatically changes `regfile_shape_hash`. Bump `stateCodecVersion` when state JSON or custom
+   encoding changes without a register-shape change. The old row becomes `SnapshotNotFound` for the
+   new codec, hydration replays events, and a later policy firing writes a compatible row.
+
+   Keiki 0.2 causes this once for every old non-empty 0.1 shape hash; the empty `regfile:0` hash is
+   unchanged. Do not update an old row's hash in place.
+
+4. **Discard a bad cache row only when necessary.** To evict one known stream snapshot:
+
+   ```sql
+   DELETE FROM keiro.keiro_snapshots WHERE stream_id = $1;
+   ```
+
+   `TRUNCATE keiro.keiro_snapshots` is appropriate only when you intentionally accept a full-replay
+   surge for every aggregate, such as in an isolated test database.
+
 <Callout type="warn">
-A snapshot is **advisory** and the write is **synchronous** (after the append, inside the command
-effect). A missing, stale, or undecodable snapshot is a benign cache miss — hydration replays from
-the beginning. You never lose correctness by invalidating snapshots, only the latency benefit.
+A snapshot is **advisory**. Its fold, strict encode, and store write run synchronously after the event
+append has committed. Missing, incompatible, or undecodable rows fall back to full replay. A
+post-commit encode/write failure leaves the command successful and is counted; do not retry the
+command as though its events rolled back.
 </Callout>
+
+With a fixed codec version and shape hash, a lower-version snapshot write is ignored. An incompatible
+codec or shape may replace a higher-version row so a rolled-back deployment can recover. Keep mixed
+codec deployments brief: incompatible writers can repeatedly replace one another's cache rows,
+causing misses without corrupting event state.
 
 ## Verify it worked
 
 Run `just jitsurei-snapshots`. Append past the policy threshold and confirm a row appears in
-`keiro_snapshots` for the stream; truncate it and confirm the next hydration still produces the same
-state (via full replay).
+`keiro.keiro_snapshots`. Then test these scenarios with `RunCommandOptions.metrics` installed:
+
+- corrupt the row's JSON and confirm the command succeeds through full replay while
+  `keiro.snapshot.read.misses` and `keiro.snapshot.decode.failures` increase;
+- make the snapshot table reject a write and confirm the events remain committed, the command stays
+  successful, and `keiro.snapshot.write.failures` increases;
+- use a partial encoder at a firing boundary and confirm `keiro.snapshot.encode.failures` increases
+  without a snapshot row being written.
 
 ## Related
 
-- [Snapshot reference](/docs/keiro/reference/snapshot) — `defaultStateCodec`, `shouldSnapshot`, the table.
+- [Snapshot reference](/docs/keiro/reference/snapshot) — APIs, exact lookup outcomes, replacement rules, and the operator outcome matrix.
 - [Event stream and Stream handle reference](/docs/keiro/reference/event-stream-and-stream) — `SnapshotPolicy`, `StateCodec`.

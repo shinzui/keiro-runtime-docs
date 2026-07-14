@@ -43,24 +43,37 @@ fast path:
 flowchart TD
   H["hydrate"] --> C{"stateCodec set?"}
   C -- "No" --> Full["hydrateFull (replay from 0)"]
-  C -- "Yes" --> L["hydrateWithSnapshot"]
-  L -- "Nothing (miss/stale/undecodable)" --> Full
-  L -- "Just seed" --> R["replay forward from seed.streamVersion"]
+  C -- "Yes" --> L["lookupSnapshotSeed"]
+  L -- "SnapshotUnavailable reason" --> Full
+  L -- "SnapshotHit seed" --> R["replay forward from seed.streamVersion"]
+  R -- "tail replay fails" --> Full
   R --> D["transduce + append"]
-  D --> W["writeSnapshotIfNeeded (advisory)"]
+  D --> V["verify just-appended replay"]
+  V --> W["strict encode + snapshot write if policy fires"]
 ```
 
 A snapshot stores the joint `(state, registers)` as JSON. It is gated on two identities: the
-`state_codec_version` and a `regfile_shape_hash` (a SHA-256 over the register-file *shape*, so any
-slot change invalidates older snapshots). On write, an upsert with a monotonicity guard keeps the
-newest version — a stale write cannot clobber a fresher row.
+`state_codec_version` and a `regfile_shape_hash` over the register-file *shape*, so any slot change
+invalidates older snapshots. `SnapshotNoStream`, `SnapshotNotFound`, and `SnapshotDecodeFailed`
+retain the reason a lookup could not produce a seed; the command runner turns all three into full
+replay while recording hit/miss/decode telemetry.
+
+Snapshot version non-regression is scoped to a fixed codec version and shape hash. A stale compatible
+write cannot clobber a fresher row, but an incompatible codec or shape may replace a higher-version
+row so a rolled-back deployment can make progress. Mixed versions can thrash the single row and
+cause repeated full replay, but cannot replace the event log as truth.
 
 <Callout type="info">
-The snapshot write runs after a successful append and is advisory. If it fails, the command still
-succeeds and the optional metrics handle records a snapshot-write failure. If `stateCodec = Nothing`,
-or the lookup misses, or the row is incompatible/undecodable, hydration falls back to a full replay
-with no error.
+The snapshot fold, strict encode, and write run after a successful append and are advisory. An encode
+or store failure leaves the command successful and increments its dedicated counter. A divergence
+while replaying the just-appended events also leaves the already-committed result successful, but
+records stream-integrity evidence for immediate investigation. If `stateCodec = Nothing`, or the
+lookup misses, or the row is incompatible/undecodable, hydration falls back to full replay.
 </Callout>
+
+Keiki 0.2's stable built-in shape names deliberately make every old non-empty 0.1 shape hash miss
+once. Let the cache miss, replay events from zero, and write a fresh row; the empty `regfile:0` shape
+is unchanged, and old bytes must not be relabelled.
 
 See [Add a snapshot](/docs/keiro/how-to/add-a-snapshot) for the recipe and the
 [Snapshot reference](/docs/keiro/reference/snapshot) for the exact API.

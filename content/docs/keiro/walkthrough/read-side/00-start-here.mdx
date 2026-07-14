@@ -23,9 +23,9 @@ transducer. As events apply, it threads **two** pieces of runtime, not one:
   total, a captured id, a deadline).
 
 The crucial fact: **the registers are not derived from the control state.** They are independent
-runtime threaded alongside it. `Keiki.step` takes the **pair** `(s, RegFile rs)` and a command and
+runtime threaded alongside it. `Keiki.stepEither` takes the **pair** `(s, RegFile rs)` and a command and
 returns the next pair plus emitted events; keiro's command path calls it as
-`Keiki.step (eventStream ^. #transducer) (state current, registers current) command`.
+`Keiki.stepEither (eventStream ^. #transducer) (state current, registers current) command`.
 
 <Callout type="warn">
 **The thesis of this tour.** A snapshot is the cache that serializes that whole pair at a known
@@ -50,7 +50,7 @@ flowchart LR
   Cmd["runCommand / runCommandWithProjections"] --> Append[("append events")]
   Cmd -- "same tx" --> Inline["InlineProjection (verb)"]
   Inline --> RM[("read model (noun)")]
-  Append -- "writeSnapshotIfNeeded (synchronous)" --> Snap[("keiro_snapshots (cache)")]
+  Append -- "verify replay + strict advisory write" --> Snap[("keiro_snapshots (cache)")]
   Snap -. "hydrate fast path" .-> Cmd
   RM --> Query["runQueryWith (ConsistencyMode)"]
   Append -. "async boundary (no shipped worker)" .-> Async["applyAsyncProjection"]
@@ -64,8 +64,8 @@ projection table on the *read* side; a **projection** is the verb that writes a 
 ## The chapters
 
 <Cards>
-  <Card title="01 — The snapshot codec and the register pair" href="/docs/keiro/walkthrough/read-side/01-the-snapshot-codec-and-the-register-pair" description="defaultStateCodec, decodeSnapshotValue, the StateCodec record, SnapshotSeed, and why both state and registers are serialized." />
-  <Card title="02 — Snapshots in the command and hydration path" href="/docs/keiro/walkthrough/read-side/02-snapshots-in-the-command-and-hydration-path" description="hydrate, the synchronous writeSnapshotIfNeeded, the keiro_snapshots schema, and the monotonicity guard." />
+  <Card title="01 — The snapshot codec and the register pair" href="/docs/keiro/walkthrough/read-side/01-the-snapshot-codec-and-the-register-pair" description="defaultStateCodec, initial and strict encoding, observable lookup outcomes, stable shape hashes, and why both state and registers are serialized." />
+  <Card title="02 — Snapshots in the command and hydration path" href="/docs/keiro/walkthrough/read-side/02-snapshots-in-the-command-and-hydration-path" description="lookupSnapshotSeed, full-replay fallback, verifyAndSnapshot, policy spans, telemetry, and rollback-aware replacement." />
   <Card title="03 — The read-model query path" href="/docs/keiro/walkthrough/read-side/03-the-read-model-query-path" description="runQueryWith, schema validation, and the consistency-mode wait." />
   <Card title="04 — Projections and the rebuild path" href="/docs/keiro/walkthrough/read-side/04-projections-and-the-rebuild-path" description="Inline vs async projections, and the skeleton rebuild status transitions." />
 </Cards>
@@ -74,11 +74,11 @@ The source files this tour reads:
 
 ```text
 keiro/src/Keiro/Snapshot/Codec.hs        -- defaultStateCodec, decodeSnapshotValue (the centerpiece)
-keiro/src/Keiro/Snapshot.hs              -- SnapshotSeed, hydrateWithSnapshot, writeSnapshot
+keiro/src/Keiro/Snapshot.hs              -- lookup outcomes, strict encode, hydration/write helpers
 keiro/src/Keiro/Snapshot/Schema.hs       -- keiro_snapshots table + lookupSnapshot/writeSnapshotRow
-keiro-core/src/Keiro/Snapshot/Policy.hs  -- shouldSnapshot
+keiro-core/src/Keiro/Snapshot/Policy.hs  -- shouldSnapshot / shouldSnapshotSpan
 keiro-core/src/Keiro/EventStream.hs      -- StateCodec, SnapshotPolicy, EventStream
-keiro/src/Keiro/Command.hs               -- hydrate + writeSnapshotIfNeeded (the snapshot fast path)
+keiro/src/Keiro/Command.hs               -- hydrate + verifyAndSnapshot
 keiro/src/Keiro/ReadModel.hs             -- runQueryWith, validateMetadata, waitIfNeeded
 keiro/src/Keiro/ReadModel/Schema.hs      -- the keiro_read_models registry
 keiro/src/Keiro/ReadModel/Rebuild.hs     -- rebuild / promote / abandonRebuild (skeleton)

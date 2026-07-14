@@ -185,7 +185,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
   integration handoff.
 - [x] (2026-07-14T16:49:29Z) EP-2 Milestone 1: refresh event-stream validation, hydration, and
   command failures.
-- [ ] EP-2 Milestone 2: refresh snapshot correctness and recovery behavior.
+- [x] (2026-07-14T16:56:24Z) EP-2 Milestone 2: refresh snapshot correctness and recovery behavior.
 - [ ] EP-2 Milestone 3: refresh read models, projections, and rebuild operations.
 - [ ] EP-3 Milestone 1: refresh process-manager and router delivery.
 - [ ] EP-3 Milestone 2: refresh sharded delivery and dead-letter operations.
