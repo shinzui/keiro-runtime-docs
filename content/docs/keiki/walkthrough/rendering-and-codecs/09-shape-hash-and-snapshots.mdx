@@ -17,10 +17,10 @@ hydration is built on.
 
 ## The shape hash, in one link
 
-The shape hash lives in `Keiki.Shape` (the `keiki` package), introduced in EP-22. It is **one** SHA-256
-over **one** canonical pre-hash string describing the slot list's structure — names, order, and the
-stable type representation of each slot's value type. Any structural change to the slot list flips the
-hash.
+The shape hash lives in `Keiki.Shape` (the `keiki` package). It is **one** SHA-256 over **one**
+canonical pre-hash string describing slot names, order, and each value type's
+`CanonicalTypeName`. Built-in names are pinned in 0.2; application types can inherit the
+module-qualified `Typeable` default or provide an explicit persistence identity.
 
 This chapter does not re-document it. For the canonical encoding, the `regFileShapeHash` entry point,
 and the `CanonicalTypeName` escape hatch, read the reference:
@@ -46,23 +46,24 @@ newtype, replace a primitive with a record, split a slot, rename a type — each
     regFileShapeHash (Proxy @ReorderSlots) `shouldSatisfy` (/= baseline)
 ```
 
-Alongside the sensitivity tests, a golden test pins the *exact* hash of `ExemplarSlots` for the
-current GHC, so a future GHC that moves a base type out of its current module — and thereby changes its
-stable type representation — fails loudly rather than silently invalidating every persisted snapshot:
+Alongside the sensitivity tests, a checked-in golden pins the canonical built-in names and exact hash
+of `ExemplarSlots`:
 
 ```haskell
--- keiki-codec-json/test/Keiki/Codec/JSON/GoldenSpec.hs
-  it "matches the pinned GHC-9.12.* value" $
-    regFileShapeHash (Proxy @ExemplarSlots)
-      `shouldBe`
-      T.pack "a37b2b77042a635f394a082765f3410ea23a0b89745b0c77242b925a03aa172b"
+-- keiki-codec-json/test/golden/exemplar-shape.json
+{"canonical":"retryCount:Int;cooldownUntil:UTCTime;correlationId:Text;regfile:0",
+ "hash":"d920c3660d5b2a7bda082cdedb08fa493acd3f74a663434a4cead475096866f9"}
 ```
 
 <Callout type="warn">
-"Sensitivity" here is **structural-drift detection with no silent fallback** — the same discipline you
-saw in the strict decoder (chapter 07) and the event deriver (chapter 08). It is *not* redaction. The
-hash exists so drift is caught at load time, not papered over.
+Keiki 0.2 deliberately changes **every non-empty 0.1 shape hash once** by replacing
+module-qualified built-in names with pinned names. Treat an old snapshot as a benign cache miss,
+replay the event log from event 0, and write a fresh snapshot. The empty `regfile:0` hash is
+unchanged; never relabel old snapshot bytes with a new hash.
 </Callout>
+
+"Sensitivity" here is structural-drift detection, not redaction. The hash exists so drift becomes a
+snapshot miss instead of an unsafe decode.
 
 ## The two-discriminant snapshot boundary
 
@@ -96,8 +97,13 @@ reordered, or retyped. The codec version catches the encoding drift the shape ha
 in *how* a structurally-identical slot list is written. An ineligible snapshot is not an error; it just
 means hydration falls back to replaying events, exactly as if no snapshot existed.
 
-This is the boundary keiro builds on. keiki provides the two discriminants and the codec; keiro stores
-them next to the snapshot bytes and applies the conjunction at hydration time.
+This is the boundary keiro builds on. Keiki provides the shape hash and codecs; keiro owns the
+consumer-managed codec version, stores both discriminants next to the bytes, and applies the
+conjunction at hydration time.
+
+`RegFileToJSON` additionally requires `DistinctNames (Names rs)`, so a duplicate slot symbol cannot
+reach persistence as ambiguous JSON. The golden suite freezes each selected encoder path separately,
+decodes the historical bytes back to fixed register values, and pins the shape document above.
 
 ## Why two packages: the aeson-free split
 

@@ -105,56 +105,69 @@ data OrderEvent
   deriving stock (Eq, Show)
 ```
 
-the splice `$(deriveEventCodecSkeleton opts ''OrderEvent)` emits **four** top-level bindings:
+the splice `$(deriveEventCodecSkeleton opts ''OrderEvent)` emits **five** top-level bindings:
 
 ```haskell
 -- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs (Haddock)
 orderEventToJSON     :: OrderEvent -> Aeson.Value
 orderEventFromJSON   :: Aeson.Value -> Either String OrderEvent
-orderEventEventTypes :: [Data.Text.Text]                    -- ctor names, in order
-orderEventKindMap    :: [(Data.Text.Text, Data.Text.Text)]  -- (ctor, kind)
+orderEventEventTypes :: [Data.Text.Text]                    -- wire kinds, in order
+orderEventKindMap    :: [(Data.Text.Text, Data.Text.Text)]  -- (ctor, wire kind)
+orderEventSchemaVersion :: Int
 ```
 
 <TypeTable
   type={{
     "<p>ToJSON": { type: "Event -> Aeson.Value", description: "One encode clause per constructor; each emits a kind discriminator plus one entry per payload field." },
     "<p>FromJSON": { type: "Aeson.Value -> Either String Event", description: "Reads kind, branches on it, and reassembles the payload field by field." },
-    "<p>EventTypes": { type: "[Text]", description: "The constructor names in declaration order — a Keiro-feeding surface, plain Text, no Keiro import." },
-    "<p>KindMap": { type: "[(Text, Text)]", description: "Each (constructor name, kind string) pair." },
+    "<p>EventTypes": { type: "[Text]", description: "Resolved wire kinds in declaration order — a Keiro-feeding surface, plain Text, no Keiro import." },
+    "<p>KindMap": { type: "[(Text, Text)]", description: "Each (constructor name, resolved wire kind) pair." },
+    "<p>SchemaVersion": { type: "Int", description: "The version stamped into every envelope by this generated codec." },
   }}
 />
 
 ### The `kind` discriminator
 
-Each constructor encodes to a JSON object carrying a `"kind"` key (the constructor name) plus one entry
-per payload field. The encoder generates the `kind` pair per clause:
+Each constructor encodes to a JSON object carrying a resolved `"kind"`, an in-band `"v"`, and one
+entry per payload field. The encoder generates both envelope pairs per clause:
 
 ```haskell
 -- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs (encodeClause)
   kindPair =
     [|
         $(keyE (kindFieldName opts))
-            Aeson..= (T.pack $(stringE (nameBase (ecCtorName ec))) :: Text)
+            Aeson..= (T.pack $(stringE (wireKindOf opts (ecCtorName ec))) :: Text)
         |]
+  versionPair =
+    [|
+      $(keyE (versionFieldName opts))
+        Aeson..= ($(litE (IntegerL (fromIntegral (currentVersion opts)))) :: Int)
+      |]
 ```
 
-The decoder reads `"kind"`, then walks a nested `if kind == "C" then <build C> else …` chain ending in
-an unknown-kind `Left`:
+`kindOverrides` maps Haskell constructor names to deployed wire kinds. Unknown override keys,
+duplicate resolved kinds, and payload collisions with the kind/version keys fail at splice time.
+Renaming a Haskell constructor therefore does not require renaming its wire identity.
+
+The decoder first reads the stored version (an absent `"v"` means version 1), rejects impossible or
+future versions, migrates the whole envelope, and only then dispatches on the migrated wire kind.
+That ordering lets an upcaster rewrite both payload keys and the discriminator.
 
 ```haskell
 -- keiki-codec-json/src/Keiki/Codec/JSON/Event.hs (dispatch)
 foldr
     ( \ec elseQ ->
         [|
-            if $(varE kVar) == T.pack $(stringE (nameBase (ecCtorName ec)))
+            if $(varE kVar) == T.pack $(stringE (wireKindOf opts (ecCtorName ec)))
                 then $(buildCtorDecode opts oVar ec)
                 else $elseQ
             |]
     )
-    [|Left ("unknown event kind: " <> T.unpack $(varE kVar))|]
+    [|Left ("unknown event kind: " <> T.unpack $(varE kVar) <> expectedKinds)|]
 ```
 
-The discriminator key defaults to `"kind"` but is configurable via `kindFieldName`.
+The discriminator key defaults to `"kind"`; the version key defaults to `"v"` and the current
+version to 1.
 
 ### The no-silent-fallback contract
 
@@ -231,6 +244,24 @@ encode or decode of that field throws the named error rather than silently round
 generic instance. Either way, the author is forced to confront the new field — that is the anti-drift
 property in full.
 
+### Additive defaults and structural migrations
+
+`FieldCodec` has a third field, `fcOnMissing :: Maybe Name`. The `fieldCodec` smart constructor
+creates a strict override; record-update `fcOnMissing` with a top-level constant when a newly added
+field has a domain-safe historical default. A syntactic `Maybe t` passthrough has the built-in
+missing-key default `Nothing`. All other fields remain strict.
+
+Structural changes use `currentVersion` and `upcasters`. Each `(n, 'upgradeN)` entry names an
+`Aeson.Value -> Either String Aeson.Value` function that rewrites one complete envelope from version
+`n` to `n + 1`. `validateUpcasters` requires exactly one rung for every source version in
+`[1 .. currentVersion - 1]` and rejects duplicate or out-of-range sources. Rung failures retain the
+source version in their message.
+
+This generated pipeline is intentionally one envelope to one envelope. Event splits and merges stay
+at the application/event-store boundary. Event decoding ignores unknown keys for additive rolling
+deployments; chapter 07's snapshot decoder rejects them because a snapshot must match one exact
+shape.
+
 <Callout type="warn">
 This is what "sensitivity" means in keiki — **structural drift caught loudly, no silent fallback** — not
 redaction. A payload that gains a field is a structural change, and the deriver refuses to paper over it.
@@ -240,9 +271,10 @@ redaction. A payload that gains a field is a structural change, and the deriver 
 **Test anchor.** `Keiki.Codec.JSON.THEventSpec` drives the splice against a 3-constructor `OrderEvent`
 (an overridden newtype field, an all-passthrough payload, and a singleton): round-trip, that the
 `kind` key and the override actually run, the unknown-kind and non-object error paths, and the
-`EventTypes`/`KindMap` surfaces. The two `onMissingCodec` behaviours are documented as a manual
-negative-test procedure (one is a compile failure, one is a successful build with a `_todo_` stub),
-verified by hand on 2026-06-06.
+`EventTypes`/`KindMap`/`SchemaVersion` surfaces, version guards, wire-kind pinning, additive defaults,
+and migration chains. The compile-time failures are documented as a manual negative-test procedure.
+`Keiki.Codec.JSON.GoldenFileSpec` freezes current and historical envelopes, including a version-absent
+additive document and both versions around a structural migration.
 </Callout>
 
 ---

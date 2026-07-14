@@ -37,9 +37,13 @@ is exported at the reviewed source commit, and by navigating the site without li
 - [x] (2026-07-14T16:19:29Z) Milestone 2: refresh builder validation, symbolic soundness, and
   checked composition. `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the 447-file
   internal-link scan, the upstream-export symbol scan, and `git diff --check` all passed.
-- [ ] Milestone 3: refresh shape hashes, JSON persistence evolution, and the keiro integration
-  handoff.
-- [ ] Run the complete EP-1 validation and stale-API scan, then record outcomes for EP-7.
+- [x] (2026-07-14T16:35:26Z) Milestone 3: refresh shape hashes, JSON persistence evolution, and the
+  keiro integration handoff. `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the
+  447-file internal-link scan, exact-once keiki navigation audit, upstream-export symbol scan, and
+  `git diff --check` all passed.
+- [x] (2026-07-14T16:35:26Z) Run the complete EP-1 validation and stale-API scan, then record
+  outcomes for EP-7. The sole `Keiki.Decider` hit explicitly states that 0.2 does not export it;
+  removed routes and callable helpers have no hits.
 
 ## Surprises & Discoveries
 
@@ -67,6 +71,17 @@ is exported at the reviewed source commit, and by navigating the site without li
   each async stage separately.
   Evidence: `src/Keiki/Profunctor.hs:167-203,514-574`,
   `test/Keiki/CategorySpec.hs:192-225`, and `jitsurei/test/Jitsurei/LoanWorkflowSpec.hs:1-20`.
+- Observation: The persistence pages pinned 0.1's module-qualified built-in names and hashes, and the
+  event-codec pages still described a four-binding, kind-only envelope. Keiki 0.2 instead pins
+  built-ins such as `Int` and `Maybe(Int)`, emits a fifth schema-version binding, and runs a complete
+  one-envelope-to-one-envelope migration chain before wire-kind dispatch.
+  Evidence: `src/Keiki/Shape.hs:68-222`, `keiki-codec-json/src/Keiki/Codec/JSON/Event.hs:140-265`,
+  and the checked-in fixtures under `keiki-codec-json/test/golden/`.
+- Observation: Snapshot and event decoding deliberately have opposite unknown-field contracts.
+  `RegFileToJSON` rejects missing, extra, duplicate, and uninitialized register shapes, while event
+  decoding ignores unknown keys and permits explicit defaults for additive deployment compatibility.
+  Evidence: `keiki-codec-json/src/Keiki/Codec/JSON.hs:1-216` and
+  `keiki-codec-json/src/Keiki/Codec/JSON/Event.hs:41-60,590-617`.
 
 
 ## Decision Log
@@ -101,6 +116,19 @@ is exported at the reviewed source commit, and by navigating the site without li
   inner copy of `t`, while poison provenance deliberately rejects lossy mapped boundaries. The docs
   must not promise stronger operational semantics than the values provide.
   Date: 2026-07-14
+- Decision: Teach snapshots as exact, disposable caches and events as versioned, forward-compatible
+  history. Keep generated upcasters one envelope to one envelope and place splits/merges at the
+  application event-store boundary.
+  Rationale: The snapshot decoder and shape hash must reject ambiguity, while event logs must remain
+  readable across additive and structural releases. Conflating the two contracts previously made
+  both evolution paths less precise.
+  Date: 2026-07-14
+- Decision: Describe the 0.2 built-in-name change as a one-time non-empty snapshot cache miss, never
+  as an instruction to relabel old snapshot bytes.
+  Rationale: The event log is unchanged and keiro already falls back to full replay on a shape-hash
+  mismatch. Rewriting metadata would falsely assert that old bytes were produced under the new
+  persistence identity.
+  Date: 2026-07-14
 
 
 ## Outcomes & Retrospective
@@ -118,6 +146,14 @@ constructor-drift failure, explains sequential read-after-write substitution for
 paths, uses `PLeftArm`/`PRightArm` for total arm exclusion, carries poison provenance through the
 experimental category surface, and names `feedback1`'s independent two-copy semantics. The build and
 all incremental quality gates pass at the unchanged clean upstream SHA.
+
+Milestone 3 now documents pinned built-in shape names, the one-time 0.2 snapshot miss/full-replay
+upgrade, duplicate and uninitialized register rejection, separate Value/Encoding-path goldens,
+stable event wire kinds, in-band versions, additive missing-key defaults, and compile-time-complete
+historical-envelope migrations. The keiro handoff now names keiki's structured command/replay
+contracts without pre-empting EP-2's runtime failure mapping. Every keiki page appears exactly once
+in its nearest navigation metadata, all 447 internal links resolve, the production site prerenders,
+and the upstream tree remains clean at `ce5748b5f2311de1355e648db564da8b404e42f2`.
 
 
 ## Context and Orientation

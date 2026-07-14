@@ -40,12 +40,17 @@ codec serialises and deserialises the eligible ones.
 
 ## The shape-hash stability contract
 
-`regFileShapeHash` is a GHC-upgrade-safe discriminator over the register file's structural shape —
-its ordered slot list of `(name, type)` pairs. It is sensitive to structural drift (a renamed,
-reordered, retyped, added, or removed slot changes the hash) and stable across GHC upgrades that do
-not change that shape. This page does **not** re-document how the hash is computed — see the
+`regFileShapeHash` is a structural discriminator over the register file's ordered `(name, type)`
+slot list. It changes for renamed, reordered, retyped, added, or removed slots. Keiki 0.2 pins the
+common built-in names independently of GHC module paths; application types must pin their own
+`CanonicalTypeName` when their defining module is not part of the persistence identity. See the
 [shape hash reference](/docs/keiki/reference/shape) for the canonical pre-hash encoding and the
 `CanonicalTypeName` escape hatch.
+
+This stronger contract causes one deliberate upgrade effect: **every non-empty 0.1 shape hash misses
+once under 0.2**. Keiro treats the old snapshot as a cache miss and replays the unchanged event log
+from event 0, then may write a fresh 0.2 snapshot. The empty `regfile:0` shape is unchanged. Never
+relabel old snapshot bytes with the new hash.
 
 ## Two discriminants for snapshot eligibility
 
@@ -95,7 +100,24 @@ semantics and different cost:
 The two paths are **not** byte-equal (the `Value` path orders keys alphabetically via aeson's
 `KeyMap`; the `Encoding` path emits slot-list order), but each is deterministic and each round-trips.
 See the [codec reference](/docs/keiki/reference/codec-json#two-encoder-paths) for the full detail, and
-`Keiki.Codec.JSON.GoldenSpec` for the pinned-output golden tests.
+`Keiki.Codec.JSON.GoldenFileSpec` for the checked-in byte fixtures.
+
+The snapshot codec intentionally accepts only one unambiguous shape. `DistinctNames (Names rs)`
+rejects duplicate slot symbols at compile time, the encoder requires every slot to be initialized,
+and the decoder rejects missing and extra keys. These constraints prevent a Value encoder from
+silently losing one duplicate key or a streaming encoder from writing two indistinguishable keys.
+
+## Events evolve differently from snapshots
+
+A snapshot must match one exact shape, so its decoder is strict and a shape mismatch falls back to
+full replay. A durable event log must remain readable across releases, so generated event envelopes
+carry a stable wire `kind` and an in-band schema version. Additive fields may default on absence;
+structural changes use a complete chain of one-envelope-to-one-envelope upcasters before kind
+dispatch. Unknown event keys are tolerated for additive rolling deployments.
+
+That asymmetry is deliberate: snapshots are disposable caches, while events are the source of truth.
+The checked-in snapshot, shape, current-event, and historical-event goldens ensure both sides keep
+their respective contracts.
 
 ## "Sensitivity" here means structural drift and no silent fallback
 
@@ -114,7 +136,8 @@ feature — it does not mask, drop, or obscure field values. "Sensitive" means o
 
 The no-silent-fallback property is itself a form of drift protection: adding a field to a payload
 record forces the author to choose its codec at compile time, so the wire format never changes behind
-your back. See `Keiki.Codec.JSON.SensitivitySpec` for the tests that pin both senses down.
+your back. `Keiki.Codec.JSON.SensitivitySpec` pins the structural cases;
+`Keiki.Codec.JSON.THEventSpec` pins the no-silent-fallback contract.
 
 ## See also
 

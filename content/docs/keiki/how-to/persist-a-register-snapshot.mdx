@@ -48,6 +48,11 @@ The strict decoder `mySnapshotFromJSON` rejects missing, extra, or type-mismatch
 per-slot message — e.g. `Left "retryCount: missing slot"` — so a malformed snapshot never decodes to
 a partially-populated value.
 
+The generated codec also inherits two construction checks: duplicate register names fail to compile
+through `DistinctNames`, and encoding requires every register to be initialized. Do not snapshot a
+partially hydrated `emptyRegFile`; an unwritten slot throws a slot-named `ErrorCall` beginning with
+`uninit:`.
+
 <Callout type="info">
   At a register file's *type* level, the same machinery is the `RegFileToJSON` class with
   `regFileToEncoding` (streaming), `regFileToJSON` (strict `Value`), and `regFileFromJSON` (strict
@@ -56,10 +61,10 @@ a partially-populated value.
 
 ## Compute the shape hash
 
-`regFileShapeHash` is the compact, GHC-upgrade-safe discriminator for the type-level slot list. It is
-a pure `Text` keyed on the structure of the slot list — sensitive to a slot rename, addition,
-removal, reordering, or type change, and insensitive to incidental changes like GHC patch version or
-the slot type's typeclass instances:
+`regFileShapeHash` is the compact discriminator for the type-level slot list. It is a pure `Text`
+keyed on slot names, order, and canonical type names. Keiki pins built-in names; define an explicit
+`CanonicalTypeName` for an application type when its Haskell module path must not affect persisted
+identity:
 
 ```haskell
 import Data.Proxy (Proxy (..))
@@ -120,14 +125,33 @@ hydrate currentVersion currentHash env
   silent fallback to a best-effort decode.
 </Callout>
 
+### Upgrading from keiki 0.1
+
+Keiki 0.2 replaced module-qualified built-in type names with pinned names such as `Int`, `Text`, and
+`Maybe(Int)`. Therefore every **non-empty** 0.1 register shape has a different 0.2 hash. Let the gate
+above return `Right Nothing` and replay from event 0; the event log is unchanged and the next
+snapshot is written with the new hash. Do not copy the new hash onto old bytes. The empty
+`regfile:0` shape is unchanged.
+
 ## Verify it worked
 
-The round-trip and strict-decoder behaviour are pinned in `Keiki.Codec.JSON.THSpec`: the value path
-round-trips (`testRecFromJSON (testRecToJSON tr) == Right tr`), the streaming path's bytes parse back
-to the same value, and a missing slot decodes to `Left "trCount: missing slot"`.
-`Keiki.Codec.JSON.PropSpec` checks the encoding-path / value-path agreement across generated inputs.
-To confirm the gate: compute `regFileShapeHash` before and after a slot rename — the hash changes,
-so the old snapshot becomes ineligible and replay kicks in.
+The round-trip and strict-decoder behaviour are pinned in `Keiki.Codec.JSON.THSpec` and
+`Keiki.Codec.JSON.PropSpec`. `Keiki.Codec.JSON.GoldenFileSpec` goes further: it decodes checked-in
+historical bytes to fixed values and requires each selected encoder path to reproduce its own fixture
+byte for byte. It also freezes the canonical shape text and hash. To confirm the gate locally,
+compute `regFileShapeHash` before and after a slot rename — the old snapshot becomes ineligible and
+replay starts from event 0.
+
+For an intentional wire change in the keiki source tree, use the guarded regeneration procedure:
+
+```bash
+KEIKI_UPDATE_GOLDENS=1 cabal test keiki-codec-json:keiki-codec-json-test
+cabal test keiki-codec-json:keiki-codec-json-test
+git diff keiki-codec-json/test/golden/
+```
+
+The first run rewrites fixtures and deliberately fails; the clean second run and reviewed diff make
+the compatibility decision explicit.
 
 ## Related
 

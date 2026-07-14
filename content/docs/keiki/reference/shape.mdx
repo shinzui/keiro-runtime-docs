@@ -13,12 +13,11 @@ fast-forward hydration from a stored snapshot it must know that the snapshot was
 *same* register-file shape this binary expects. The shape hash is that check.
 
 <Callout type="info">
-The shape hash exists to be a GHC-upgrade-safe discriminator. It is **sensitive to structural
-change** — renaming, adding, removing, reordering a slot, or changing a slot's type all flip the
-hash — and **insensitive to incidental change** — a GHC patch or minor bump, a different cabal
-dependency tree, a different machine, or a change to a slot type's typeclass instances all leave it
-byte-for-byte identical. That combination is what makes it safe to persist alongside a snapshot and
-compare on the way back in.
+The shape hash is **sensitive to structural change** — renaming, adding, removing, reordering a slot,
+or changing a slot's type all flip the hash. In 0.2, built-in scalar and container names are pinned to
+module-independent Haskell spellings, so GHC module moves no longer churn the common case. A
+user-defined type that accepts the `CanonicalTypeName` default still includes its defining module;
+override the name when that module path is not part of your persistence identity.
 </Callout>
 
 ## The model
@@ -27,7 +26,7 @@ compare on the way back in.
 slot by slot, in slot-list order. Each slot contributes:
 
 ```text
-<slotSymbol> ":" <renderStableTypeRep tr> ";"
+<slotSymbol> ":" <canonicalTypeName> ";"
 ```
 
 and the **empty** slot list is anchored at the literal `regfile:0`. So a slot list of length *n*
@@ -38,11 +37,11 @@ Worked from `test/Keiki/ShapeSpec.hs`: the one-slot list `'[ '("retryCount", Int
 form
 
 ```text
-retryCount:GHC.Types.Int;regfile:0
+retryCount:Int;regfile:0
 ```
 
 and its hash is the SHA-256 of those UTF-8 bytes,
-`e2c8839d9ae8e89baebbc1adf6dfd5a35608712d9bf994c7cef4ea774e739700`. The empty list `'[]` has
+`de03289268ae222f84d8a1b9af8f4f78bc9d23a747c97c12f4974e2504485978`. The empty list `'[]` has
 canonical form `regfile:0` and hash
 `0b262a9e301796f7a5b36bb6ea874e9ffccf7d1b4aff78a8d4b5436bd23914a6`.
 
@@ -127,10 +126,9 @@ renderStableTypeRep (someTypeRep (Proxy @UTCTime))     == "Data.Time.Clock.Inter
 ```
 
 The implementation uses **only** `tyConModule`, `tyConName`, and `splitApps`. It never touches
-`tyConPackage` (which varies with cabal version pins), never calls `Show` on a `TypeRep` (whose
-output is not contractually stable), and never reads the raw `Fingerprint`. That restriction is
-*why* the hash is byte-stable across GHC patch and minor releases and across machines: it depends
-only on module-and-constructor names, which move rarely and visibly.
+`tyConPackage`, calls `Show` on a `TypeRep`, or reads the raw `Fingerprint`. This renderer is the
+default for **user-defined** `CanonicalTypeName` instances. Built-ins do not use it in 0.2: their
+instances return pinned names such as `Int`, `Text`, and `Maybe(Int)`.
 
 ## `sha256Hex`
 
@@ -154,8 +152,7 @@ class CanonicalTypeName a where
 
 This is the per-type override point. If a slot type's defining module is renamed — say a refactor
 moves `MyDomain.Types.Email` to `MyDomain.Email` — the default `renderStableTypeRep` output changes
-and the shape hash flips, even though nothing structural about your register file changed. Pin the
-name explicitly to keep the old hash stable across the incidental rename:
+and the shape hash flips. Pin an application-owned name to keep the persistence identity stable:
 
 ```haskell
 instance CanonicalTypeName Email where
@@ -164,8 +161,8 @@ instance CanonicalTypeName Email where
 
 ### Built-in instances
 
-keiki ships `CanonicalTypeName` for the common scalar and primitive container types a typical
-register file carries. Each built-in is empty-bodied and picks up the `Typeable` default:
+keiki ships explicit, module-independent `CanonicalTypeName` instances for the common scalar and
+primitive container types a register file carries:
 
 <TypeTable
   type={{
@@ -173,27 +170,37 @@ register file carries. Each built-in is empty-bodied and picks up the `Typeable`
     Ints: { type: "Int  Int8  Int16  Int32  Int64", description: "Machine and sized signed integers" },
     Words: { type: "Word  Word8  Word16  Word32  Word64", description: "Machine and sized unsigned integers" },
     Time: { type: "UTCTime  Day", description: "The two time types from the time library" },
-    Containers: { type: "Maybe a  [a]  Either a b  (a, b)  (a, b, c)", description: "Typeable-bounded containers and small tuples" },
+    Containers: { type: "Maybe a  [a]  Either a b  (a, b)  (a, b, c)", description: "Containers recurse through CanonicalTypeName for every argument" },
   }}
 />
 
-A slot type not in this list needs either a `CanonicalTypeName` instance of its own or — for the
-common case of a derivable `Typeable` — the empty `instance CanonicalTypeName MyType` that inherits
-the default.
+A slot type not in this list needs its own `CanonicalTypeName` instance. An empty instance inherits
+the module-qualified `Typeable` default; an explicit body pins an application-owned identity.
+
+## The 0.2 one-time migration
+
+Keiki 0.1 used module-qualified defaults for built-ins. Keiki 0.2 pins those names, so **every
+non-empty register-file shape hash changes once** on upgrade; the empty shape remains the hash of
+`regfile:0`. Snapshot stores should treat the old non-empty hash as an ordinary cache miss: ignore
+that snapshot and replay the durable event log from the beginning. Do not rewrite old snapshot
+metadata to the new hash because the stored bytes were not produced under the new identity.
+
+After the first successful replay, the runtime may write a fresh snapshot with the 0.2 hash. This is
+a snapshot-cache migration, not an event migration: the event log remains the source of truth.
 
 ## The snapshot story
 
 The shape hash is the keiki-side half of snapshot persistence. The other half — how an eligible
 register file is serialized to JSON — lives in the sibling `keiki-codec-json` package, documented at
-`/docs/keiki/reference/regfile-json-codec`. Together they form the two-discriminant
+[`Codec: JSON`](/docs/keiki/reference/codec-json). Together they form the two-discriminant
 snapshot-eligibility rule: a stored snapshot is eligible to fast-forward hydration **iff both** its
 `state_codec_version` and its `regfile_shape_hash` match what the running binary expects. The shape
 hash catches the structural drift the codec version does not; the codec version catches encoding
 drift the shape hash does not.
 
-The golden-value tests for this module are in `test/Keiki/ShapeSpec.hs`; they pin the canonical
-strings and hashes for GHC 9.12.* so a future GHC that moves a base type out of its current module
-fails loudly rather than silently invalidating every persisted snapshot.
+`test/Keiki/ShapeSpec.hs` pins the canonical strings and hashes for the built-in names.
+`keiki-codec-json/test/golden/exemplar-shape.json` additionally freezes a representative snapshot
+shape (`retryCount:Int;cooldownUntil:UTCTime;correlationId:Text;regfile:0`) and its exact hash.
 
 <Cards>
   <Card title="Core: RegFile and slots" href="/docs/keiki/reference/core" />

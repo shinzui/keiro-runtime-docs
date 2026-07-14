@@ -81,7 +81,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| EP-1 | Refresh keiki 0.2 correctness replay and persistence documentation | `docs/plans/40-refresh-keiki-0-2-correctness-replay-and-persistence-documentation.md` | None | None | In Progress |
+| EP-1 | Refresh keiki 0.2 correctness replay and persistence documentation | `docs/plans/40-refresh-keiki-0-2-correctness-replay-and-persistence-documentation.md` | None | None | Complete |
 | EP-2 | Refresh keiro command replay snapshot and read-model reliability documentation | `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md` | None | EP-1 | Not Started |
 | EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Not Started |
 | EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Not Started |
@@ -181,7 +181,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
   structured replay.
 - [x] (2026-07-14T16:19:29Z) EP-1 Milestone 2: refresh builder, validation, symbolic, and
   composition contracts.
-- [ ] EP-1 Milestone 3: refresh persistence, codecs, and the keiro integration handoff.
+- [x] (2026-07-14T16:35:26Z) EP-1 Milestone 3: refresh persistence, codecs, and the keiro
+  integration handoff.
 - [ ] EP-2 Milestone 1: refresh event-stream validation, hydration, and command failures.
 - [ ] EP-2 Milestone 2: refresh snapshot correctness and recovery behavior.
 - [ ] EP-2 Milestone 3: refresh read models, projections, and rebuild operations.
@@ -217,6 +218,13 @@ interactions between child plans. Provide concise evidence.
 - EP-1 confirmed that `feedback1` is a two-copy cascade, not shared-state aggregate feedback. Runtime
   orchestration pages should describe durable feedback as explicit cross-stream dispatch owned by
   keiro, not as state sharing hidden inside the keiki combinator.
+- EP-1 confirmed that keiki 0.2 intentionally changes every non-empty 0.1 register shape hash once.
+  EP-2 must describe this as a benign snapshot cache miss and full event replay; EP-7 must carry the
+  upgrade note into announcement-facing compatibility guidance.
+- EP-1 confirmed that generated event codecs expose resolved wire kinds and in-band schema versions,
+  default compatible additive fields, and require a complete one-envelope migration chain. EP-2 and
+  EP-4 should consume these generated surfaces instead of documenting constructor names as durable
+  wire identities.
 
 
 ## Decision Log

@@ -29,12 +29,20 @@ class RegFileWalk rs => RegFileToJSON (rs :: [Slot]) where
   regFileFromJSON   :: Aeson.Value -> Either String (RegFile rs)
 ```
 
-The JSON object's keys are the **slot symbols, in slot-list order**.
+The JSON object's keys are the slot symbols. The streaming encoder preserves slot-list order; the
+`Aeson.Value` path follows aeson's `KeyMap` order when bytes are finally emitted.
 
 <Callout type="info">
-There is a single blanket instance — `instance RegFileWalk rs => RegFileToJSON rs`. Any slot list
-that the inductive `RegFileWalk` machinery covers is automatically a `RegFileToJSON`. Program against
-`RegFileToJSON`; the `RegFileWalk` class below is the internal helper that does the work.
+There is a single blanket instance:
+
+```haskell
+instance (RegFileWalk rs, DistinctNames (Names rs)) => RegFileToJSON rs
+```
+
+The `DistinctNames` constraint rejects duplicate slot symbols at compile time. Without it, the Value
+path could retain only one duplicate key, the streaming path could emit the key twice, and decoding
+could never populate the second slot. Program against `RegFileToJSON`; `RegFileWalk` is the internal
+inductive helper.
 </Callout>
 
 ### The three methods
@@ -54,6 +62,14 @@ The decoder is **strict** in three ways. Any of these is a `Left`:
 - an **extra** top-level field → `Left "regfile: unknown extra fields: [...]"`
 
 A non-object input is `Left "regfile: expected JSON Object"`.
+
+Every slot must be initialized before either encoder runs. Encoding a register file produced by
+`emptyRegFile` before all slots have been written throws a slot-named `ErrorCall` beginning with
+`uninit:`; the streaming path may already have emitted earlier object bytes. Snapshot only fully
+hydrated aggregates.
+
+`Nothing` is an explicit `null`, not a missing key. Avoid `Maybe (Maybe a)` when the outer/inner
+distinction matters: aeson's standard instances encode both `Nothing` and `Just Nothing` as `null`.
 
 ### `RegFileWalk` — the internal walker
 
@@ -168,7 +184,10 @@ skeleton.
 data FieldCodec = FieldCodec
   { fcEncode :: Name   -- names a function  fieldType -> Aeson.Value
   , fcDecode :: Name   -- names a function  Aeson.Value -> Either String fieldType
+  , fcOnMissing :: Maybe Name -- optional top-level default constant
   }
+
+fieldCodec :: Name -> Name -> FieldCodec -- strict: fcOnMissing = Nothing
 
 data OnMissingCodec
   = FailAtCompileTime   -- default: abort the splice, listing every unhandled field
@@ -180,12 +199,17 @@ data OnMissingCodec
     fieldCodecOverrides: { type: "Map String FieldCodec", description: "Per-field encode/decode hooks, keyed by payload field name" },
     passthroughFields: { type: "Set String", description: "Field names whose type already has aeson instances and may use them directly" },
     kindFieldName: { type: "String", description: "The discriminator key" },
+    kindOverrides: { type: "Map String String", description: "Haskell constructor name to stable wire kind; omitted constructors use their current name" },
+    versionFieldName: { type: "String", description: "The in-band schema-version key" },
+    currentVersion: { type: "Int", description: "Version stamped by the encoder; must be at least 1" },
+    upcasters: { type: "[(Int, Name)]", description: "Complete n→n+1 whole-envelope migration chain for every historical version" },
     onMissingCodec: { type: "OnMissingCodec", description: "Behaviour for a field in neither overrides nor passthrough" },
   }}
 />
 
 ```haskell
--- Empty overrides, empty passthrough, kind = "kind", FailAtCompileTime.
+-- Empty overrides/passthrough, kind = "kind", version = "v",
+-- currentVersion = 1, no upcasters, FailAtCompileTime.
 defaultEventCodecOptions :: EventCodecOptions
 ```
 
@@ -196,7 +220,7 @@ deriveEventCodecSkeleton   :: EventCodecOptions -> Name -> Q [Dec]
 deriveEventCodecSkeletonAs :: String -> EventCodecOptions -> Name -> Q [Dec]
 ```
 
-For `data E = C1 P1 | … | Singleton`, the splice emits **four** top-level bindings (prefix derived by
+For `data E = C1 P1 | … | Singleton`, the splice emits **five** top-level bindings (prefix derived by
 lower-casing the first letter):
 
 ```haskell
@@ -211,16 +235,23 @@ $(deriveEventCodecSkeleton defaultEventCodecOptions ''OrderEvent)
 -- emits:
 orderEventToJSON     :: OrderEvent -> Aeson.Value
 orderEventFromJSON   :: Aeson.Value -> Either String OrderEvent
-orderEventEventTypes :: [Text]            -- ctor names, in declaration order
-orderEventKindMap    :: [(Text, Text)]    -- (ctor, kind) pairs
+orderEventEventTypes :: [Text]            -- resolved wire kinds, in declaration order
+orderEventKindMap    :: [(Text, Text)]    -- (constructor, resolved wire kind)
+orderEventSchemaVersion :: Int
 ```
 
 `orderEventEventTypes` and `orderEventKindMap` are **plain `Text`** — the generated code carries no
 keiro import, so they feed a keiro registration surface without coupling the two packages.
 
-Each constructor encodes to a JSON object carrying a `"kind"` discriminator (the constructor name)
-plus one entry per payload field. The decoder reads `"kind"`, dispatches through a nested `if`, and
-ends in `Left "unknown event kind: …"`. A singleton encodes to just `{"kind":"Singleton"}`.
+Each constructor encodes to a JSON object carrying a resolved `"kind"` discriminator, an in-band
+`"v"` schema version, and one entry per payload field. The decoder validates the stored version,
+migrates the whole envelope when necessary, then dispatches on the migrated kind. A singleton at
+version 1 encodes to `{"kind":"Singleton","v":1}`.
+
+`kindOverrides` pins wire identity independently of Haskell constructor names. Override keys must
+name real constructors, resolved kinds must be unique, and neither envelope key may collide with a
+payload field. The generated `EventTypes` contains the resolved wire kinds; `KindMap` retains both
+the Haskell constructor and wire kind.
 
 <Callout type="warn">
 The splice **rejects** multi-argument constructors, constructors that use record syntax directly
@@ -255,6 +286,36 @@ decision at compile time — that is the structural sensitivity guarantee. See
 `Keiki.Codec.JSON.THEventSpec` for the documented negative-test procedure exercising both
 `FailAtCompileTime` and `EmitTodoBindings` (one is a compile failure, so they cannot both live as a
 passing unit test).
+
+## Event-schema evolution
+
+Decoding uses this pipeline:
+
+1. Parse the version field; an absent `"v"` means version 1.
+2. Reject versions below 1 or ahead of `currentVersion`.
+3. Run the compile-time-complete `upcasters` chain in ascending source-version order. Each function
+   is `Aeson.Value -> Either String Aeson.Value` and migrates one whole envelope from `n` to `n + 1`.
+4. Read the migrated wire kind, dispatch, and decode fields.
+
+For an additive field that does not change the structural envelope, keep `currentVersion` unchanged.
+A syntactic `Maybe t` in `passthroughFields` defaults an absent key to `Nothing`; an override can set
+`fcOnMissing = Just 'someTopLevelConstant`. Required passthrough fields and strict overrides still
+fail on absence.
+
+For a rename, type change, or other structural rewrite, increment `currentVersion` and add every
+rung in `[1 .. currentVersion - 1]`. The splice rejects missing, duplicate, or out-of-range source
+versions, so a historical version cannot silently bypass a migration. Upcasters run before kind
+dispatch and may rewrite both the discriminator and payload keys. They are deliberately one envelope
+to one envelope; splitting one historical event into several current events belongs at the
+application/event-store boundary.
+
+Event decoding ignores unknown object keys to permit additive rolling deployments. Register-file
+snapshot decoding remains exact and rejects extra keys; the two codecs have different compatibility
+contracts.
+
+The checked-in fixtures under `keiki-codec-json/test/golden/` freeze current encoded bytes and old
+documents that must continue decoding. Regenerate them only for an intentional wire change, then
+rerun without the update flag and review the diff.
 
 ## See also
 

@@ -6,8 +6,9 @@ description: Pairing the durable keiro runtime with the pure keiki core — and 
 keiro (経路, the event-sourcing framework) is the **durable, effectful runtime**: it talks to the
 store, hydrates aggregates, runs the command cycle, and drives process managers and workflows. keiki
 (継起, the pure mathematical core) is the **law-abiding, IO-free decision engine**: a
-`SymTransducer phi rs s ci co` whose `step` is total and side-effect-free. keiro does not re-implement
-any of keiki's semantics — it *embeds* a keiki transducer and adds the plumbing needed to replay it.
+`SymTransducer phi rs s ci co` with structured command and replay results. keiro does not
+re-implement those semantics — it embeds a keiki transducer and adds durable storage, routing, and
+failure mapping.
 
 This page describes that boundary, and then the headline integration the two libraries gained
 recently: keiro can ask keiki to **prove a stream is replay-safe at build time**, with no SMT solver
@@ -33,14 +34,16 @@ data EventStream phi rs s ci co = EventStream
 
 Everything downstream flows from that one embedded transducer:
 
-- **The command cycle is one call into keiki.** keiro's Transduce phase is
-  `Keiki.step transducer (state, registers) command`. `Nothing` is a rejection (`CommandRejected`);
-  `Just (state', registers', events)` is an accepted transition. Stepping the transducer *is* both the
-  decision and the state advance — there is no separate `evolve`. See
+- **The command cycle is one call into keiki.** `stepEither` distinguishes a legitimate
+  `NoMatchingEdge` rejection from `NoOutgoingEdges` and the `AmbiguousEdges` defect; `step` remains a
+  compatibility wrapper that collapses them to `Nothing`. Stepping the transducer is both decision
+  and state advance — there is no separate `evolve`. The keiro-specific mapping of those results is
+  documented by the runtime pages. See
   [Why SymTransducer, not Decider](/docs/keiro/explanation/why-symtransducer-not-decider).
-- **Replay is inherited, not added.** Because `step` is pure and total, folding a stream's event log
-  back into `(state, registers)` is deterministic by construction. keiro's durability layer adds
-  idempotency and ordering on top; the *decision* semantics are entirely keiki's.
+- **Replay is inherited, not added.** `replayEvents` / `reconstituteEither` invert stored outputs and
+  report an indexed `ReplayFailure` for ambiguous inversion, queue mismatch, inversion failure, or a
+  truncated multi-event chain. The older `Maybe` functions collapse those diagnostics. Keiro's
+  durability layer adds ordering and maps the structured result into runtime failures.
 - **The type parameters thread straight through.** `phi` (guard alphabet), `rs` (register set), `s`
   (control state), `ci` (command input), `co` (event output) are keiki's, surfaced unchanged on the
   `EventStream`.
@@ -166,6 +169,14 @@ Replay safety is enforced at several layers:
   stored events fail hydration instead of being skipped.
 - `Stream`/`StreamCategory` prevent stream-name/category drift, keeping category reads and
   subscriptions pointed at the same family of streams as command writes.
+
+<Callout type="info">
+Keiki 0.2 pins built-in `CanonicalTypeName` values, so every non-empty 0.1 register shape hash changes
+once. That is an intentional snapshot-cache miss: keiro ignores the old snapshot, replays the event
+log in full, and can write a new snapshot. Separately, `keiki-codec-json` now emits pinned wire kinds,
+an in-band event version, additive missing-field defaults, and a complete historical-envelope
+migration chain. Event compatibility and snapshot eligibility are different boundaries.
+</Callout>
 
 ### Assert it over your whole registry, in CI
 

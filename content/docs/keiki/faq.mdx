@@ -24,11 +24,12 @@ Short answers to the questions people ask most about keiki. Each links to the pa
   </Accordion>
 
   <Accordion title="Why does my replay return Nothing?">
-    A **hidden input**. Replay folds events back through the transducer; if an event dropped a field
-    a later edge needs to decide, that field is read at a vertex where it was never written and the
-    fold stalls. Add the field back to the event (additively). `checkHiddenInputs` names the exact
-    edge and register involved, so you do not have to guess. See [Evolve a schema
-    safely](/docs/keiki/cookbook/evolve-a-schema-safely).
+    `applyEvents` and `reconstitute` are compatibility wrappers that collapse replay defects to
+    `Nothing`. Use `replayEvents`, `applyEventsEither`, or `reconstituteEither` to learn the failing
+    event index, wrapper state, and exact `ReplayFailureReason` — ambiguous inversion, queue mismatch,
+    inversion failure, or a truncated multi-event chain. A hidden input is one possible design cause,
+    and the validation warnings identify it before replay. See [Replay
+    failures](/docs/keiki/reference/step-failure#replay-failures-are-not-command-rejections).
   </Accordion>
 
   <Accordion title="step returned Nothing — was the command rejected or was it ambiguous?">
@@ -42,11 +43,13 @@ Short answers to the questions people ask most about keiki. Each links to the pa
   </Accordion>
 
   <Accordion title="How do I evolve an event or register schema?">
-    Write an explicit **wire→current upcaster** at the boundary and keep changes **additive by
-    convention** — new optional fields, never a repurposed or removed one. Be aware that the
-    register-shape hash changes when the register layout changes, which **invalidates existing
-    snapshots** (they rebuild from the log on next read). See [Shape](/docs/keiki/reference/shape) and
-    [Evolve a schema safely](/docs/keiki/cookbook/evolve-a-schema-safely).
+    Pin deployed constructor kinds. For an additive field, keep the event version and give an absent
+    key a `Maybe`/`fcOnMissing` default. For a structural rewrite, bump `currentVersion` and provide
+    every whole-envelope upcaster rung. A register-shape change invalidates only the snapshot cache;
+    replay rebuilds it from the event log. Keiki 0.2 also causes one intentional miss for every
+    non-empty 0.1 shape because built-in names are now pinned. See
+    [Shape](/docs/keiki/reference/shape) and [Evolve a schema
+    safely](/docs/keiki/cookbook/evolve-a-schema-safely).
   </Accordion>
 
   <Accordion title="Should I call delta and omega, or step?">
@@ -74,8 +77,9 @@ Short answers to the questions people ask most about keiki. Each links to the pa
   <Accordion title="Is compose how the runtime fires cross-context flows?">
     No. `compose` is **lockstep** — it fuses two transducers that advance together, in the same step,
     as one machine. It does not model an asynchronous, cross-context flow. The runtime models that
-    with the `lmapMaybeCi` adapters, which let one machine react to another's outputs across a
-    boundary without forcing them into a single synchronous step. See [The composition
+    with durable routing and explicit dispatch. `lmapMaybeCi` is a useful standalone forward router,
+    but composing across it is deliberately poison-stamped because the partial map cannot support
+    replay-safe inversion. See [The composition
     algebra](/docs/keiki/explanation/the-composition-algebra).
   </Accordion>
 </Accordions>

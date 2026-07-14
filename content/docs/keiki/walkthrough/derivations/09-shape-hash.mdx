@@ -1,6 +1,6 @@
 ---
 title: "09 — The shape hash"
-description: "The canonical pre-hash string for a slot list, the single SHA-256 over it, the GHC-upgrade-stable renderStableTypeRep, and why the hash keys snapshot eligibility."
+description: "The canonical pre-hash string for a slot list, pinned built-in type names, the single SHA-256 over it, and why the hash keys snapshot eligibility."
 ---
 
 A snapshot persister needs a compact discriminator for a register file's type-level slot list: a token
@@ -38,7 +38,7 @@ instance
       ]
 ```
 
-Each slot contributes `<slotSymbol> ":" <renderStableTypeRep tr> ";"` in slot-list order, and the empty
+Each slot contributes `<slotSymbol> ":" <canonicalTypeName> ";"` in slot-list order, and the empty
 list is anchored at the literal `"regfile:0"`. So a one-slot list renders as a string whose tail is the
 anchor:
 
@@ -46,7 +46,7 @@ anchor:
 -- keiki/test/Keiki/ShapeSpec.hs
 it "concatenates one slot in the documented R3 form" $
   regFileShapeCanonical (Proxy @('[ '("retryCount", Int) ] :: [(Symbol, Type)]))
-    `shouldBe` T.pack "retryCount:GHC.Types.Int;regfile:0"
+    `shouldBe` T.pack "retryCount:Int;regfile:0"
 ```
 
 <Callout type="info">
@@ -86,12 +86,16 @@ it "matches its sha256Hex-of-canonical definition" $ do
   regFileShapeHash p `shouldBe` sha256Hex (regFileShapeCanonical p)
 ```
 
-## `renderStableTypeRep`: GHC-upgrade-stable type rendering
+## Pinned built-ins and the user-type fallback
 
-The slot *type* in the canonical string comes from `renderStableTypeRep`, and its construction is the
-crux of the cross-version stability guarantee. It renders a `SomeTypeRep` as an application-tree string,
-contributing `<tyConModule>.<tyConName>` per type constructor and recursing into applied arguments
-inside parentheses:
+The slot type in the canonical string comes from `CanonicalTypeName`. Keiki 0.2 provides explicit,
+module-independent names for built-ins: `Int`, `Text`, `UTCTime`, and so on. Container instances
+recurse through the class, producing forms such as `Maybe(Int)` and preserving an application
+override inside lists, `Either`, and tuples.
+
+`renderStableTypeRep` remains the default for a user-defined `CanonicalTypeName` instance. It renders
+a `SomeTypeRep` as an application-tree string, contributing `<tyConModule>.<tyConName>` per type
+constructor and recursing into applied arguments:
 
 ```haskell
 -- keiki/src/Keiki/Shape.hs
@@ -111,10 +115,9 @@ renderTypeRep tr =
             <> T.pack ")"
 ```
 
-The discipline is what makes it stable: the implementation uses *only* `tyConModule`, `tyConName`, and
-`splitApps`. It never touches `tyConPackage` (which varies with cabal version pins), never `Show` on
-`TypeRep` (not contractually stable), and never the raw `Fingerprint`. So `Int` renders as
-`GHC.Types.Int` and `Maybe Int` as a parenthesised application:
+The fallback uses only `tyConModule`, `tyConName`, and `splitApps`; it never includes package versions
+or raw fingerprints. These examples test the fallback renderer itself, **not** the 0.2 canonical names
+used for built-in slots:
 
 ```haskell
 -- keiki/test/Keiki/ShapeSpec.hs
@@ -127,9 +130,8 @@ it "renders Maybe Int as a parenthesised application" $
     `shouldBe` T.pack "GHC.Internal.Maybe.Maybe(GHC.Types.Int)"
 ```
 
-For a slot type whose defining module is likely to be renamed, or one that straddles libraries with
-unstable layouts, `CanonicalTypeName` is the escape hatch — override it to pin the name explicitly
-instead of letting the `Typeable` default render the module path.
+For a user type whose defining module may be renamed, override `canonicalTypeName` to pin an
+application-owned name instead of accepting the `Typeable` default.
 
 ## Why this keying scheme — sensitivity and insensitivity
 
@@ -145,8 +147,14 @@ it "differs when slot order is reversed (P10: slot order is identity)" $
   regFileShapeHash
     (Proxy @('[ '("retryCount", Int), '("cooldownUntil", UTCTime) ] :: [(Symbol, Type)]))
     `shouldBe`
-    T.pack "944d775449408b12b78b2a41770af207bae37d0a833c046310eb6ff3902ea44f"
+    T.pack "22a08cf2b847545bf0ce24f505de379ee49c2edb8c2236b6f6bcfadba984b1ea"
 ```
+
+<Callout type="warn">
+Keiki 0.2 changes every non-empty 0.1 shape hash once because built-in names are now pinned. Existing
+keiro snapshots become benign cache misses: replay the durable event log in full and write a fresh
+snapshot. The empty `regfile:0` shape is unchanged.
+</Callout>
 
 This is exactly the property a snapshot persister wants. A stored snapshot is keyed by the shape hash of
 the slot list it was written against. When the running code's slot list still hashes to the same value,
@@ -159,15 +167,14 @@ the gate, not the serialiser.
 The shape hash and the JSON codec are the two halves of the snapshot story: the hash decides *whether* a
 snapshot is eligible; the codec serialises the eligible ones. The codec lives in the sibling package and
 is documented separately — see the RegFile JSON codec reference at the path
-`/docs/keiki/reference/regfile-json-codec` (that page is authored in a later chapter of this set and is
-not yet linkable).
+[`/docs/keiki/reference/codec-json`](/docs/keiki/reference/codec-json).
 </Callout>
 
 ## Where this fits
 
 That closes the derivations tour. We have walked from the symbolic transducer and register file, through
 the generic record walk and the TH constructor/wire splices, the zero-enumeration and fused forms, the
-B-presentation view, and the Decider and acceptor projections, to the shape hash that keys snapshot
+B-presentation view and acceptor projections, to the shape hash that keys snapshot
 persistence.
 
 <Cards>

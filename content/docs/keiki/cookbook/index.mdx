@@ -36,7 +36,7 @@ If the *count or shape* of the output depends on the input value — approve emi
 
 ### When to compose / reach for a Process
 
-Keep it one aggregate when there is one identity and one lifecycle. Split into two transducers — each with its own event stream — when a concept has **its own identity and its own lifecycle** (a loan application and the core-banking sync that mirrors it). Wire them together with a Process: `compose` plus `lmapMaybeCi` to route a parent event into a child command.
+Keep it one aggregate when there is one identity and one lifecycle. Split into two transducers — each with its own event stream — when a concept has **its own identity and its own lifecycle** (a loan application and the core-banking sync that mirrors it). Wire durable hops with a runtime Process/router and explicit dispatch. Use `composeChecked` only for a genuinely lockstep, structurally aligned machine; a lossy `lmapMaybeCi` boundary is deliberately not replay-safe composition.
 
 `compose` is **lockstep** — both transducers step together within one transition. Model anything asynchronous (a webhook, a delayed external reply) through the adapter functions at the boundary, not by trying to make the composition wait. See [Build a cross-context process](/docs/keiki/how-to/build-a-cross-context-process) and [Compose aggregates into a workflow](/docs/keiki/cookbook/compose-aggregates-into-a-workflow).
 
@@ -46,7 +46,7 @@ The symbolic analyses can only see guards in the verifiable fragment: `PEq` (equ
 
 - Keep guards structural so they land in that fragment.
 - Wire `validateTransducer defaultValidationOptions t == []` into CI so a regression in well-formedness fails the build. See [Validate a transducer at build time](/docs/keiki/cookbook/validate-a-transducer-at-build-time) and [Assert a transducer is well-formed in CI](/docs/keiki/how-to/assert-a-transducer-is-well-formed-in-ci).
-- Turn on `warnOpaqueGuards` when you want the validator to *also* flag any guard that routes through a `TApp` — the early warning that a guard has slipped out of the verifiable fragment. See [The SymTransducer](/docs/keiki/explanation/the-symtransducer).
+- Treat `OpaqueGuard` as the signpost that a guard routes through a `TApp` and has slipped out of the verifiable fragment. See [The SymTransducer](/docs/keiki/explanation/the-symtransducer).
 
 ### New-transducer checklist
 
@@ -59,7 +59,7 @@ Before you call a transducer done:
 - **Branches are mutually exclusive** (`g` / `pnot g`) so no command matches two edges.
 - **Every slot a later read needs is initialised** before the read — seed counters and decision slots on the entrance edge.
 - **`validateTransducer defaultValidationOptions t == []`** is green in CI.
-- Recommended surface is the transducer: `step` / `stepEither` / `delta` / `omega` / `reconstitute`.
+- Recommended surface is the transducer: `stepEither` for commands and `replayEvents` / `reconstituteEither` for persisted events.
 
 ## Recipes
 
@@ -73,9 +73,9 @@ Before you call a transducer done:
   <Card title="Diagnose why a command was rejected" href="/docs/keiki/cookbook/diagnose-why-a-command-was-rejected" description="Swap step for stepEither and read the StepFailure explanation." />
   <Card title="Validate a transducer at build time" href="/docs/keiki/cookbook/validate-a-transducer-at-build-time" description="Assert validateTransducer returns no findings as a CI gate." />
   <Card title="Fix a hidden-input replay failure" href="/docs/keiki/cookbook/fix-a-hidden-input-replay-failure" description="When an event drops a field a guard reads, replay can't reconstruct the command." />
-  <Card title="Evolve a schema safely" href="/docs/keiki/cookbook/evolve-a-schema-safely" description="Add fields and events without breaking replay of an existing log." />
+  <Card title="Evolve a schema safely" href="/docs/keiki/cookbook/evolve-a-schema-safely" description="Pin wire kinds, default additive fields, migrate versioned envelopes, and invalidate stale snapshots safely." />
   <Card title="Build a cross-context process" href="/docs/keiki/cookbook/build-a-cross-context-process" description="Route a parent event into a child command across two bounded contexts." />
-  <Card title="Compose aggregates into a workflow" href="/docs/keiki/cookbook/compose-aggregates-into-a-workflow" description="Drive two transducers in lockstep with compose and lmapMaybeCi." />
+  <Card title="Compose aggregates into a workflow" href="/docs/keiki/cookbook/compose-aggregates-into-a-workflow" description="Understand the legacy lockstep topology and keep durable cross-context dispatch at the runtime boundary." />
   <Card title="Derive a lifecycle transition from a threshold" href="/docs/keiki/cookbook/derive-a-lifecycle-transition-from-a-threshold" description="Tip from one vertex to the next when a numeric threshold is met." />
   <Card title="Project a per-vertex read view" href="/docs/keiki/cookbook/project-a-per-vertex-read-view" description="Expose only the slots a given vertex actually uses." />
   <Card title="Resolve the lens operator clash" href="/docs/keiki/cookbook/resolve-the-lens-operator-clash" description="Disambiguate keiki's builder operators from a lens library's." />

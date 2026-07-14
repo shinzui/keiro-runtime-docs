@@ -1,6 +1,6 @@
 ---
 title: "Derive a JSON event codec"
-description: "Derive a kind-discriminated JSON encoder/decoder for an event sum with deriveEventCodecSkeleton, then wire the emitted surfaces into a keiro event-type registry."
+description: "Derive a pinned, versioned JSON event envelope with additive defaults and whole-envelope migrations, then expose its wire kinds to keiro."
 ---
 
 You have an event sum type and want a JSON codec whose `kind` discriminator and per-field handling
@@ -15,37 +15,42 @@ decision for every payload field.
 
 ## Goal
 
-Derive `<event>ToJSON`, `<event>FromJSON`, `<event>EventTypes`, and `<event>KindMap` for an event
-sum, control how each field is encoded, and feed the emitted registry surfaces into a keiro
-`eventTypes` registry.
+Derive a versioned event envelope, pin constructor wire kinds, choose field codecs and missing-key
+defaults, and provide explicit migrations for historical envelopes.
 
 ## Derive the skeleton
 
-`deriveEventCodecSkeleton opts ''EventType` emits four top-level bindings, prefixed by the type name
+`deriveEventCodecSkeleton opts ''EventType` emits five top-level bindings, prefixed by the type name
 with its first letter lower-cased. For `data OrderEvent = Placed PlacedData | Shipped ShippedData |
 Cancelled`, the splice emits `orderEventToJSON`, `orderEventFromJSON`, `orderEventEventTypes`, and
-`orderEventKindMap`. Each constructor encodes to an object carrying a `"kind"` discriminator (the
-constructor name) plus one entry per payload field:
+`orderEventKindMap`, plus `orderEventSchemaVersion`. Each constructor encodes to an object carrying
+the resolved `"kind"`, an in-band `"v"`, and its payload fields:
 
 ```haskell
 {-# LANGUAGE TemplateHaskell #-}
 
 import Keiki.Codec.JSON.Event
   ( EventCodecOptions (..)
-  , FieldCodec (..)
   , defaultEventCodecOptions
   , deriveEventCodecSkeleton
+  , fieldCodec
   )
 
 $( deriveEventCodecSkeleton
      defaultEventCodecOptions
        { fieldCodecOverrides =
-           Map.fromList [("orderId", FieldCodec 'orderIdToJSON 'orderIdFromJSON)]
+           Map.fromList [("orderId", fieldCodec 'orderIdToJSON 'orderIdFromJSON)]
        , passthroughFields = Set.fromList ["qty", "trackingNo"]
+       , kindOverrides = Map.fromList [("Placed", "order.placed")]
        }
      ''OrderEvent
  )
 ```
+
+At the defaults, `currentVersion = 1` and `versionFieldName = "v"`. The `Placed` value now carries
+`{"kind":"order.placed","v":1,...}`. Pin every deployed kind whose Haskell constructor may be
+renamed; the splice rejects unknown override keys, duplicate wire kinds, and payload fields that
+collide with the kind or version keys.
 
 ## Choose how each field is handled
 
@@ -98,10 +103,62 @@ compiles, but any actual encode/decode of that field throws the named error inst
   error). The negative-test procedure is documented in `Keiki.Codec.JSON.THEventSpec`.
 </Callout>
 
+## Default a new additive field
+
+Keep `currentVersion` unchanged for a compatible field addition. A syntactic `Maybe t` listed in
+`passthroughFields` decodes a missing key as `Nothing`. For a non-`Maybe` field, attach a top-level
+constant through `fcOnMissing`:
+
+```haskell
+import Keiki.Codec.JSON.Event (FieldCodec (fcOnMissing), fieldCodec)
+
+missingDiscount :: Discount
+missingDiscount = Discount 0
+
+discountCodec :: FieldCodec
+discountCodec =
+  (fieldCodec 'discountToJSON 'discountFromJSON)
+    { fcOnMissing = Just 'missingDiscount }
+```
+
+Only an **absent** key selects the default. A present `null` or malformed value still runs the field
+decoder. Ordinary non-`Maybe` passthrough fields and strict overrides remain required.
+
+## Migrate a structural change
+
+For a rename, type change, or other envelope rewrite, bump the schema version and provide the whole
+`n -> n + 1` rung. This version-1 migration renames `qty` to `quantity`:
+
+```haskell
+upcastQuantityV1 :: Aeson.Value -> Either String Aeson.Value
+upcastQuantityV1 value = case value of
+  Aeson.Object object -> case KeyMap.lookup (Key.fromString "qty") object of
+    Nothing -> Left "missing qty"
+    Just quantityValue ->
+      Right
+        (Aeson.Object (KeyMap.insert (Key.fromString "quantity") quantityValue object))
+  _ -> Left "expected an object"
+
+$( deriveEventCodecSkeleton
+     defaultEventCodecOptions
+       { passthroughFields = Set.fromList ["quantity"]
+       , currentVersion = 2
+       , upcasters = [(1, 'upcastQuantityV1)]
+       }
+     ''QuantityEvent
+ )
+```
+
+An absent version is read as version 1. The decoder rejects future versions, runs all applicable
+rungs in order, and only then dispatches on the migrated kind. The splice requires exact coverage of
+`[1 .. currentVersion - 1]`; a missing, duplicate, or out-of-range rung fails compilation. A rung
+migrates one envelope to one envelope. Put an event split or merge at the application/event-store
+boundary, before replay reaches keiki.
+
 ## Wire the surfaces into a keiro registry
 
-`<event>EventTypes :: [Text]` lists the constructor names in declaration order, and
-`<event>KindMap :: [(Text, Text)]` pairs each constructor with its kind string. Both are plain
+`<event>EventTypes :: [Text]` lists resolved wire kinds in declaration order, and
+`<event>KindMap :: [(Text, Text)]` pairs each constructor with its resolved kind. Both are plain
 `Text` with no keiro import, so a keiro adapter module can consume them to build an `eventTypes`
 registry without keiki depending on keiro:
 
@@ -109,7 +166,7 @@ registry without keiki depending on keiro:
 -- In a keiro-side adapter module. orderEventEventTypes is the emitted [Text].
 orderRegistry :: [Text]
 orderRegistry = orderEventEventTypes
-  -- e.g. ["Placed", "Shipped", "Cancelled"], the wire `kind` values keiro
+  -- e.g. ["order.placed", "Shipped", "Cancelled"], the wire `kind` values keiro
   -- routes on. orderEventKindMap pairs each with its kind string for any
   -- ctor/kind divergence.
 ```
@@ -119,9 +176,10 @@ orderRegistry = orderEventEventTypes
 `Keiki.Codec.JSON.THEventSpec` pins the round-trip and the discriminator:
 `orderEventFromJSON (orderEventToJSON placed) == Right placed`, and
 `orderEventToJSON (Placed (PlacedData (OrderId 7) 3))` is
-`{"kind":"Placed","orderId":"ord-7","qty":3}` — the `"ord-7"` string proving the override ran
-rather than a generic `Int` codec. An unknown kind decodes to `Left "unknown event kind: <k>"`, and
-`orderEventEventTypes == ["Placed", "Shipped", "Cancelled"]`.
+`{"kind":"order.placed","orderId":"ord-7","qty":3,"v":1}` — the pinned kind and `"ord-7"`
+override both visible. `Keiki.Codec.JSON.GoldenFileSpec` freezes that document, a singleton envelope,
+an additive pre-default document with no `"v"`, and both sides of a version-1-to-2 migration. These
+goldens verify that old bytes still decode and current bytes do not drift accidentally.
 
 ## Related
 

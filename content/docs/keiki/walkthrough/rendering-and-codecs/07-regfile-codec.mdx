@@ -89,8 +89,13 @@ list.
 
 ```haskell
 -- keiki-codec-json/src/Keiki/Codec/JSON.hs
-instance RegFileWalk rs => RegFileToJSON rs
+instance (RegFileWalk rs, DistinctNames (Names rs)) => RegFileToJSON rs
 ```
+
+`DistinctNames` is part of the public persistence boundary. A repeated slot symbol fails to compile
+with `register file declares slot "x" more than once`. Without that invariant, the Value path would
+lose one duplicate key, the streaming path would emit two indistinguishable keys, and the decoder
+could never populate both slots.
 
 ## The two encoder paths
 
@@ -133,6 +138,11 @@ cross-path byte equality. Pick one path per persistence site and stay on it.
 The within-path guarantee that *does* hold is determinism: re-encoding the same RegFile via the same
 path yields byte-equal output every time. That is what `valueDeterministic` and `encodingDeterministic`
 pin in `PropSpec`.
+
+Both encoders require a fully initialized register file. If a slot from `emptyRegFile` has not been
+written, forcing it raises a slot-named `ErrorCall` beginning with `uninit:`. On the streaming path,
+earlier bytes may already have been emitted, so persistence code must snapshot only a fully hydrated
+aggregate. Optional slots are still present: `Nothing` encodes as `null`, not as an omitted key.
 
 ## The strict decoder
 
@@ -184,6 +194,10 @@ path) plus within-path determinism — and documents in its header why cross-pat
 asserted. The strict decoder's three rejection messages are pinned in
 [`THSpec`](/docs/keiki/walkthrough/rendering-and-codecs/08-th-derivers): a slot-prefixed missing-slot
 error, an unknown-extra-field error, and a slot-prefixed type-mismatch error.
+
+`Keiki.Codec.JSON.GoldenFileSpec` also checks in separate Value-path and Encoding-path byte fixtures,
+decodes each to a fixed register value, and freezes the canonical shape document. The paths have
+separate files because key order is intentionally different.
 </Callout>
 
 ---

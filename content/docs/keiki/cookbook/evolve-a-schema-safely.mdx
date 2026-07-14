@@ -14,56 +14,72 @@ must replay both without silently producing wrong state.
 
 ## Solution
 
-keiki keeps the formalism (`SymTransducer`, `Edge`, `solveOutput`, the hidden-input check)
-version-agnostic. Evolution is an **application** concern handled by an explicit upcaster
-`wire -> [current]` at the event-store boundary, additive-by-convention. The library never sees
-a non-current event.
+Use the generated event codec's two compatibility mechanisms:
+
+- For a purely additive field, keep the current envelope version and define its missing-key
+  behavior: a syntactic `Maybe t` passthrough defaults to `Nothing`, or a `FieldCodec` can name a
+  constant through `fcOnMissing`.
+- For a structural rewrite, bump `currentVersion` and provide every one-envelope-to-one-envelope
+  rung in `upcasters`.
+- Preserve a deployed constructor's discriminator with `kindOverrides`; do not make a Haskell rename
+  a wire rename.
 
 ```haskell
--- The application owns this. It runs per stored event, before any event
--- reaches solveOutput. Additive change (a new field with a sensible
--- default) needs only this fill-in:
-upcastAccountConfirmed :: WireAccountConfirmed -> [AccountConfirmedData]
-upcastAccountConfirmed w =
-  [ AccountConfirmedData
-      { email       = w.email
-      , at          = w.at
-      , confirmCode = sentinelMissingCode   -- domain choice: marks a pre-field event
-      }
-  ]
+missingDiscount :: Discount
+missingDiscount = Discount 0
 
--- A constructor split is the one 1-to-many case: emit the events in the
--- order whose effect on the register file matches the old single event.
-upcastConfirmationResent :: WireConfirmationResent -> [CurrentEvent]
-upcastConfirmationResent w =
-  [ ConfirmationCodeRotated                 -- writes #confirmCode first
-      (ConfirmationCodeRotatedData { email = w.email, confirmCode = w.confirmCode, at = w.at })
-  , ConfirmationResent                      -- then the re-send, no register change
-      (ConfirmationResentData { email = w.email, at = w.at })
-  ]
+discountCodec :: FieldCodec
+discountCodec =
+  (fieldCodec 'discountToJSON 'discountFromJSON)
+    { fcOnMissing = Just 'missingDiscount }
+
+upcastQuantityV1 :: Aeson.Value -> Either String Aeson.Value
+upcastQuantityV1 value = case value of
+  Aeson.Object object -> case KeyMap.lookup (Key.fromString "qty") object of
+    Nothing -> Left "missing qty"
+    Just quantityValue ->
+      Right
+        (Aeson.Object (KeyMap.insert (Key.fromString "quantity") quantityValue object))
+  _ -> Left "expected an object"
+
+additiveOptions =
+  defaultEventCodecOptions
+    { fieldCodecOverrides = Map.fromList [("discount", discountCodec)]
+    , passthroughFields = Set.fromList ["orderId", "note"]
+    }
+
+structuralOptions =
+  defaultEventCodecOptions
+    { passthroughFields = Set.fromList ["quantity"]
+    , kindOverrides = Map.fromList [("QuantityRecorded", "quantity.recorded")]
+    , currentVersion = 2
+    , upcasters = [(1, 'upcastQuantityV1)]
+    }
 ```
 
-<Callout type="info">
-  "jitsurei" (実例) is the family's word for a runnable worked example. The upcaster bodies
-  above are application code — keiki ships the contract and the registration point, not the
-  body.
+The decoder treats a missing `"v"` as version 1, rejects a future version, runs applicable rungs in
+ascending order, then dispatches on the migrated wire kind and applies field defaults. The splice
+requires exact upcaster coverage of `[1 .. currentVersion - 1]`, so a historical version cannot
+silently skip a migration.
+
+<Callout type="warn">
+  Keiki's generated upcasters map **one JSON envelope to one JSON envelope**. If one historical event
+  must split into several current events (or several must merge), perform that transformation at the
+  application/event-store boundary and preserve the resulting replay order explicitly.
 </Callout>
 
-## How it works
+## Protect replay and snapshots
 
-The upcaster contract is `WireEvent -> Either Error [CurrentEvent]`: the `[]` allows the
-1-to-many constructor split, and the list order is the replay order. Trivial additive changes
-need a near-`id` upcaster (default the new field); only rename, split, merge, type-narrowing,
-and field removal need real work — and they need it written once, at the boundary.
+Run the replay-safety validation against the **current** event shape. If a migration removes data an
+edge still needs, the guard/input-read checks report it before production replay.
 
-Two safety nets stay with the library. First, the **hidden-input check** runs against the
-current schema only: if an evolution drops a field from an event but leaves an edge still
-reading it, the check fires by name — the same check the
-[hidden-input recipe](/docs/keiki/cookbook/fix-a-hidden-input-replay-failure) shows, now doing
-a second job. Second, every snapshot carries a hash of the register-file shape (slot labels,
-slot types, vertex set) from [`Keiki.Shape`](/docs/keiki/reference/shape); on read a mismatch
-discards the snapshot and forces a full replay through the upcaster, so a register-shape change
-can never load a stale snapshot into a differently-shaped register file. See
-[the JSON codec](/docs/keiki/reference/codec-json) for where the shape hash is written and
-compared. keiki cannot detect a same-shape, different-meaning change — that one the application
-must version deliberately.
+Treat snapshots differently from events. A snapshot is a disposable cache and must match both the
+consumer codec version and `regFileShapeHash`, which covers only the ordered register slot names and
+canonical types. A mismatch discards the snapshot and replays the event log from event 0. Keiki 0.2
+deliberately changes every non-empty 0.1 shape hash once because built-in type names are now pinned;
+let that benign cache miss happen and write a fresh snapshot after replay.
+
+Finally, freeze representative bytes. `Keiki.Codec.JSON.GoldenFileSpec` demonstrates the pattern:
+keep current event envelopes, version-absent additive history, every migration-era version, register
+snapshots for the chosen encoder path, and the canonical shape/hash as checked-in fixtures. Regenerate
+only for an intentional compatibility decision and review the byte diff.
