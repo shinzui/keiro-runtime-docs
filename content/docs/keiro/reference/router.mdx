@@ -1,129 +1,107 @@
 ---
 title: "Router"
-description: "Keiro.Router: stateless content-based dispatch — Router, RouterResult, runRouterOnce, runRouterWorker, and deterministic-id exactly-once-per-target."
+description: "Keiro.Router: effectful target resolution, target-derived deterministic IDs, drift semantics, and rejection-aware worker policy."
 ---
 
-The types and functions on this page live in `Keiro.Router` (re-exported from `Keiro`). A `Router`
-is a **stateless, content-based router** (in the Enterprise Integration Patterns sense): for each
-incoming event it resolves a data-dependent set of target streams *effectfully* and dispatches one
-command to each. See [Route events to commands](/docs/keiro/how-to/route-events-to-commands) for the
-task recipe.
+A `Router` is the stateless sibling of a process manager. For each source event, it resolves zero or
+more target commands effectfully and dispatches each in its own transaction.
 
-## `Router`
-
-<TypeTable
-  type={{
-    name: { type: "Text", description: "Part of every dispatched command's deterministic id" },
-    key: { type: "input -> Text", description: "Correlation string for the source event" },
-    resolve: { type: "input -> Eff es [PMCommand targetCi]", description: "Effectful target set (e.g. a runQuery against a read model)" },
-    targetEventStream: { type: "ValidatedEventStream targetPhi targetRs targetState targetCi targetCo", description: "The validated event stream each dispatched command runs against" },
-    targetProjections: { type: "Stream targetCi -> [InlineProjection targetCo]", description: "Inline projections to run in the dispatch transaction" },
-  }}
-/>
+## Definition
 
 ```haskell
 data Router input targetPhi targetRs targetState targetCi targetCo es = Router
-  { name              :: !Text
-  , key               :: !(input -> Text)
-  , resolve           :: !(input -> Eff es [PMCommand targetCi])
-  , targetEventStream :: !(ValidatedEventStream targetPhi targetRs targetState targetCi targetCo)
-  , targetProjections :: !(Stream targetCi -> [InlineProjection targetCo])
+  { name              :: Text
+  , key               :: input -> Text
+  , resolve           :: input -> Eff es [PMCommand targetCi]
+  , targetEventStream :: ValidatedEventStream targetPhi targetRs targetState targetCi targetCo
+  , targetProjections :: Stream targetCi -> [InlineProjection targetCo]
   }
-  deriving stock (Generic)
+
+newtype RouterResult target = RouterResult
+  { commandResults :: [PMCommandResult target] }
 ```
 
-`PMCommand`, `PMCommandResult`, `deterministicCommandId`, and `eventAlreadyIn` come from
-`Keiro.ProcessManager` (see the [process-manager reference](/docs/keiro/reference/process-manager)),
-and `InlineProjection` / `runCommandWithProjections` from `Keiro.Projection` (see the [projection
-reference](/docs/keiro/reference/projection)).
+`resolve` computes the target set; it does not dispatch. Keep it read-only in effect—typically an
+explicitly registered read-model query—because it may run again for the same source event. Returning
+`[]` is an intentional no-op. Each target's inline projections share that target command's append
+transaction; the entire fan-out is not atomic.
 
-### The `resolve` seam
+`RouterResult` contains one target-bearing `PMCommandResult` per resolved command, in resolution
+order. There is no manager-state append and therefore no outer `Either CommandError`.
 
-`resolve :: input -> Eff es [PMCommand targetCi]` is the one effectful field, and the source of most
-confusion: it **computes the target set, it does not dispatch**. Given the decoded source event it
-returns a list of `PMCommand`s (each a target `Stream` paired with the command to run on it); keiro
-performs the idempotent dispatch *after* `resolve` returns.
-
-- It is a **query, not a write** — read a read model (`runQuery`) or config and return; never append
-  events from inside `resolve`. keiro owns the writes.
-- The list may be **empty, one, or many** — that is the dynamic-recipient-list behaviour. `[]` means
-  "routes nowhere" (an intentional no-op, not an error).
-- It can run **more than once** for the same source event (the worker retries on failure), which is
-  safe precisely because it only reads; the dispatch it feeds is idempotent by deterministic id.
-
-The `key :: input -> Text` field is the correlation string (an incident id, a transaction id) folded
-into each `deterministicCommandId`, so re-derived ids are stable per source event. For the EIP
-lineage and the stateless mental model, see [Routers and content-based
-dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch).
-
-### `targetProjections`
-
-`targetProjections :: Stream targetCi -> [InlineProjection targetCo]` runs read-model updates in the
-**same transaction** as each dispatched command's append. Use `const []` for append-only dispatch
-(the common case); return projections when a dispatched event must update a read model atomically
-with its write.
-
-## `RouterResult`
+## Target-derived IDs
 
 ```haskell
-newtype RouterResult target = RouterResult { commandResults :: [PMCommandResult target] }
-  deriving stock (Generic, Eq, Show)
+deterministicRouterCommandId ::
+  Text -> Text -> EventId -> StreamName -> Int -> EventId
 ```
 
-A failed dispatch surfaces as a `PMCommandFailed` element of the list, **not** as an outer `Either`.
+The UUIDv5 name includes router name, correlation key, source event ID, resolved target stream name,
+and the command's occurrence among commands addressing that same stream. Text fields use
+length-prefixed UTF-8, avoiding delimiter ambiguity and non-ASCII truncation.
 
-## `runRouterOnce`
+Target identity—not list position—is the critical 0.2 contract. If a redelivery returns targets in
+a different order, the same target and same-stream occurrence still derive the same ID. If `resolve`
+returns a newly added target, that target receives a new dispatch. Across attempts, the durable
+recipient set is therefore the union of resolved sets; keep `resolve` stable when one exact snapshot
+of recipients matters.
 
-Dispatch the commands for one source event.
+Multiple commands to one target in the same result use occurrences `0`, `1`, and so on, preserving
+distinct IDs.
+
+## Upgrade probe for positional IDs
+
+Before dispatch, the router checks both the current target-derived ID and a legacy
+`deterministicCommandId ... legacyIndex`. The legacy check is scoped to the same target stream, so it
+cannot mistake another target's old positional event for success.
+
+<Callout type="warn">
+  The legacy positional lookup is a transition bridge, not a permanent exactly-once guarantee
+  across simultaneous code and resolver-output changes. If target ordering/membership changes while
+  old positional writes are still being redelivered, an already handled logical target may receive
+  one new target-derived ID. Keep resolution stable through the compatibility window and remove the
+  probe in a later coordinated release.
+</Callout>
+
+## Dispatch and duplicate proof
 
 ```haskell
 runRouterOnce ::
-  forall input targetPhi targetRs targetState targetCi targetCo es.
-  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
-   BoolAlg targetPhi (RegFile targetRs, targetCi), Eq targetCo) =>
-  RunCommandOptions ->
-  Router input targetPhi targetRs targetState targetCi targetCo es ->
-  RecordedEvent ->
-  input ->
-  Eff es (RouterResult (EventStream targetPhi targetRs targetState targetCi targetCo))
+  ( HasCallStack, IOE :> es, Store :> es, Error StoreError :> es
+  , KirokuStoreResource :> es
+  , BoolAlg targetPhi (RegFile targetRs, targetCi), Eq targetCo ) =>
+  RunCommandOptions -> Router ... -> RecordedEvent -> input -> Eff es (RouterResult ...)
 ```
 
-<Callout type="info">
-Dispatch is **exactly-once-per-target by construction**. For each resolved target, the router derives
-a `deterministicCommandId name correlationId sourceEventId emitIndex`, pre-checks it with
-`eventAlreadyIn` (skip → `PMCommandDuplicate`), otherwise runs the command and folds a store-level
-`DuplicateEvent` rejection into a benign `PMCommandDuplicate`. Re-processing the same source event
-writes nothing the second time.
-</Callout>
+For each command, the runner:
 
-## `runRouterWorker`
+1. derives the target stream name and same-stream occurrence;
+2. checks the current ID in that target;
+3. checks the legacy positional ID in that target during the upgrade window;
+4. otherwise dispatches with `runCommandWithProjections`; and
+5. folds `DuplicateEvent` to `PMCommandDuplicate` only when `confirmBenignDuplicate` proves the
+   current attempted ID is present in the intended target.
 
-Run a router as a live subscription, draining a shibuya `Adapter`.
+A globally colliding ID that exists only in another stream remains
+`PMCommandFailed targetStreamName error`. It is a systemic deterministic failure and halts rather
+than being silently acknowledged.
+
+## Worker policy
 
 ```haskell
-runRouterWorker ::
-  forall msg input targetPhi targetRs targetState targetCi targetCo es.
-  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
-   BoolAlg targetPhi (RegFile targetRs, targetCi), Eq targetCo) =>
-  RunCommandOptions ->
-  Router input targetPhi targetRs targetState targetCi targetCo es ->
-  Adapter es msg ->
-  (msg -> Maybe (RecordedEvent, input)) ->
-  Eff es ()
+runRouterWorkerWith ::
+  WorkerOptions es msg -> RunCommandOptions -> Router ... -> Adapter es msg ->
+  (msg -> Maybe (RecordedEvent, input)) -> Eff es ()
 ```
 
-The worker decodes each message to `(RecordedEvent, input)` and finalizes the ingested message's
-`AckHandle`:
+`runRouterWorker` supplies `defaultWorkerOptions`. Poison input follows `PoisonPolicy`; transient
+failures retry; systemic deterministic failures halt; and an all-rejection group follows
+`RejectedCommandPolicy` (`RejectedHalt`, `RejectedDeadLetter`, or `RejectedSkip`). The default is
+`RejectedHalt`. Each ingested ack handle is finalized once.
 
-- an **undecodable** message → the configured `PoisonPolicy` from `WorkerOptions` (default
-  `AckHalt (HaltFatal …)`);
-- every dispatch `PMCommandAppended` / `PMCommandDuplicate` → `AckOk`;
-- transient `PMCommandFailed` values → `AckRetry transientRetryDelay`;
-- deterministic `PMCommandFailed` values → `AckHalt (HaltFatal …)`.
+`RejectedDeadLetter` writes `keiro.keiro_dead_letters` rows with
+`DispatcherRouter`, the target stream, source identity, error class/detail, emit index, and attempt
+count before acknowledging the source. It is separate from Kiroku's retry-exhaustion table.
 
-Use `runRouterWorkerWith` to override the poison policy, transient retry delay, or dispatch metrics.
-The worker invokes the adapter ack handle exactly once per ingested message.
-
-The worked example is `jitsurei` `pagingRouter` (`jitsurei/src/Jitsurei/Paging.hs`): for each
-`IncidentRaisedData` it `runQuery`s the on-call read model and dispatches one `SendPage` per
-responder, with `targetProjections = const []`. Run it with `just jitsurei-paging`.
+See [Route events to commands](/docs/keiro/how-to/route-events-to-commands) and
+[Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch).

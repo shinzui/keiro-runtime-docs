@@ -1,78 +1,52 @@
 ---
 title: "Keep target commands total"
-description: "A PMCommandFailed wedges the worker forever. Model benign target rejections as total transitions so a process manager's dispatched commands never fail."
+description: "Model benign late or repeated dispatches as successful no-ops so they do not require a rejection loss policy."
 ---
 
-When a process manager dispatches a command that fails, the worker treats it as fatal and retries
-the source event **forever**. This guide shows how to avoid that trap by keeping your target
-aggregates' commands *total*.
+When a process manager or router dispatches a command with no matching edge, the target returns
+`CommandRejected`. The live worker then applies `RejectedCommandPolicy`: halt by default, or consume
+through explicit dead-letter/skip policy. Benign “already done” behavior should not need that choice.
 
-<Callout type="info">
-Assumes you understand the [two-transaction model and the `PMCommandFailed`
-caveat](/docs/keiro/explanation/process-managers-and-sagas#the-sharp-edge-a-failed-dispatch-wedges-the-worker).
-</Callout>
+## Add an explicit no-op transition
 
-## Goal
+For every dispatched command, identify states where a late or repeated arrival is harmless. Add an
+explicit same-state, no-output edge for those cases. The command then succeeds with a no-op
+`CommandResult` rather than returning `CommandRejected`.
 
-Ensure a process manager never produces a `PMCommandFailed`, so its subscription worker keeps making
-progress. The technique is a **modeling discipline**: design the target aggregate's state machine so
-that a command which arrives "too late" (the work is already done, or a race was lost) is a
-**benign rejection**, not an error your worker reacts to.
+For a race between `Acknowledge` and `Escalate`, for example:
 
-## Why a failed dispatch is fatal
+- the state-changing edge from `Triaging` emits the winning event;
+- `Acknowledge` in `Acknowledged` is an explicit no-op;
+- `Escalate` in `Escalated` is an explicit no-op; and
+- if the losing cross-command is also harmless, model its corresponding no-op in the other terminal
+  state.
 
-`runProcessManagerWorker` halts on `Left`, and a higher-level loop that inspects `commandResults`
-treats `PMCommandFailed` as a reason to retry the source event. A *transient* failure (the store was
-briefly unavailable) should indeed be retried. But a *benign* rejection — the target is already in
-the state the command wanted to reach — must **not** look like a failure, or the worker retries an
-event that can never succeed and wedges.
+Use Keiki's explicit `noEmit` intent for silent edges. The validation floor rejects dangerous
+state-changing silent transitions; a same-state benign no-op is the intended case.
 
-## Steps
+## Reserve rejection for a real policy decision
 
-1. **Make the racing transitions legal only from one state.** In the jitsurei incident aggregate
-   (`Jitsurei/Incident.hs`), both `AcknowledgeIncident` and `EscalateIncident` are legal **only from
-   `Triaging`**:
+If the target must genuinely refuse the command, let it return `CommandRejected` and choose the
+source-event disposition explicitly:
 
-   ```haskell
-   B.from Triaging do
-     B.onCmd inCtorAcknowledgeIncident $ \d -> B.do
-       B.emit wireIncidentAcknowledged IncidentAcknowledgedTermFields { incidentId = d.incidentId }
-       B.goto Acknowledged
+- `RejectedHalt` keeps the position for operator action;
+- `RejectedDeadLetter` records the target and acknowledges; or
+- `RejectedSkip` acknowledges without a row.
 
-     B.onCmd inCtorEscalateIncident $ \d -> B.do
-       B.emit wireIncidentEscalated IncidentEscalatedTermFields { incidentId = d.incidentId }
-       B.goto Escalated
-   ```
+Never treat `CommandAmbiguous` as a benign totality case. It means multiple transitions matched and
+requires a model fix.
 
-   Whichever command arrives first wins and moves the incident out of `Triaging`. The loser of the
-   race — say the escalation timer fires *after* a responder already acknowledged — finds no edge for
-   its command in the current state.
+## Verify the worker path
 
-2. **Let the loser be a benign `CommandRejected`, not a hard error.** A transducer with no edge for
-   a command returns `CommandRejected` — the command simply did nothing, and *nothing was written*.
-   This is distinct from a store failure. The escalation timer worker dispatches `EscalateIncident`
-   unconditionally and ignores the rejection:
+Test the harmless late command through the real target runner and assert:
 
-   > The command is a benign no-op if the incident was already acknowledged (the aggregate rejects
-   > it), so the timer firing is safe regardless of the ack/escalate race; the timer is marked fired
-   > either way.
+1. the result is `Right` with no new event/global position;
+2. the process-manager/router result is not `PMCommandFailed`;
+3. the source delivery reaches `AckOk`; and
+4. no Keiro dispatch dead letter is written.
 
-   Because the rejection is *expected and harmless*, the worker does not treat it as a reason to
-   retry the source event. The race is safe without the worker inspecting any state.
+Separately test a genuine rejection under the selected policy so its target-bearing evidence and
+checkpoint behavior are intentional.
 
-3. **Audit every command a process manager can dispatch.** For each, ask: "if this arrives when the
-   target is already past the relevant state, is that a benign rejection or a genuine error?" If it
-   is benign, the target's state machine should make it a no-op/rejection from those states (or
-   accept-and-emit-nothing). Reserve real `CommandError`s for genuine faults you *want* retried.
-
-## Verify it worked
-
-Drive the ack/escalate race deliberately: acknowledge an incident, then fire its escalation timer
-(or vice versa). The first command appends its event; the second is rejected with no write and does
-not wedge the worker — the timer is still marked `Fired`, and the subscription continues.
-
-## Related
-
-- [Understanding process managers and sagas](/docs/keiro/explanation/process-managers-and-sagas) — the `PMCommandFailed` caveat in full.
-- [The command cycle](/docs/keiro/explanation/the-command-cycle) — rejected vs. no-op vs. store failure.
-- [Drive the timer worker](/docs/keiro/how-to/drive-the-timer-worker) — the escalation worker that relies on this.
+See [Run a process manager as a subscription](/docs/keiro/how-to/run-a-process-manager-as-a-subscription)
+and [Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch).

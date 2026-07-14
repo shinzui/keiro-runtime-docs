@@ -28,18 +28,38 @@ workflow snapshot failure does not undo durable journal progress.
 
 ## Progress
 
-
+- [x] (2026-07-14T17:08:31Z) Resolve Keiro, Kiroku, and Shibuya through mori; review clean committed
+  Keiro `c68dcc7b9cea8d9c180d1c04254a72aa43804cac`. As in EP-2, the two commits after the planned
+  boundary only release the dependency-realigned 0.3.0.0 package set and do not change `keiro` or
+  `keiro-core` orchestration source.
+- [x] (2026-07-14T17:16:13Z) Milestone 1: refresh process-manager and router delivery. Reconciled
+  target-scoped duplicate proof, current and legacy router command identities, rejected-command
+  policy, transaction boundaries, and dispatch-dead-letter inspection across reference, task,
+  explanation, cookbook, and walkthrough pages. Formatting, types, production build/prerender,
+  the 449-file internal-link scan, and focused stale-term scans passed.
+- [ ] Milestone 2: refresh sharded delivery and subscription dead-letter operations.
+- [ ] Milestone 3: refresh workflow and cross-worker operations.
+- [ ] Run final EP-3 validation and record EP-4/EP-7 handoffs.
 
 ## Surprises & Discoveries
 
-(None yet.)
+- `eventAlreadyIn` is now a Kiroku point lookup in the intended target stream. Older prose that
+  described a forward scan understated both the implementation and the cross-stream safety check.
+- `keiro.dispatch.deadlettered` is recorded for both `RejectedDeadLetter` and `RejectedSkip`.
+  Therefore that metric means the worker handled rejection-class failures under a non-halting
+  policy; it does not, by itself, prove that a `keiro.keiro_dead_letters` row exists.
+- A router probes the old positional command ID in the intended target stream during the identity
+  transition, but this is not a permanent exactly-once bridge when resolver output and deployed
+  code change at the same time. The docs now state that boundary instead of promising global
+  exactly-once fan-out.
 
 
 ## Decision Log
 
-- Decision: Use committed keiro SHA `87bf3ff173b2f4ce274e36cea64923ad33817d7c` and exclude
-  upstream working-tree modifications.
-  Rationale: The source boundary must be reproducible and shared with the other keiro plans.
+- Decision: Use clean committed Keiro SHA `c68dcc7b9cea8d9c180d1c04254a72aa43804cac`.
+  Rationale: The source advanced from the planned boundary only through the dependency-alignment and
+  0.3.0.0 package-set release already audited by EP-2; neither commit changes the orchestration
+  modules in this plan. This keeps one reproducible Keiro boundary across EP-2 and EP-3.
   Date: 2026-07-14
 - Decision: Group process managers, routers, sharded subscriptions, dead letters, workflows, and
   worker operations by delivery guarantee rather than by module.
@@ -55,7 +75,11 @@ workflow snapshot failure does not undo durable journal progress.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+- Milestone 1 now gives implementers and operators one consistent dispatch model: manager-state
+  persistence, target-command transactions, target-scoped duplicate evidence, rejection policy,
+  and durable inspection are separated explicitly. Benign late commands are modeled as successful
+  same-state transitions rather than rejections, while genuine domain rejection retains the safe
+  `RejectedHalt` default.
 
 
 ## Context and Orientation

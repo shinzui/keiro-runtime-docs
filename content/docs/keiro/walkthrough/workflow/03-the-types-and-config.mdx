@@ -140,16 +140,36 @@ data PMCommand targetCi = PMCommand
 data PMCommandResult target
   = PMCommandAppended  !(CommandResult target)  -- the dispatch appended events
   | PMCommandDuplicate !EventId                 -- idempotent replay; id already existed
-  | PMCommandFailed    !CommandError            -- worker classifies transient retry vs deterministic halt
+  | PMCommandFailed    !StreamName !CommandError -- failed target plus error
 ```
 
 <TypeTable
   type={{
     PMCommandAppended: { type: "CommandResult target", description: "The dispatch appended events; carries the command's result. The happy path." },
     PMCommandDuplicate: { type: "EventId", description: "The command id already existed (pre-check hit or a DuplicateEvent) — an idempotent no-op." },
-    PMCommandFailed: { type: "CommandError", description: "Any other CommandError. Transient failures retry; deterministic failures halt. The PMCommandFailed hazard (chapter 02): make target commands total to avoid benign deterministic failures." },
+    PMCommandFailed: { type: "StreamName, CommandError", description: "The target identity and error. Transient failures retry, systemic deterministic failures halt, and rejection-class failures follow RejectedCommandPolicy." },
   }}
 />
+
+## Worker rejection policy
+
+```haskell
+data RejectedCommandPolicy
+  = RejectedHalt
+  | RejectedDeadLetter
+  | RejectedSkip
+
+data WorkerOptions es msg = WorkerOptions
+  { poisonPolicy          :: PoisonPolicy es msg
+  , rejectedCommandPolicy :: RejectedCommandPolicy
+  , transientRetryDelay    :: RetryDelay
+  , metrics                :: Maybe KeiroMetrics
+  }
+```
+
+The default is `RejectedHalt`. `RejectedDeadLetter` persists target-bearing rows before
+acknowledging; `RejectedSkip` acknowledges without rows. Both `CommandRejected` and
+`CommandAmbiguous` are routed through this policy, though ambiguity remains a definition defect.
 
 ## `PMStateResult` — the outcome of the manager append
 

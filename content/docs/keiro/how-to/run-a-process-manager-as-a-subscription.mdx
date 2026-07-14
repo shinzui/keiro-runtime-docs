@@ -1,74 +1,90 @@
 ---
 title: "Run a process manager as a subscription"
-description: "Drive a keiro process manager continuously by wiring runProcessManagerWorker to a shibuya adapter with a decodeMessage function."
+description: "Configure poison, rejection, retry, and acknowledgement policy for a live process-manager worker."
 ---
 
-You have a `ProcessManager` and you want it to react to events *as they arrive*, not one at a time
-in a test. This guide wires it to a live subscription with `runProcessManagerWorker`.
+Use `runProcessManagerWorkerWith` when operating a manager continuously. The worker drains a Shibuya
+adapter, runs one deterministic reaction per delivery, and finalizes its ack handle exactly once.
 
-<Callout type="info">
-Assumes you already have a working process manager (see [Your first process
-manager](/docs/keiro/tutorials/your-first-process-manager)) and a shibuya `Adapter` that delivers
-messages from your event source. shibuya is keiro's supervised subscription/worker substrate.
-</Callout>
+## 1. Decode only owned messages
 
-## Goal
+```haskell
+decodeMessage :: KirokuMessage -> Maybe (RecordedEvent, OrderEvent)
+decodeMessage message = do
+  recorded <- messageRecordedEvent message
+  event <- decodeOrderEvent (recorded ^. #payload)
+  pure (recorded, event)
+```
 
-Run a process manager as a long-lived worker that drains a shibuya adapter, decoding each delivered
-message into the `(RecordedEvent, input)` pair the manager reacts to.
+`Nothing` is poison, not a filter. It follows `PoisonPolicy` and defaults to `PoisonHalt`. Filter the
+subscription upstream when unrelated event types are expected.
 
-## Steps
+## 2. Choose rejection policy explicitly
 
-1. **Write a `decodeMessage` for your adapter's message type.** The worker needs to turn each raw
-   `msg` into the recorded source event and the decoded `input` the manager's `correlate`/`handle`
-   expect. Return `Nothing` for a message that does not concern this manager (the worker treats an
-   undecodable message as fatal, so only return `Nothing` when that is what you mean):
+```haskell
+workerOptions = defaultWorkerOptions
+  & #rejectedCommandPolicy .~ RejectedHalt
+  & #transientRetryDelay .~ RetryDelay 5
+  & #metrics ?~ keiroMetrics
 
-   ```haskell
-   decodeMessage :: KirokuMessage -> Maybe (RecordedEvent, OrderEvent)
-   decodeMessage msg = do
-     recorded <- messageRecordedEvent msg            -- the RecordedEvent carried by the message
-     event    <- decodeOrderEvent (recorded ^. #payload)
-     pure (recorded, event)
-   ```
+runProcessManagerWorkerWith
+  workerOptions
+  defaultRunCommandOptions
+  fulfillmentManager
+  kirokuAdapter
+  decodeMessage
+```
 
-2. **Run the worker over the adapter.** Pass your `RunCommandOptions`, the manager, the shibuya
-   adapter, and `decodeMessage`:
+Keep `RejectedHalt` unless you have an explicit reason to consume a rejected reaction:
 
-   ```haskell
-   runProcessManagerWorker
-     defaultRunCommandOptions
-     fulfillmentProcessManager
-     kirokuAdapter
-     decodeMessage
-   ```
+- `RejectedHalt` preserves the source position and stops for investigation.
+- `RejectedDeadLetter` writes one `keiro.keiro_dead_letters` row per rejected target, then returns
+  `AckOk`. Manager history may already be committed while the target is not.
+- `RejectedSkip` returns `AckOk` without a durable row. Use it only when loss is an intentional
+  domain policy.
 
-   The worker folds the adapter's stream forever: for each message it decodes, it calls
-   `runProcessManagerOnce` and acks based on the outcome.
+Both `CommandRejected` and `CommandAmbiguous` enter this policy branch. Ambiguity is still a code
+defect; the default halt is the appropriate response unless a durable operational repair process is
+already in place.
 
-3. **Understand the ack semantics.** They are deliberately simple:
+## 3. Understand the complete disposition
 
-   - decode returns `Nothing` → the configured `PoisonPolicy` (default `AckHalt`);
-   - transient store or command failures → `AckRetry transientRetryDelay`;
-   - deterministic command failures → `AckHalt (HaltFatal …)`;
-   - successful appends and duplicate deterministic ids → `AckOk`.
+| Failure group | Decision | Evidence |
+| --- | --- | --- |
+| No failures; appends and confirmed duplicates only | `AckOk` | Target/manager events and duplicate metric. |
+| Any transient store/conflict failure | `AckRetry` | `keiro.dispatch.failed`; Kiroku attempt state. |
+| Any systemic deterministic failure | `AckHalt` | Error retains the failed target stream. |
+| All failures are rejection-class | Selected `RejectedCommandPolicy` | Halt, Keiro dispatch rows, or metric-only skip. |
+| Decode failure | Selected `PoisonPolicy` | Halt, callback, or adapter dead letter. |
 
-   A retried message is safe to replay. Because every write the manager makes is keyed
-   by a [deterministic id](/docs/keiro/reference/process-manager#deterministiccommandid), that
-   forced retry is safe: already-applied appends collapse to `PMStateDuplicate` /
-   `PMCommandDuplicate` rather than duplicating events. (The same idempotency discipline is
-   described for the command cycle in [Make commands
-   idempotent](/docs/keiro/how-to/make-commands-idempotent).)
+On a Kiroku-backed adapter, repeated `AckRetry` is bounded by its subscription `RetryPolicy` (five
+total deliveries by default on the current adapter path). Exhaustion writes the source event to
+`kiroku.dead_letters` and advances the checkpoint atomically. That is distinct from a
+`RejectedDeadLetter`, which records the failed *target dispatch* in Keiro and acknowledges the source
+immediately.
 
-## Verify it worked
+## 4. Preserve target-scoped duplicate proof
 
-Append a `PaymentApproved` event to an order stream the adapter feeds from, and watch the worker
-react: the manager's `fulfillment-<orderId>` stream gains a `FulfillmentObserved` event and the
-order stream gains an `OrderPacked` event. Reacting to the *same* source event twice leaves both
-streams unchanged the second time — the duplicate is collapsed.
+Do not replace Keiro's duplicate handling with “matching event ID means success.” Event IDs are
+globally unique. A matching ID in another stream is a collision, not proof that this target command
+ran. `confirmBenignDuplicate` point-checks the intended target; an unconfirmed collision remains a
+target-bearing failure and halts.
 
-## Related
+## 5. Make correlation order-insensitive
 
-- Each dispatch goes through the [command cycle](/docs/keiro/explanation/the-command-cycle).
-- [Keep target commands total](/docs/keiro/how-to/keep-target-commands-total) — avoid a `PMCommandFailed` wedging the worker.
-- [Keiro.ProcessManager reference](/docs/keiro/reference/process-manager) — `runProcessManagerWorker`.
+Two source streams that correlate to the same manager instance may arrive in either order, and
+shards may process them concurrently. Model both orders in the manager transducer. Do not use
+delivery/global order as a business sequence across streams.
+
+## Verify the failure paths
+
+Test at least these cases:
+
+1. Redeliver one source event and observe `PMStateDuplicate`/`PMCommandDuplicate` with `AckOk`.
+2. Inject a transient store error and observe `AckRetry` without checkpoint advancement.
+3. Reject a target under `RejectedHalt` and observe the failed `targetStreamName` and no ack.
+4. Switch deliberately to `RejectedDeadLetter`; observe an idempotent Keiro row and `AckOk`.
+5. Put the attempted deterministic ID in another stream; confirm the worker halts rather than
+   classifying it as a benign duplicate.
+
+See [Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch) for remediation.

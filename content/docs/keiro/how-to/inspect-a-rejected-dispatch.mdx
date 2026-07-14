@@ -1,0 +1,68 @@
+---
+title: "Inspect a rejected dispatch"
+description: "Locate a failed target, distinguish Keiro dispatch evidence from Kiroku retry exhaustion, and choose a safe repair path."
+---
+
+Start by identifying which terminal path occurred. Keiro has two dead-letter domains with different
+meanings.
+
+| Evidence | Meaning | Source checkpoint |
+| --- | --- | --- |
+| `keiro.keiro_dead_letters` | A process-manager/router target command was rejected under `RejectedDeadLetter`. | Acknowledged; may advance. |
+| `kiroku.dead_letters` | Delivery of the source event exhausted the subscription retry policy. | Advanced atomically with the dead-letter insert. |
+| Neither; worker halted | Default rejection policy or systemic deterministic failure. | Not acknowledged by the worker. |
+
+## Inspect Keiro dispatch evidence
+
+```haskell
+rows <- listDispatchDeadLetters "fulfillment-manager"
+```
+
+Find the row by `sourceEventId`/`sourceGlobalPosition`, then record:
+
+- `dispatcherKind` and `dispatcherName`;
+- `correlationId`;
+- `emitIndex` (`-1` denotes manager-state rejection);
+- `targetStreamName`;
+- `errorClass` and bounded `errorDetail`; and
+- `attemptCount`.
+
+Rows are newest first and idempotent under source redelivery. Keiro intentionally exports list and
+insert operations, not a generic delete/replay command; the row remains a durable witness.
+
+## Classify before repairing
+
+- `command_rejected`: decide whether rejection is a legitimate domain outcome. Prefer making benign
+  target behavior total. If the target truly should change, repair its state/definition and rerun the
+  domain-specific dispatch using the original source identity.
+- `command_ambiguous`: treat it as a transducer-definition defect. Fix and validate the aggregate
+  before any replay; do not relabel it as ordinary business rejection.
+- an unconfirmed `DuplicateEvent`: this does not reach `RejectedDeadLetter`, because it is systemic
+  deterministic and halts. Use the retained `targetStreamName` and attempted ID to find the
+  cross-stream collision. Never acknowledge it as benign unless that ID exists in the intended
+  target.
+- transient store/conflict errors: these retry rather than entering Keiro dispatch dead letters.
+  After exhaustion, inspect the Kiroku source-event row instead.
+
+For a process manager, remember the history split: the manager stream may already say the reaction
+occurred. If that failure belongs in saga history, drive a modeled `DispatchFailed`-style command and
+event from your operator workflow; Keiro cannot append a generic event unknown to the transducer.
+
+## Replay the right object
+
+For `kiroku.dead_letters`, use
+`replaySubscriptionDeadLetters subscriptionName member handler`. It scans the source log by opaque
+cursors, continues across per-row failures, and returns `ReplayedFresh`, `ReplayedDuplicate`,
+`ReplayFailed detail`, or `ReplaySourceMissing`. It does not delete or mark the Kiroku rows, so the
+same operator command is repeatable.
+
+For `keiro.keiro_dead_letters`, there is no generic replay helper: the record describes one target
+command, not a parked source delivery. Use a domain-specific command or rerun the deterministic
+process-manager/router handler after the underlying fault is repaired, then verify the target stream
+and manager history. Retain the witness according to your audit policy.
+
+<Callout type="info">
+  `keiro.dispatch.deadlettered` counts rejection-class failures consumed by both
+  `RejectedDeadLetter` and `RejectedSkip`. Query `keiro.keiro_dead_letters` to distinguish durable
+  evidence from a metric-only skip.
+</Callout>

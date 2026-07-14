@@ -1,326 +1,92 @@
 ---
 title: "01 — The process manager: the dispatch loop"
-description: "runProcessManagerOnce top to bottom: correlate/handle, deterministicCommandId, the eventAlreadyIn guard, the dispatch loop, retarget = coerce, and the worker's ack semantics."
+description: "Read runProcessManagerOnce: point-lookup idempotency, target-scoped duplicate proof, separate target commits, and target-bearing results."
 ---
 
-<Callout type="info">
-  Part of the [workflow code walkthrough](/docs/keiro/walkthrough/workflow/00-start-here).
-  If you are new, start at [00 — Start here](/docs/keiro/walkthrough/workflow/00-start-here).
-</Callout>
+This chapter follows `runProcessManagerOnce` in `keiro/src/Keiro/ProcessManager.hs`. The next chapter
+focuses on transaction and acknowledgement consequences.
 
-This chapter walks the **control flow** of `runProcessManagerOnce` — the single function that
-reacts to one source event. We read it top to bottom: how it picks a manager instance, the one
-pure `handle` call that decides everything, the deterministic write ids, the `eventAlreadyIn`
-guard, the dispatch loop, and the `retarget = coerce` cast. We defer the *transaction-
-atomicity* argument — what commits together and what does not — to
-[chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model); here we follow the
-shape of the code.
-
-The source is `keiro/src/Keiro/ProcessManager.hs`.
-
-## The setup block: correlate, handle, and the manager write id
-
-The function opens with a `let` block that derives everything it needs from the manager config,
-the source event, and the input:
+## Derive the reaction and manager ID
 
 ```haskell
--- keiro/src/Keiro/ProcessManager.hs
-runProcessManagerOnce options manager sourceEvent input = do
-  let correlationId = (manager ^. #correlate) input
-      action = (manager ^. #handle) input
-      managerStream = (manager ^. #streamFor) correlationId
-      managerEventId = deterministicCommandId (manager ^. #name) correlationId (sourceEvent ^. #eventId) (-1)
-      managerOptions = options & #eventIds .~ [managerEventId]
-      managerStreamName = ((manager ^. #eventStream) ^. #resolveStreamName) managerStream
+let correlationId = (manager ^. #correlate) input
+    action = (manager ^. #handle) input
+    managerStream = (manager ^. #streamFor) correlationId
+    managerEventId =
+      deterministicCommandId
+        (manager ^. #name) correlationId (sourceEvent ^. #eventId) (-1)
 ```
 
-Reading it line by line:
+`handle` is pure, so the same input returns the same manager command, target command order, and
+timers. The manager-state ID uses emit index `-1`; target commands begin at `0`.
 
-- **`correlate input`** produces the **correlation id** — a text key (an order id, an incident
-  id) that selects *which* manager instance handles this event. In jitsurei's
-  `fulfillmentProcessManager` it is `orderIdText . eventOrderId`; in `escalationProcessManager`
-  it is `incidentIdText . escalationInputIncidentId`.
-- **`handle input`** runs the **whole pure reaction up front**. `handle :: input ->
-  ProcessManagerAction ci targetCi` returns a `ProcessManagerAction` with three fields decided
-  in one shot: `command` (advance the manager's own state), `commands` (the list of
-  `PMCommand`s to dispatch), and `timers` (the `TimerRequest`s to schedule). Nothing about the
-  reaction depends on store I/O — the decision is total and is computed before any append.
-- **`streamFor correlationId`** maps the correlation id to the manager's own `Stream` handle —
-  jitsurei's `fulfillmentStream . OrderId` gives `fulfillment-<orderId>`, and
-  `escalationStream . IncidentId` gives `esc-<incidentId>`.
-- **`managerEventId`** is the deterministic id for the *manager-state* append. Note the **`-1`**
-  emit index.
-- **`managerOptions = options & #eventIds .~ [managerEventId]`** pins exactly one event id for
-  the upcoming append, so the manager append is keyed by `managerEventId` and nothing else.
-- **`managerStreamName`** resolves the manager `Stream` to its concrete `StreamName`, which the
-  pre-check needs.
+`eventAlreadyIn` now delegates to Kiroku's `eventExistsInStream` point lookup. It is not the old
+forward scan. If `managerEventId` already exists in the manager stream, the runner reports
+`PMStateDuplicate` and still enters the target dispatch loop, filling any writes missed by a crash.
 
-### Why the `-1` emit index
+## Manager append and timers
 
-`deterministicCommandId` derives a stable id from `(name, correlationId, sourceEventId,
-emitIndex)`:
+For a fresh manager reaction, `runCommandWithSql` appends manager events and schedules timers in its
+SQL callback. The resource-aware runner requires `KirokuStoreResource` and applies Kiroku event
+enrichment.
 
 ```haskell
--- keiro/src/Keiro/ProcessManager.hs
--- v5 UUID over [keiro, process-manager, name, correlationId, sourceEventId, emitIndex]
-deterministicCommandId :: Text -> Text -> EventId -> Int -> EventId
+managerOutcome <-
+  runCommandWithSql managerOptions managerEventStream managerStream managerCommand
+    (\_ -> traverse_ scheduleTimerTx timers)
 ```
 
-The **manager-state append uses `emitIndex = -1`**; the dispatched commands start at `0` (the
-dispatch loop numbers them `0, 1, 2, …`). The `-1` keeps the manager's own write id distinct
-from every dispatched command's id, even when both are derived from the same source event. Same
-inputs always yield the same UUID, so a replay of the same source event produces the *same* set
-of write ids — the foundation of crash-safe replay
-([chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model)).
+If the manager command appends events, its timers share that transaction. A fresh no-op command does
+not execute the SQL callback, so the runner schedules its timers in a follow-up transaction.
 
-## The pre-check: `eventAlreadyIn` is a forward scan
+An append-time `DuplicateEvent` is not accepted from error detail alone. The runner calls
+`confirmBenignDuplicate managerStreamName managerEventId err`; only a point lookup proving the ID is
+in this manager stream becomes `PMStateDuplicate`. Any other manager failure is the outer
+`Left CommandError`.
 
-Before appending, the runner asks whether the manager has *already* processed this source event:
+## Dispatch every pure command position
+
+`finish` zips the pure target-command list with `[0..]`. For each item it derives the positional
+process-manager ID, resolves the target stream name, and point-checks that ID in that target.
 
 ```haskell
--- keiro/src/Keiro/ProcessManager.hs
-  managerAlreadyProcessed <- eventAlreadyIn options managerStreamName managerEventId
-  if managerAlreadyProcessed
-    then finish correlationId (PMStateDuplicate managerEventId) action
-    else do
-      ...
+data PMCommandResult target
+  = PMCommandAppended (CommandResult target)
+  | PMCommandDuplicate EventId
+  | PMCommandFailed StreamName CommandError
 ```
 
-`eventAlreadyIn` is **not** an index lookup — it is a **forward scan** of the stream:
+On a precheck miss, `runCommandWithProjections` appends one target command and its inline projections
+in one target-specific transaction. If a race returns `DuplicateEvent`,
+`confirmBenignDuplicate targetStreamName commandId err` again requires the attempted ID in the
+intended target. A cross-stream collision therefore becomes `PMCommandFailed target err`, preserving
+the target needed by policy and diagnosis.
 
-```haskell
--- keiro/src/Keiro/ProcessManager.hs
-eventAlreadyIn options streamName eventId =
-  Streamly.fold
-    (Fold.any (\recorded -> recorded ^. #eventId == eventId))
-    (readStreamForwardStream streamName (StreamVersion 0) (options ^. #pageSize))
+`retarget = coerce` changes only the phantom tag from `Stream targetCi` to the full target event
+stream type; the underlying validated stream name is unchanged.
+
+## Why a duplicate manager still dispatches
+
+```mermaid
+flowchart TD
+  S["source event"] --> M{"manager ID in manager stream?"}
+  M -- "no" --> A["append manager + timers"]
+  M -- "yes" --> D["PMStateDuplicate"]
+  A --> F["finish"]
+  D --> F
+  F --> T["dispatch every target position"]
+  T --> C{"target ID in intended target?"}
+  C -- "yes" --> U["PMCommandDuplicate"]
+  C -- "no" --> W["append target command"]
 ```
 
-It reads the stream forward from version `0`, paging by `options.pageSize`, and folds with
-`Fold.any`, stopping as soon as it finds a recorded event whose id equals `eventId`. So it is
-**O(stream length)** in the worst case — the price of recognizing a benign replay *before*
-re-running the reaction. If the manager append id is already present, the runner skips the append
-and jumps straight to `finish` with `PMStateDuplicate`. Crucially, `finish` **still runs the
-whole dispatch loop** — that is what recovers a crash that landed the manager append but missed a
-later dispatch (derived in chapter 02).
+A crash can commit manager state and some targets. Redelivery recognizes the manager duplicate but
+still traverses all targets: completed writes deduplicate, missing writes append.
 
-## The manager-state append (and its timers)
+## Cross-stream correlation remains unordered
 
-When the event has not been seen, the runner appends the manager-state command and schedules its
-timers:
+One source stream preserves its own order. Different source streams can correlate to the same
+manager and race, especially under sharding. The manager transducer must accept both orders; the
+global position is persistence order, not a business sequencing guarantee.
 
-```haskell
--- keiro/src/Keiro/ProcessManager.hs
-      managerOutcome <-
-        runCommandWithSql
-          managerOptions
-          (manager ^. #eventStream)
-          managerStream
-          (action ^. #command)
-          (\_ -> traverse_ scheduleTimerTx (action ^. #timers))
-      case managerOutcome of
-        Left (StoreFailed (DuplicateEvent (Just duplicateId))) | duplicateId == managerEventId ->
-          finish correlationId (PMStateDuplicate managerEventId) action
-        Left (StoreFailed (DuplicateEvent Nothing)) ->
-          finish correlationId (PMStateDuplicate managerEventId) action
-        Left err -> pure (Left err)
-        Right (managerResult, _) ->
-          finish correlationId (PMStateAppended managerResult) action
-```
-
-`runCommandWithSql` runs the manager-state command (`action.command`) through the command cycle
-and lets the caller compose extra SQL into the *same* transaction; here that extra SQL is
-`traverse_ scheduleTimerTx (action.timers)` — arming every timer. The outcome is classified:
-
-- a `DuplicateEvent` whose id matches `managerEventId` (or a `Nothing` duplicate) is a benign
-  replay → `finish` with `PMStateDuplicate` (the dispatch loop still runs);
-- any other `Left err` aborts the whole reaction by returning `Left err` — note there is **no**
-  `PMStateFailed` constructor; a genuine manager-append error bubbles out as an outer `Left
-  CommandError`;
-- a `Right` means the append landed → `finish` with `PMStateAppended`.
-
-The *transaction* semantics of `runCommandWithSql` (the timers committing atomically with the
-state append) are the subject of [chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model);
-for the cycle a single command runs through, see the
-[command processor](/docs/keiro/walkthrough/command-cycle/03-the-command-processor).
-
-## The payoff: the manager's own state is a keiki transducer
-
-It is worth pausing on what just happened, because it is the whole reason a process manager is so
-little code. That `manager ^. #eventStream` argument is an `EventStream phi rs s ci co` — the **same**
-typed wrapper over a keiki `SymTransducer` that a *domain aggregate* carries
-([the foundation tour](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step)). The manager
-is **just another aggregate**: its progress is event-sourced to its own `fulfillment-<id>` /
-`esc-<id>` stream, and `runCommandWithSql` steps its transducer through the **exact same**
-Hydrate → Transduce → Append cycle a user command uses. Nothing in this engine re-implements state
-storage, replay, or concurrency — it *borrows* the command cycle wholesale. That reuse is the benefit,
-and it has three concrete edges:
-
-- **Typed registers (`RegFile rs`) instead of hand-rolled saga state.** A saga's working memory —
-  "which approvals are in", "the reservation id to compensate", a deadline — lives in the transducer's
-  typed register file, not smuggled into an ad-hoc state blob. The same `RegFile` shape is what lets the
-  manager stream snapshot and hydrate exactly like an aggregate.
-- **ε-edges: the manager can advance *itself*.** A keiki transducer can take an internal transition on
-  a **guard alone**, without consuming a command — "once both legs have confirmed, move to `Shipped`".
-  That is precisely the "stateful coordinator that drives itself forward" behaviour a saga needs, and it
-  falls out of the transducer rather than being coded as an extra dispatch.
-- **Replay-safety is inherited, not added.** Stepping a `SymTransducer` is a **pure, total**
-  transition, so re-hydrating the manager stream reconstructs the exact manager state deterministically.
-  *That* is why the `eventAlreadyIn` pre-check plus a `deterministicCommandId` is enough to make the
-  whole reaction a benign no-op on replay (chapter 02) — the determinism comes from the transducer
-  underneath, for free.
-
-The single mental model is the point: an aggregate, this process manager, and a
-[saga](/docs/keiro/how-to/write-a-saga-with-compensation) are all the *same* keiki transducer, differing
-only in what `ci` and `co` are bound to — so there is one decision core, one persistence story, and one
-replay argument across the whole framework. (For the full rationale, read
-[Why SymTransducer, not Decider](/docs/keiro/explanation/why-symtransducer-not-decider).) Contrast this
-with [durable execution](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop#this-is-not-a-keiki-transducer-and-that-is-deliberate),
-the one subsystem that is *not* a transducer: a workflow is imperative code over a dynamic step map, so
-it cannot reuse this machinery and journals instead.
-
-## `finish` and the dispatch loop
-
-Both the duplicate and the freshly-appended path call `finish`, which runs the dispatch loop and
-assembles the result:
-
-```haskell
--- keiro/src/Keiro/ProcessManager.hs
-    finish correlationId managerResult action = do
-      commandResults <- dispatchCommands correlationId (sourceEvent ^. #eventId) (action ^. #commands)
-      pure $
-        Right
-          ProcessManagerResult
-            { managerResult = managerResult
-            , commandResults = commandResults
-            , timersScheduled = length (action ^. #timers)
-            }
-
-    dispatchCommands correlationId sourceEventId commands =
-      traverse
-        (uncurry (dispatchCommand correlationId sourceEventId))
-        (zip [0 ..] commands)
-```
-
-`dispatchCommands` **`zip [0 ..]`** numbers the commands `0, 1, 2, …`. That number is the **emit
-index** handed to `deterministicCommandId`, so the *n*-th dispatched command always gets the
-*same* id on every replay — provided `handle` is deterministic and produces the commands in the
-same order (it does: it is a pure function of the input). `timersScheduled` is simply the count
-of `action.timers` (the requests were already armed inside the manager append; this field just
-reports how many).
-
-## `dispatchCommand`: pre-check, dispatch, classify
-
-Each command is dispatched by `dispatchCommand`:
-
-```haskell
--- keiro/src/Keiro/ProcessManager.hs
-    dispatchCommand correlationId sourceEventId emitIndex command = do
-      let commandId = deterministicCommandId (manager ^. #name) correlationId sourceEventId emitIndex
-          targetOptions = options & #eventIds .~ [commandId]
-          targetStream = retarget (command ^. #target)
-          targetStreamName = ((manager ^. #targetEventStream) ^. #resolveStreamName) targetStream
-      commandAlreadyProcessed <- eventAlreadyIn options targetStreamName commandId
-      if commandAlreadyProcessed
-        then pure (PMCommandDuplicate commandId)
-        else do
-          outcome <-
-            runCommandWithProjections
-              targetOptions
-              (manager ^. #targetEventStream)
-              targetStream
-              (command ^. #command)
-              ((manager ^. #targetProjections) (command ^. #target))
-          pure $ case outcome of
-            Right result -> PMCommandAppended result
-            Left (StoreFailed (DuplicateEvent (Just duplicateId))) | duplicateId == commandId -> PMCommandDuplicate commandId
-            Left (StoreFailed (DuplicateEvent Nothing)) -> PMCommandDuplicate commandId
-            Left err -> PMCommandFailed err
-```
-
-The shape mirrors the manager append:
-
-1. compute the deterministic **`commandId`** from this command's `emitIndex`, and pin it as the
-   single event id in `targetOptions`;
-2. resolve the **target stream** (see `retarget` below) and its `StreamName`;
-3. **pre-check** with `eventAlreadyIn` on the *target* stream — if the command id is already
-   present, return `PMCommandDuplicate` without re-running it;
-4. otherwise **dispatch** via `runCommandWithProjections`, which appends the target events *and*
-   runs the manager's `targetProjections` for this target (jitsurei's
-   `orderSummaryInlineProjection` for fulfillment, `[]` for escalation) in the same dispatch
-   transaction — see [read-side projections](/docs/keiro/walkthrough/read-side/04-projections-and-the-rebuild-path);
-5. **classify** the outcome into one of three results:
-   - `PMCommandAppended` — the dispatch appended events;
-   - `PMCommandDuplicate` — a `DuplicateEvent` for *this* command id (idempotent replay);
-   - `PMCommandFailed` — any other `CommandError`. This is the dangerous case (below).
-
-## `retarget = coerce` — and why it is sound
-
-A `PMCommand` names its target as `Stream targetCi` (a stream of the target's *command* type),
-but `runCommandWithProjections` wants `Stream (EventStream targetPhi targetRs targetState
-targetCi targetCo)`. `retarget` bridges them for free:
-
-```haskell
--- keiro/src/Keiro/ProcessManager.hs
-    retarget :: Stream targetCi -> Stream (EventStream targetPhi targetRs targetState targetCi targetCo)
-    retarget = coerce
-```
-
-`Stream` is a phantom newtype over a stream *name* — the type parameter is purely a tag, with no
-runtime representation — so `coerce` re-types the handle at zero cost. The cast is **sound**
-because both handles resolve to the *same* name. jitsurei makes this concrete: in `Incident.hs`,
-
-```haskell
--- keiro/jitsurei/src/Jitsurei/Incident.hs
-incidentStream        incidentId = stream ("incident-" <> incidentIdText incidentId)
-incidentCommandStream incidentId = stream ("incident-" <> incidentIdText incidentId)
-```
-
-`incidentStream` and `incidentCommandStream` are **the same name** `incident-<id>`. The
-escalation manager dispatches to `incidentCommandStream`, and `retarget` re-types it into the
-`incidentEventStream` handle naming the same row — exactly what the cast assumes.
-
-## The worker: `runProcessManagerWorker` and its ack semantics
-
-The single-shot `runProcessManagerOnce` becomes a live subscription via
-`runProcessManagerWorker`, which drains a Shibuya adapter:
-
-```haskell
--- keiro/src/Keiro/ProcessManager.hs
-runProcessManagerWorker options manager Adapter{source = adapterSource} decodeMessage =
-  Streamly.fold Fold.drain $
-    Streamly.mapM handleIngested adapterSource
-  where
-    handleIngested Ingested{envelope = env@Envelope{payload = message}, ack = AckHandle finalizeAck} = do
-      decision <- case decodeMessage message of
-        Nothing -> decideForPoison workerOptions "process-manager worker could not decode message" env
-        Just (recorded, input) -> do
-          outcome <- tryError @StoreError (runProcessManagerOnce options manager recorded input)
-          pure $ classify outcome
-      finalizeAck decision
-      pure decision
-```
-
-The ack table:
-
-```text
-decode failure (Nothing)      -> PoisonPolicy (default AckHalt)
-transient store/command error -> AckRetry transientRetryDelay
-deterministic command error   -> AckHalt (HaltFatal ...)
-success or duplicate ids      -> AckOk
-```
-
-The subtle point: a **`PMCommandFailed` lives *inside* a `Right`'s `commandResults`**, not in the
-outer `Left`. The worker now inspects those results: transient failures retry, deterministic failures
-halt, and duplicate deterministic ids count as successful idempotent replay. The outer `Left` only
-fires when the *manager-state* append failed for a non-duplicate reason. The hazard is therefore for
-a benign domain rejection that surfaces as a deterministic `PMCommandFailed`.
-[Chapter 02](/docs/keiro/walkthrough/workflow/02-the-transaction-model) spells out that hazard and
-how to avoid it; the discipline is to [keep target commands
-total](/docs/keiro/how-to/keep-target-commands-total).
-
-## Next
-
-[02 — The transaction model](/docs/keiro/walkthrough/workflow/02-the-transaction-model): exactly
-what commits together, what does not, and why deterministic ids make replay a no-op without
-atomicity.
+Next: [02 — The transaction model](/docs/keiro/walkthrough/workflow/02-the-transaction-model).

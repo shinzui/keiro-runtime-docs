@@ -1,6 +1,6 @@
 ---
 title: "Understanding process managers and sagas"
-description: "How keiro coordinates work across several aggregates in response to events: the stateful process manager, the saga vocabulary, the two-transaction model, and why replay is safe."
+description: "How Keiro coordinates aggregates with deterministic replay, target-scoped duplicate proof, and explicit rejection policy."
 ---
 
 How do you coordinate work that spans several aggregates in reaction to events? An order is
@@ -136,7 +136,7 @@ on a multi-stream atomic commit.
 This is why the manager works correctly under **at-least-once** delivery, which is all a
 subscription substrate like shibuya promises.
 
-## The sharp edge: deterministic dispatch failures halt the worker
+## Failure disposition is explicit
 
 A dispatched command can come back three ways, captured in `PMCommandResult`:
 
@@ -144,21 +144,43 @@ A dispatched command can come back three ways, captured in `PMCommandResult`:
 data PMCommandResult target
   = PMCommandAppended  !(CommandResult target)  -- the dispatch appended events
   | PMCommandDuplicate !EventId                 -- idempotent replay; the id already existed
-  | PMCommandFailed    !CommandError            -- worker classifies retry vs halt
+  | PMCommandFailed    !StreamName !CommandError -- target identity + failure
 ```
 
-`PMCommandFailed` is classified by the worker. Transient store/conflict failures finalize
-`AckRetry transientRetryDelay`; deterministic command errors finalize `AckHalt (HaltFatal …)`. The
-retry path is correct for a *transient* failure, but deterministic halts are a trap for a *benign*
-rejection: if a target aggregate rejects a command simply because it is already in the right state,
-and that surfaces as `PMCommandFailed`, the worker wedges.
+The worker first halts systemic deterministic failures, retries any transient store/conflict
+failure, and applies `RejectedCommandPolicy` only when every failure is `CommandRejected` or
+`CommandAmbiguous`:
 
-The fix is a modeling discipline, not a flag: **target aggregates should model benign rejections
-as total transitions** so they never produce a `CommandError` in the first place. The jitsurei
-incident aggregate (`Jitsurei/Incident.hs`) is the worked example — `AcknowledgeIncident` and
-`EscalateIncident` are each legal only from `Triaging`, so the ack/escalate race resolves to one
-winner and a benign `CommandRejected`. See [Keep target commands
-total](/docs/keiro/how-to/keep-target-commands-total).
+- `RejectedHalt` is the conservative default: stop without acknowledging.
+- `RejectedDeadLetter` writes a durable target-bearing row to `keiro.keiro_dead_letters`, then
+  acknowledges the source.
+- `RejectedSkip` acknowledges with metric evidence only.
+
+Keep benign target commands total so ordinary already-done/not-applicable outcomes never need a
+loss policy. `CommandAmbiguous` is included so the worker's policy is exhaustive, but remains a code
+defect; default halt is normally the right response.
+
+Dead-lettering creates a history split: the manager's state may already record its reaction while
+the target did not. If that failure belongs in saga history, model and dispatch a domain-specific
+failure command/event; the generic dead-letter row is otherwise the durable witness.
+
+This Keiro table is distinct from `kiroku.dead_letters`, which holds a *source event* after bounded
+subscription retry exhaustion and advances the checkpoint atomically. See
+[Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch).
+
+## A duplicate is scoped to its intended target
+
+Event IDs are globally unique, so a store `DuplicateEvent` is not by itself proof that a target
+command already ran. `confirmBenignDuplicate targetStreamName attemptedId error` accepts it only
+when Kiroku's point lookup finds that ID in the intended target. A matching ID in another stream
+remains a target-bearing failure and halts; it is never silently folded to `PMCommandDuplicate`.
+
+## Correlation does not create cross-stream order
+
+Events from one source stream retain append order. Events from different streams that correlate to
+the same manager have no relative business order and may run concurrently on different shards.
+Design the manager to accept either arrival order—record one fact while waiting for the other—rather
+than treating global position as a domain sequence.
 
 ## Trade-offs
 

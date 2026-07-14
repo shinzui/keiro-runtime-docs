@@ -83,7 +83,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 |---|-------|------|-----------|-----------|--------|
 | EP-1 | Refresh keiki 0.2 correctness replay and persistence documentation | `docs/plans/40-refresh-keiki-0-2-correctness-replay-and-persistence-documentation.md` | None | None | Complete |
 | EP-2 | Refresh keiro command replay snapshot and read-model reliability documentation | `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md` | None | EP-1 | Complete |
-| EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Not Started |
+| EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | In Progress |
 | EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Not Started |
 | EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Not Started |
 | EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | Not Started |
@@ -188,7 +188,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T16:56:24Z) EP-2 Milestone 2: refresh snapshot correctness and recovery behavior.
 - [x] (2026-07-14T17:05:09Z) EP-2 Milestone 3: refresh read models, projections, and rebuild
   operations.
-- [ ] EP-3 Milestone 1: refresh process-manager and router delivery.
+- [x] (2026-07-14T17:16:13Z) EP-3 Milestone 1: refresh process-manager and router delivery.
 - [ ] EP-3 Milestone 2: refresh sharded delivery and dead-letter operations.
 - [ ] EP-3 Milestone 3: refresh workflow and cross-worker operations.
 - [ ] EP-4 Milestone 1: create the keiro-dsl 0.2 learning and upgrade path.
@@ -233,6 +233,10 @@ interactions between child plans. Provide concise evidence.
 - EP-2 found that `finishRebuild` prevents only a named async replay that produced zero applications;
   it does not attest full event or row coverage. Announcement and operations pages must keep table
   and cursor verification as an explicit operator responsibility.
+- EP-3 found that process-manager and router duplicate evidence is scoped to the intended target
+  stream, including the router's legacy positional-ID probe. Announcement guidance must avoid a
+  global exactly-once claim: resolver drift can grow the durable target union, and simultaneous
+  code/output changes can cross the legacy compatibility boundary.
 - EP-2 established the runtime schema split consumed by EP-5 and EP-6: application projection data
   is schema-qualified outside both Keiro's `keiro` framework schema and Kiroku's `kiroku` store
   schema. The later migration plans own how those schemas are composed and deployed.
@@ -287,3 +291,7 @@ Compare the result against the original vision.
   read-side docs teach explicit registration, qualified application schemas, category-scoped strong
   waits, fenced async outcomes, and the supported guarded rebuild lifecycle. All milestone and final
   site checks passed, including the 448-file internal-link scan.
+- EP-3 Milestone 1 completed the orchestration dispatch foundation. Process-manager and router docs
+  now agree on transaction boundaries, target-scoped duplicate confirmation, deterministic current
+  and legacy router IDs, explicit rejected-command policy, and the distinction between handled
+  failures and durable dispatch-dead-letter evidence.

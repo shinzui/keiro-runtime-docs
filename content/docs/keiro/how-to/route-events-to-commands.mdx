@@ -1,80 +1,90 @@
 ---
 title: "Route events to commands"
-description: "Use Keiro.Router to dispatch one command per resolved target for each incoming event, once-only, over a shibuya subscription."
+description: "Resolve dynamic targets, dispatch with target-derived IDs, and choose a rejection policy for the live router worker."
 ---
 
-You have an event (an incident was raised) that must fan out to a data-dependent set of commands
-(page each on-call responder). keiro's `Router` resolves the targets effectfully and dispatches one
-command to each, exactly once per target.
+Use `Router` when one source event must dispatch to a data-dependent target set and the coordinator
+does not need its own history.
 
-<Callout type="info">
-  Assumes you understand the command cycle (see
-  [The command cycle](/docs/keiro/explanation/the-command-cycle)) and have a `ValidatedEventStream`
-  for the target commands. New to the pattern? Read [Routers and content-based
-  dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch) first — especially [Router
-  vs. process manager](/docs/keiro/explanation/routers-and-content-based-dispatch#router-vs-process-manager)
-  if you are unsure which to reach for.
-</Callout>
+## 1. Define a read-only resolver
 
-## Goal
+```haskell
+pagingRouter :: (IOE :> es, Store :> es) => Router IncidentRaised TargetPhi ... es
+pagingRouter = Router
+  { name = "paging-router"
+  , key = \raised -> incidentIdText (raised ^. #incidentId)
+  , resolve = \raised -> do
+      queryResult <- runQuery Nothing onCallReadModel (raised ^. #service)
+      responders <- requireRouterTargets queryResult
+      pure
+        [ PMCommand
+            { target = pageStream (raised ^. #incidentId) responder
+            , command = SendPage (raised ^. #incidentId) responder
+            }
+        | responder <- responders
+        ]
+  , targetEventStream = pageEventStream
+  , targetProjections = const []
+  }
+```
 
-For each incoming event, dispatch one command per resolved target, idempotently, and run it as a live
-subscription.
+Register `onCallReadModel` explicitly at startup. `requireRouterTargets` represents your deliberate
+failure boundary: do not turn `ReadModelUnregistered`, stale schema, rebuild state, or wait timeout
+into `[]`, because that silently acknowledges “route nowhere.” Surface the failure so supervision
+stops without accepting the source event.
 
-## Steps
+Keep `resolve` read-only. It can run multiple times for the same event, and its target set may drift.
+Each target is dispatched independently after resolution.
 
-1. **Define a `Router`** whose `resolve` queries a read model for the targets. All five fields wired,
-   from the `jitsurei` `pagingRouter` (`jitsurei/src/Jitsurei/Paging.hs`):
+## 2. Understand the target identity
 
-   ```haskell
-   pagingRouter :: (IOE :> es, Store :> es) => Router IncidentRaisedData … es
-   pagingRouter =
-     Router
-       { name              = "jitsurei-paging"            -- stable; part of every deterministic id
-       , key               = \raised -> incidentIdText raised.incidentId   -- correlation string
-       , resolve           = \raised -> do               -- the effectful seam: read, don't write
-           result <- runQuery Nothing serviceOncallReadModel raised.service
-           let responders = either (const []) id result
-           pure [ PMCommand { target  = pageCommandStream raised.incidentId responder.responderId
-                            , command = SendPage (SendPageData { incidentId = raised.incidentId, responderId = responder.responderId }) }
-                | responder <- responders ]
-       , targetEventStream = pageEventStream            -- ValidatedEventStream for the target aggregate
-       , targetProjections = const []                   -- append-only dispatch (no inline projection)
-       }
-   ```
+For each command, Keiro derives:
 
-   The `resolve` body is a read-model query feeding a pure list comprehension — empty list means
-   "routes nowhere". See [the `resolve` seam](/docs/keiro/reference/router#the-resolve-seam).
+```haskell
+deterministicRouterCommandId
+  routerName correlation sourceEventId targetStreamName sameStreamOccurrence
+```
 
-2. **Dispatch for one event** with `runRouterOnce`:
+Reordering distinct targets does not change their IDs. Two commands to the same target get
+occurrences `0`, `1`, and so on. A target added on retry receives a fresh dispatch, so attempts
+accumulate the union of resolved targets. Keep resolution stable when the exact recipient set must
+be frozen.
 
-   ```haskell
-   RouterResult results <- runRouterOnce defaultRunCommandOptions pagingRouter recordedEvent incidentRaised
-   ```
+During the upgrade window, the runner also checks the old positional ID in the same target. Keep
+target order/membership stable across that window: the probe cannot guarantee one logical dispatch
+when both old code and resolver output change together.
 
-3. **Run it as a live subscription** with `runRouterWorker`, draining a shibuya `Adapter`;
-   `decodeMessage` turns each message into `(RecordedEvent, input)`:
+## 3. Run once or continuously
 
-   ```haskell
-   -- decodeMessage :: msg -> Maybe (RecordedEvent, input)
-   runRouterWorker defaultRunCommandOptions pagingRouter adapter decodeMessage
-   ```
+```haskell
+RouterResult results <-
+  runRouterOnce defaultRunCommandOptions pagingRouter recorded raised
 
-<Callout type="warn">
-Model benign domain rejections (a target refusing a command because no edge matches) as **total**
-transitions in the keiki transducer, so they never surface as `PMCommandFailed` and wedge the worker
-(a `PMCommandFailed` makes the worker `AckHalt` and retry the source event).
-</Callout>
+routerOptions = defaultWorkerOptions
+  & #rejectedCommandPolicy .~ RejectedHalt
 
-## Verify it worked
+runRouterWorkerWith
+  routerOptions
+  defaultRunCommandOptions
+  pagingRouter
+  adapter
+  decodeMessage
+```
 
-Run `just jitsurei-paging`: a raised incident dispatches one page per on-call responder. Re-deliver
-the same source event and confirm the second pass writes nothing (each target is a
-`PMCommandDuplicate`).
+The live worker shares the process-manager policy: transient failures retry, systemic deterministic
+failures halt, and an all-rejection group follows `RejectedHalt`, `RejectedDeadLetter`, or
+`RejectedSkip`. The safe default is halt.
 
-## Related
+## 4. Verify order drift and collision behavior
 
-- [Routers and content-based dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch) — the mental model, the `resolve` seam, and Router vs. process manager.
-- [Router reference](/docs/keiro/reference/router) — `Router`, `runRouterOnce`, `runRouterWorker`.
-- [Fan out an event with a router](/docs/keiro/cookbook/event-fan-out-with-routers) — a second complete worked recipe.
-- [Make commands idempotent](/docs/keiro/how-to/make-commands-idempotent) — the deterministic-id mechanism the router automates.
+Use one source event and two targets:
+
+1. Dispatch target A, interrupt before B, then redeliver with `[B, A]`; A is duplicate and B is
+   applied.
+2. Redeliver after both complete with `[B, A]`; both are duplicates.
+3. Add C on a later resolution; C is applied and A/B remain duplicates.
+4. Put A's attempted ID only in another stream; A becomes
+   `PMCommandFailed targetA (StoreFailed DuplicateEvent ...)`, never `PMCommandDuplicate`.
+
+See [Router](/docs/keiro/reference/router) and
+[Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch).
