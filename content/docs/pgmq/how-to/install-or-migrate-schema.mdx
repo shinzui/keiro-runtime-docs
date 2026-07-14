@@ -1,79 +1,103 @@
 ---
 title: "Install or migrate the schema"
-description: "Use pgmq-migration to install or upgrade pgmq 1.11.0 without the PostgreSQL extension."
+description: "Compose PGMQ's native component for a fresh database or import verified hasql-migration history before handoff."
 ---
 
-Use `pgmq-migration` when your PostgreSQL deployment cannot install the pgmq
-extension, or when you want migrations owned by your Haskell deployment.
-
-## Goal
-
-Run the vendored pgmq 1.11.0 schema migrations against a database, then use
-`pgmq-hasql` or `pgmq-effectful` against that same database.
+Use `pgmq-migration` when PostgreSQL cannot install the PGMQ extension or when the application owns
+schema deployment. The library exports a component; your application owns the final migration plan
+and runner.
 
 ## Fresh database
 
-```haskell
-import Hasql.Connection qualified as Connection
-import Hasql.Session qualified as Session
-import Pgmq.Migration (migrate)
-
-installPgmq :: Connection.Settings -> IO ()
-installPgmq settings = do
-  acquired <- Connection.acquire settings
-  case acquired of
-    Left err -> print err
-    Right conn -> do
-      result <- Session.run migrate conn
-      case result of
-        Right (Right ()) -> putStrLn "pgmq schema installed"
-        Right (Left migrationErr) -> print migrationErr
-        Left sessionErr -> print sessionErr
-```
-
-`migrate` applies the full current schema. Re-running it is safe because
-`hasql-migration` tracks applied commands.
-
-## Existing database
+Resolve `pgmqMigrations` and compose it with every other component that shares the target ledger:
 
 ```haskell
-import Hasql.Connection qualified as Connection
-import Hasql.Session qualified as Session
-import Pgmq.Migration (upgrade)
+import Data.List.NonEmpty (NonEmpty (..))
+import Database.PostgreSQL.Migrate (migrationPlan)
+import Pgmq.Migration qualified as Pgmq
 
-upgradePgmq :: Connection.Settings -> IO ()
-upgradePgmq settings = do
-  acquired <- Connection.acquire settings
-  case acquired of
-    Left err -> print err
-    Right conn -> do
-      result <- Session.run upgrade conn
-      case result of
-        Right (Right ()) -> putStrLn "pgmq schema upgraded"
-        Right (Left migrationErr) -> print migrationErr
-        Left sessionErr -> print sessionErr
+servicePlan = do
+  pgmq <- Pgmq.pgmqMigrations
+  application <- applicationMigrations
+  migrationPlan (pgmq :| [application])
 ```
 
-Prefer `upgrade` when the database may already have pgmq-migration state. It is
-also safe on a fresh database.
+If the service also uses Kiroku and Keiro, use the order
+`kiroku :| [keiro, pgmq, application]`; Keiro declares its Kiroku dependency and the planner
+validates it. Declare application dependencies for any PGMQ objects its SQL consumes.
 
-## Validate
+Mount the standard `pg-migrate-cli` parser around `servicePlan`, then use the host executable as a
+deployment gate:
+
+```console
+export DATABASE_URL='postgresql://service_owner@localhost/app'
+
+cabal run service-migrate -- plan --json
+cabal run service-migrate -- status --json
+cabal run service-migrate -- verify --json
+cabal run service-migrate -- up --json
+cabal run service-migrate -- verify --json
+```
+
+The fresh run applies the PGMQ 1.11 baseline and native canary. Do not run a component during
+library initialization or execute a partial plan that omits components already recorded in the
+shared ledger.
+
+## Existing `hasql-migration` database
+
+Do not run native `up` first. Quiesce predecessor writers, back up the database, and identify the
+history that actually ran:
+
+- `DirectFullInstallHistory` for the single `pgmq_v1.11.0` row.
+- `EquivalentTwoStepUpgradeHistory` for the exact 1.10→1.10.1→1.11 pair.
+
+Build the source configuration and matching target mapping from the same policy:
 
 ```haskell
-import Pgmq.Migration (getMigrations, validate, version)
+let policy = DirectFullInstallHistory
 
-checkPgmq :: Session.Session ()
-checkPgmq = do
-  errors <- validate
-  applied <- getMigrations
-  pure ()
+plan <- either (fail . show) pure servicePlan
+config <-
+  either (fail . show) pure
+    (pgmqHasqlMigrationSourceConfig sourceProvider policy)
+mappings <-
+  either (fail . show) pure
+    (pgmqHasqlMigrationMappings policy)
+
+report <-
+  importHasqlMigrationHistory
+    defaultImportOptions
+    config
+    targetProvider
+    plan
+    mappings
 ```
 
-`version` reports the vendored schema version. At the reviewed source commit,
-that value is pgmq `1.11.0`.
+For a ledger deliberately shared with other packages, replace the config constructor with:
 
-## Next
+```haskell
+pgmqHasqlMigrationSourceConfigWithPolicy
+  sourceProvider
+  policy
+  AllowUnselectedSourceRows
+```
 
-Once the schema exists, create application queues with
-[queue configuration](/docs/pgmq/how-to/configure-queues-at-startup) or direct
-[queue creation](/docs/pgmq/how-to/create-send-read-finish).
+This permits unrelated rows but does not weaken evidence for selected PGMQ rows.
+
+For `EquivalentTwoStepUpgradeHistory`, pass
+`withEquivalentHistory AllowEquivalentHistory defaultImportOptions`. The adapter verifies both
+stored base64 MD5 checksums and the packaged read-only PGMQ 1.11 state contract before import. Never
+use the equivalent policy to bypass ambiguous or incomplete source history.
+
+Import executes no schema DDL. It atomically adopts `pgmq/0001-install-v1.11.0` in the native ledger
+and writes audit evidence. Then run the normal `status`, `verify`, `up`, `verify` gate; only
+`pgmq/0002-schema-management-comment` should apply.
+
+## Provision queues
+
+Schema installation does not create application queues. After the migration gate, reconcile queue
+topology with [queue configuration](/docs/pgmq/how-to/configure-queues-at-startup) or create queues
+through the [queue API](/docs/pgmq/how-to/create-send-read-finish).
+
+See [Migrations reference](/docs/pgmq/reference/migrations) for the exact policy types and
+[Deploy a migration plan](/docs/pg-migrate/how-to/deploy-a-migration-plan) for production recovery.

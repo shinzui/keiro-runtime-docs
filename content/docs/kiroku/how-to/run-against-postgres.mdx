@@ -1,79 +1,92 @@
 ---
 title: "Run against PostgreSQL"
-description: "Install the schema with kiroku-store-migrate and configure ConnectionSettings."
+description: "Apply Kiroku's native migration plan and configure ConnectionSettings for the dedicated kiroku schema."
 ---
 
-You need a real PostgreSQL database holding kiroku's schema, and a store configured to use it.
-This guide covers the two steps: migrate the schema, then point `ConnectionSettings` at it.
+Apply Kiroku's schema as a deployment step, then open the store with matching connection settings.
+Opening a `Store` never runs DDL.
 
 <Callout type="info">
-  Assumes you have PostgreSQL running and the `kiroku-store-migrations` package available. If you
-  are starting from zero, do the [getting-started tutorial](/docs/kiroku/tutorials/getting-started)
-  first.
+  Assumes PostgreSQL is running and `kiroku-store-migrations` is available. If you are starting
+  from zero, follow the [getting-started tutorial](/docs/kiroku/tutorials/getting-started).
 </Callout>
 
-## Goal
+## 1. Inspect and apply the native plan
 
-A migrated database in a dedicated `kiroku` schema, and a `withStore` that opens a pool against
-it with the connection options your workload needs.
+```console
+export DATABASE_URL='postgresql://service_owner@localhost/app'
 
-## Steps
-
-1. **Apply (or upgrade) the schema.** kiroku's migrations are forward-only `codd` migrations run
-   by the `kiroku-store-migrate` executable. Configure it with the `CODD_*` environment variables
-   and run it — re-running it is safe and applies only new migrations.
-
-   ```bash
-   export CODD_CONNECTION='dbname=kiroku'
-   export CODD_SCHEMAS=kiroku
-   cabal run kiroku-store-migrate
-   ```
-
-   All objects land in a dedicated **`kiroku` schema** (ADR 0003), leaving `public` free for your
-   application's own tables. The store **never runs DDL on open** — migrating is always a separate,
-   explicit step. `codd` is forward-only: do not edit historical migrations after they have run in an
-   environment; ship another timestamped migration instead.
-
-   The June 2026 hardening migrations add operational safety on top of the bootstrap schema: append
-   notifications fire only for application-stream version advances, dead letters are indexed by
-   `event_id` for hard-delete cleanup, stream/version and dead-letter indexes are tuned, the hot
-   `$all` stream row gets lower fillfactor, and `kiroku.streams` enforces the same 512-byte stream
-   name limit as the Haskell API. The July 2026 lifecycle migration adds
-   `streams.truncate_before`, the reversible close-the-book marker used by
-   `setStreamTruncateBefore`.
-
-2. **Configure the connection.** Start from `defaultConnectionSettings` and override the fields
-   your deployment needs:
-
-   ```haskell
-   let settings = (defaultConnectionSettings "postgresql://localhost/app")
-                    { poolSize        = 20            -- default 10
-                    , schema          = "kiroku"      -- sets search_path AND the NOTIFY channel
-                    , extraSearchPath = ["public"]    -- so inline projection tables resolve
-                    }
-   withStore settings $ \store -> do
-     -- store is open against the migrated database
-     pure ()
-   ```
-
-   Notable fields: `schema` sets both the `search_path` _and_ the `LISTEN/NOTIFY` channel name, so
-   it must match the schema you migrated. `extraSearchPath` adds your application schemas (e.g.
-   `public`) so inline projection tables resolve. `idleInTransactionTimeout` (seconds, default 30)
-   and `statementTimeout` bound long-running statements.
-
-## Verify it worked
-
-After migrating, the `kiroku` schema contains `streams`, `events`, `stream_events`,
-`subscriptions`, and `dead_letters`:
-
-```bash
-psql 'dbname=kiroku' -c '\dt kiroku.*'
+cabal run kiroku-store-migrate -- plan --json
+cabal run kiroku-store-migrate -- status --json
+cabal run kiroku-store-migrate -- verify --json
+cabal run kiroku-store-migrate -- up --lock-timeout 30000 --json
+cabal run kiroku-store-migrate -- verify --json
 ```
 
-You should see the core tables. A `withStore` against the same database then opens without
-error and you can append your first event.
+On a fresh database, preflight verification reports pending migrations. Stop on changed applied
+bytes, unknown rows, gaps, or unresolved state. Post-apply verification must report no issues.
+Preserve the JSON with the deployment record.
 
-## Related
+The component creates all event-store objects in `kiroku`. Its manifest contains seven historical
+migrations plus the native `0008-schema-management-comment` canary. It does not use `public` for
+Kiroku tables.
 
-- [Build a projection](/docs/kiroku/how-to/build-a-projection) — consume what you store.
-- [The Store effect](/docs/kiroku/reference/store-effect) — the operations you run against the store.
+For an existing database whose history is recorded by Codd, do not run `up` first. Use the exact
+checked-in Codd mapping to [import predecessor history](#existing-codd-database) without replaying
+the seven historical SQL payloads.
+
+## 2. Configure the store connection
+
+```haskell
+let settings = (defaultConnectionSettings "postgresql://app@localhost/app")
+      { poolSize = 20
+      , schema = "kiroku"
+      , extraSearchPath = ["public"]
+      }
+
+withStore settings \store -> do
+  -- The store is open against the already-migrated database.
+  pure ()
+```
+
+`schema` controls both `search_path` and the `LISTEN/NOTIFY` channel, so it must match the migrated
+schema. `extraSearchPath` makes application projection tables resolvable. Tune
+`idleInTransactionTimeout` and `statementTimeout` for the workload.
+
+## Existing Codd database
+
+Quiesce writers and back up the database. Build `kirokuMigrationPlan`, then configure the supported
+source with `kirokuCoddSourceConfig`. The checked-in mapping covers every one of the seven historical
+rows:
+
+```haskell
+plan <- either (fail . show) pure kirokuMigrationPlan
+config <-
+  either (fail . show) pure
+    (kirokuCoddSourceConfig sourceProvider True reason Confirmed)
+
+report <-
+  importCoddHistory
+    defaultImportOptions
+    config
+    targetProvider
+    plan
+    kirokuCoddHistoryMappings
+```
+
+Strict import checks the source ledger, exact supplied payloads, and checked-in manifest before it
+atomically writes native ledger and audit rows. It executes no target DDL. After import, run normal
+`verify`, `up`, and `verify`; only the native canary should be newly applied. Native commands never
+inspect the Codd ledger implicitly.
+
+## Verify runtime readiness
+
+```console
+psql "$DATABASE_URL" -c '\dt kiroku.*'
+```
+
+The schema includes `streams`, `events`, `stream_events`, `subscriptions`, and `dead_letters`.
+After that check, a `withStore` against the same database should open and accept an append.
+
+See [Schema migrations](/docs/kiroku/reference/schema-migrations) for the API and CLI contract, and
+[Deploy a migration plan](/docs/pg-migrate/how-to/deploy-a-migration-plan) for the production gate.

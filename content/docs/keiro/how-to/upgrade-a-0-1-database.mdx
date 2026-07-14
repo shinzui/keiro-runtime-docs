@@ -1,0 +1,85 @@
+---
+title: "Upgrade a Keiro 0.1 database"
+description: "Relocate legacy framework tables, import the shared Codd history, and hand execution to the native pg-migrate plan without replaying DDL."
+---
+
+Use this once for a persistent database originally migrated by `keiro-migrations 0.1.0.0`. Fresh and
+ephemeral databases already create Keiro objects in the dedicated `keiro` schema and skip this path.
+
+<Callout type="warn">
+  Back up and prove restore, stop application and migration writers, and rehearse on a recent copy.
+  Do not run native `up` until relocation and history import have both completed.
+</Callout>
+
+## 1. Inspect the legacy layout and ledger
+
+Confirm that `keiro_*` tables are in `kiroku` and identify whether the predecessor ledger is
+`codd.sql_migrations` or `codd_schema.sql_migrations`. If the database contains an early
+sentinel-timestamp variant, use only the packaged, tested `keiro-migrations/ledger-fixups` script for
+that exact version before import; never improvise ledger updates.
+
+## 2. Relocate the framework tables
+
+Run the shipped transactional remediation:
+
+```console
+psql "$DATABASE_URL" \
+  --file keiro-migrations/remediation/2026-07-05-relocate-keiro-tables-to-keiro-schema.sql
+```
+
+It creates `keiro` and moves each existing `kiroku.keiro_*` table with `ALTER TABLE ... SET SCHEMA`.
+The guarded script is all-or-nothing and idempotent; it moves rows, indexes, and constraints with the
+table. It does not modify predecessor or target migration history.
+
+## 3. Import both component prefixes atomically
+
+Build the concrete Kiroku/Keiro plan, then use the checked-in combined mapping:
+
+```haskell
+config <-
+  either (fail . show) pure
+    (frameworkCoddSourceConfig sourceProvider True reason Confirmed)
+
+report <-
+  importCoddHistory
+    defaultImportOptions
+    config
+    targetProvider
+    frameworkPlan
+    frameworkCoddHistoryMappings
+```
+
+Strict source mode selects all seven historical Kiroku rows and sixteen historical Keiro rows. The
+adapter verifies the manifests and exact source bytes, holds the Codd source lock while acquiring the
+target lock, and atomically writes `pgmigrate` rows plus audit evidence. It executes no target DDL.
+
+## 4. Verify and advance only the native suffix
+
+```console
+cabal run keiro-migrate -- status --json
+cabal run keiro-migrate -- verify --json
+cabal run keiro-migrate -- up --json
+cabal run keiro-migrate -- verify --json
+```
+
+The imported historical rows must report already applied. Native `up` then applies only the
+non-destructive Kiroku/Keiro canaries and later Keiro dead-letter migration. Preserve import and apply
+JSON with the change record.
+
+## 5. Verify the physical boundary
+
+```sql
+SELECT table_schema, table_name
+FROM information_schema.tables
+WHERE table_name LIKE 'keiro\_%'
+ORDER BY table_schema, table_name;
+```
+
+Every result must be in `keiro`, with none remaining in `kiroku`. Run application smoke tests against
+the relocated tables before ending the maintenance window.
+
+Recovery is restore-from-backup or a reviewed forward correction. Do not reverse the native ledger,
+delete imported audit, or replay the historical SQL.
+
+See [Import Codd history](/docs/pg-migrate/how-to/import-codd-history) for the evidence and cleanup
+semantics.

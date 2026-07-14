@@ -1,74 +1,87 @@
 ---
 title: "Migrations"
-description: "Schema installation and upgrade helpers from pgmq-migration."
+description: "The native PGMQ pg-migrate component and explicit hasql-migration predecessor-history adapter."
 ---
 
-`pgmq-migration` installs the pgmq schema into PostgreSQL without requiring the
-pgmq extension. This is useful when the database user cannot install extensions,
-or when the deployment wants application-controlled schema migration.
+`pgmq-migration` `0.4.0.1` vendors PGMQ `1.11.0` as a native `pg-migrate` component. It installs
+the schema without requiring the PostgreSQL extension.
 
-## Public module
+## Public component
 
 ```haskell
 module Pgmq.Migration
-  ( migrate
-  , upgrade
-  , validate
-  , getMigrations
-  , version
-  , migrations
-  , upgradeMigrations
-  , MigrationCommand
-  , MigrationError (..)
-  , SchemaMigration (..)
+  ( DefinitionError
+  , MigrationComponent
+  , pgmqMigrations
   )
+
+pgmqMigrations :: Either DefinitionError MigrationComponent
 ```
 
-The reviewed source vendors pgmq schema version `1.11.0`.
+The component identity is `pgmq`, with no component dependencies. Its manifest contains:
 
-## Fresh install
+| Migration | Purpose |
+| --- | --- |
+| `pgmq/0001-install-v1.11.0` | exact vendored PGMQ 1.11 schema baseline |
+| `pgmq/0002-schema-management-comment` | non-destructive native-runner handoff canary |
+
+The package exports no standalone runner and no `migrate`, `upgrade`, `validate`, `getMigrations`,
+or `version` functions. The application owns the final plan, connection policy, and CLI or
+deployment process.
+
+## Predecessor history
+
+Existing databases may have PGMQ history in `public.schema_migrations` from the removed
+`hasql-migration` runner. Native commands do not inspect that ledger. The explicit adapter exports:
 
 ```haskell
-migrate :: Session (Either MigrationError ())
+data AlternativeHistoryPolicy
+  = DirectFullInstallHistory
+  | EquivalentTwoStepUpgradeHistory
+
+data SourceLedgerPolicy
+  = RequireExclusiveSourceLedger
+  | AllowUnselectedSourceRows
+
+pgmqHasqlMigrationMappings
+  :: AlternativeHistoryPolicy
+  -> Either HistoryDefinitionError (NonEmpty HistoryMapping)
+
+pgmqHasqlMigrationSourceConfig
+  :: ConnectionProvider
+  -> AlternativeHistoryPolicy
+  -> Either HasqlMigrationDefinitionError HasqlMigrationSourceConfig
+
+pgmqHasqlMigrationSourceConfigWithPolicy
+  :: ConnectionProvider
+  -> AlternativeHistoryPolicy
+  -> SourceLedgerPolicy
+  -> Either HasqlMigrationDefinitionError HasqlMigrationSourceConfig
 ```
 
-`migrate` applies the full pgmq 1.11.0 schema command set. It is idempotent:
-`hasql-migration` records applied migrations in `schema_migrations` and skips
-commands that already ran.
+`DirectFullInstallHistory` selects `pgmq_v1.11.0`. The adapter reproduces its stored base64 MD5
+from the exact vendored payload, then maps the matching SHA-256 payload to the native baseline with
+`SamePayload`.
 
-## Upgrade
+`EquivalentTwoStepUpgradeHistory` selects both `pgmq_v1.10.0_to_v1.10.1` and
+`pgmq_v1.10.1_to_v1.11.0`. It requires both exact predecessor checksums plus the packaged, read-only
+PGMQ 1.11 schema-state validator. Import also requires the operator to opt in with
+`AllowEquivalentHistory`; equivalent history is never implicit.
 
-```haskell
-upgrade :: Session (Either MigrationError ())
-```
+The default policy requires the selected rows to be the whole predecessor ledger.
+`AllowUnselectedSourceRows`, added in `0.4.0.1`, supports a deliberately shared
+`public.schema_migrations` table. It relaxes only the unselected-row check; every selected PGMQ row
+keeps its exact checksum and state-evidence requirements.
 
-`upgrade` applies the incremental migration command set. The source includes
-the v1.10.0 to v1.10.1 and v1.10.1 to v1.11.0 deltas, preceded by migration
-table initialization. The upstream migration comments note that old
-hand-written migration names may differ from the vendored migration names; the
-vendored commands use guards such as `CREATE OR REPLACE FUNCTION` and `IF NOT
-EXISTS` where upstream made them safe to re-run.
+## Import and native handoff
 
-Use `upgrade` when you are not sure whether the database is fresh or already
-managed by `pgmq-migration`.
+History import acquires no cooperating `hasql-migration` source lock, so quiesce every predecessor
+writer. It validates evidence and atomically records target ledger plus audit rows without executing
+target DDL. After import, native `up` reports `0001` already applied and applies only the `0002`
+canary.
 
-## Validation and inspection
+Fresh databases skip import and apply both native migrations. After schema installation,
+`pgmq-config` owns queue provisioning; it is not part of component migration.
 
-```haskell
-validate :: Session [MigrationError]
-getMigrations :: Session [SchemaMigration]
-```
-
-`validate` checks that previously applied migrations still match the expected
-commands. `getMigrations` returns the rows known to `hasql-migration`.
-
-## Transaction behavior
-
-Each migration command runs through `Pgmq.Migration.Sessions` in a serializable
-write transaction. The migration layer captures the current PostgreSQL
-`search_path` and runs the command with that path inside the transaction.
-
-<Callout type="info">
-  `pgmq-migration` is for installing the pgmq schema. `pgmq-config` is for
-  creating application queues and queue features after the schema exists.
-</Callout>
+See [Install or migrate the schema](/docs/pgmq/how-to/install-or-migrate-schema) and
+[Import hasql-migration history](/docs/pg-migrate/how-to/import-hasql-migration-history).

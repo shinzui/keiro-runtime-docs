@@ -20,8 +20,7 @@ and migration cost per test.
 ## Steps
 
 1. **Wrap the whole suite in `withMigratedSuite`.** It starts one cached PostgreSQL server, creates a
-   `keiro_template` database, and applies Kiroku + Keiro embedded migrations to it **once** with
-   `runAllKeiroMigrationsNoCheck`:
+   `keiro_template` database, and applies the native Kiroku + Keiro `pg-migrate` plan to it **once**:
 
    ```haskell
    import Keiro.Test.Postgres (withMigratedSuite, withFreshStore)
@@ -37,16 +36,25 @@ and migration cost per test.
              pure ()
    ```
 
-2. **Use `withMigratedSuiteWith` when every clone needs extra schema.** The hook receives the
-   template database connection string after framework migrations and before any clone is created:
+2. **Use `withMigratedSuiteWith` when every clone needs extra components.** Resolve each library or
+   application `MigrationComponent` and pass it in plan order. For example, add PGMQ to every clone:
 
    ```haskell
+   import Pgmq.Migration qualified as Pgmq
+
    main =
-     withMigratedSuiteWith installExtraSchema \fixture ->
-       hspec $
-         describe "orders" $ around (withFreshStore fixture) $ do
-           it "uses the extra schema" \store -> pure ()
+     case Pgmq.pgmqMigrations of
+       Left err -> fail (show err)
+       Right pgmq ->
+         withMigratedSuiteWith [pgmq] \fixture ->
+           hspec $
+             describe "orders" $ around (withFreshStore fixture) $ do
+               it "uses the PGMQ schema" \store -> pure ()
    ```
+
+   The fixture appends extras after Kiroku and Keiro in one plan. They must not be run as a second,
+   partial plan: all components share the ledger, and strict verification rejects a plan that omits
+   an already-recorded component as `UnknownStoredMigration`.
 
 3. **Use `withFreshStore fixture` as the `around` action.** For each example it clones a fresh
    database with `CREATE DATABASE … TEMPLATE keiro_template`, opens a `KirokuStore` against it, runs
@@ -68,13 +76,13 @@ Run the suite (`cabal test`). Each example sees an empty, migrated database: the
 (migrations ran against the template) but carry no rows from other tests (each example got a fresh
 clone). Writing a row in one example and asserting it is absent in the next confirms isolation.
 
-Fixture setup intentionally skips codd expected-schema verification so tests start quickly from a
-fresh template. The strict drift check lives in `keiro-migrations-test`, which compares the migrated
-schema against `keiro-migrations/expected-schema`.
+The fixture uses `defaultRunOptions` and fails suite setup when component construction, plan
+validation, or migration execution fails. Keep a separate CI `check --manifest` gate for authored
+manifest changes and a strict `verify` gate for deployed databases.
 
 ## Related
 
-- [Run the migrations](/docs/keiro/how-to/run-migrations) — the same `allKeiroMigrations` the fixture
-  applies to its template.
+- [Run the migrations](/docs/keiro/how-to/run-migrations) — compose and operate the same native
+  components the fixture applies to its template.
 - [Get started with keiro](/docs/keiro/tutorials/getting-started) — opening a `KirokuStore` outside
   of tests.

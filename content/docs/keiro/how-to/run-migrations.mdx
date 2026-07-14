@@ -1,105 +1,90 @@
 ---
 title: "Run the migrations"
-description: "Apply keiro's schema with the keiro-migrate tool, or compose keiro's migrations into a service's own codd ledger."
+description: "Apply the native Kiroku-before-Keiro plan or compose those components into a larger application-owned pg-migrate plan."
 ---
 
-keiro owns PostgreSQL tables that must exist before the framework runs. They ship as **embedded codd
-migrations** (codd is a Haskell migration tool; the SQL is baked into the binary). This guide shows
-how to apply them — either with the ready-made `keiro-migrate` tool or by composing keiro's SQL into
-your service's own migration ledger.
+Keiro runtime code never creates framework schema. Run the native plan as a deployment job before
+opening the application.
 
 <Callout type="info">
-  keiro's tables live in the **`kiroku` schema** (the same schema the event store uses; keiro
-  extends it). You apply **kiroku's** event-store migrations and **keiro's** framework migrations
-  together, in that order — `keiro-migrate` does both for you.
+  Kiroku owns schema `kiroku`; Keiro owns schema `keiro`. The `keiro` component depends on
+  `kiroku`, and the planner enforces that order.
 </Callout>
 
-## Goal
+## Apply the packaged framework plan
 
-Apply the kiroku + keiro schema to a database so the framework tables exist in the `kiroku` schema,
-including `keiro_snapshots`, `keiro_read_models`, `keiro_timers`, `keiro_outbox`, `keiro_inbox`,
-`keiro_projection_dedup`, workflow tables, and `keiro_subscription_shards`.
+```console
+export DATABASE_URL='host=localhost dbname=myservice user=service_owner'
 
-## Steps
-
-1. **Run `keiro-migrate` against your database.** It reads codd settings from the environment, then
-   applies kiroku's migrations followed by keiro's. For a local dev database, skip schema
-   verification with `KEIRO_MIGRATE_NO_CHECK`:
-
-   ```bash
-   # Apply kiroku + keiro schema (local dev: skip the expected-schema check).
-   export CODD_CONNECTION="host=localhost dbname=myservice user=postgres"
-   export CODD_SCHEMAS=kiroku
-   export KEIRO_MIGRATE_NO_CHECK=1
-   cabal run keiro-migrate
-   ```
-
-   <Callout type="info">
-   Without `KEIRO_MIGRATE_NO_CHECK`, `keiro-migrate` verifies the resulting schema with codd's
-   `LaxCheck` and a 5-second connect timeout. `LaxCheck` is the right default for production; the
-   no-check path is for dev databases that keep no checked-in expected-schema representation.
-   </Callout>
-
-2. **(Alternative) Compose keiro's migrations into your own ledger.** If your service already runs
-   codd, do not shell out — pull keiro's migrations into your own list. `keiroFrameworkMigrations`
-   returns **only** keiro-owned SQL; `allKeiroMigrations` returns **kiroku then keiro** in the
-   load-bearing order:
-
-   ```haskell
-   import Keiro.Migrations (keiroFrameworkMigrations, allKeiroMigrations)
-
-   -- keiro-owned SQL only, to splice after your own kiroku setup:
-   keiroOnly <- keiroFrameworkMigrations
-   -- or the full, correctly-ordered set (kiroku event store, then keiro framework):
-   everything <- allKeiroMigrations
-   ```
-
-   <Callout type="warn">
-   The order in `allKeiroMigrations` is **load-bearing**: kiroku's event-store tables must exist
-   before keiro's tables that reference them. If you compose by hand with
-   `keiroFrameworkMigrations`, make sure kiroku's migrations run first.
-   </Callout>
-
-## Scaffold a new migration
-
-When you add your own keiro-adjacent table, let the CLI stamp a correctly-named, correctly-pinned
-skeleton instead of hand-numbering a file. From the `keiro-migrations` package root (or with
-`KEIRO_MIGRATIONS_DIR` pointing at your `sql-migrations` dir):
-
-```bash
-cabal run keiro-migrate -- new "add widget projection table"
-# Created sql-migrations/2026-06-05-14-32-07-keiro-add-widget-projection-table.sql
+cabal run keiro-migrate -- plan --json > plan.json
+cabal run keiro-migrate -- status --json > status-before.json
+cabal run keiro-migrate -- verify --json > verify-before.json
+cabal run keiro-migrate -- up --lock-timeout 30000 --json > up.json
+cabal run keiro-migrate -- verify --json > verify-after.json
 ```
 
-The file is named for the real current UTC time (so it can never collide with or sort before an
-existing one) and opens with the `SET search_path TO kiroku, pg_catalog;` pin plus a TODO body. After
-adding it, **touch the embed comment** in `src/Keiro/Migrations.hs` (or `cabal clean`) so Template
-Haskell re-embeds the directory — the command prints this reminder. See the
-[migration scaffold reference](/docs/keiro/reference/migrations-and-schema#the-migration-scaffold-keiromigrationsnew).
+On a fresh database, the preflight `verify` reports the reviewed pending plan. Stop if it reports
+changed applied bytes, unresolved state, gaps, or unknown rows. Post-apply verification must have no
+issues. Preserve the JSON with the release record.
 
-## Verify it worked
+## Compose the application plan
 
-Connect to the database and confirm the keiro tables exist in the `kiroku` schema:
+Libraries export components; the application owns the final plan and process policy:
 
-```bash
-psql "$CODD_CONNECTION" -c "\dt kiroku.keiro_*"
+```haskell
+import Data.List.NonEmpty (NonEmpty (..))
+import Database.PostgreSQL.Migrate (migrationPlan)
+import Keiro.Migrations qualified as Keiro
+import Kiroku.Store.Migrations qualified as Kiroku
+import Pgmq.Migration qualified as Pgmq
+
+servicePlan = do
+  kiroku <- Kiroku.kirokuMigrations
+  keiro <- Keiro.keiroMigrations
+  pgmq <- Pgmq.pgmqMigrations
+  application <- applicationMigrations
+  migrationPlan (kiroku :| [keiro, pgmq, application])
 ```
 
-You should see the framework tables listed in the
-[schema reference](/docs/keiro/reference/migrations-and-schema#tables-keiro-owns), including
-`keiro_projection_dedup`. Re-running `keiro-migrate` is idempotent — codd's ledger skips
-already-applied migrations.
+Declare the application component's dependencies to match objects its SQL consumes. Mount the
+standard CLI around `servicePlan` and execute the complete plan. Do not run each component during
+library initialization or split one shared `pgmigrate` ledger across plans that omit known rows.
 
-For framework schema changes, regenerate and test the checked-in expected schema:
+## Author the next Keiro migration
 
-```bash
-cabal run keiro-write-expected-schema
-cabal test keiro-migrations-test
+```console
+cabal run keiro-migrate -- new \
+  --manifest keiro-migrations/migrations/manifest \
+  --description "add workflow lookup index"
+
+cabal run keiro-migrate -- check \
+  --manifest keiro-migrations/migrations/manifest
 ```
 
-## Related
+Review the new SQL and manifest append together. Use qualified `keiro.<object>` names, never edit a
+released payload, and keep application-owned objects outside `kiroku` and `keiro`.
 
-- [Migrations and schema reference](/docs/keiro/reference/migrations-and-schema) — the migration
-  functions, the runner signatures, and the table overview.
-- [Test with the Postgres fixture](/docs/keiro/how-to/test-with-the-postgres-fixture) — the test
-  fixture applies `allKeiroMigrations` to a template database for you.
+## Existing 0.1 databases
+
+Do not run native `up` first. A database created by `keiro-migrations 0.1.0.0` needs its framework
+tables relocated from `kiroku` to `keiro`, then its combined Codd history imported without replaying
+DDL. Follow [Upgrade a 0.1 database](/docs/keiro/how-to/upgrade-a-0-1-database).
+
+## Verify runtime readiness
+
+Confirm the schemas and then start the application with runtime schema initialization disabled:
+
+```console
+psql "$DATABASE_URL" -c '\dt kiroku.*'
+psql "$DATABASE_URL" -c '\dt keiro.*'
+```
+
+```haskell
+withStore
+  (defaultConnectionSettings connString
+    & #schemaInitialization .~ SkipSchemaInitialization)
+  app
+```
+
+See [Deploy a migration plan](/docs/pg-migrate/how-to/deploy-a-migration-plan) for backups,
+quiescence, cleanup issues, and forward recovery.

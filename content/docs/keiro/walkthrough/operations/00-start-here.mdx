@@ -1,68 +1,49 @@
 ---
 title: "00 — Start here"
-description: "An ordered tour of keiro's operations internals: the OpenTelemetry span helpers in Keiro.Telemetry and the embedded migration runner in Keiro.Migrations."
+description: "An ordered source tour of Keiro telemetry and the native Kiroku-before-Keiro migration boundary."
 ---
 
-This is an **ordered source tour** of keiro's two cross-cutting **operations** internals: how
-`Keiro.Telemetry` wraps work in OpenTelemetry spans, and how `Keiro.Migrations` embeds and applies
-keiro's SQL schema. It reads the real Haskell in `keiro/src/Keiro/Telemetry.hs`,
-`keiro/src/Keiro/Command.hs`, `keiro/src/Keiro/Outbox.hs`, and
-`keiro-migrations/src/Keiro/Migrations.hs`, and explains *why* the code is shaped the way it is. Read
-the chapters in order.
-
-## The design in one picture
-
-Telemetry is **opt-in** through a `Maybe Tracer` (spans) and a `Maybe KeiroMetrics` (worker metrics):
-with `Nothing` every helper is a pass-through; with the handle set it records. Three sites open spans
-today; the four background workers carry the metric instruments. The migration runner embeds four SQL
-files at compile time and applies kiroku's then keiro's schema in one idempotent codd ledger.
+This operations tour reads two cross-cutting seams: `Keiro.Telemetry` and the `keiro-migrations`
+package. The migration half now uses native pg-migrate components; Codd appears only in the optional
+predecessor-history adapter.
 
 ```mermaid
 flowchart TD
-  subgraph Telemetry["Keiro.Telemetry (Maybe Tracer)"]
-    P["withProducerSpan -> Producer 'send (dest)'"]
-    C["withConsumerSpan -> Consumer 'process (topic)' (child of upstream via W3C)"]
-    Cmd["withCommandSpan -> Internal '(stream)'"]
-    Cmd --> Seam["recordCommandOutcome: keiro.events.appended | error.type + status Error"]
+  subgraph Telemetry[Keiro.Telemetry]
+    Producer[producer span]
+    Consumer[consumer span]
+    Command[command span + outcome]
   end
-  subgraph Migrations["Keiro.Migrations (codd, embedded SQL)"]
-    Embed["embedDir 'sql-migrations' (Template Haskell)"] --> Parse["parseAddedSqlMigration"]
-    Parse --> All["allKeiroMigrations: kiroku THEN keiro (load-bearing)"]
-    All --> Apply["runCoddLogger + applyMigrations (idempotent ledger)"]
+  subgraph Migrations[keiro-migrations]
+    KM[Kiroku kirokuMigrations] --> Plan[frameworkMigrationPlan]
+    EM[Keiro keiroMigrations depends on kiroku] --> Plan
+    Plan --> CLI[keiro-migrate standard CLI]
+    CLI --> Ledger[(pgmigrate ledger v1)]
   end
 ```
 
 ## The chapters
 
 <Cards>
-  <Card title="01 — The tracer seam and span helpers" href="/docs/keiro/walkthrough/operations/01-the-tracer-seam-and-span-helpers" description="The Maybe Tracer opt-in, inSpan', and withProducerSpan / withConsumerSpan / withCommandSpan with their call sites." />
-  <Card title="02 — Attribute keys and the command-outcome seam" href="/docs/keiro/walkthrough/operations/02-attribute-keys-and-the-command-outcome-seam" description="Imported vs. bespoke AttributeKeys, the W3C bridge, recordCommandOutcome / commandErrorClass, and the honest partial-coverage note." />
-  <Card title="03 — The migration runner" href="/docs/keiro/walkthrough/operations/03-the-migration-runner" description="embedDir, parseAddedSqlMigration, the kiroku-then-keiro order, the four runners, the keiro-migrate CLI (apply + the new scaffold), and the nine tables." />
+  <Card title="01 — The tracer seam and span helpers" href="/docs/keiro/walkthrough/operations/01-the-tracer-seam-and-span-helpers" description="The Maybe Tracer opt-in and producer, consumer, and command span call sites." />
+  <Card title="02 — Attribute keys and the command-outcome seam" href="/docs/keiro/walkthrough/operations/02-attribute-keys-and-the-command-outcome-seam" description="Semantic-convention keys, W3C propagation, and structured command outcomes." />
+  <Card title="03 — The migration runner" href="/docs/keiro/walkthrough/operations/03-the-migration-runner" description="Manifest embedding, Kiroku-before-Keiro composition, the standard CLI, schema ownership, and one-time Codd import." />
 </Cards>
 
-The source files this tour reads:
+The migration chapter reads:
 
 ```text
-keiro/src/Keiro/Telemetry.hs              -- the three span helpers, the W3C bridge, the keys, the KeiroMetrics surface
-keiro/src/Keiro/Command.hs                -- withCommandSpan + recordCommandOutcome / commandErrorClass
-keiro/src/Keiro/Outbox.hs                 -- withProducerSpan call site (publish); keiro.outbox.* metrics
-keiro-migrations/src/Keiro/Migrations.hs  -- the migration runner
-keiro-migrations/app/Main.hs              -- the keiro-migrate CLI (apply + new)
-keiro-migrations/src/Keiro/Migrations/New.hs -- the `keiro-migrate new` scaffold
-keiro-migrations/sql-migrations/*.sql     -- the nine embedded files (nine tables)
+keiro-migrations/src/Keiro/Migrations.hs
+keiro-migrations/src/Keiro/Migrations/Internal/Definition.hs
+keiro-migrations/src/Keiro/Migrations/History/Codd.hs
+keiro-migrations/app/Main.hs
+keiro-migrations/migrations/manifest
 ```
 
-<Callout type="warn">
-**Span coverage is partial; metric coverage is broad.** Three sites emit **spans**: **outbox
-publish**, **inbox consume**, and **command run**. Hydration and snapshot reads are still not traced.
-The four background workers (outbox, inbox, timer, projection) instead carry the **metric** instruments
-in [`KeiroMetrics`](/docs/keiro/reference/telemetry#metrics-surface), so their backlog, lag, and
-outcome counts are observable without spans. (Same note as the
-[Telemetry reference](/docs/keiro/reference/telemetry).)
-</Callout>
+The public application boundary is `Keiro.Migrations`; the `Internal.Definition` module appears only
+because this is a source walkthrough of how the package constructs that public component.
 
-For the look-up version of this material, read the
-[Telemetry reference](/docs/keiro/reference/telemetry) and the
-[Migrations and schema reference](/docs/keiro/reference/migrations-and-schema); for the wiring task,
-the how-tos [Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) and
-[Run the migrations](/docs/keiro/how-to/run-migrations).
+<Callout type="warn">
+  Migration execution is a deployment operation. Runtime Keiro/Kiroku initialization does not own
+  DDL, and predecessor Codd history is imported once rather than replayed.
+</Callout>

@@ -86,7 +86,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 | EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Complete |
 | EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Complete |
 | EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Complete |
-| EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | Not Started |
+| EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | In Progress |
 | EP-7 | Prepare announcement navigation compatibility and whole-site release gate | `docs/plans/46-prepare-announcement-navigation-compatibility-and-whole-site-release-gate.md` | EP-1, EP-2, EP-3, EP-4, EP-5, EP-6 | None | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -199,7 +199,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T18:34:02Z) EP-5 Milestone 2: document authoring, composition, and CLI integration.
 - [x] (2026-07-14T18:40:31Z) EP-5 Milestone 3: document production execution and recovery.
 - [x] (2026-07-14T18:48:14Z) EP-5 Milestone 4: document predecessor cutovers and practical recipes.
-- [ ] EP-6 Milestone 1: replace old migration guidance with component composition.
+- [x] (2026-07-14T19:00:30Z) EP-6 Milestone 1: replace old migration guidance with component
+  composition.
 - [ ] EP-6 Milestone 2: refresh Kiroku 0.3 user and operator behavior.
 - [ ] EP-6 Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
 - [ ] EP-6 Milestone 4: reconcile cross-package operations.
@@ -259,6 +260,10 @@ interactions between child plans. Provide concise evidence.
   unchanged at committed `c68dcc7`.
 - EP-5 began at its planned, clean pg-migrate `1.1.0.0` boundary `f39d64e`; no source drift or
   untracked upstream state affects the new documentation family.
+- EP-6 found that clean pgmq-hs advanced to `f4a1018` and release `0.4.0.1`, adding a safe policy
+  for unselected rows in a deliberately shared predecessor ledger. It also confirmed that Kiroku's
+  native manifest has seven historical migrations plus an eighth native canary, and that committed
+  Keiro test support already composes extra migration components into its suite template.
 
 
 ## Decision Log
@@ -378,3 +383,7 @@ Compare the result against the original vision.
   the upstream public build and all 110 unit tests pass. EP-6 inherits this as the canonical runtime
   migration model. EP-7 still owns final `mori.dhall`, README/source-ledger registration, and
   announcement navigation ordering.
+- EP-6 Milestone 1 established native runtime migration ownership across Kiroku, Keiro, and PGMQ.
+  Fresh setup, application composition, standard CLI gates, dedicated schema ownership, Keiro 0.1
+  remediation, Codd import, PGMQ direct/equivalent predecessor histories, and shared-ledger policy
+  now agree with the committed sources. The production build and 504-file internal-link scan pass.

@@ -27,11 +27,28 @@ commands, and guarantees.
 
 ## Progress
 
-
+- [x] (2026-07-14T19:00:30Z) Milestone 1: replace old migration guidance with native component
+  composition, explicit predecessor imports, and current operator CLIs.
+- [ ] Milestone 2: refresh Kiroku 0.3 user and operator behavior.
+- [ ] Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
+- [ ] Milestone 4: reconcile cross-package operations and run final scoped scans.
 
 ## Surprises & Discoveries
 
-(None yet.)
+- The clean pgmq-hs source advanced beyond the planned `8439385` boundary to
+  `f4a101843ea6f5c055277fd84859ece02865eff4`. Release `0.4.0.1` adds an explicit
+  `AllowUnselectedSourceRows` policy for deliberately shared predecessor ledgers while retaining
+  exact selected-row evidence. The unshipped grouped-head PGMQ 1.12 plan remains excluded.
+- The committed Keiro `keiro-test-support` source already has
+  `withMigratedSuiteWith :: [MigrationComponent] -> ...`; it is not merely an uncommitted change.
+  The fixture composes extras into one plan because a later partial plan would classify known
+  shared-ledger rows as `UnknownStoredMigration`.
+- Kiroku's released native manifest contains eight migrations: seven imported historical payloads
+  plus the `0008-schema-management-comment` canary. Earlier prose that described seven current
+  migrations counted only the predecessor prefix.
+- Kiroku and PGMQ load pg-migrate's recompilation plugin in their embedding modules, but Keiro's
+  committed embedding module does not. Keiro authoring guidance therefore keeps explicit
+  `check --manifest` as the source-tree gate and does not promise plugin-backed rebuild detection.
 
 
 ## Decision Log
@@ -46,8 +63,8 @@ commands, and guarantees.
   Rationale: Shibuya core and the Message DB adapter have no committed drift from their site pins;
   inventing changes would make the sweep less accurate. A no-drift audit is still valuable evidence.
   Date: 2026-07-14
-- Decision: Exclude uncommitted upstream work, including keiro test-support changes, pgmq-hs 1.12
-  planning files, and the Message DB adapter's local `mori.dhall` edit.
+- Decision: Exclude uncommitted upstream work, including pgmq-hs 1.12 planning files and the
+  Message DB adapter's local `mori.dhall` edit.
   Rationale: Source pins must be reproducible and the uncommitted work belongs to the user.
   Date: 2026-07-14
 - Decision: Keep source-sync pointer edits for EP-7.
@@ -58,7 +75,12 @@ commands, and guarantees.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+- Milestone 1 replaced current Codd and `hasql-migration` runner instructions with native Kiroku,
+  Keiro, and PGMQ components. Readers now have one Kiroku-before-Keiro plan with optional PGMQ and
+  application components, standard CLI gates, exact schema ownership, a Keiro 0.1 relocation path,
+  and explicit import-before-native cutovers that execute no target DDL. The Keiro test fixture
+  documentation now matches its committed component-list API. Typecheck, formatting, production
+  build, whitespace checks, stale-runner scans, and the 504-file internal-link scan pass.
 
 
 ## Context and Orientation

@@ -1,0 +1,89 @@
+---
+title: "Schema migrations"
+description: "Kiroku's native pg-migrate component, standalone plan, CLI, and one-time Codd history adapter."
+---
+
+`kiroku-store-migrations` embeds Kiroku's SQL as a native `pg-migrate` component. Runtime store
+construction never applies it.
+
+## Public component API
+
+```haskell
+kirokuMigrations
+  :: Either DefinitionError MigrationComponent
+
+kirokuMigrationPlan
+  :: Either PlanError MigrationPlan
+```
+
+`kirokuMigrations` constructs component `kiroku`, which has no component dependencies.
+`kirokuMigrationPlan` validates the one-component standalone plan. Applications that also use Keiro,
+PGMQ, or application schema should compose those components into one final plan rather than execute
+several partial plans against a shared ledger.
+
+The embedded manifest has eight entries. `0001` through `0007` preserve the exact historical SQL
+payloads; `0008-schema-management-comment` is the first native-only canary. The package's compile-time
+embedding hook tracks manifest membership and payload changes so Cabal rebuilds the embedded plan.
+
+## Standard CLI
+
+`kiroku-store-migrate` mounts all eight standard commands:
+
+```console
+export DATABASE_URL='postgresql://service_owner@localhost/app'
+
+cabal run kiroku-store-migrate -- plan
+cabal run kiroku-store-migrate -- list
+cabal run kiroku-store-migrate -- check \
+  --manifest kiroku-store-migrations/migrations/manifest
+cabal run kiroku-store-migrate -- status
+cabal run kiroku-store-migrate -- verify
+cabal run kiroku-store-migrate -- up
+```
+
+`repair` is the confirmed recovery command for one nontransactional migration. `new` exclusively
+creates the next numbered SQL file and atomically appends it to the manifest. Database commands use
+`--database-url` when supplied and otherwise read `DATABASE_URL`; every command supports `--json`.
+
+Kiroku uses pg-migrate 1.1 execution options. Present CLI flags can override wait, lock-timeout, and
+statement-timeout policy. A run holds one dedicated connection and target advisory lock for the
+operation. If work commits but releasing a resource fails, the successful result is preserved and
+the release problem appears in `cleanupIssues`; do not blindly replay durable success.
+
+`verify` checks embedded bytes against ledger v1, while `check --manifest` validates the authored
+directory and manifest. Neither is a substitute for application smoke tests.
+
+## Codd history adapter
+
+`Kiroku.Store.Migrations.History.Codd` exports:
+
+```haskell
+kirokuCoddHistoryMappings :: NonEmpty HistoryMapping
+
+kirokuCoddSourceConfig
+  :: ConnectionProvider
+  -> Bool
+  -> Text
+  -> Confirmation
+  -> Either CoddDefinitionError CoddSourceConfig
+```
+
+The mapping adopts all seven historical Codd rows as `kiroku/0001` through `kiroku/0007`. Strict
+source mode verifies the supported ledger shape, selection, exact supplied payloads, and checked-in
+manifest. Import writes native ledger and audit evidence atomically and executes no target DDL.
+Afterward, normal `up` applies only `0008` and later migrations.
+
+Codd is a one-time predecessor evidence source, not the current runner. Fresh databases use the
+native component directly; native commands do not discover or interpret Codd history.
+
+## Compatibility
+
+- `kiroku-store`: `0.3.0.1`
+- `kiroku-store-migrations`: `0.3.0.0`
+- migration runtime: pg-migrate `1.1`
+- component identity: `kiroku/*`
+- owned schema: `kiroku`
+- default target ledger: `pgmigrate` schema v1
+
+See [Run against PostgreSQL](/docs/kiroku/how-to/run-against-postgres) and
+[Import Codd history](/docs/pg-migrate/how-to/import-codd-history).

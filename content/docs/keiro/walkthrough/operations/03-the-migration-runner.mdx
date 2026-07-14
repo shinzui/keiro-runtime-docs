@@ -1,239 +1,89 @@
 ---
 title: "03 — The migration runner"
-description: "Reading Keiro.Migrations: embedDir at compile time, parseAddedSqlMigration, the kiroku-then-keiro order, the four runners over codd's idempotent ledger, the keiro-migrate CLI (apply + the new scaffold), and the nine SQL files that create (and alter) the nine tables."
+description: "Reading Keiro.Migrations: manifest embedding, dependency-ordered components, standard CLI dispatch, dedicated schema, and legacy-history import."
 ---
 
-This chapter reads `keiro-migrations/src/Keiro/Migrations.hs` (the runner),
-`keiro-migrations/app/Main.hs` (the `keiro-migrate` CLI), and the four embedded SQL files. It is
-self-contained: keiro bakes its schema into the binary and applies it through
-[`codd`](https://github.com/mzabani/codd), a Haskell migration tool that keeps a **ledger** of
-applied migrations so re-running is idempotent.
+Keiro's migration package separates three responsibilities: internal exact-byte component
+construction, a small public composition facade, and an application-owned CLI executable.
 
-## Compile-time embedding with `embedDir`
+## Exact bytes become the `keiro` component
 
-The SQL is not read from disk at run time — it is inlined into the binary at **compile** time with a
-Template Haskell splice:
+`Keiro.Migrations.Internal.Definition` embeds the ordered manifest and delegates validation to
+pg-migrate:
 
 ```haskell
--- keiro-migrations/src/Keiro/Migrations.hs
-embeddedMigrationFiles :: [(FilePath, ByteString)]
-embeddedMigrationFiles = $(embedDir "sql-migrations")
+embeddedMigrationEntries =
+  $(embedMigrationManifest "migrations/manifest")
+
+keiroMigrations =
+  migrationComponentFromEmbeddedSql
+    "keiro"
+    (Set.singleton "kiroku")
+    embeddedMigrationEntries
 ```
 
-`embedDir` (from `Data.FileEmbed`) reads every file in `sql-migrations/` at compile time and produces
-a `[(FilePath, ByteString)]` of their names and bytes. The deployed `keiro-migrate` binary therefore
-carries the schema with it — no loose `.sql` files to ship or lose.
+The stable component name becomes part of every durable identity. The declared dependency means no
+valid plan can place Keiro before Kiroku or omit Kiroku.
 
-## Parsing each file into a codd migration
+The manifest currently contains eighteen entries. Positions `0001`–`0016` preserve historical
+payloads, `0017-schema-management-comment` is a non-destructive native canary, and `0018` creates
+`keiro.keiro_dead_letters` for rejected dispatch evidence.
 
-`keiroFrameworkMigrations` turns the embedded bytes into codd's `AddedSqlMigration` values, one per
-file, ordered by their timestamped filenames:
+## The public facade composes concrete values
+
+`Keiro.Migrations` does not expose embedded bytes or runner actions:
 
 ```haskell
--- keiro-migrations/src/Keiro/Migrations.hs
-keiroFrameworkMigrations :: (MonadFail m, EnvVars m) => m [AddedSqlMigration m]
-keiroFrameworkMigrations =
-  traverse parseEmbeddedMigration embeddedMigrationFiles
- where
-  parseEmbeddedMigration (name, bytes) = do
-    let stream = PureStream $ Streaming.yield (TE.decodeUtf8 bytes)
-    result <- parseAddedSqlMigration name stream
-    case result of
-      Left err -> fail ("Invalid Keiro migration " <> name <> ": " <> err)
-      Right migration -> pure migration
+frameworkMigrationPlan kiroku keiro =
+  migrationPlan (kiroku :| [keiro])
 ```
 
-Each file's bytes are decoded to UTF-8, wrapped in a `PureStream`, and handed to
-`parseAddedSqlMigration`. A parse failure is **fatal**: the helper `fail`s with the offending
-filename, so a malformed migration aborts the run rather than silently skipping. On success it yields
-the parsed `AddedSqlMigration`.
+The caller obtains Kiroku's component from `Kiroku.Store.Migrations`, obtains Keiro's from this
+facade, and passes both concrete values. Applications adding PGMQ or their own component construct a
+larger plan themselves.
 
-## Three accessors: framework-only, the alias, and the full set
+## The CLI remains application-owned
 
-```haskell
--- keiro-migrations/src/Keiro/Migrations.hs
--- Compatibility alias for Keiro-owned framework migrations only.
-keiroMigrations :: (MonadFail m, EnvVars m) => m [AddedSqlMigration m]
-keiroMigrations = keiroFrameworkMigrations
+`app/Main.hs` builds that plan, mounts `migrationCommandParser`, resolves `DATABASE_URL` into Hasql
+settings, dispatches with `runMigrationCommand`, selects text or JSON from the parsed command, and
+maps `ExitClass` to process exit.
 
--- Kiroku event-store migrations followed by Keiro framework migrations.
-allKeiroMigrations :: (MonadFail m, EnvVars m) => m [AddedSqlMigration m]
-allKeiroMigrations = do
-  kiroku <- Kiroku.kirokuMigrations
-  keiro <- keiroFrameworkMigrations
-  pure (kiroku <> keiro)
-```
-
-`keiroMigrations` is a plain alias of `keiroFrameworkMigrations` (keiro-owned SQL only) — use it when
-composing keiro's schema into a service that owns its own migration list. `allKeiroMigrations`
-concatenates **kiroku's** event-store migrations **then** keiro's framework migrations.
-
-<Callout type="warn">
-The concatenation order in `allKeiroMigrations` (kiroku, *then* keiro) is **load-bearing**. keiro's
-tables live in the `kiroku` schema and reference the event-store tables, so kiroku's migrations must
-run first — flip the order and the framework tables would reference objects that do not yet exist.
-</Callout>
-
-## The four runners
-
-Each accessor is paired with two runners — one that verifies the resulting schema, one that skips the
-check — giving four entry points:
-
-```haskell
--- keiro-migrations/src/Keiro/Migrations.hs
-runKeiroMigrations           :: CoddSettings -> DiffTime -> VerifySchemas -> IO ApplyResult
-runKeiroMigrationsNoCheck    :: CoddSettings -> DiffTime -> IO ()
-runAllKeiroMigrations        :: CoddSettings -> DiffTime -> VerifySchemas -> IO ApplyResult
-runAllKeiroMigrationsNoCheck :: CoddSettings -> DiffTime -> IO ()
-```
-
-The `runKeiro*` pair applies keiro-owned SQL only; the `runAll*` pair applies the kiroku-then-keiro
-set. Their bodies all share one shape — wrap codd's logger, fetch the migration list, then apply it:
-
-```haskell
--- keiro-migrations/src/Keiro/Migrations.hs (runAllKeiroMigrations)
-runAllKeiroMigrations settings connectTimeout verifySchemas =
-  runCoddLogger $ do
-    migrations <- allKeiroMigrations
-    applyMigrations settings (Just migrations) connectTimeout verifySchemas
-```
-
-```haskell
--- keiro-migrations/src/Keiro/Migrations.hs (runAllKeiroMigrationsNoCheck)
-runAllKeiroMigrationsNoCheck settings connectTimeout =
-  runCoddLogger $ do
-    migrations <- allKeiroMigrations
-    applyMigrationsNoCheck settings (Just migrations) connectTimeout (\_ -> pure ())
-```
-
-`runCoddLogger` supplies codd's logging context. The `*NoCheck` runners call
-`applyMigrationsNoCheck`, which skips the expected-schema comparison (`VerifySchemas`) — useful for a
-local dev database that keeps no checked-in expected-schema representation — but it **keeps codd's
-migration ledger and locking**, so it is still idempotent. The `DiffTime` argument is the connect
-timeout.
-
-## Idempotency
-
-Re-running the migrations is safe by two independent mechanisms. First, codd's **ledger**: it records
-which migrations have been applied and skips them on the next run (this holds even for the `*NoCheck`
-runners). Second, the SQL itself is written re-runnably — every `CREATE TABLE IF NOT EXISTS` and
-`CREATE INDEX IF NOT EXISTS`. Either alone makes a second run a no-op; together they make the runner
-safe to call on every deploy.
-
-## The `keiro-migrate` CLI
-
-The executable (`app/Main.hs`) is a thin dispatcher. It first branches on its **arguments** — a `new`
-subcommand scaffolds a migration; anything else applies them over the `runAll*` pair:
-
-```haskell
--- keiro-migrations/app/Main.hs
-main :: IO ()
-main = do
-  args <- getArgs
-  case args of
-    ("new" : rest) -> generate (unwords rest)   -- write a timestamped skeleton
-    _ -> migrate                                 -- apply migrations
-
-migrate :: IO ()
-migrate = do
-  settings <- getCoddSettings
-  noCheck <- lookupEnv "KEIRO_MIGRATE_NO_CHECK"
-  case noCheck of
-    Just _ ->
-      runAllKeiroMigrationsNoCheck settings (secondsToDiffTime 5)
-    Nothing -> do
-      _ <- runAllKeiroMigrations settings (secondsToDiffTime 5) LaxCheck
-      pure ()
-```
-
-For the apply path, `getCoddSettings` reads codd's environment (the connection string and the managed
-schema). The CLI then dispatches on `KEIRO_MIGRATE_NO_CHECK`: if the variable is **set**, it runs the
-no-check path; otherwise it runs the verifying path with `LaxCheck`. Both apply the **full** kiroku+keiro
-set with a 5-second connect timeout (`secondsToDiffTime 5`). For the invocation, read [Run the
-migrations](/docs/keiro/how-to/run-migrations).
-
-### `keiro-migrate new`: the scaffold (`Keiro.Migrations.New`)
-
-`generate` delegates to `Keiro.Migrations.New.newMigrationFile`, which stamps the **real current UTC
-time** into the filename — `YYYY-MM-DD-HH-MM-SS-<slug>.sql` — so two migrations authored at different
-moments can never collide and always sort in authoring order, with no hand-assigned slots to coordinate:
-
-```haskell
-newMigrationFile dir description = do
-  when (not (any isAlphaNum description)) $ ioError (userError "...")
-  now <- getCurrentTime
-  let path = dir </> migrationFileName now description   -- formatTime "%Y-%m-%d-%H-%M-%S" + slug
-  createDirectoryIfMissing True dir
-  exists <- doesFileExist path
-  when exists $ ioError (userError ("refusing to overwrite existing migration: " <> path))
-  writeFile path (migrationTemplate description)
-  pure path
-```
-
-`migrationSlug` lower-cases the description, collapses non-alphanumeric runs to single dashes, and
-ensures the `keiro-` prefix the existing files use; `migrationTemplate` emits a header comment, the
-`SET search_path TO kiroku, pg_catalog;` pin (so unqualified names resolve into the `kiroku` schema on
-an incremental upgrade), and a TODO body. The directory defaults to `sql-migrations` and is overridable
-with `KEIRO_MIGRATIONS_DIR`. Because `embedDir` is not tracked per-file by GHC's recompilation checker,
-the command prints a reminder to **touch the embed comment** (or `cabal clean`) so the new file is
-picked up.
-
-## The nine files, the nine tables
-
-The embedded files apply in filename-timestamp order; each creates (or alters) tables in the `kiroku`
-schema:
+It therefore exposes the standard command algebra rather than a Keiro-specific runner:
 
 ```text
-2026-05-17-00-00-00-keiro-bootstrap.sql           -> keiro_snapshots, keiro_read_models, keiro_timers
-2026-05-17-01-00-00-keiro-outbox.sql              -> keiro_outbox
-2026-05-17-02-00-00-keiro-inbox.sql               -> keiro_inbox
-2026-05-17-03-00-00-keiro-timer-recovery.sql      -> ALTER keiro_timers (add last_error; re-index)
-2026-06-03-00-00-00-keiro-workflow-steps.sql      -> keiro_workflow_steps
-2026-06-03-01-00-00-keiro-awakeables.sql          -> keiro_awakeables
-2026-06-03-02-00-00-keiro-workflow-children.sql   -> keiro_workflow_children
-2026-06-05-00-00-00-keiro-workflow-generation.sql -> ALTER keiro_workflow_steps (add generation; widen PK; re-index)
-2026-06-05-01-00-00-keiro-subscription-shards.sql -> keiro_subscription_shards
+plan  list  check --manifest PATH  status  verify  up  repair  new
 ```
 
-Because `embedDir` embeds **every** `.sql` under `sql-migrations/`, adding each new file was all it took
-to ship its schema — the runner picks them up with no code change. (One build gotcha the runtime's own
-source flags: `embedDir` is a Template Haskell directory read GHC's recompilation checker does not track
-per-file, so after adding a `.sql` you must touch `Keiro.Migrations` or `cabal clean` before the new file
-is embedded — the `keiro-migrate new` scaffold above prints this reminder.) Each table's purpose, with a
-cross-link to the subsystem that owns it:
+No command reads Codd settings, an expected-schema tree, or a runtime SQL directory. Execution uses
+the pg-migrate dedicated-connection/advisory-lock lifecycle and ledger v1.
 
-- **`keiro_snapshots`** — the latest persisted state per stream, keyed by `stream_id`, with a
-  compatibility index (`keiro_snapshots_compat_idx`) on the codec version and shape hash. See
-  [Snapshot](/docs/keiro/reference/snapshot).
-- **`keiro_read_models`** — the registry of read-model build status (version, shape hash,
-  `last_built_at`). See [Read model](/docs/keiro/reference/read-model).
-- **`keiro_timers`** — scheduled process-manager timers, with a partial due/recovery index
-  (`keiro_timers_due_idx`) on `(status, fire_at, process_manager_name)` over active rows, plus a
-  `last_error` column for dead-lettered timers (timer-recovery migration). See
-  [Timers](/docs/keiro/reference/timers).
-- **`keiro_outbox`** — the transactional outbox of pending integration events, with a pending index
-  and a per-key head-of-line index. See [Outbox](/docs/keiro/reference/outbox).
-- **`keiro_inbox`** — the consumer-side dedupe ledger keyed by `(source, dedupe_key)`. See
-  [Inbox](/docs/keiro/reference/inbox).
-- **`keiro_workflow_steps`** — the durable-workflow step-lookup index backing replay and current-generation
-  lookups. The workflow-generation migration adds the `generation` column and
-  widens the PK to `(workflow_id, workflow_name, generation, step_name)` for
-  [continue-as-new rotation](/docs/keiro/reference/durable-workflows#versioning-and-rotation). See
-  [Durable workflows](/docs/keiro/reference/durable-workflows#tables).
-- **`keiro_workflows`** — one lifecycle row per durable workflow instance: current generation, status,
-  attempts, lease, wake-after, and GC metadata. See
-  [Durable workflows](/docs/keiro/reference/durable-workflows#tables).
-- **`keiro_awakeables`** — pending external completions for workflow awakeables
-  (`pending`/`completed`/`cancelled`). See [Durable workflows](/docs/keiro/reference/durable-workflows#tables).
-- **`keiro_workflow_children`** — durable parent→child workflow links
-  (`running`/`completed`/`cancelled`/`failed`). See [Durable workflows](/docs/keiro/reference/durable-workflows#tables).
-- **`keiro_subscription_shards`** — consumer-group bucket-ownership leases for sharded category
-  subscriptions, one row per `(subscription_name, bucket)`. See
-  [Subscription sharding](/docs/keiro/reference/subscription-sharding#the-lease-table).
+## Schema ownership is physical
 
-For the column-level detail of every table, read the
-[Migrations and schema reference](/docs/keiro/reference/migrations-and-schema) — this tour names the
-tables and walks the runner rather than re-listing each field.
+The SQL qualifies framework objects under `keiro`, matching `Keiro.Schema.keiroSchema`. Kiroku's
+event-store objects remain in `kiroku`; application projection/read-model schemas are configured and
+owned separately. This is not merely a `search_path` convention.
 
-This is the last chapter of the operations tour. Back to [00 — Start
-here](/docs/keiro/walkthrough/operations/00-start-here).
+`0018` adds `keiro_dead_letters`, distinct from `kiroku.dead_letters`: the former records rejected
+target dispatches after a source event was handled, while the latter records terminal source
+subscription delivery.
+
+## Codd survives only as cutover evidence
+
+`Keiro.Migrations.History.Codd` pairs the seven Kiroku and sixteen Keiro legacy names with their
+native component identities. `frameworkCoddSourceConfig` combines exact payload maps and manifests;
+`frameworkCoddHistoryMappings` covers both gap-free prefixes.
+
+The generic importer reads and locks the predecessor, verifies those 23 mappings, and atomically
+writes target ledger/audit rows without executing the target actions. The first native `up` then
+applies only Kiroku `0008` and Keiro `0017`–`0018`.
+
+This distinction is the handoff:
+
+| Database | First operation |
+| --- | --- |
+| fresh | run the native combined plan |
+| historical Codd, already in dedicated schemas | import combined history, then native `up` |
+| Keiro 0.1 tables still in `kiroku` | relocate tables, import history, then native `up` |
+
+Continue with [Run the migrations](/docs/keiro/how-to/run-migrations) for the operator path or
+[Upgrade a 0.1 database](/docs/keiro/how-to/upgrade-a-0-1-database) for the cutover.
