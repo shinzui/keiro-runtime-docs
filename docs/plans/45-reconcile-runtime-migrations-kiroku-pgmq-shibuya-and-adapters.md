@@ -29,7 +29,7 @@ commands, and guarantees.
 
 - [x] (2026-07-14T19:00:30Z) Milestone 1: replace old migration guidance with native component
   composition, explicit predecessor imports, and current operator CLIs.
-- [ ] Milestone 2: refresh Kiroku 0.3 user and operator behavior.
+- [x] (2026-07-14T19:11:40Z) Milestone 2: refresh Kiroku 0.3 user and operator behavior.
 - [ ] Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
 - [ ] Milestone 4: reconcile cross-package operations and run final scoped scans.
 
@@ -49,6 +49,11 @@ commands, and guarantees.
 - Kiroku and PGMQ load pg-migrate's recompilation plugin in their embedding modules, but Keiro's
   committed embedding module does not. Keiro authoring guidance therefore keeps explicit
   `check --manifest` as the source-tree gate and does not promise plugin-backed rebuild detection.
+- Kiroku's high-level 0.3 reference already covered most released behavior, but two source
+  walkthroughs still taught the removed checkpoint-to-zero fallback and bounded-queue shutdown
+  sentinel. The committed worker now fails checkpoint load loudly, while stream termination uses a
+  separate close/crash TVar so cancellation cannot block on queue capacity and worker crashes reach
+  the next pull.
 
 
 ## Decision Log
@@ -81,6 +86,13 @@ commands, and guarantees.
   and explicit import-before-native cutovers that execute no target DDL. The Keiro test fixture
   documentation now matches its committed component-list API. Typecheck, formatting, production
   build, whitespace checks, stale-runner scans, and the 504-file internal-link scan pass.
+- Milestone 2 added a single Kiroku 0.3 upgrade and operator matrix spanning corrected backward
+  cursors, eager name/batch validation, typed link and transaction errors, truncate-before, closed
+  effect updates, live-source selection, loud checkpoint/buffer failures, remote CLI operation, and
+  Shibuya adapter guards/termination. The detailed worker and adapter walkthroughs now match
+  `LiveSource` and the crash-aware stream bridge, and all package version labels match the reviewed
+  release. Typecheck, formatting, production build, whitespace/stale scans, and the 505-file
+  internal-link scan pass.
 
 
 ## Context and Orientation

@@ -9,6 +9,9 @@ letters, durable checkpoints, filters, and consumer-group membership. shibuya
 owns processor supervision, handler execution, metrics, and coordinated
 shutdown.
 
+Current compatibility is `shibuya-kiroku-adapter 0.4.0.0`, `kiroku-store 0.3`, and
+`shibuya-core 0.8`.
+
 The adapter is intentionally thin. It builds a Kiroku `subscriptionAckStream`,
 converts each `RecordedEvent` into a shibuya `Envelope RecordedEvent`, and waits
 for shibuya's `AckDecision` before letting the Kiroku worker advance.
@@ -23,7 +26,7 @@ for shibuya's `AckDecision` before letting the Kiroku worker advance.
 | `subscriptionTarget` | required | `AllStreams` or a `Category`. |
 | `batchSize` | `100` | Batch size passed to Kiroku subscription config. |
 | `bufferSize` | `256` | Subscription stream buffer. |
-| `queueCapacity` | `16` | Live publisher queue capacity for all-streams subscriptions. |
+| `queueCapacity` | `16` | Live publisher queue capacity for non-group all-streams subscriptions; ignored by DB-driven category/group sources. |
 | `consumerGroup` | `Nothing` | Optional consumer-group member metadata. |
 | `eventTypeFilter` | all event types | Kiroku-side event type filter. |
 | `selector` | accept all | Kiroku-side predicate. |
@@ -49,6 +52,11 @@ delivery is attempt `0`; each Kiroku retry increments it.
 The consumer-group helper wraps synchronous handler exceptions as
 `AckRetry (RetryDelay 1)`. Asynchronous exceptions still propagate so
 cancellation and shutdown remain responsive.
+
+Direct `kirokuAdapter` users must wrap their handler with `guardKirokuHandler` (or
+`guardKirokuHandlerWith` for an application-specific decision). An unguarded synchronous exception
+does not finalize the ack and can leave the Kiroku worker waiting. The consumer-group helper applies
+the default guard automatically.
 
 ## Ordering and Backpressure
 
@@ -92,6 +100,11 @@ while different streams can run on different members.
 
 If processor creation fails part-way through a group, already-created adapters
 are cleaned up before the error escapes.
+
+A non-positive group size raises `InvalidConsumerGroup` before any subscription opens. The adapter's
+`source` obeys Shibuya's termination contract: clean stop or cancellation ends the stream normally,
+while a Kiroku worker crash is rethrown from the next pull. `shutdown` cancels the underlying
+subscription and wakes an idle source without relying on a bounded-queue sentinel.
 
 ## Related
 

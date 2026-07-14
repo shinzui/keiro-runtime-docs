@@ -28,7 +28,14 @@ subscribe store config = liftIO $ do
 
   -- 2. Allocate the live source. Non-group AllStreams registers a bounded publisher queue;
   --    category and consumer-group workers are DB-driven and register no publisher queue.
-  (queue, statusVar, unsubscribe) <- allocateLiveSource store config
+  (liveSource, unsubscribe) <- case (consumerGroup config, target config) of
+    (Nothing, AllStreams) -> do
+      (queue, statusVar, unsubscribe) <- subscribePublisher ...
+      pure (LiveFromPublisherQueue queue statusVar, unsubscribe)
+    (Nothing, Category (CategoryName cat)) ->
+      pure (LiveFromCategoryNotify cat, pure ())
+    (Just _, _) ->
+      pure (LiveFromGroupPolling, pure ())
 
   -- 3. Seed the observable state TVar with the catch-up entry state.
   stateVar <- newTVarIO (CatchingUp (GlobalPosition 0) 0)
@@ -48,7 +55,7 @@ subscribe store config = liftIO $ do
   -- 5. Spawn the worker; `finally cleanup` guarantees deregistration on ANY exit.
   thread <-
     Async.async
-      ( runWorker (store ^. #pool) queue statusVar stateVar pubPosVar catGenVar
+      ( runWorker (store ^. #pool) liveSource stateVar pubPosVar catGenVar
                   config (store ^. #eventHandler) (store ^. #storeSettings)
           `finally` cleanup )
 
@@ -106,9 +113,10 @@ cases, and they map straight back to the FSM's terminal `Stopped` reasons:
   (`StopCancelled`).
 - `Left SubscriptionOverflowed` — the publisher dropped this subscription under
   `DropSubscription` (`StopOverflowed`).
-- `Left e` for any other exception — a handler that threw. Handler exceptions are **not** caught;
-  the worker thread dies and the exception propagates. That is intentional: a throwing handler is
-  signalling the subscription cannot proceed safely.
+- `Left UsageError` during checkpoint load — startup could not read durable progress. The worker
+  emits a `LoadCheckpoint` database event and fails rather than substituting position `0`.
+- `Left e` for any other exception — a handler, fetch/decode hook, dead-letter write, or another
+  worker operation failed. The worker thread dies and the original exception propagates.
 
 ## What `currentState` returns
 

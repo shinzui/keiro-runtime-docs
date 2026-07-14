@@ -99,11 +99,11 @@ body = do
 ```
 
 `loadCheckpoint` is keyed by `(subscription_name, member)`, so a consumer-group member resumes from
-its **own** saved position; a non-group worker reads the `(name, 0)` row. A DB error here degrades to
-position `0` (re-process from the start) but surfaces a `KirokuEventSubscriptionDbError` first, so a
-silent transient pool error can never quietly rewind a subscription without a signal. The `Started`
-event is emitted **once**, after the checkpoint is known — then control enters the loop at
-`CatchingUp checkpoint 0`.
+its **own** saved position; a non-group worker reads the `(name, 0)` row. Only an absent row starts at
+position `0`. A database error emits `KirokuEventSubscriptionDbError ... LoadCheckpoint ...` and is
+re-thrown, so `handle.wait` returns `Left error` and the worker stops instead of silently replaying
+the whole log. The `Started` event is emitted **once**, after the checkpoint is known — then control
+enters the loop at `CatchingUp checkpoint 0`.
 
 ## The driver cycle
 

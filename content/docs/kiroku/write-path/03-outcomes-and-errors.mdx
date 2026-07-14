@@ -92,6 +92,13 @@ with the migrations. Second, when the `events_pkey` detail string can't be parse
 locale), `DuplicateEvent` carries `Nothing` rather than a fabricated all-zeroes UUID — the code
 refuses to invent data it didn't actually read.
 
+Opaque transaction bodies use a narrower `mapTransactionUsageError`: a duplicate on
+`events_pkey`/`stream_events_pkey` still becomes `DuplicateEvent`, but every other PostgreSQL server
+failure preserves its SQLSTATE and message as `UnexpectedServerError`. In particular, a `23503`
+foreign-key violation in caller SQL is not passed through the append-shaped `StreamNotFound`
+mapping with a fabricated `<transaction>` stream. Transaction incident handling can therefore trust
+the original diagnostics.
+
 ## Idempotent retries ride on `DuplicateEvent`
 
 This is where [part 01's id-generation seam](/docs/kiroku/write-path/01-the-store-effect-and-append-api#id-generation-is-the-idempotency-seam)

@@ -10,10 +10,10 @@ metrics, and coordinated graceful shutdown — while kiroku still owns durable c
 into shibuya's **pull-based** `Adapter` interface.
 
 <Callout type="info">
-  Assumes you know shibuya's `Adapter` / `QueueProcessor` model and have a configured kiroku store.
-  This guide covers the kiroku side of the bridge. For a single in-process subscription, the native
-  [subscription API](/docs/kiroku/tutorials/getting-started) is simpler — reach for the adapter when
-  you already run shibuya processors or want several subscriptions supervised together.
+  Uses `shibuya-kiroku-adapter 0.4.0.0` with `kiroku-store 0.3` and `shibuya-core 0.8`. Assumes you
+  know shibuya's `Adapter` / `QueueProcessor` model and have a configured Kiroku store. For a single
+  in-process subscription, the native [subscription API](/docs/kiroku/tutorials/getting-started) is
+  simpler.
 </Callout>
 
 ## Goal
@@ -48,12 +48,15 @@ event's processing outcome (`AckDecision`) drives kiroku's checkpoint.
              pure AckOk
 
        Right appHandle <-
-         runApp IgnoreFailures 100
-           [(ProcessorId "my-projection", mkProcessor adapter handler)]
+         runApp defaultAppConfig
+           [(ProcessorId "my-projection", mkProcessor adapter (guardKirokuHandler handler))]
        waitApp appHandle
    ```
 
-   `SubscriptionName`, `SubscriptionTarget`, `ConsumerGroup`, and `EventTypeFilter` are
+   `guardKirokuHandler` turns a synchronous handler exception into `AckRetry (RetryDelay 1)` so
+   Shibuya still finalizes the ack. Without a guard or an application-owned exception mapping, a
+   thrown handler leaves the Kiroku worker waiting for a verdict. Asynchronous cancellation still
+   propagates. `SubscriptionName`, `SubscriptionTarget`, `ConsumerGroup`, and `EventTypeFilter` are
    re-exported from `Shibuya.Adapter.Kiroku`, so you need no separate `kiroku-store` import for them.
 
 2. **Configure as needed.** The fields of `KirokuAdapterConfig`:
@@ -103,7 +106,7 @@ event's processing outcome (`AckDecision`) drives kiroku's checkpoint.
                    (Category (CategoryName "orders"))
                    4   -- group size
        Right processors <- kirokuConsumerGroupProcessors store cfg handler
-       Right appHandle   <- runApp IgnoreFailures 100 processors
+       Right appHandle   <- runApp defaultAppConfig processors
        waitApp appHandle
      where
        handler ingested = pure AckOk
@@ -120,6 +123,10 @@ event's processing outcome (`AckDecision`) drives kiroku's checkpoint.
    `AckRetry (RetryDelay 1)`. Asynchronous exceptions still propagate normally for cancellation and
    shutdown.
 
+   A non-positive group size throws `InvalidConsumerGroup` before any subscription opens. If a later
+   member fails during construction, the helper shuts down the adapters it already created before
+   propagating the error.
+
 ## Verify it worked
 
 Run the shibuya app against a store with pending events. Events flow through the processors;
@@ -127,6 +134,9 @@ returning `AckOk` advances the kiroku checkpoint (restart resumes after the last
 returning `AckRetry`/`AckDeadLetter` exercises kiroku's retry and dead-letter paths (inspect
 `kiroku.dead_letters`). For a consumer group, confirm each member's id appears as
 `"<name>-member-<m>"` and that a given stream's events always land on the same member.
+On coordinated shutdown, the adapter source terminates normally. If the Kiroku worker crashes, the
+next source pull rethrows its exception so Shibuya supervision observes the failure instead of
+waiting forever.
 
 ## Related
 

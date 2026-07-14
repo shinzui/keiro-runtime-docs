@@ -201,7 +201,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T18:48:14Z) EP-5 Milestone 4: document predecessor cutovers and practical recipes.
 - [x] (2026-07-14T19:00:30Z) EP-6 Milestone 1: replace old migration guidance with component
   composition.
-- [ ] EP-6 Milestone 2: refresh Kiroku 0.3 user and operator behavior.
+- [x] (2026-07-14T19:11:40Z) EP-6 Milestone 2: refresh Kiroku 0.3 user and operator behavior.
 - [ ] EP-6 Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
 - [ ] EP-6 Milestone 4: reconcile cross-package operations.
 - [ ] EP-7 Milestone 1: build the announcement discovery and compatibility path.
@@ -264,6 +264,10 @@ interactions between child plans. Provide concise evidence.
   for unselected rows in a deliberately shared predecessor ledger. It also confirmed that Kiroku's
   native manifest has seven historical migrations plus an eighth native canary, and that committed
   Keiro test support already composes extra migration components into its suite template.
+- EP-6 found two stale Kiroku source walkthrough assumptions beneath otherwise-current 0.3
+  reference prose: checkpoint-load errors no longer rewind to zero, and stream shutdown no longer
+  writes a sentinel through the bounded data queue. The release gate must preserve the loud-failure
+  and crash-propagation contracts now documented in the 0.3 upgrade matrix.
 
 
 ## Decision Log
@@ -387,3 +391,7 @@ Compare the result against the original vision.
   Fresh setup, application composition, standard CLI gates, dedicated schema ownership, Keiro 0.1
   remediation, Codd import, PGMQ direct/equivalent predecessor histories, and shared-ledger policy
   now agree with the committed sources. The production build and 504-file internal-link scan pass.
+- EP-6 Milestone 2 completed the Kiroku 0.3 compatibility and operating path. One upgrade guide now
+  classifies new validation, store, transaction, subscription, stream, CLI, and adapter outcomes by
+  boundary and recovery action; the source walkthroughs and package labels match the committed July
+  releases. The production build and 505-file internal-link scan pass.

@@ -1,0 +1,142 @@
+---
+title: "Upgrade to Kiroku 0.3"
+description: "Apply the required schema, update exhaustive code, and operate the new read, append, transaction, subscription, CLI, and adapter behavior."
+---
+
+Use this checklist when moving an application to `kiroku-store 0.3.0.1`. The matching migration
+package is `kiroku-store-migrations 0.3.0.0`; the standalone operator client is `kiroku-cli
+0.2.0.0`; and the Shibuya bridge is `shibuya-kiroku-adapter 0.4.0.0`.
+
+## 1. Apply the required schema first
+
+Kiroku 0.3 requires the notification guard, dead-letter index, index/fillfactor hardening,
+512-byte stream-name constraint, and `streams.truncate_before` migrations (`0003` through `0007`).
+Compose `kirokuMigrations` into the application's complete `pg-migrate` plan and run the normal
+`plan`, `status`, `verify`, `up`, `verify` deployment gate before starting 0.3 code.
+
+If the database still has only Codd history, import its seven-migration predecessor prefix before
+native `up`; do not replay historical DDL. Follow [Run against PostgreSQL](/docs/kiroku/how-to/run-against-postgres).
+
+## 2. Recompile exhaustive integrations
+
+Update code that mirrors Kiroku's closed types:
+
+- Handle `EmptyAppendBatch`, `StreamNameTooLong`, `EventAlreadyLinked`, and
+  `LinkSourceEventMissing` in exhaustive `StoreError` matches.
+- Add `EventExistsInStream` and `SetStreamTruncateBefore` arms to custom `Store` interpreters.
+- Add `truncateBefore` to constructed or matched `StreamInfo` values.
+- If calling exposed `runWorker`, replace the queue/status arguments with one `LiveSource`:
+  `LiveFromPublisherQueue`, `LiveFromCategoryNotify`, or `LiveFromGroupPolling`.
+- Add `queueCapacity` to full `KirokuAdapterConfig` and `KirokuConsumerGroupConfig` literals, or
+  switch to their default smart constructors so future fields inherit safe defaults.
+
+## 3. Update backward pagination
+
+A nonzero backward cursor is now an exclusive upper bound. Start at `0`, then feed the oldest
+cursor in the returned descending page into the next call:
+
+```haskell
+newest <- readAllBackward (GlobalPosition 0) 100
+older <-
+  if Vector.null newest
+    then pure Vector.empty
+    else readAllBackward ((Vector.last newest) ^. #globalPosition) 100
+```
+
+Use the same pattern with `readStreamBackward` and `streamVersion`. Code that repeatedly passed a
+nonzero cursor expecting the old, incorrect direction must be changed; mocks must preserve the
+`0`-means-after-everything sentinel and exclusive `< cursor` behavior.
+
+## 4. Treat new validation as caller feedback
+
+`validateStreamName` checks `$all` and the `maxStreamNameBytes == 512` UTF-8 byte limit before pool
+work. Append, link, lifecycle, and append-transaction wrappers all use it. Count encoded bytes, not
+Unicode code points.
+
+`appendToStream name expected []` and any empty per-stream batch in `appendMultiStream` fail before
+a transaction with `EmptyAppendBatch name`. An entirely empty multi-stream operation remains an
+explicit no-op returning `[]` without a round trip. Fix the caller; retrying the same empty input
+cannot succeed.
+
+## 5. Adopt typed database failures
+
+| Trigger | Boundary and durable effect | Recovery |
+| --- | --- | --- |
+| stream name exceeds 512 UTF-8 bytes | `StreamNameTooLong name bytes` before database work | Reject or shorten the application identity; do not retry unchanged input. |
+| one append batch is empty | `EmptyAppendBatch name` before pool/transaction work | Fix the command-to-events path. |
+| target already contains a linked event | `EventAlreadyLinked target maybeEventId`; the whole link batch rolls back | Treat as idempotent only after confirming the intended target/event; otherwise fix selection. |
+| a requested link source is absent | `LinkSourceEventMissing target`; the whole link batch rolls back | Repair the source id or ordering; blind retry is not useful. |
+| caller event id duplicates inside a transaction | `DuplicateEvent (Just eventId)` where PostgreSQL detail is parseable; the transaction aborts | Confirm whether the committed event represents the intended idempotent write before reporting success. |
+| opaque transaction SQL raises another server error | `UnexpectedServerError sqlstate message`; the original SQLSTATE and message survive | Classify the SQLSTATE and repair the statement/data. It is not generally retryable. |
+
+`runTransaction` still retries serialization failures; `runTransactionNoRetry` does not. Neither
+turns arbitrary SQL errors into a missing sentinel stream. Keep diagnostic code and message in the
+incident record.
+
+## 6. Choose the subscription source deliberately
+
+All subscriptions catch up from PostgreSQL. Their live source is fixed from target and group shape:
+
+| Subscription shape | Live source | Relevant tuning/failure |
+| --- | --- | --- |
+| non-group `AllStreams` | shared publisher's bounded subscriber queue | `queueCapacity` and `overflowPolicy`; `DropSubscription` can raise `SubscriptionOverflowed`. |
+| non-group `Category` | category NOTIFY generation plus filtered database fetch | queue/overflow settings have no effect; fetch failures reconnect and re-catch-up. |
+| any consumer-group member | global publisher position gate plus partitioned database polling | queue/overflow settings have no effect; each member resumes its own checkpoint. |
+
+Checkpoint startup failure is intentionally loud. A `Hasql.Pool.UsageError` emits
+`KirokuEventSubscriptionDbError ... LoadCheckpoint ...`, surfaces as `Left error` from
+`handle.wait`, and stops the worker. Kiroku never substitutes position `0`; repair database access
+and restart the same subscription identity.
+
+Both stream bridges require `bufferSize >= 1`. Zero throws `InvalidStreamBufferSize 0` before the
+bridge subscribes, avoiding a first-delivery deadlock. A clean stop or cancellation ends the stream;
+a worker crash is rethrown by the next pull.
+
+## 7. Decide whether to expose truncate-before
+
+`setStreamTruncateBefore stream version` hides older events only from ordered reads of that stream.
+It deletes nothing and does not affect `$all`, category reads, subscriptions, filters, or existence
+probes. Append a self-contained snapshot event first, prove replay from it, set the marker, and use
+`clearStreamTruncateBefore` to expose the prefix again. Custom interpreters must implement the new
+effect constructor even if the application does not use it yet.
+
+## 8. Update operator and Shibuya entry points
+
+The standalone `kiroku` binary is an HTTP client, not a database client:
+
+```console
+export KIROKU_REMOTE_URL='http://worker-host:9091'
+kiroku subscriptions status
+kiroku subscriptions status --format json
+```
+
+`--remote-url` overrides the environment. With neither, or on connection/non-2xx/JSON decode
+failure, the binary prints a readable error and exits nonzero. The embeddable parser still supports
+local registry access through `runKirokuCommandWithStore`.
+
+| Operator surface | Data source | Configuration | Output/failure |
+| --- | --- | --- | --- |
+| embedded `kirokuSubparser` | the host process's live subscription registry | pass `KirokuStore` to `runKirokuCommandWithStore` | table by default or the shared JSON row codec |
+| standalone `kiroku` | worker `GET /subscriptions` | `--remote-url` or `KIROKU_REMOTE_URL` | table/JSON; missing endpoint, transport, non-2xx, and decode failures exit nonzero with readable text |
+
+The standalone client has no database URL, schema, or pool-size configuration.
+
+For Shibuya, preserve `queueCapacity = 16` unless burst testing justifies another value and wrap
+direct handlers with `guardKirokuHandler` so synchronous exceptions finalize the ack as a one-second
+retry. The consumer-group helper applies that guard automatically and rejects non-positive group
+sizes before opening subscriptions.
+
+## Verification checklist
+
+- Two backward pages have no duplicate boundary event and descend into older history.
+- Too-long names and empty batches fail before any database observation changes.
+- Missing/duplicate links roll back the whole link batch with typed evidence.
+- A foreign-key violation inside `runTransaction` retains SQLSTATE `23503` and its server message.
+- A broken checkpoint read makes `wait` fail without replaying from zero.
+- A zero bridge buffer fails immediately; a cancelled bridge terminates its stream.
+- Truncate-before hides only the ordered stream prefix and clears reversibly.
+- The remote CLI table and JSON forms read the worker's `/subscriptions` endpoint.
+
+See [Core types](/docs/kiroku/reference/core-types), [The Store effect](/docs/kiroku/reference/store-effect),
+and [Subscriptions and consumer groups](/docs/kiroku/explanation/subscriptions-and-consumer-groups)
+for the stable contracts behind this checklist.

@@ -64,7 +64,7 @@ flowchart TD
     W["runWorker / processEvents<br/>(one event at a time)"]
     BH["bridgeHandler<br/>writeTBQueue then takeTMVar"]
   end
-  AckQ["ack TBQueue<br/>(Maybe AckItem)<br/>cap = bufferSize (256)"]
+  AckQ["ack TBQueue<br/>(AckItem)<br/>cap = bufferSize (256)"]
   subgraph stream["Streamly + adapter"]
     S["Stream.unfoldrM step<br/>(morphInner liftIO)"]
     Ing["toIngestedAck → Ingested"]
@@ -114,13 +114,17 @@ checkpoint from racing ahead — proven below.
 ```haskell
 -- shibuya-kiroku-adapter/src/Shibuya/Adapter/Kiroku.hs (trimmed)
 kirokuAdapter :: (IOE :> es) => KirokuStore -> KirokuAdapterConfig -> Eff es (Adapter es RecordedEvent)
-kirokuAdapter store (KirokuAdapterConfig subName subTarget bs buf cg etf sel) = do
+kirokuAdapter store KirokuAdapterConfig
+  { subscriptionName = subName, subscriptionTarget = subTarget
+  , batchSize = bs, bufferSize = buf, queueCapacity = qCap
+  , consumerGroup = cg, eventTypeFilter = etf, selector = sel
+  } = do
   -- 1. Translate the adapter config into a kiroku SubscriptionConfig, built from the smart
   --    constructor so any future SubscriptionConfig field is inherited at its default.
   let subConfig =
         (defaultSubscriptionConfig subName subTarget (\_ -> pure Continue))
           { batchSize       = bs
-          , queueCapacity   = 16             -- the *front-half* per-subscriber queue (batches)
+          , queueCapacity   = qCap           -- the *front-half* per-subscriber queue (batches)
           -- overflowPolicy is inherited from defaultSubscriptionConfig: PauseAndResume
           , consumerGroup   = cg
           , eventTypeFilter = etf
@@ -149,7 +153,7 @@ Three steps, three things to notice:
    subscription machinery for catch-up, live delivery, partitioning, and checkpointing — not for the
    per-event verdict. (`subscriptionAckStream` overwrites this field with its own `bridgeHandler`
    anyway; the placeholder just satisfies the smart constructor.)
-2. There are **two** capacities, and they are different queues. `queueCapacity = 16` sizes the
+2. There are **two** capacities, and they are different queues. `queueCapacity` (default 16) sizes the
    front-half publisher queue (measured in _batches_) only for non-group `AllStreams` adapters;
    category adapters and consumer-group members are DB-driven and do not register that queue.
    `buf` / `bufferSize` (default 256) sizes the back-half ack queue (the one the bridge fills,
@@ -159,17 +163,26 @@ Three steps, three things to notice:
    `AckItem` into shibuya's `Ingested`. The adapter's `shutdown` **is** the cancel action, so shibuya's
    coordinated shutdown tears down the kiroku subscription cleanly.
 
+<Callout type="warn">
+  Direct `kirokuAdapter` users must pass `guardKirokuHandler handler` to `mkProcessor`, or provide an
+  equivalent `guardKirokuHandlerWith` mapping. A synchronous exception otherwise prevents Shibuya
+  from finalizing the ack and leaves the worker waiting. `kirokuConsumerGroupProcessors` applies the
+  default one-second-retry guard automatically; asynchronous cancellation still propagates.
+</Callout>
+
 ## The Streamly bridge: `subscriptionAckStream`
 
-This is the heart of the back half, and it is worth reading in full — it is only ~30 lines and every
-line carries weight:
+This is the heart of the back half. The current termination core matters as much as the ack path:
 
 ```haskell
--- kiroku-store/src/Kiroku/Store/Subscription/Stream.hs (the whole function)
+-- kiroku-store/src/Kiroku/Store/Subscription/Stream.hs (trimmed)
 subscriptionAckStream ::
     KirokuStore -> SubscriptionConfig -> Natural -> IO (Stream IO AckItem, IO ())
 subscriptionAckStream store config bufferSize = do
+    when (bufferSize < 1) $
+        throwIO (InvalidStreamBufferSize bufferSize)
     queue <- newTBQueueIO bufferSize
+    closedVar <- newTVarIO Nothing
     -- Tracks the previous (eventId, attempt). The worker delivers events one at a
     -- time and blocks on the reply, so there is no concurrent access to this ref.
     attemptRef <- newIORef (Nothing :: Maybe (EventId, Word))
@@ -181,22 +194,33 @@ subscriptionAckStream store config bufferSize = do
                     Just (eid, n) | eid == eventId event -> (Just (eid, n + 1), n + 1)
                     _                                     -> (Just (eventId event, 0), 0)
             reply <- newEmptyTMVarIO
-            atomically (writeTBQueue queue (Just (AckItem event attempt reply)))
+            atomically (writeTBQueue queue (AckItem event attempt reply))
             atomically (takeTMVar reply)                       -- <-- the worker blocks here
 
     let bridgeConfig = config { handler = bridgeHandler }
     subHandle <- subscribe store bridgeConfig
 
+    _monitor <- Async.async $ do
+        outcome <- wait subHandle
+        atomically . closeBridge closedVar $ case outcome of
+            Right () -> BridgeClosedCleanly
+            Left e
+              | Just Async.AsyncCancelled <- fromException e -> BridgeClosedCleanly
+              | otherwise -> BridgeCrashed e
+
     let cancelAction = do
             cancel subHandle
-            atomically (writeTBQueue queue Nothing)            -- <-- sentinel wakes a blocked reader
+            atomically (closeBridge closedVar BridgeClosedCleanly)
 
     let step :: () -> IO (Maybe (AckItem, ()))
         step () = do
-            mItem <- atomically (readTBQueue queue)
-            case mItem of
-                Just item -> pure (Just (item, ()))
-                Nothing   -> pure Nothing                      -- <-- Nothing terminates the stream
+            next <- atomically $
+              (Right <$> readTBQueue queue)
+                `orElse` (readTVar closedVar >>= maybe retry (pure . Left))
+            case next of
+                Right item -> pure (Just (item, ()))
+                Left BridgeClosedCleanly -> pure Nothing
+                Left (BridgeCrashed e) -> throwIO e
 
     pure (Stream.unfoldrM step (), cancelAction)
 ```
@@ -207,10 +231,10 @@ Why each Streamly choice is the right one:
   consumer (shibuya) pulls. There is no producer thread spinning ahead of the consumer; the only
   producer is the kiroku worker, and it is gated by the ack (next section). So the stream holds no
   backlog of its own — it is a thin adapter over the queue, not a buffer.
-- **The element type is `Maybe AckItem`, and `Nothing` is the end-of-stream sentinel.** `step`
-  pattern-matches: `Just item` yields one element and loops; `Nothing` returns `Nothing`, which
-  `unfoldrM` interprets as stream termination. This is how `cancelAction` makes a _blocked_ reader
-  exit — it writes the sentinel.
+- **Termination is separate from the bounded data queue.** `closedVar` records clean close or worker
+  crash. `step` waits on `readTBQueue queue` `orElse` that state: clean close ends the stream, while
+  `BridgeCrashed e` rethrows `e` from the next pull. Cancellation can therefore wake an idle reader
+  without needing a free queue slot.
 - **`Stream.morphInner liftIO` (back in `kirokuAdapter`) changes only the base monad**, `IO →
 Eff es`. It does not re-order, buffer, or fork; the laziness and the one-element-at-a-time shape
   are preserved across the lift.
@@ -224,14 +248,14 @@ verdict. The adapter deliberately uses the **ack-coupled** variant so a shibuya 
 
 Two STM primitives carry the coupling, and the choice of each is deliberate.
 
-**The ack `TBQueue (Maybe AckItem)` — bounded, but effectively depth 1.** Its capacity is `bufferSize`
+**The ack `TBQueue AckItem` — bounded, but effectively depth 1.** Its capacity is `bufferSize`
 (256 by default), yet under ack-coupling it never holds more than one live item. The reason is the
 sequential producer: `bridgeHandler` does `writeTBQueue` **then** `takeTMVar reply`, and the worker's
 `processEvents` does not call the handler for the next event until this call returns. So the worker
 enqueues item _N_, blocks, and cannot enqueue _N+1_ until shibuya acks _N_ and the worker loops. The
-generous capacity is therefore not a pipeline depth — it is just headroom so the enqueue and the
-shutdown sentinel never have to wait for a slot. **The ack-coupling, not the queue size, is the
-backpressure.**
+generous capacity is therefore not a pipeline depth. A zero capacity is rejected up front with
+`InvalidStreamBufferSize`, and shutdown state travels through `closedVar`, not this queue.
+**The ack-coupling, not the queue size, is the backpressure.**
 
 **The one-shot reply `TMVar SubscriptionResult` — created per item.** Each `AckItem` carries its own
 freshly-`newEmptyTMVarIO`'d reply. This is the textbook one-shot synchronization variable: empty until
@@ -456,14 +480,14 @@ each has a guaranteed waker, and there is no cycle of "A waits on B waits on A."
 | Blocked thread                   | Blocks on                         | Woken by                                                                                                   |
 | -------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | kiroku worker (`bridgeHandler`)  | `takeTMVar reply`                 | shibuya's `finalize` (`tryPutTMVar`), **or** `cancel subHandle` raising `AsyncCancelled` into the STM wait |
-| shibuya / stream reader (`step`) | `readTBQueue queue`               | the worker's `writeTBQueue (Just …)`, **or** `cancelAction`'s `writeTBQueue Nothing` sentinel              |
+| shibuya / stream reader (`step`) | data queue `orElse` `closedVar`   | worker `writeTBQueue`, monitor close/crash, or `cancelAction` clean close                                  |
 | kiroku worker, AllStreams live   | `readTBQueue liveQueue`           | the publisher's push, **or** `AsyncCancelled`                                                              |
 | EventPublisher                   | `readTChan tick \`orElse\` timer` | a `NOTIFY` tick, **or** the 30 s safety timer                                                              |
 
-The reason it cannot cycle: **shibuya never waits on the worker.** Shibuya's handler runs to a verdict
-and calls `finalize`, which is `tryPutTMVar` — it cannot block. So the dependency edge is one-way:
-worker → (waits for) → shibuya's verdict → (always produced) → reply. The worker is the only party that
-_blocks_ on the other, and the other is structurally guaranteed to eventually unblock it.
+With the required handler guard, Shibuya runs to a verdict and calls `finalize`, which is
+`tryPutTMVar` and cannot block. The dependency edge is one-way: worker → waits for → Shibuya's
+verdict → reply. A direct unguarded handler breaks that premise if it throws synchronously, which is
+why `guardKirokuHandler` is part of the adapter contract rather than optional error decoration.
 
 Shutdown is the case worth checking explicitly, because that is where a careless bridge wedges:
 
@@ -471,10 +495,10 @@ Shutdown is the case worth checking explicitly, because that is where a careless
   case), `Async.cancel` delivers `AsyncCancelled`, which aborts the STM transaction — the worker is
   _not_ stuck waiting for a reply that will never come. Its `finally unsubscribe` ([part 04](/docs/kiroku/walkthrough/04-subscribe-and-lifecycle))
   removes it from the publisher registry, so the front half stops pushing too.
-- `cancelAction` then writes the `Nothing` sentinel. A stream reader parked in `readTBQueue` wakes,
-  `step` returns `Nothing`, and `unfoldrM` ends the stream — shibuya's `source` terminates gracefully
-  rather than hanging. The sentinel write itself does not block: the ack queue holds at most the one
-  unacked item, far below its capacity, so there is always a free slot.
+- `cancelAction` records `BridgeClosedCleanly` in `closedVar`. A stream reader parked on the
+  queue-or-close STM choice wakes, `step` returns `Nothing`, and `unfoldrM` ends the stream. No
+  bounded-queue slot is needed. The monitor records the same clean state for a normal stop, but
+  records `BridgeCrashed e` for another worker failure so the next pull rethrows it.
 - An event in flight at shutdown (shibuya mid-handler) is simply never checkpointed — its later
   `finalize` does a `tryPutTMVar` into a `TMVar` no one reads (harmless), and the event replays on
   restart. At-least-once holds across shutdown.

@@ -71,8 +71,10 @@ readCategory            :: (HasCallStack, Store :> es) => CategoryName -> Global
 
 Cursors are **exclusive**: `StreamVersion 0` / `GlobalPosition 0` read from the start (for
 backward reads, `0` means "after everything"), and the `$all` seed row (position 0) is never
-returned. The final `Int32` is the batch/page size. `readStreamForwardStream` is a Streamly
-constant-memory paging variant (suggested page size 256).
+returned. A nonzero backward cursor is an exclusive upper bound: pass the oldest version/position
+from one descending page to fetch the next older page without repeating the boundary event. The
+final `Int32` is the batch/page size. `readStreamForwardStream` is a Streamly constant-memory paging
+variant (suggested page size 256).
 
 Ordered per-stream reads honor the stream's logical `truncateBefore` marker: events whose
 per-stream version is lower than the marker are hidden from `readStreamForward`,
@@ -147,7 +149,10 @@ RunTransactionNoRetry :: Tx.Transaction a -> Store m a   -- exactly-once body, n
 Run an explicit `hasql` transaction through the store's pool — for example to append events _and_
 update an inline projection table atomically. `RunTransaction` retries the body on serialization
 failure; `RunTransactionNoRetry` runs it exactly once. Connection and server failures are mapped to
-typed `StoreError` constructors where the store can recognise them.
+typed `StoreError` constructors where the store can recognise them. A duplicate event constraint
+becomes `DuplicateEvent (Just eventId)` when its detail is parseable. Other server failures preserve
+their SQLSTATE and message as `UnexpectedServerError`; they are not misclassified as a missing
+`<transaction>` stream.
 
 ## Interpreters
 
