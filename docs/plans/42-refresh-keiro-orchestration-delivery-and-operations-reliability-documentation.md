@@ -52,7 +52,12 @@ workflow snapshot failure does not undo durable journal progress.
   terminal evidence. Added a production outcome-verification checklist spanning workflows,
   dispatch, Kiroku subscriptions, inbox, outbox, and timers. Formatting, MDX/types, production
   build/prerender, the 451-file internal-link scan, and focused stale-term scans passed.
-- [ ] Run final EP-3 validation and record EP-4/EP-7 handoffs.
+- [x] (2026-07-14T17:44:55Z) Run final EP-3 validation and record EP-4/EP-7 handoffs. The full
+  `pnpm run check` gate passed: MDX/types, lint (four pre-existing warnings), format, production
+  build/prerender, and the 451-file internal-link scan. Focused rejection, sharding, replay,
+  dead-letter telemetry, and post-commit snapshot scans covered reference, task, explanation,
+  cookbook, FAQ, and walkthrough surfaces. EP-4 must emit the same disposition/store-error
+  contracts; EP-7 must retain the at-least-once language and terminal-evidence checklist.
 
 ## Surprises & Discoveries
 
@@ -84,6 +89,10 @@ workflow snapshot failure does not undo durable journal progress.
 - Outbox head-of-line order is deterministic over `(created_at, outbox_id)`, but `created_at` is
   PostgreSQL transaction-start time. The canonical producer serializes same-key input; concurrent
   inline enqueues require caller serialization when commit order is a domain invariant.
+- The current migration source creates Keiro framework tables in the `keiro` schema, although the
+  existing migration overview still says all framework tables live in `kiroku`. This plan corrected
+  the durable-workflow reference and leaves the global migration-page reconciliation to EP-6, which
+  already owns runtime schema composition.
 
 
 ## Decision Log
@@ -134,6 +143,12 @@ workflow snapshot failure does not undo durable journal progress.
   docs expose their production retention, retry, ordering, and timeout defaults. The new operations
   checklist makes “not in backlog” insufficient evidence and maps every worker path to durable state,
   explicit skip policy, metrics, and terminal tables.
+- EP-3 is complete against clean committed Keiro `c68dcc7`, Kiroku `58aff77`, and Shibuya
+  `172df24`. EP-4 inherits rejection/poison disposition, target-scoped duplicate proof, typed
+  workflow store errors, and order-insensitive correlation for generated `.keiro` surfaces. EP-6
+  inherits the `keiro`-versus-`kiroku` schema correction. EP-7 inherits the at-least-once wording,
+  explicit-skip caveat, source/target dead-letter distinction, and the durable-worker outcome
+  checklist; it remains responsible for source-sync pointers and the announcement-wide gate.
 
 
 ## Context and Orientation

@@ -83,7 +83,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 |---|-------|------|-----------|-----------|--------|
 | EP-1 | Refresh keiki 0.2 correctness replay and persistence documentation | `docs/plans/40-refresh-keiki-0-2-correctness-replay-and-persistence-documentation.md` | None | None | Complete |
 | EP-2 | Refresh keiro command replay snapshot and read-model reliability documentation | `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md` | None | EP-1 | Complete |
-| EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | In Progress |
+| EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Complete |
 | EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Not Started |
 | EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Not Started |
 | EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | Not Started |
@@ -248,6 +248,9 @@ interactions between child plans. Provide concise evidence.
 - EP-3 confirmed that ordered outbox policies sort transaction-start timestamps, not commit order.
   The canonical producer's serialized input is stable; inline concurrent same-key/source enqueues
   need application serialization when strict order is promised.
+- EP-3 found that the current Keiro migrations create framework tables in the `keiro` schema while
+  the global migration overview still calls it `kiroku`. EP-3 corrected its workflow reference;
+  EP-6 must reconcile the migration overview and cross-package schema-composition guidance.
 - EP-2 established the runtime schema split consumed by EP-5 and EP-6: application projection data
   is schema-qualified outside both Keiro's `keiro` framework schema and Kiroku's `kiroku` store
   schema. The later migration plans own how those schemas are composed and deployed.
@@ -315,3 +318,8 @@ Compare the result against the original vision.
   docs state their actual recovery/ordering boundaries; and a new production checklist maps workflow,
   dispatch, subscription, inbox, outbox, and timer outcomes to their durable record and telemetry.
   All milestone checks passed, including the 451-file internal-link scan.
+- EP-3 is complete against clean committed Keiro `c68dcc7`, Kiroku `58aff77`, and Shibuya
+  `172df24`. Its final full-site gate passed. EP-4 inherits the generated disposition, duplicate,
+  workflow store-error, and correlation contracts; EP-6 inherits the framework-schema correction;
+  EP-7 inherits at-least-once announcement language, explicit-skip caveats, the two dead-letter
+  domains, and the durable-worker outcome checklist.
