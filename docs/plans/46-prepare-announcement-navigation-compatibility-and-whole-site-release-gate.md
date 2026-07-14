@@ -33,7 +33,8 @@ and navigation integrity.
   example-status language.
 - [x] (2026-07-14T19:41:48Z) Milestone 3: update repository metadata and source
   ledgers.
-- [ ] Milestone 4: establish and run the whole-site release gate.
+- [ ] Milestone 4: establish and run the whole-site release gate. The automated gate is complete;
+  the required manual preview remains pending because this session exposes no browser backend.
 
 ## Surprises & Discoveries
 
@@ -44,6 +45,17 @@ and navigation integrity.
 - Every final child-plan SHA still equals its upstream `HEAD`. Keiro has only the previously excluded
   untracked `mori.automation.dhall`; Message DB has only the user's existing `mori.dhall` edit. Both
   remain outside the evidence boundary and untouched.
+- The first navigation-coverage run found two root-level pages that Fumadocs built but
+  `content/docs/meta.json` omitted: `diagram-demo.mdx` and `ligature-check.mdx`. Registering both made
+  the metadata inventory complete at 62 metadata files and 506 pages.
+- The stale-claim audit found two forms of current-tense drift: four Keiki pages still pinned their
+  source notes to 0.1/`344c4ca`, and two Keiro/PGMQ pages taught Shibuya's old public
+  `Ingested -> AckDecision` handler shape. They now use Keiki 0.2/`ce5748b` and
+  `Message -> AckDecision`. Remaining scan matches are explicit removed-API notes, predecessor
+  history imports, physical Keiro table names, or the deliberately excluded example subtree.
+- The in-app browser runtime reported no available browser backend after its required setup and
+  troubleshooting checks. Automated prerendering and search-index generation succeed, but the plan's
+  manual sidebar/search/component inspection cannot be claimed until a browser is available.
 
 
 ## Decision Log
@@ -92,6 +104,12 @@ and navigation integrity.
   range summaries. The jitsurei pointer remains byte-for-byte unchanged. `mori show --full`
   resolves all seven dependencies and ten local documentation references; formatting and whitespace
   checks pass.
+- Milestone 4's automated release gate is implemented and green. `pnpm check` now verifies types,
+  lint, formatting, navigation metadata, the production build, and links; navigation covers 62
+  metadata files and all 506 pages, and the internal-link scan reports no broken links. The run has
+  the same four pre-existing lint warnings plus the existing production chunk-size warning.
+  `git diff --check` is clean and `mori show --full` resolves seven dependencies and ten docs. The
+  milestone remains open solely for the required rendered preview and six-product search check.
 
 
 ## Context and Orientation

@@ -210,7 +210,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
   example-status language.
 - [x] (2026-07-14T19:41:48Z) EP-7 Milestone 3: update repository metadata and
   source ledgers.
-- [ ] EP-7 Milestone 4: establish and run the whole-site release gate.
+- [ ] EP-7 Milestone 4: establish and run the whole-site release gate. Automated validation is
+  complete; rendered preview validation is pending because this session exposes no browser backend.
 
 ## Surprises & Discoveries
 
@@ -279,6 +280,13 @@ interactions between child plans. Provide concise evidence.
   `shibuya-message-db-adapter 0.1.0.0` still bounds `shibuya-core` to the 0.5 line and cannot be
   selected with the reviewed 0.8 core. The announcement matrix now distinguishes source-reviewed
   behavior from a compatible release pairing.
+- EP-7's navigation gate found two built but unlisted root pages and now proves that all 506 MDX
+  pages occur exactly once in their nearest metadata inventory. Its stale audit also corrected four
+  Keiki 0.1 source pins and two obsolete Shibuya handler signatures; the remaining matches are
+  explicitly historical, physical table identifiers, or part of the excluded example subtree.
+- The required rendered-preview check is the only remaining EP-7 acceptance item. Browser setup and
+  troubleshooting completed, but the runtime listed no available browser backend, so sidebars,
+  six-product search results, and visible MDX rendering could not be inspected in this session.
 
 
 ## Decision Log
@@ -433,3 +441,10 @@ Compare the result against the original vision.
   Kiroku 0.3, pgmq-hs 0.4, Shibuya 0.8, and all four adapters while preserving every prior pointer.
   Dirty upstream files remain excluded and untouched, and the jitsurei ledger is unchanged.
   `mori show --full`, formatting, and whitespace checks pass.
+- EP-7 Milestone 4's automated portion added a read-only navigation-integrity checker and wired it
+  into `pnpm check`. The checker covers 62 metadata files and 506 pages; the full type, lint,
+  formatting, navigation, production-build, and link gate passes, with four pre-existing lint
+  warnings and the existing chunk-size warning recorded. `git diff --check` is clean and
+  `mori show --full` resolves seven dependencies and ten docs. EP-7 remains in progress until the
+  manual browser preview confirms sidebars, search hits for all six products, and visible MDX
+  components.

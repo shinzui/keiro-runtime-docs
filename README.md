@@ -35,16 +35,17 @@ Open the URL Vite prints (default <http://localhost:3000>).
 
 ## Common scripts
 
-| Command             | What it does                                                             |
-| ------------------- | ------------------------------------------------------------------------ |
-| `pnpm dev`          | Dev server with hot reload.                                              |
-| `pnpm build`        | Prerender the static SPA into `.output/public/`.                         |
-| `pnpm start`        | Serve a built `.output/public/`.                                         |
-| `pnpm typecheck`    | Generate `.source/` with `fumadocs-mdx`, then run `tsc --noEmit`.        |
-| `pnpm lint`         | `oxlint`.                                                                |
-| `pnpm format:check` | `oxfmt --check .` (use `pnpm format` to write).                          |
-| `pnpm lint:links`   | Source-level `/docs` link check, then a `linkinator` crawl of the build. |
-| `pnpm check`        | The full gate: typecheck → lint → format:check → build → link check.     |
+| Command             | What it does                                                              |
+| ------------------- | ------------------------------------------------------------------------- |
+| `pnpm dev`          | Dev server with hot reload.                                               |
+| `pnpm build`        | Prerender the static SPA into `.output/public/`.                          |
+| `pnpm start`        | Serve a built `.output/public/`.                                          |
+| `pnpm typecheck`    | Generate `.source/` with `fumadocs-mdx`, then run `tsc --noEmit`.         |
+| `pnpm lint`         | `oxlint`.                                                                 |
+| `pnpm format:check` | `oxfmt --check .` (use `pnpm format` to write).                           |
+| `pnpm lint:nav`     | Verify every MDX page and child section appears exactly once in metadata. |
+| `pnpm lint:links`   | Source-level `/docs` link check, then a `linkinator` crawl of the build.  |
+| `pnpm check`        | The full gate: types → lint → format → nav → build → links.               |
 
 `pnpm check` mirrors the CI workflow in `.github/workflows/ci.yml`; run it before pushing.
 
@@ -60,7 +61,7 @@ content/docs/        # all documentation, as MDX — the source of truth
   _templates/        # per-doc-type starting points (hidden from the sidebar)
 docs/*-source-sync.md # exact upstream SHAs reviewed by each source-backed tree
 src/                 # the TanStack Start app shell, routes, and MDX components
-scripts/             # check-doc-links.mjs, copy-fonts.mjs
+scripts/             # navigation/link checks and static asset helpers
 ```
 
 ## Writing docs
