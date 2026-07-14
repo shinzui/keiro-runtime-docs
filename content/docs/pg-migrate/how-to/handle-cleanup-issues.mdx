@@ -1,0 +1,56 @@
+---
+title: "Handle cleanup issues"
+description: "Preserve the primary durable outcome while investigating advisory-unlock or statement-timeout restoration failures."
+---
+
+Cleanup occurs after the runner's primary work. First classify whether that primary work succeeded or
+failed; the next action is different.
+
+## Successful report with cleanup issues
+
+`MigrationReport`, `RepairReport`, and `HistoryImportReport` each contain:
+
+```haskell
+cleanupIssues :: [CleanupIssue]
+```
+
+When the surrounding result is successful and this list is non-empty, the primary migration,
+repair, or history import is already durable. Do not convert it into an execution failure and do not
+rerun the primary action.
+
+1. Record the complete successful report, database, role, connection/provider identity, and time.
+2. Preserve which issue occurred: `AdvisoryUnlockReturnedFalse`, `AdvisoryUnlockFailed`, or
+   `StatementTimeoutRestoreFailed`.
+3. Confirm that the connection was discarded or safely returned according to the application's
+   provider contract.
+4. Before another operation, check for an active migration session or lock holder and investigate
+   session loss, permissions, networking, or provider behavior.
+5. Run read-only status/verification from a fresh connection to confirm the durable primary outcome.
+
+If policy needs to stop the wider application rollout while cleanup is investigated, record that as
+an operational gate around a successful migration—not as evidence that the SQL should run again.
+
+## Primary failure plus cleanup failure
+
+```haskell
+CleanupFailed primaryError cleanupIssueList
+```
+
+This constructor means the primary operation failed first and cleanup then also failed. Preserve both
+parts. Classify `primaryError` using the normal failure runbook, while independently establishing
+whether an old session or advisory lock remains. A nontransactional primary error may still be
+ambiguous and must not be retried automatically.
+
+Asynchronous interruption is rethrown only after cleanup has been attempted. Treat cancellation logs
+and any retained cleanup diagnostic as part of the same incident evidence.
+
+## Verify the next safe action
+
+Use a fresh connection and `status --json`. The ledger and database evidence—not the cleanup error
+alone—determine whether the plan is applied, pending, or in nontransactional recovery. Never edit the
+ledger or release a lock by changing the configured lock key.
+
+## Related
+
+- [Errors, events, and reports](/docs/pg-migrate/reference/errors-events-and-reports)
+- [The locked dedicated connection](/docs/pg-migrate/explanation/the-locked-dedicated-connection)

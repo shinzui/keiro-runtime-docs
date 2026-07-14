@@ -1,0 +1,54 @@
+---
+title: "Operate an intentionally shared ledger"
+description: "Allow foreign component rows only when multiple application plans deliberately coordinate on one ledger."
+---
+
+Prefer one validated ledger schema and lock identity per application plan. Use a shared ledger only
+when ownership, release coordination, and foreign-row inventory are explicit operational contracts.
+
+## Configure the shared boundary
+
+Every participant must use the same ledger schema and advisory-lock key:
+
+```haskell
+sharedLedger <- either fail pure (ledgerConfig "platform_migrations" 424242)
+
+let options =
+      withUnknownMigrationsPolicy AllowUnknownMigrations
+        $ withLedger sharedLedger
+        $ defaultRunOptions
+```
+
+Do not share the schema while choosing different lock keys. That removes serialization between
+plans that mutate the same ledger and database.
+
+## Define what is foreign
+
+Write down the stable component names owned by each application, the expected foreign migration
+identities, the release process that changes that inventory, and the incident owner. A renamed or
+removed component is durable-history change, not routine foreign churn.
+
+`AllowUnknownMigrations` permits execution, repair, history import, and operational `status` to
+coexist with rows outside the active plan. It does not relax identity, position, checksum, kind,
+transaction mode, status, or prefix checks for migrations the plan does own.
+
+## Gate a shared-ledger deployment
+
+1. Capture `status --json` and compare `unknownMigrations` with the approved foreign inventory.
+2. Stop if an owned row has any issue or if a foreign row is unexpected.
+3. Apply the active plan as one complete unit.
+4. Capture successful apply and post-apply status evidence.
+5. Have every owning application run its own release gate after changes to shared history.
+
+Strict `verify` deliberately reports every foreign row as `UnknownStoredMigration`, regardless of
+the run option. Preserve that signal; do not wrap or filter it into a false strict success. If the
+organization requires an empty strict verification report per application, use separate ledger
+schemas instead of shared-ledger policy.
+
+Never delete another application's rows, move them to another schema, or change checksums to make a
+local command pass.
+
+## Related
+
+- [Verify a deployed plan](/docs/pg-migrate/how-to/verify-a-deployed-plan)
+- [Component ownership and plan composition](/docs/pg-migrate/explanation/component-ownership-and-plan-composition)

@@ -31,7 +31,8 @@ failure classes to decide whether deployment may proceed.
   fresh-database tutorial covering embedding, CLI mounting, apply, verify, rerun, and append.
 - [x] (2026-07-14T18:34:02Z) Milestone 2: documented authoring, composition, CLI integration,
   testing, and the public reference surface.
-- [ ] Milestone 3: document production execution, verification, cleanup, and recovery.
+- [x] (2026-07-14T18:40:31Z) Milestone 3: documented production execution, verification, cleanup,
+  and recovery.
 - [ ] Milestone 4: document predecessor imports, practical recipes, FAQ, and final navigation.
 
 ## Surprises & Discoveries
@@ -44,6 +45,12 @@ failure classes to decide whether deployment may proceed.
 - The CLI facade exposes every command and options constructor but intentionally has no
   `commandOutputFormat` helper. Applications select the renderer with an exhaustive
   `MigrationCommand` match, so a newly added command becomes a compile-time integration task.
+- Read-only `status` and `verify` use a dedicated provider connection but intentionally neither
+  acquire the migration advisory lock nor initialize the ledger. They observe history; only
+  execution, repair, and import establish the serialized mutation lifecycle.
+- Strict `verify` always reports foreign rows even when `RunOptions` allows them for execution and
+  `status`. An intentionally shared ledger therefore needs an explicit foreign-row inventory; an
+  application requiring empty strict verification should use its own ledger schema.
 
 
 ## Decision Log
@@ -85,6 +92,12 @@ failure classes to decide whether deployment may proceed.
   rendering, and exit behavior remain application-owned. The upstream public build and all 110 unit
   tests pass; formatting, MDX/TypeScript, production build, `git diff --check`, and the 478-file link
   scan pass.
+- Milestone 3 added seven production how-tos and five explanations spanning the deployment gate,
+  lock/timeouts, verification, shared-ledger policy, nontransactional repair, cleanup, failure
+  triage, ownership, connection lifecycle, execution state machines, schema drift, and forward-only
+  recovery. The guidance retains JSON evidence, forbids automatic ambiguous retry and ledger edits,
+  and preserves durable success when cleanup has issues. Formatting, MDX/TypeScript, production
+  build, `git diff --check`, and the 490-file link scan pass.
 
 
 ## Context and Orientation

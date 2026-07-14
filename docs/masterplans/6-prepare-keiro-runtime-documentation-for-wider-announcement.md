@@ -197,7 +197,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T18:19:23Z) EP-4 Milestone 4: reconcile keiro-dsl across the keiro documentation.
 - [x] (2026-07-14T18:24:38Z) EP-5 Milestone 1: create the pg-migrate section and fresh-database spine.
 - [x] (2026-07-14T18:34:02Z) EP-5 Milestone 2: document authoring, composition, and CLI integration.
-- [ ] EP-5 Milestone 3: document production execution and recovery.
+- [x] (2026-07-14T18:40:31Z) EP-5 Milestone 3: document production execution and recovery.
 - [ ] EP-5 Milestone 4: document predecessor cutovers and practical recipes.
 - [ ] EP-6 Milestone 1: replace old migration guidance with component composition.
 - [ ] EP-6 Milestone 2: refresh Kiroku 0.3 user and operator behavior.
@@ -363,3 +363,8 @@ Compare the result against the original vision.
   policy, exact-byte manifests, all eight CLI commands, JSON v1, report and cleanup semantics, and
   the six-package compatibility surface. The upstream public build and all 110 unit tests pass;
   the production docs build and 478-file link scan pass.
+- EP-5 Milestone 3 established a source-backed operator runbook from backup and preflight evidence
+  through complete-plan apply, strict post-verification, contention policy, shared-ledger handling,
+  and forward-only incident recovery. Separate transactional/nontransactional state machines and
+  cleanup-outcome guidance prevent unsafe automatic retry or loss of durable success evidence. The
+  production docs build and 490-file link scan pass.

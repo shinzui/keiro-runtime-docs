@@ -1,0 +1,49 @@
+---
+title: "Verification is not schema drift detection"
+description: "What strict plan-to-ledger verification proves, what it deliberately cannot prove, and how to close the remaining operational gap."
+---
+
+Strict verification answers a history question: “Does this database's pg-migrate ledger represent
+exactly the declared application plan?” It does not answer a schema-introspection question: “Does
+the live database still have every table, index, constraint, and data invariant the SQL intended?”
+
+## What verification compares
+
+For every declared and stored migration, ledger v1 retains enough information to compare:
+
+- component-local identity and position;
+- SHA-256 of the exact immutable payload;
+- SQL versus Haskell kind;
+- transactional versus nontransactional mode;
+- durable status and component-prefix ordering; and
+- rows stored outside the declared plan.
+
+Strict success proves there are no pending migrations, changed applied definitions, unresolved
+states, history gaps, duplicate identities/positions, or unknown rows.
+
+## The two evidence domains
+
+| Question | Plan/ledger verification | Schema or application validation |
+| --- | --- | --- |
+| Was this exact payload recorded as applied? | yes | usually no |
+| Was applied history reordered or renamed? | yes | no |
+| Is a nontransactional attempt unresolved? | yes | perhaps indirectly |
+| Does an expected index currently exist and remain valid? | no | yes |
+| Did a privileged actor alter a constraint later? | no | yes |
+| Does migrated data satisfy a business invariant? | no | yes |
+
+The ledger is intentionally append-only evidence of execution, not a continuously reconciled model
+of PostgreSQL catalogs. Adding introspection to generic verification would also require pg-migrate to
+understand the semantic intent of arbitrary SQL, which cannot be derived reliably from bytes alone.
+
+## Closing the gap
+
+Use strict verification as the release gate for migration history. Add narrower independent checks
+where the deployment requires them: PostgreSQL catalog queries for a concurrent index, application
+smoke tests, constraint-validation queries, or a schema-drift tool with its own reviewed model.
+
+During nontransactional repair, those independent checks become the evidence for `MarkApplied` or
+`Retry`. They do not authorize changing the ledger checksum. Conversely, an empty schema diff does
+not prove that pg-migrate history is a valid prefix; keep both proofs.
+
+See [Verify a deployed plan](/docs/pg-migrate/how-to/verify-a-deployed-plan).

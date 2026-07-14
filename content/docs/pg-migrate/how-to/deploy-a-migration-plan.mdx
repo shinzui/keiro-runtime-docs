@@ -1,0 +1,67 @@
+---
+title: "Deploy a migration plan"
+description: "Gate a production deployment with reviewed plan evidence, one complete apply, and strict post-deploy verification."
+---
+
+Run migrations as an explicit deployment job from the same reviewed artifact that contains the
+application's embedded plan.
+
+<Callout type="warn">
+  Back up the database and prove the restore procedure before the change window. Quiesce application
+  writers whenever the reviewed SQL or predecessor cutover requires it.
+</Callout>
+
+## 1. Capture the pre-deploy evidence
+
+Record the release identity, database, role, start time, and complete JSON results:
+
+```console
+my-service-migrate plan --json > migration-plan.json
+my-service-migrate status --json > migration-status-before.json
+my-service-migrate verify --json > migration-verify-before.json
+```
+
+Before a forward deployment, strict `verify` normally reports the reviewed pending suffix and exits
+in the verification-failed class. Stop if it reports anything else: changed applied bytes, reordered
+history, `Running` or `Failed` state, an unknown stored row, or a pending set different from the
+reviewed plan.
+
+## 2. Apply the complete plan once
+
+```console
+my-service-migrate up \
+  --lock-timeout 30000 \
+  --statement-timeout 120000 \
+  --json > migration-up.json
+```
+
+Choose timeouts from measured operations and the deployment window. Do not add a component, count,
+or target selector around `up`: the application plan is the deployment unit.
+
+Inspect every result and `cleanupIssues`. `AppliedNow` means the migration committed during this run;
+`AlreadyApplied` means it was already durable. If the report is successful but has cleanup issues,
+do not rerun it—follow [Handle cleanup issues](/docs/pg-migrate/how-to/handle-cleanup-issues).
+
+## 3. Close the gate
+
+```console
+my-service-migrate status --json > migration-status-after.json
+my-service-migrate verify --json > migration-verify-after.json
+```
+
+Post-deploy strict verification must have no issues and no pending migrations before the new
+application version starts. Retain all five JSON documents with the release and change record.
+
+If apply failed, keep the writers quiesced and classify the outcome before acting. Transactional SQL
+can be corrected by restoring the reviewed pending definition or appending a forward migration.
+Ambiguous nontransactional state requires the explicit [repair
+runbook](/docs/pg-migrate/how-to/repair-a-nontransactional-migration).
+
+Never edit `pgmigrate` ledger rows, bypass a checksum mismatch, or treat strict verification as a
+live-schema comparison.
+
+## Related
+
+- [Configure locks and timeouts](/docs/pg-migrate/how-to/configure-locks-and-timeouts)
+- [Verify a deployed plan](/docs/pg-migrate/how-to/verify-a-deployed-plan)
+- [Why pg-migrate is forward-only](/docs/pg-migrate/explanation/why-pg-migrate-is-forward-only)

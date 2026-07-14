@@ -1,0 +1,65 @@
+---
+title: "Configure locks and timeouts"
+description: "Choose advisory-lock waiting and temporary statement-timeout policy without weakening the single-runner boundary."
+---
+
+Every execution, repair, and history import must coordinate through one ledger lock key. Configure
+how long the operation waits and whether PostgreSQL temporarily limits each statement.
+
+## Configure the application defaults
+
+```haskell
+options =
+  withStatementTimeout (Just 120)
+    $ withLockWait (WaitFor 30)
+    $ defaultRunOptions
+```
+
+`LockWait` has three public choices:
+
+| Policy | Use it when | Failure |
+| --- | --- | --- |
+| `WaitIndefinitely` | a supervised job may queue behind the active owner | none from elapsed wait |
+| `WaitFor duration` | the deployment has a bounded acquisition budget | `AdvisoryLockTimedOut` |
+| `NoWait` | automation should fail fast when another owner exists | `AdvisoryLockUnavailable` |
+
+Durations must be positive. An invalid lock wait or statement timeout fails before connection
+acquisition. Positive sub-millisecond statement timeouts round up to one millisecond.
+
+`withStatementTimeout Nothing` leaves the session's existing `statement_timeout` unchanged.
+`withStatementTimeout (Just duration)` saves the current value, applies the positive duration for the
+operation, and restores the previous value during cleanup. A timeout bounds a PostgreSQL statement;
+it does not make nontransactional SQL atomic.
+
+## Override a single CLI operation
+
+```console
+my-service-migrate up \
+  --lock-timeout 30000 \
+  --statement-timeout 120000 \
+  --json
+```
+
+Timeout flags use positive integer milliseconds. The lock overrides `--no-wait`,
+`--lock-timeout MILLISECONDS`, and `--wait` are mutually exclusive. The statement overrides
+`--statement-timeout MILLISECONDS` and `--no-statement-timeout` are also mutually exclusive.
+
+Omitting those flags preserves the application-configured defaults. Use `--wait` to explicitly
+replace a finite/no-wait default with indefinite waiting, and `--no-statement-timeout` to explicitly
+remove a configured temporary timeout.
+
+## Respond to contention safely
+
+When acquisition fails, identify the current migration, repair, or import before retrying. Do not
+change the lock key merely to bypass it: two keys permit concurrent mutation of the same ledger and
+target database.
+
+The runner attempts statement-timeout restoration and advisory unlock on success, failure, callback
+failure, and asynchronous interruption. Interpret any cleanup problem with [the cleanup
+runbook](/docs/pg-migrate/how-to/handle-cleanup-issues), preserving whether the primary operation had
+already committed.
+
+## Related
+
+- [The locked dedicated connection](/docs/pg-migrate/explanation/the-locked-dedicated-connection)
+- [Errors, events, and reports](/docs/pg-migrate/reference/errors-events-and-reports)

@@ -1,0 +1,49 @@
+---
+title: "Why pg-migrate is forward-only"
+description: "How append-only history, explicit ambiguity, and embedded artifacts make production recovery reviewable."
+---
+
+pg-migrate does not expose down migrations. Once a migration is durable, its identity, position,
+payload checksum, kind, and transaction mode are history. Recovery restores the released definition
+and moves forward with another reviewed migration.
+
+## A down script cannot restore the old world
+
+DDL reversal is often lossy: dropped data, rewritten values, external readers, long-running
+transactions, and application-version compatibility do not reverse just because a second SQL file
+has an inverse-looking name. Treating “down” as a guaranteed rollback hides those decisions behind a
+generic command.
+
+A forward correction makes the actual recovery explicit. It has a new identity, goes through the
+same review and deployment gate, and leaves both the original action and correction in durable
+history. Application rollback remains a separate compatibility decision; migrations should use
+expand/contract sequencing when old and new binaries must overlap.
+
+## The same principle shapes other exclusions
+
+- **No automatic ambiguous repair.** `Running` or `Failed` nontransactional state cannot reveal
+  whether the effect is absent, partial, or complete. An operator supplies evidence, confirmation,
+  and an audited reason.
+- **No checksum bypass.** Changing a ledger digest would erase the proof that the deployed artifact
+  differs from current source. Restore the applied bytes and append a correction.
+- **No arbitrary `IO` migration.** Public Haskell migrations are limited to typed Hasql transaction
+  or session actions with explicit fingerprints. External effects do not share PostgreSQL's durable
+  boundary and cannot be represented honestly by its ledger.
+- **No runtime file discovery.** Manifest v1 is validated and embedded at compile time. Production
+  executes the exact reviewed bytes in its artifact, not whatever happens to exist in a directory.
+- **No partial-plan `up`.** The application composes one dependency-validated plan; selective
+  execution would create unreviewed intermediate release states.
+
+## Recovery remains possible
+
+Forward-only is not “do nothing after failure.” Before durable apply, correct the pending migration
+and rebuild. After apply, append a compensating or completing migration. For an ambiguous
+nontransactional attempt, inspect the live effect and choose audited `MarkApplied` or safe `Retry`.
+For predecessor cutover, import proven history rather than replaying old SQL.
+
+The common rule is that recovery adds evidence; it does not rewrite existing evidence. This makes
+post-incident reasoning and future verification possible.
+
+See [Deploy a migration plan](/docs/pg-migrate/how-to/deploy-a-migration-plan) and [Transactional and
+nontransactional state
+machines](/docs/pg-migrate/explanation/transactional-and-nontransactional-state-machines).

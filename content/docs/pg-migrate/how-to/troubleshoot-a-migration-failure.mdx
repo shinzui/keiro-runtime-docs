@@ -1,0 +1,60 @@
+---
+title: "Troubleshoot a migration failure"
+description: "Classify definition, verification, acquisition, execution, recovery, and cleanup failures without unsafe retries."
+---
+
+Start from public Haskell constructors or CLI JSON v1. Human text is diagnostic; `Show` and rendered
+text are not automation protocols.
+
+## Preserve the incident boundary
+
+Capture the command, complete JSON result, artifact/release identity, database and role, timestamps,
+server logs, and any `cleanupIssues`. Quiesce writers if the database effect may be ambiguous.
+
+## Classify before acting
+
+| Failure class | First check | Next action |
+| --- | --- | --- |
+| Definition or manifest | exact filename, bytes, directive, and plan dependencies | fix pending source; rebuild artifact |
+| `UnsupportedPostgresVersion` | intended instance and tested major | use a supported server; do not bypass |
+| Lock unavailable/timed out | current holder and operation | wait or fail the deployment; keep the same key |
+| `PlanVerificationFailed` | every structured `VerificationIssue` | restore applied definitions; append forward |
+| Transactional action | PostgreSQL error and transaction result | correct only the pending definition or append |
+| Nontransactional `Running`/`Failed` | catalogs, logs, and actual effect | stop retries; use confirmed repair |
+| Event handler | optional retained primary error plus callback exception | fix observation path without changing durable semantics |
+| Successful report with cleanup issues | report outcome and cleanup list | preserve success; investigate cleanup; do not rerun |
+| `CleanupFailed` | primary error and every cleanup issue | handle both; do not collapse one into the other |
+
+## Common authoring failures
+
+`embedMigrationManifest` rejects blank/commented manifest lines, whitespace-padded or nested names,
+missing listed files, unlisted sibling SQL, invalid UTF-8, and an empty manifest. SQL validation also
+rejects BOMs, empty payloads, transaction-control statements, psql meta-commands, `COPY FROM STDIN`,
+unknown/duplicate/misplaced directives, unterminated constructs, and nontransactional files with
+anything other than one statement.
+
+Run the direct check for a shorter feedback loop:
+
+```console
+my-service-migrate check --manifest migrations/accounts/manifest --json
+```
+
+## Common history failures
+
+- Checksum, position, kind, or transaction-mode mismatch means applied history changed. Restore the
+  original applied definition and append a migration.
+- Unknown stored history usually means the wrong artifact, database, ledger config, removed
+  component, or intentional shared ledger. Do not delete it.
+- `Running` or `Failed` can only persist for nontransactional work. Never infer the database effect
+  from that state alone.
+- `LedgerTooNew` means this binary cannot safely interpret the database. Use a compatible artifact;
+  never downgrade the ledger.
+
+After any recovery, run status and strict verification from a fresh connection and retain the new
+evidence beside the original failure.
+
+## Related
+
+- [Verify a deployed plan](/docs/pg-migrate/how-to/verify-a-deployed-plan)
+- [Repair a nontransactional migration](/docs/pg-migrate/how-to/repair-a-nontransactional-migration)
+- [CLI and JSON v1](/docs/pg-migrate/reference/cli-and-json-v1)

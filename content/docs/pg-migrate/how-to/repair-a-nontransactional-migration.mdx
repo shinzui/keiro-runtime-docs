@@ -1,0 +1,75 @@
+---
+title: "Repair a nontransactional migration"
+description: "Resolve a durable Running or Failed state only after inspecting the database effect and recording an explicit audited decision."
+---
+
+A nontransactional migration can be interrupted after PostgreSQL applied all, some, or none of its
+effect. The ledger state alone cannot tell which outcome occurred.
+
+<Callout type="warn">
+  Stop automated retries. Back up the database, quiesce competing writers, and retain the original
+  deployment output before choosing any repair operation.
+</Callout>
+
+## 1. Identify the exact attempt
+
+```console
+my-service-migrate status --json > repair-status-before.json
+my-service-migrate list --component accounts --migration 0003-build-index --json
+```
+
+Confirm that the target is a declared nontransactional migration in `Running` or `Failed` state.
+Resolve any checksum, identity, position, kind, transaction-mode, prefix, or unexpected-unknown issue
+before repair; repair never bypasses those checks.
+
+## 2. Inspect independent evidence
+
+Read the reviewed SQL and inspect PostgreSQL catalogs, server logs, deployment logs, and the intended
+application invariant. For a concurrent index, for example, check whether the index exists, is valid,
+matches the reviewed definition, and can safely serve traffic. Record the queries and results in the
+incident or change record.
+
+## 3. Choose exactly one operation
+
+When the intended effect is completely present and safe, mark it applied:
+
+```console
+my-service-migrate repair accounts/0003-build-index \
+  --mark-applied \
+  --reason "index exists, is valid, and matches change CR-1842" \
+  --confirm \
+  --json > repair-result.json
+```
+
+When the effect is absent, or a reviewed cleanup made retry demonstrably safe, retry it:
+
+```console
+my-service-migrate repair accounts/0003-build-index \
+  --retry \
+  --reason "invalid partial index removed under incident INC-92" \
+  --confirm \
+  --json > repair-result.json
+```
+
+`--retry` returns the row to `Running` and executes the same embedded action. A second failure remains
+durable. Never select retry merely because the row says `Failed`, and never mark applied from intent
+alone.
+
+## 4. Verify and retain the audit
+
+```console
+my-service-migrate status --json > repair-status-after.json
+my-service-migrate verify --json > repair-verify-after.json
+```
+
+A successful repair appends an audit row with operation, old/new status, reason, role, runner version,
+and time. Retain that evidence. Inspect `cleanupIssues` without retrying a durably successful repair.
+
+Repair cannot target transactional history or an already applied row. In a deliberately shared
+ledger it honors the explicit unknown-migrations policy, while still enforcing all owned-plan
+metadata and prefix checks.
+
+## Related
+
+- [Transactional and nontransactional state machines](/docs/pg-migrate/explanation/transactional-and-nontransactional-state-machines)
+- [Troubleshoot a migration failure](/docs/pg-migrate/how-to/troubleshoot-a-migration-failure)

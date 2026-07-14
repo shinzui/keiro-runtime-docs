@@ -1,0 +1,59 @@
+---
+title: "Verify a deployed plan"
+description: "Compare the embedded plan with durable ledger history and turn each verification issue into an explicit action."
+---
+
+Use `status` for an operational summary and `verify` for the strict deployment assertion.
+
+```console
+my-service-migrate status --json
+my-service-migrate verify --json
+```
+
+Both commands are read-only: they do not initialize the ledger or acquire the migration advisory
+lock. On a new database, `status` reports the full plan as pending, while strict `verify` returns a
+verification report containing `PendingMigration` issues.
+
+## Interpret the report
+
+| Issue | Meaning | Safe action |
+| --- | --- | --- |
+| `PendingMigration` | declared migration has no applied row | review and run the complete plan |
+| `MigrationChecksumMismatch` | exact embedded bytes differ | restore applied bytes; append a correction |
+| `MigrationPositionMismatch` | applied component order changed | restore the applied order; append only |
+| `MigrationKindMismatch` | SQL/Haskell kind changed under one identity | restore the applied definition |
+| `MigrationTransactionModeMismatch` | transaction mode changed | restore the applied definition |
+| `StoredMigrationRunning` or `StoredMigrationFailed` | nontransactional attempt is unresolved | inspect effects; use confirmed repair |
+| `AppliedMigrationAfterGap` | durable component history is not a prefix | investigate artifact and import history |
+| `UnknownStoredMigration` | ledger row is absent from this plan | confirm database, artifact, ledger, and ownership |
+
+Duplicate stored identities or positions indicate corrupted or incompatible history and require
+manual investigation—not ledger editing.
+
+## Set the deployment invariant
+
+For a normally isolated application ledger, post-deploy acceptance is:
+
+- `issues` is empty;
+- `pendingMigrations` is empty;
+- `unknownMigrations` is empty; and
+- `appliedMigrations` is exactly the reviewed plan.
+
+Inspection filters only narrow displayed output; they never narrow validation. Do not use a
+component or migration filter to approve a partial deployment.
+
+`verify` always treats unknown rows as strict issues. `status` can honor
+`AllowUnknownMigrations` for an intentionally shared ledger, but that does not redefine strict
+verification. See [Operate an intentionally shared
+ledger](/docs/pg-migrate/how-to/operate-a-shared-ledger).
+
+## Keep the proof scoped correctly
+
+Verification compares plan identity, position, checksum, kind, transaction mode, status, and prefix
+against ledger v1. It does not inspect tables, indexes, constraints, or data invariants. Pair it with
+application smoke tests or dedicated schema-drift tooling when those properties matter.
+
+## Related
+
+- [Verification is not schema drift detection](/docs/pg-migrate/explanation/verification-is-not-schema-drift-detection)
+- [Deploy a migration plan](/docs/pg-migrate/how-to/deploy-a-migration-plan)
