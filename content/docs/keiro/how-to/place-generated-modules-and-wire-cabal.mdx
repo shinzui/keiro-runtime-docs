@@ -52,16 +52,20 @@ The CLI flags still override the spec per invocation — useful when the same sp
 different repos. Precedence is **CLI flag > spec clause > built-in default**.
 
 <Callout type="info">
-Re-running `scaffold` into an existing tree is safe regardless of placement: `-- @generated` modules
-are overwritten and filled hole modules (`Holes.hs` / `ProcessHoles.hs`) are never clobbered. Changing
-placement just changes the output paths — scaffold into a fresh `--out` (or delete the old tree) when
-you switch, so stale modules under the previous namespace don't linger.
+Re-running into an existing tree overwrites files with the `-- @generated` banner and preserves
+create-once holes. A generated target without the banner stops the entire plan before any write;
+move hand-owned code or use `--force-generated-overwrite` only for a deliberate, reviewed adoption.
 </Callout>
+
+Changing placement creates a new set of paths. Re-scaffold, then review the `stale:` report produced
+from `keiro-dsl-scaffold-record.<context>.txt`. Scaffold deletes nothing: remove stale generated
+entries only after checking imports, and migrate stale hole entries as hand-owned code. Do not delete
+an old tree wholesale when it contains filled holes.
 
 ## Wire the modules into Cabal from the manifest
 
-Every `scaffold` run writes `keiro-dsl-manifest.<context>.txt` into `--out`. It contains two
-paste-ready blocks: the `other-modules` (every generated and hole module, dotted) and the
+Every successful `scaffold` run writes `keiro-dsl-manifest.<context>.txt` into `--out`. It contains
+two paste-ready blocks: the `other-modules` (every generated and hole module, dotted) and the
 `build-depends` implied by the node kinds in the spec.
 
 ```bash
@@ -115,9 +119,9 @@ library
 <Callout type="info">
 The manifest is a **paste aid**, not an automated `.cabal` edit — editing a consumer's build file in
 place is out of scope by design. The `build-depends` set is the union implied by the node kinds
-present (e.g. an aggregate pulls `aeson, keiki, keiro, text`; a process adds `time, uuid`); a project
-on the runtime-only path can trim it. The manifest is regenerated (overwritten) on every scaffold, so
-re-run and re-paste when you add a node.
+present (e.g. an aggregate pulls `aeson, keiki, keiro, text`; a process adds `time, uuid`). The
+manifest is regenerated on every successful scaffold, so re-run and reconcile it when you add or
+remove a node.
 </Callout>
 
 ## Confirm placement landed
@@ -137,7 +141,8 @@ manifest: src/keiro-dsl-manifest.hospital-capacity.txt
 ## Related
 
 - [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) — the scaffold/fill workflow.
-- [keiro-dsl notation and CLI](/docs/keiro/reference/keiro-dsl-notation) — the `module`/`layout`
-  clauses and every CLI flag.
+- [keiro-dsl notation](/docs/keiro/reference/keiro-dsl-notation) — the `module`/`layout` clauses.
+- [keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) — flags, protected paths, manifests, and stale
+  records.
 - [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — the full
   write → check → scaffold → fill → harness → diff loop.

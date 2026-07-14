@@ -1,68 +1,71 @@
 ---
 title: "Check a service spec"
-description: "Run keiro-dsl check to reject a .keiro spec before any Haskell is written — and read the diagnostics that name the dangerous decision and line."
+description: "Run the current keiro-dsl parser and semantic gate, interpret located errors and warnings, and fix topology, policy, identity, or persistence defects before scaffolding."
 ---
 
-`keiro-dsl check` is the gate: it runs the validator over a `.keiro` spec and exits non-zero if any
-required decision is missing or any dangerous inversion is stated the wrong way. Run it **before** you
-scaffold or write any Haskell — a rejection is a spec fix, not a code fix. For the grammar see the
-[notation reference](/docs/keiro/reference/keiro-dsl-notation); for *why* these checks exist see [The
-keiro-dsl service toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain).
+Run `check` before generating Haskell. It parses the whole `.keiro` file, validates every top-level
+node and cross-node reference, prints located diagnostics, and exits nonzero when any diagnostic is
+an error.
 
-## Run it
+## Run and normalize
 
 ```bash
-# from the keiro repo root
-keiro-dsl check service.keiro ; echo "exit=$?"
+keiro-dsl check service.keiro
 # OK
-# exit=0
+
+keiro-dsl check service.keiro --emit
+# canonical accepted spec
 ```
 
-`OK` / exit 0 means every required decision is present. Any `error[Code]` (exit non-zero) names the
-rule and the line. **Warnings** (e.g. the benign-inversion notice for a timer's `on-reject Fired`) are
-informational and pass — `check` only fails on `Error`-severity diagnostics.
+Warnings print but exit 0. Errors use this form and exit nonzero:
 
-Add `--emit` to pretty-print the parsed spec on success instead of `OK` — it folds the common
-`parse`-then-`check` into one call (and is handy for confirming what the parser actually read):
-
-```bash
-keiro-dsl check service.keiro --emit   # prints the canonical spec text on success; still exits non-zero on error
+```text
+service.keiro:<line>: error[Code]: <message>
 ```
 
-<Callout type="info">
-`scaffold` runs this same validation first and refuses to emit any module for an invalid spec, so a
-green `check` is a precondition the scaffolder also enforces.
-</Callout>
+`--emit` combines parse, validation, and canonical pretty-printing. Scaffold runs the same gate and
+writes nothing for an invalid spec.
 
-## The rejections you must resolve in the spec
+## Fix the owning family
 
-Each of these is a dangerous decision the checker forces you to state — correctly — before any code
-exists:
-
-| Code | What it means | Fix in the spec |
+| Family | Representative diagnostics | Corrective move |
 |---|---|---|
-| `StatusMapNotTotal` | A projection's `status-map` does not cover every event | Add the missing `Event=>status` rows |
-| `EvtVersionMissingUpcaster` | A `vN` (N > 1) event has no contiguous upcaster | Add `upcast from v(N-1) = HOLE` |
-| `ClockSampled` / `ProcessFireAtNotInjected` | A guard/deadline reads the wall clock | Compute time from a `:Time` input field |
-| `ProcessDispatchIdSupplied` | A user-supplied dispatch-id | Remove it — dispatch-ids are runtime-owned |
-| `Disposition*` | The inbox table is incomplete, or `duplicate`/`previouslyFailed`/`decodeFailed` is mapped the unsafe way | Complete the table; `duplicate => ackOk`, `previouslyFailed => deadLetter`, `decodeFailed => deadLetter` |
-| `EmitSkipMissing` | An outbox `map` lacks `_ => skip` | Add the mandatory `_ => skip` arm |
-| `WqPhysicalDivergence` | A captured physical queue/table name does not match the re-derived one | Fix the `derive` block to match the logical name |
-| `AwaitSignalMismatch` | A `signal <label> of <wf>` has no matching `await <label>` | Align the labels — else the workflow waits forever |
-| `*UnresolvedRef` | A saga/target/fire/enqueue/publisher reference does not resolve | Point it at a declared node |
+| names and syntax | `IdentHaskellKeyword`, `IdentNotConstructorSafe`, `VertexCtorCollision`, duplicate-name codes | Rename to an ASCII, Haskell-safe, collision-free identifier; remove shadowed singleton/row declarations |
+| aggregate/evolution | `RegisterInitialOutOfScope`, `WriteTargetNotRegister`, `StatusMapNotTotal`, `EvtVersionMissingUpcaster`, `ClockSampled` | Align declared types/references, complete or explicitly partialize the map, add contiguous upcasters, inject time |
+| read model | `RmShapeHashDrift`, `RmStrongInlineOnly`, `RmScopeWithoutStrong`, `RmInlineFeedUnreferenced` | Capture the printed shape, bump version for a real shape change, align consistency/feed/scope/projection ownership |
+| process/router | `SagaCategoryIllegal`, `ProcessFieldBindingUnresolved`, `RouterBindingUnscoped`, `PolicyContradiction`, `AmbiguousMarkedBenign` | Use a valid category, resolve typed bindings, align node/dispatch policy, route ambiguity to retry/dead-letter evidence |
+| inbox/outbox | `DispositionIncomplete`, disposition inversion codes, `TopicAffinityMismatch`, `EmitSkipMissing` | Complete unique outcomes, preserve retry/poison semantics, align contract topic, add `_ => skip` |
+| workqueue/dispatch | queue divergence/group/provision codes, `WqDispositionIncomplete`, dispatch reference codes | Copy the derived queue trio, align FIFO/group/provision, complete policy, resolve read-model columns and queue fields |
+| workflow/operation | duplicate label/patch codes, `WorkflowContinueAsNewNotTerminal`, `AwaitSignalMismatch`, `OperationUnresolvedRef` | Stabilize labels/patch IDs, put continuation last/top-level, align signal value and target references |
 
-## Wire it into CI
+See [domain/read-side notation](/docs/keiro/reference/keiro-dsl-domain-nodes) and
+[runtime/integration notation](/docs/keiro/reference/keiro-dsl-runtime-nodes) for exact closed values
+and defaults.
 
-`check` is designed to gate a merge. The exit code is the contract:
+## Treat warnings as review items
+
+Warnings do not block the CLI, but they describe an acknowledged risk or forward policy:
+
+- `ProcessBenignInversion`: duplicate/rejected delivery is being treated as success under a
+  target-scoped runtime check;
+- `PolicyDeadLetterUnused` / `AmbiguousFollowsRejectedPolicy`: node-level rejection behavior needs
+  explicit operator understanding;
+- `WqUnloggedDurability`: a database crash can empty the queue; and
+- `RmProjectionWithoutNode`: legacy projection wiring lacks registered read-model identity/helpers.
+
+Do not suppress these by changing generated code. Decide whether the spec policy is intentional.
+
+## Gate CI
 
 ```bash
-keiro-dsl check service.keiro || exit 1   # fail the build on any error-severity diagnostic
+keiro-dsl check service.keiro
 ```
 
-Read a spec from stdin with `/dev/stdin` as the file argument.
+The exit code is sufficient for CI. Use `/dev/stdin` for pipelines, for example:
 
-## Related
+```bash
+keiro-dsl new router | keiro-dsl check /dev/stdin
+```
 
-- [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — the full loop.
-- [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) — the next step once `check` is green.
-- [Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff) — the lifecycle gate.
+Continue with [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) only after the
+spec is green.

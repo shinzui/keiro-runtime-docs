@@ -1,0 +1,83 @@
+---
+title: "Configure FIFO queue ordering and provisioning"
+description: "Declare a PGMQ workqueue's ordering group, storage provision, captured names, retry policy, generated files, and cold-start proof."
+---
+
+Use FIFO when jobs for one domain key must be processed in send order while unrelated keys continue
+in parallel. FIFO changes ordering, not delivery uniqueness: handlers still run at least once and
+must remain idempotent.
+
+## Declare ordering and the group key
+
+```keiro-dsl
+workqueue reservation_work {
+  queue logical = "hospital_capacity.reservation_work"
+  derive physical = "hospital_capacity_reservation_work"
+         dlq = "hospital_capacity_reservation_work_dlq"
+         table = "pgmq.q_hospital_capacity_reservation_work"
+  ordering fifo-throughput
+  group key from reservationId via raw
+  provision standard
+  payload ReservationWorkItem {
+    reservationId -> "reservation_id" text required
+    hospitalId -> "hospital_id" text required
+  }
+  retry maxRetries = 3 delay = 5s dlq = on
+  disposition {
+    storeFailure -> retry 5s
+    commandRejected -> deadLetter
+    decodeFailure -> deadLetter
+    onCodecReject -> deadLetter
+  }
+}
+```
+
+Choose `fifo-throughput` for maximum cross-group concurrency or `fifo-roundrobin` for fairer group
+selection. `unordered` is the default and forbids a group key. FIFO requires one group key.
+
+`via raw` requires a `text` payload field. For an opaque derivation, use
+`via <function> fixture "input => output"`; fill that function consistently with the captured row.
+
+## Choose storage provision
+
+| Clause | Use | Operational consequence |
+|---|---|---|
+| `provision standard` | durable default | ordinary logged PGMQ queue |
+| `provision unlogged` | regenerable transient work only | PostgreSQL can truncate the queue to empty after a database crash; `check` warns |
+| `provision partitioned(interval="daily", retention="7 days")` | high-volume retained work | requires `pg_partman`; values apply only when the queue is created |
+
+Changing an existing spec does not migrate a live queue between provisions. Treat ordering, group
+derivation, and provision as rollout/migration decisions; `diff` classifies changes as breaking.
+FIFO provisioning adds its required GIN index. The DLQ remains standard.
+
+## Keep the captured queue trio exact
+
+`check` re-derives physical queue, DLQ, and table names from `queue logical`. Fix
+`WqPhysicalDivergence`, `WqDlqDivergence`, or `WqTableDivergence` in the spec; do not make generated
+code point at the typo.
+
+## Scaffold and wire runtime values
+
+```bash
+keiro-dsl check keiro-dsl/test/fixtures/reservation-work.keiro
+keiro-dsl scaffold keiro-dsl/test/fixtures/reservation-work.keiro --out gen
+```
+
+Generated `Queue` contains payload codec, queue reference, and group derivation. Generated
+`QueuePolicy` contains `jobOrdering`, FIFO-aware `queueProvision`, retry policy, and outcome mapping.
+Pass `queueProvision` to `ensureJobQueueWith` at startup and the generated ordering through the job
+worker tuning.
+
+Fan-out, raw-SQL queue dedupe, handler behavior, batch size, visibility timeout, polling, concurrency,
+headers, and metrics remain hand-owned/runtime configuration.
+
+## Verify the cold start
+
+```bash
+cabal test keiro-dsl-conformance-queue-runtime
+cabal test keiro-dsl-conformance-dispatch-full
+```
+
+The first compiles queue names, ordering/provisioning, codec, retry policy, and dispositions against
+live Keiro/PGMQ types. The second compiles the generated policy with a filled worker and dispatch
+dedupe path.

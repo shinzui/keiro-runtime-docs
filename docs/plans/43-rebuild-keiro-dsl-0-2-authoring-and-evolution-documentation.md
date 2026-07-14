@@ -32,7 +32,9 @@ holes, running the harness, and classifying a changed spec with commands and out
   source-valid aggregate/read-model/router cold-start fixture.
 - [x] (2026-07-14T18:02:54Z) Milestone 2: made the twelve-node notation reference complete and
   navigable across overview, domain/read-side, runtime/integration, and CLI pages.
-- [ ] Milestone 3: add task-oriented authoring and evolution guides.
+- [x] (2026-07-14T18:12:28Z) Milestone 3: added task-oriented read-model/router, FIFO queue,
+  inbox persistence, snapshot, and workflow-evolution guides and rebuilt the authoring safety
+  procedures.
 - [ ] Milestone 4: reconcile keiro-dsl across the keiro documentation.
 
 
@@ -86,6 +88,12 @@ holes, running the harness, and classifying a changed spec with commands and out
   the nested projection, snapshot, timer, patch, and continuation surfaces have one owner. Nine
   representative committed fixtures spanning every family pass `check`; the docs build and
   455-file internal-link scan pass.
+- Milestone 3 added vertical guides for registered read models plus routers, FIFO queue ordering and
+  provisioning, inbox persistence, snapshots, and workflow patch/continue-as-new evolution. It also
+  rebuilt the diagnostic, scaffold, Cabal placement, and diff guides around the current validation
+  families, transactional plan-before-write behavior, generated/create-once ownership, scaffold
+  records, and the additive/warning/breaking registry. Nine upstream conformance suites covering
+  the new runtime families pass, as do the docs build and 459-file internal-link scan.
 
 
 ## Context and Orientation

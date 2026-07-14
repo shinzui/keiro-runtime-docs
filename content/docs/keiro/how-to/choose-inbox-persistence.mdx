@@ -1,0 +1,71 @@
+---
+title: "Choose inbox persistence"
+description: "Select full-envelope or dedupe-only success-row retention in a .keiro intake, wire the generated value, and test the operator tradeoff."
+---
+
+Inbox persistence controls successful rows only. It does not change dedupe identity, transaction
+atomicity, or failure evidence.
+
+## Choose the retention mode
+
+| Spec value | Successful row | Use when |
+|---|---|---|
+| omitted or `persist = full-envelope` | retains the full integration envelope | payload replay, audit, or operator inspection may matter |
+| `persist = dedupe-only` | retains identity/status/correlation but stores an empty payload | the payload is re-fetchable or has no value after success |
+
+Failed rows always retain the full envelope because they are the operator-facing dead-letter record.
+A dedupe-only successful row decodes with an empty payload; do not promise later payload replay from
+that table.
+
+## Declare it in the intake
+
+```keiro-dsl
+intake incidentInbox {
+  contract emergency
+  topic incidentEvents
+  accept IncidentTransferNeedDeclared
+  bind messageId from header "keiro-message-id" required cross-check body
+  bind key from kafka-key
+  dedupe key messageId policy PreferIntegrationMessageId
+  persist = dedupe-only
+  decode { envelope strict-required lenient-optional ; body strict schemaVersion == 1 }
+  disposition {
+    processed => ackOk
+    duplicate => ackOk
+    inProgress => retry 5s
+    previouslyFailed => deadLetter "previous inbox failure"
+    decodeFailed => deadLetter
+    dedupeFailed => deadLetter
+    storeFailed => retry 5s
+  }
+}
+```
+
+Persistence does not relax the seven-outcome table. Duplicate delivery is success; previous failure
+and decode poison dead-letter; transient store failure retries.
+
+## Scaffold and wire the generated value
+
+```bash
+keiro-dsl check keiro-dsl/test/fixtures/intake.keiro
+keiro-dsl scaffold keiro-dsl/test/fixtures/intake.keiro --out gen
+```
+
+The generated `Inbox` module exports `inboxDedupePolicy`, `inboxPersistence`, and
+`inboxDisposition`. Pass `inboxPersistence` to `runInboxTransactionWith`; do not retype the mode in
+consumer wiring. Contract payload codecs are generated separately. Broker decode, handler effects,
+and acknowledgement/dead-letter bridge remain hand-owned.
+
+## Verify both durable outcomes
+
+```bash
+cabal test keiro-dsl-conformance-intake-runtime
+cabal test keiro-dsl-conformance-intake-full
+```
+
+In an integration test, process one good event and one failing event. Confirm the successful
+dedupe-only row has an empty payload and the failed row retains the original envelope. Redeliver the
+good event and confirm `InboxDuplicate`/`ackOk` without rerunning the handler.
+
+Changing the persistence mode is visible as `WARNING: … [IntakePersistenceChanged]` in `diff`: it
+changes future retention but does not rewrite existing rows.

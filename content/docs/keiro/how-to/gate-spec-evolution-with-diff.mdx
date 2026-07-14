@@ -1,60 +1,62 @@
 ---
 title: "Gate spec evolution with diff"
-description: "Use keiro-dsl diff --since to classify a spec change as ADDITIVE or BREAKING against history, and turn a breaking event change into a versioned, upcastable one."
+description: "Classify every persisted decode, identity, and forward-policy change as additive, warning, or breaking and use the exit code as an upgrade gate."
 ---
 
-A `.keiro` spec is the source of truth across a service's whole lifetime, so a *change* to it can
-silently break decoding of event payloads already on disk. `keiro-dsl diff --since <ref>` classifies
-every change against the spec at a git ref and exits non-zero on any breaking one — the merge gate for
-evolution. For the grammar of versioned events see the [notation
-reference](/docs/keiro/reference/keiro-dsl-notation#aggregate--evolution); for the runtime story see
-[codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution).
+`check` proves the working spec is internally valid. `diff` separately proves how it changes stored
+bytes, rows, cursors, jobs, and deterministic identity relative to a committed spec.
 
-## Run it
+## Run against history
 
 ```bash
-# from the keiro repo root
-keiro-dsl diff --since <git-ref> service.keiro ; echo "exit=$?"
+keiro-dsl diff --since origin/main service.keiro
 ```
 
-`<git-ref>` is anything `git show` accepts — `HEAD`, a tag, a release branch. The tool parses the spec
-*at that ref* and the spec *on disk*, diffs them, prints each change as `ADDITIVE:` or `BREAKING:`, and
-exits non-zero if any change is breaking.
+The file must exist at the Git ref. The command prints one regular line per change:
 
-## What counts as breaking
+```text
+ADDITIVE: <node> <facet> <subject>: <detail>
+WARNING: <node> <facet> <subject>: <detail> [Code]
+BREAKING: <node> <facet> <subject>: <detail> [Code]
+```
 
-A change is **BREAKING** when an on-disk event payload written under the old spec could now fail to
-decode — most commonly **adding or changing a field on an event without bumping its version**. Adding a
-new event, a new command, or a whole new node is **ADDITIVE**.
+Only `BREAKING` makes the command exit nonzero. Warnings remain visible and exit 0; review them in
+CI instead of discarding output.
+
+## Classify the change
+
+| Tier | Examples |
+|---|---|
+| additive | new command/event/node; versioned event plus contiguous upcaster; newly declared workflow patch guarding its body |
+| warning | timer window; inbox retention; publisher retry/ordering policy; forward decode posture |
+| breaking decode | event field/type/removal without compatible versioning; enum wire spelling; contract field/topic/discriminator; queue payload shape |
+| breaking identity | ID prefix; process name/category/timer IDs; router name/key/target; read-model registry/table/subscription; queue identity/order/group/provision; workflow stable name/shape/continuation seed |
+
+The registry is exhaustive over all node families. An operation has no stored surface of its own, so
+its references are single-spec validation concerns rather than diff entries.
+
+## Repair an event payload break
+
+```keiro-dsl
+event TransferReservationConfirmed v2 { reservationId hospitalId triageNote:Text }
+  upcast from v1 = HOLE
+```
+
+Fill the pure v1-to-v2 body, re-scaffold, and run `keiro-dsl-conformance-v2`. For a retired event, use
+`deprecated event` so old bytes remain decodable while new transitions stop emitting it.
+
+## Plan identity changes explicitly
+
+An upcaster cannot repair a renamed cursor, queue, workflow journal, router dispatch ID, or read-model
+table. Preserve the old identity or supply an application/operator migration and staged rollout.
+`diff` intentionally blocks these changes because the DSL cannot move durable state implicitly.
+
+## Gate CI
 
 ```bash
-# adding a field to TransferReservationConfirmed WITHOUT a version bump:
-# BREAKING: Reservation event TransferReservationConfirmed: field added without version bump
-# exit=1
+keiro-dsl check service.keiro
+keiro-dsl diff --since origin/main service.keiro
 ```
 
-## Turn a breaking change into an additive one
-
-When `diff` reports a breaking event change, version the event instead of mutating it in place:
-
-1. **Add a versioned event** — `event TransferReservationConfirmed v2 { … }` with the new shape.
-2. **Add a contiguous upcaster hole** — `upcast from v1 = HOLE` — and fill it with a pure rewrite of a
-   v1 body into a v2 body.
-3. Or, if the event is being retired, mark it `deprecated event …` — removed from the write path, still
-   decodable.
-
-Re-run `diff` until it reports `ADDITIVE` (exit 0). The `keiro-dsl-conformance-v2` component then
-proves the v2 codec (`schemaVersion = 2`, `upcasters`) compiles and the filled upcaster migrates a
-v1-tagged payload through the chain.
-
-## Wire it into CI
-
-```bash
-keiro-dsl diff --since origin/main service.keiro || exit 1   # block a merge that breaks decoding
-```
-
-## Related
-
-- [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — step 7 walks this.
-- [Evolve an event schema](/docs/keiro/how-to/evolve-an-event-schema) — the codec-level mechanics.
-- [Check a service spec](/docs/keiro/how-to/check-a-service-spec) — the pre-Haskell gate.
+Both commands must run: a compatible diff can still leave the new spec internally invalid, and a
+valid new spec can still break history.

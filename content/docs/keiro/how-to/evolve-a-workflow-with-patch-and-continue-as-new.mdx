@@ -1,0 +1,81 @@
+---
+title: "Evolve a workflow with patch and continue-as-new"
+description: "Guard a cross-cutting in-flight change with a durable patch, rotate unbounded history with continueAsNew, fill the body, and run workflow conformance proofs."
+---
+
+Use `patch` when several journaled steps must change together without making an in-flight instance
+mix old and new assumptions. Use `continueAsNew` to bound an intentionally unbounded workflow's
+journal across generations. A single changed step normally needs only a new step label.
+
+## Declare the evolution surface
+
+```keiro-dsl
+workflow HospitalTransferReservation
+  name "hospital-transfer-reservation"
+  in ReservationWorkflowInput { reservationId:Id hospitalId:Id }
+  out ReservationWorkflowSummary
+  id from input.reservationId via idText
+  body
+    step create-transfer-hold -> ReservationHold
+    patch fraud-check-v2 {
+      step fraud-check -> FraudCheckResult
+    }
+    await reservation-confirmation -> ReservationConfirmation
+    step summarize-reservation -> ReservationWorkflowSummary
+    continueAsNew RolloverSeed
+```
+
+Patch IDs are colon-free, unique across nested blocks, opaque, and never reused. The runtime journals
+the decision at `patch:<id>`, so replay keeps one branch for that generation. Remove an ID from the
+spec only after the guarded change is permanent and the rollout policy has accounted for old
+generations.
+
+`continueAsNew <Seed>` must be the final top-level body item. It cannot appear inside a patch or
+before later items, which would be unreachable.
+
+## Check and scaffold
+
+```bash
+keiro-dsl check keiro-dsl/test/fixtures/workflow-evolution.keiro
+keiro-dsl scaffold keiro-dsl/test/fixtures/workflow-evolution.keiro --out gen
+```
+
+Workflow scaffolding emits `WorkflowFacts` and `WorkflowRuntime`. It intentionally creates no
+behavior hole stub: keep the body in a hand-owned module. The generated runtime declares the stable
+workflow name, awakeable IDs, `declaredPatches`, and continuation facts.
+
+## Fill the hand-owned body
+
+At the top, restore the generation seed. Around the cross-cutting branch, use the same generated
+patch ID. Rotate only at the tail:
+
+```haskell
+reservationWorkflow = do
+  seed <- restoreSeed initialRolloverSeed
+  useFraudV2 <- patch (PatchId "fraud-check-v2")
+  if useFraudV2
+    then step (StepName "fraud-check") runFraudV2
+    else pure legacyFraudResult
+  summary <- step (StepName "summarize-reservation") summarize
+  continueAsNew (nextSeed seed summary)
+```
+
+Derive fresh child IDs from the carried seed if each generation must start a new child. Reusing the
+same child `(WorkflowName, WorkflowId)` reattaches to its stored execution.
+
+## Verify facts, runtime wiring, and body
+
+```bash
+cabal test keiro-dsl-conformance-workflow
+cabal test keiro-dsl-conformance-workflow-runtime
+cabal test keiro-dsl-conformance-workflow-full
+```
+
+The facts suite pins notation. The runtime suite compiles names, awakeable IDs, patches, and
+continuation declarations against live APIs. The full suite compiles the ordered hand-written body.
+
+## Gate the rollout
+
+Run `keiro-dsl diff --since <ref>`. Adding a patch that guards its new body is additive. Removing a
+live patch, changing the workflow stable name/input/output/ID derivation, or changing the continuation
+seed type is breaking. A body change outside a new patch is breaking when replay can observe it.

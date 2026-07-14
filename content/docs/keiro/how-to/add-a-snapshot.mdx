@@ -17,6 +17,38 @@ hydration can start partway. You enable it on the `EventStream`.
 
 Turn on snapshotting for a stream and know how to invalidate old snapshots.
 
+## Declare it in a `.keiro` aggregate
+
+When keiro-dsl owns the event stream, put the policy after the aggregate projection:
+
+```keiro-dsl
+snapshot every 100
+  state-codec version=1 shape-hash="<captured-live-hash>"
+```
+
+Use `snapshot on-terminal` instead when terminal transitions are the useful cache boundaries.
+`every` must be at least 1; codec version must be at least 1; the hash must be non-empty.
+
+The live hash is module-qualified Haskell state/register shape data, not the event wire hash. To
+capture it safely:
+
+1. scaffold `keiro-dsl/test/fixtures/reservation-snapshot.keiro` or your equivalent with a temporary
+   hash;
+2. run the generated snapshot harness (the upstream component is
+   `keiro-dsl-conformance-snapshot`);
+3. copy the printed live hash into the spec; and
+4. re-scaffold and rerun the harness.
+
+The snapshot clause changes the generated aggregate `EventStream` and `Harness`; it does not create
+a new hole module. The existing hand-owned `Holes` still contains the transducer and projection
+behavior. Generated construction lowers to `Every n`/`OnTerminal` and `defaultStateCodec version`,
+then validates policy/codec coherence and the initial pair.
+
+```bash
+keiro-dsl check keiro-dsl/test/fixtures/reservation-snapshot.keiro
+cabal test keiro-dsl-conformance-snapshot
+```
+
 ## Steps
 
 1. **Set a `stateCodec` and a `snapshotPolicy`.** The jitsurei order stream does exactly this — it

@@ -1,0 +1,115 @@
+---
+title: "Author a registered read model and router"
+description: "Declare a schema-qualified read model, route stable resolved rows to aggregate commands, fill the SQL and resolver seams, and run the cold-start proof."
+---
+
+Use this vertical when one source event should query a registered view and dispatch one command per
+selected row. The current source proof is `keiro-dsl/test/fixtures/transfer-routing.keiro`.
+
+## Declare the read model
+
+```keiro-dsl
+readmodel hospital_load {
+  table = "hospital_load"
+  schema = "hospital_transfer"
+  columns {
+    hospital_id text required
+    region text required
+    available_beds int required
+  }
+  version = 1
+  shape = "fnv1a:977395d28f254ddb"
+  consistency = Eventual
+  feed = subscription
+  subscription = "transfer-routing-hospital-load-sub"
+}
+```
+
+The ordered columns and table produce the captured shape. When authoring a new node, put a temporary
+shape value in the spec and run `check`; `RmShapeHashDrift` prints the expected value. Copy it only
+after reviewing the table/column surface. Bump `version` whenever that captured surface changes.
+
+Use `Strong` only with `feed = subscription`; add `scope = category "name"` when a strong wait should
+follow a category head instead of the entire log. An inline feed must be owned by a same-named
+aggregate projection.
+
+## Declare the stable router and target
+
+```keiro-dsl
+router HospitalTransferRouter
+  name "hospital-transfer-router"
+  input AcceptedHospitalTransferNeed { transferNeedId region }
+  key input.transferNeedId via idText
+  resolve stable via read-model hospital_load row { hospitalId }
+  target Hospital
+  projections [ ]
+  dispatch-each RouteAcceptedTransferNeed {
+    transferNeedId=input.transferNeedId hospitalId=resolved.hospitalId
+  }
+    on-appended AckOk ; on-duplicate AckOk ; on-failed Retry
+  dispatch-id strategy=uuidv5 from=(name, key, sourceEventId, targetStreamName, occurrence)
+  rejected => deadLetter
+  poison => halt
+
+aggregate Hospital
+  regs
+  states Accepting
+  command RouteAcceptedTransferNeed { transferNeedId hospitalId }
+  event AcceptedTransferNeedRouted = fields(RouteAcceptedTransferNeed)
+  Accepting -- RouteAcceptedTransferNeed -->
+    emit AcceptedTransferNeedRouted
+    goto Accepting
+```
+
+`stable` is an acknowledgement, not an automatic snapshot of query results. A retry deduplicates a
+target it sees again, but a resolver that returns new targets grows the durable union. Make the
+read-model query stable for one source event when exact recipient membership matters.
+
+The fixed dispatch ID includes the target stream name and occurrence, so each resolved target has a
+distinct deterministic command identity. Do not replace it with source-only UUID derivation.
+
+## Check and scaffold
+
+```bash
+keiro-dsl check keiro-dsl/test/fixtures/transfer-routing.keiro
+keiro-dsl scaffold keiro-dsl/test/fixtures/transfer-routing.keiro --out gen
+```
+
+The scaffold creates:
+
+| Node | Generated | Create-once/hand-owned |
+|---|---|---|
+| `hospital_load` | `ReadModelTable`, `ReadModel`, `ReadModelHarness` | `ReadModelHoles` |
+| `HospitalTransferRouter` | `Router`, `RouterHarness` | `RouterHoles` / assembled router value |
+| `Hospital` | aggregate `Domain`, `Codec`, `EventStream`, `Projection`, `Harness` | `Holes` |
+
+## Fill the SQL and resolver
+
+In `ReadModelHoles`, interpolate the generated `hospitalLoadQualifiedTable` constant. Implement
+async `apply` idempotently and query through the declared schema; do not rely on `search_path`.
+
+In the router fill:
+
+1. query the generated `hospitalLoadReadModel`;
+2. produce one `PMCommand` per eligible row;
+3. create target streams with generated `hospitalCategory` and `entityStream`;
+4. assemble `Router` with the generated name and validated target event stream; and
+5. pass generated `hospitalTransferRouterWorkerOptions` to `runRouterWorkerWith`.
+
+A hand-written duplicate path must use `confirmBenignDuplicate` with the intended target stream and
+attempted event ID. Never acknowledge a bare `DuplicateEvent` globally.
+
+## Verify the vertical
+
+```bash
+cabal test keiro-dsl-conformance-newsurface
+```
+
+The proof covers aggregate replay safety/behavior, read-model facts, router name/key/resolver source,
+rejected-command policy, selected target stream, and dispatched command.
+
+## Evolution gate
+
+Run `keiro-dsl diff --since <ref>`. Read-model registry/table/subscription identity, router stable
+name/key/target, and target command identity are breaking surfaces. A shape change without a version
+bump is rejected even before diff.

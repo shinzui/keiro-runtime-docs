@@ -1,114 +1,83 @@
 ---
 title: "Scaffold and fill holes"
-description: "Emit the symbol-free deterministic layer plus typed holes from a .keiro spec, fill only the hole modules against the generated signatures, and verify the firewall holds."
+description: "Plan and emit generated modules safely, preserve create-once behavior, resolve protected and stale paths, fill typed seams, and verify the combined service with harnesses."
 ---
 
-`keiro-dsl scaffold` turns a checked `.keiro` spec into compiling Haskell: a `-- @generated`
-deterministic layer plus precisely-typed **holes** in hand-owned modules for the behaviour-bearing
-pieces. Your job is to fill the holes — never to edit a generated module. See [The keiro-dsl service
-toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain) for the firewall rationale.
+`scaffold` turns a checked spec into an overwritable deterministic layer and create-once hand-owned
+behavior seams. It plans and verifies the complete output before its first write.
 
-## Emit the modules
+## Scaffold into the consuming source tree
 
 ```bash
-# from the keiro repo root, after `check` is green
-keiro-dsl scaffold service.keiro --out gen/
-find gen -name '*.hs' | sort
+keiro-dsl scaffold service.keiro --out src
 ```
 
-`scaffold` **validates the spec first** and refuses to write a single module if any diagnostic is an
-error — so you can never scaffold an invalid spec. On success you get:
-
-- **`-- @generated` modules** (`Domain`, `Codec`, `EventStream`, `Projection`, the process/timer/
-  contract wiring, a `Harness`). These are **overwritten unconditionally** on every scaffold.
-- **Create-if-absent hole modules** (`Holes.hs`, `ProcessHoles.hs`). Re-scaffolding **never** clobbers
-  a filled hole module — so the Nth scaffold is as safe as the first.
-- **A `keiro-dsl-manifest.<context>.txt`** — a Cabal-pasteable `other-modules:` block (every module,
-  dotted) and a `build-depends:` block implied by the node kinds. Paste both into the consuming stanza
-  instead of hand-transcribing module paths.
-
-### Read the report
-
-`scaffold` prints a report to stderr naming what it did and confirming the firewall held:
-
-```text
-scaffold: service.keiro -> gen/ (module-root=(none), layout=prefixed)
-  generated  Generated.HospitalCapacity.Reservation.Domain   (overwritten)
-  hole       HospitalCapacity.Reservation.Holes              (created)
-  …
-firewall: OK (5 generated modules scanned, 0 forbidden operators)
-harness:  run `cabal test <your-component>` over Generated.HospitalCapacity.Reservation.Harness
-manifest: gen/keiro-dsl-manifest.hospital-capacity.txt
-```
-
-### Collocate with your domain code (optional)
-
-By default the generated layer lands in a parallel `Generated.*` tree. To place it next to your
-domain code instead, pass a namespace prefix and/or the collocated layout (or set `module`/`layout`
-clauses in the spec):
-
-```bash
-keiro-dsl scaffold service.keiro --out src --module-root Acme --collocate
-# -> src/Acme/<Ctx>/<Node>/Generated/*.hs   (module Acme.<Ctx>.<Node>.Generated.*)
-#    src/Acme/<Ctx>/<Node>/Holes.hs         (module Acme.<Ctx>.<Node>.Holes)
-```
-
-## The two rules
+Before writing, the command checks validation, exact/case-folded path collisions, faithful lowering,
+the symbolic-operator firewall, and every existing generated target's `-- @generated` banner. A
+refusal exits 1 and writes nothing.
 
 <Callout type="warn">
-**Never edit a `-- @generated` line.** If a generated module is wrong, the spec is wrong — change the
-`.keiro` and re-scaffold. **No generated module contains a keiki symbolic operator** (the firewall).
-`scaffold` checks this itself and exits non-zero on a breach (`firewall: OK …` in the report when it
-holds), so there is no manual `grep` to run. A breach is a scaffolder bug, not something to fix in
-place.
+If a generated path already contains hand-owned code, move or rename that file. Use
+`--force-generated-overwrite` only after reviewing that exact path and intentionally adopting it as
+generated output. The switch bypasses only missing-banner protection.
 </Callout>
 
-## Fill the holes
+## Read the ownership report
 
-Each hole is a typed signature with a `-- HOLE …` annotation carrying the spec decision to encode, e.g.
+The report distinguishes generated and hole dispositions:
 
 ```text
--- HOLE guard: divertStatus != TotalDivert || lifeCriticalOverride
+generated  Generated.TransferRouting.Hospital.Domain       (overwritten)
+hole       TransferRouting.Hospital.Holes                  (created)
+hole       TransferRouting.Hospital_load.ReadModelHoles    (skipped: already present)
+firewall: OK (N generated modules scanned, 0 forbidden operators)
+manifest: src/keiro-dsl-manifest.transfer-routing.txt
 ```
 
-Fill the body against the **generated** names (the TH-produced `inCtor…`/`wire…`/`…TermFields`, the
-`Keiro.Codec`, the `ProcessManager` wiring). The keiki symbolic operators live only here:
+Generated families include aggregate `Domain`/`Codec`/`EventStream`/`Projection`/`Harness`,
+read-model `ReadModelTable`/`ReadModel`/harness, process/router facts/runtime, contract/inbox/publisher,
+queue/policy, and workflow facts/runtime. Exact output depends on nodes; the manifest is authoritative.
 
-```haskell
-B.requireGuard (d.divertStatus ./= lit TotalDivert .|| d.lifeCriticalOverride .== lit True)
-B.slot @"reservationState" =: lit ReservationHeld
-B.emit wireTransferReservationCreated TransferReservationCreatedTermFields { … }
-B.goto ReservationHeld
-```
+Create-once files include `Holes`, `ProcessHoles`, `RouterHoles`, and `ReadModelHoles`. Workflow
+behavior remains in a separately hand-authored body module and has no generated hole stub.
 
-The hole-kinds are a closed set: the transducer body, a projection's `apply` SQL, an upcaster body, a
-process `handle`, the deadline window/fire command, a fan-out body, a dedup raw-SQL, and the workflow
-body. The in-repo `docs/corpus/keiro-dsl-corpus.md` index pairs each fixture spec with the reference
-fill it maps to — consult it as worked examples.
+## Reconcile the manifest and stale record
 
-## Verify with the harness
+Paste the manifest's `other-modules:` and `build-depends:` blocks into the Cabal component that owns
+the output. Re-run this step whenever the node inventory changes.
 
-The scaffolder emits a harness that pins your fill to behaviour (not text). Run it via the relevant
-`cabal test` component; a wrong fill turns a **specific** named test red:
+The per-context scaffold record powers later `stale:` output. Scaffold never deletes a stale path:
+
+- inspect then delete a stale `generated` entry if nothing imports it;
+- inspect/migrate a stale `hole` entry as hand-owned code; and
+- separate output directories if a previous-spec-path note reveals two specs sharing one context.
+
+## Fill only hand-owned seams
+
+Read each typed signature and `-- HOLE …` annotation, then use generated names/constants:
+
+- aggregate: symbolic guard/write/emit/goto and upcasters;
+- read model: qualified-table SQL, apply, and query;
+- process/router: resolver/handler, stream/category, projections, and runtime assembly;
+- integration: decode/handler/bridge behavior;
+- queue: fan-out, raw-SQL dedupe, and job handler; and
+- workflow: ordered body using generated facts.
+
+Never put Keiki symbolic operators in generated modules. A wrong generated file means the spec or
+scaffolder is wrong.
+
+For hand-written duplicate dispatch, call `confirmBenignDuplicate` with the target stream and
+attempted event ID. Do not acknowledge a bare global `DuplicateEvent`.
+
+## Run the matching harness
 
 ```bash
-cabal test keiro-dsl-conformance
-# PASS  validateTransducer is empty
-# PASS  golden round-trip: TransferReservationCreated
-# PASS  accepts RequestTransferReservation from ReservationUnrequested
+cabal test keiro-dsl-conformance-newsurface
 ```
 
-Green harness = your fill matches the spec.
+Choose the component matching the surface (`snapshot`, `process-runtime`, `router-full`,
+`readmodel-runtime`, `intake-full`, `queue-runtime`, `dispatch-full`, `workflow-full`, and so on).
+Harnesses prove the generated facts and hand-owned behavior agree; scaffold alone cannot.
 
-The generated `EventStream` module also enforces the runner boundary. It emits a raw
-`<node>EventStreamDef :: EventStream …` plus a public `<node>EventStream ::
-ValidatedEventStream …` built with `mkEventStreamOrThrow`. Your hole code fills the symbolic
-transducer; the harness proves it validates; and application wiring imports the validated value for
-`runCommand`, process managers, routers, and projections.
-
-## Related
-
-- [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — the loop end to end.
-- [Check a service spec](/docs/keiro/how-to/check-a-service-spec) — the step before this one.
-- [Place generated modules and wire them into Cabal](/docs/keiro/how-to/place-generated-modules-and-wire-cabal) — collocate the output and wire it in from the manifest.
-- [keiro-dsl notation](/docs/keiro/reference/keiro-dsl-notation) — what each node scaffolds.
+After every spec change: check, scaffold, reconcile stale/manifest output, compile, and rerun the
+harness.

@@ -193,7 +193,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T17:42:25Z) EP-3 Milestone 3: refresh workflow and cross-worker operations.
 - [x] (2026-07-14T17:54:30Z) EP-4 Milestone 1: create the keiro-dsl 0.2 learning and upgrade path.
 - [x] (2026-07-14T18:02:54Z) EP-4 Milestone 2: make the notation reference complete and navigable.
-- [ ] EP-4 Milestone 3: add task-oriented authoring and evolution guides.
+- [x] (2026-07-14T18:12:28Z) EP-4 Milestone 3: add task-oriented authoring and evolution guides.
 - [ ] EP-4 Milestone 4: reconcile keiro-dsl across the keiro documentation.
 - [ ] EP-5 Milestone 1: create the pg-migrate section and fresh-database spine.
 - [ ] EP-5 Milestone 2: document authoring, composition, and CLI integration.
@@ -334,3 +334,8 @@ Compare the result against the original vision.
   side, runtime/integration, and CLI references. The twelve-node registry, nested policies,
   generated/hole ownership, defaults, identities, scaffold records, and three-tier diff now have a
   navigable owner; nine cross-family fixtures and the 455-file link scan passed.
+- EP-4 Milestone 3 added source-backed vertical guides for read-model/router authoring, FIFO queue
+  configuration, inbox persistence, snapshots, and workflow evolution. The check, scaffold, Cabal
+  placement, and diff procedures now teach current diagnostics, transactional writes, ownership
+  boundaries, scaffold records, and all three compatibility tiers. Nine upstream runtime-family
+  conformance suites, the docs build, and the 459-file link scan passed.
