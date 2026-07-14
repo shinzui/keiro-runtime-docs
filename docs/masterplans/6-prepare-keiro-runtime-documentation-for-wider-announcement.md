@@ -195,7 +195,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T18:02:54Z) EP-4 Milestone 2: make the notation reference complete and navigable.
 - [x] (2026-07-14T18:12:28Z) EP-4 Milestone 3: add task-oriented authoring and evolution guides.
 - [x] (2026-07-14T18:19:23Z) EP-4 Milestone 4: reconcile keiro-dsl across the keiro documentation.
-- [ ] EP-5 Milestone 1: create the pg-migrate section and fresh-database spine.
+- [x] (2026-07-14T18:24:38Z) EP-5 Milestone 1: create the pg-migrate section and fresh-database spine.
 - [ ] EP-5 Milestone 2: document authoring, composition, and CLI integration.
 - [ ] EP-5 Milestone 3: document production execution and recovery.
 - [ ] EP-5 Milestone 4: document predecessor cutovers and practical recipes.
@@ -257,6 +257,8 @@ interactions between child plans. Provide concise evidence.
 - EP-4 confirmed that Keiro 0.3.0.0 changes only keiro-dsl release metadata after the planned source
   boundary. The authoring grammar, validators, scaffolder, fixtures, and 0.2 user surface remain
   unchanged at committed `c68dcc7`.
+- EP-5 began at its planned, clean pg-migrate `1.1.0.0` boundary `f39d64e`; no source drift or
+  untracked upstream state affects the new documentation family.
 
 
 ## Decision Log
@@ -352,3 +354,7 @@ Compare the result against the original vision.
   notation/CLI registry, the current generated-versus-hand-owned scaffold contract, three-tier diff
   language, conformance-suite evidence boundary, and the package-version caveat. The shared Keiro
   source pointer remains intentionally unchanged for EP-7.
+- EP-5 Milestone 1 created the top-level pg-migrate section and its fresh-database learning spine.
+  Readers can now embed exact SQL bytes, construct a component and plan, mount the reusable CLI,
+  inspect/apply/verify/rerun it, and append the next migration without runtime discovery. The
+  production build and 465-file link scan pass.

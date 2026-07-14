@@ -27,11 +27,19 @@ failure classes to decide whether deployment may proceed.
 
 ## Progress
 
-
+- [x] (2026-07-14T18:24:38Z) Milestone 1: created the top-level pg-migrate section and a
+  fresh-database tutorial covering embedding, CLI mounting, apply, verify, rerun, and append.
+- [ ] Milestone 2: document authoring, composition, CLI integration, testing, and public reference.
+- [ ] Milestone 3: document production execution, verification, cleanup, and recovery.
+- [ ] Milestone 4: document predecessor imports, practical recipes, FAQ, and final navigation.
 
 ## Surprises & Discoveries
 
-(None yet.)
+- The planned pg-migrate boundary is still the clean committed repository head:
+  `f39d64e354818999667d345a1452f33eb4857fc1` (`1.1.0.0`). No source-boundary adjustment is
+  required.
+- The documentation site's Shiki configuration has no `cabal` language lexer. Cabal stanzas use
+  plain `text` fences so production rendering remains deterministic without changing their syntax.
 
 
 ## Decision Log
@@ -61,7 +69,12 @@ failure classes to decide whether deployment may proceed.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+- Milestone 1 added pg-migrate to top-level navigation with stable tutorial, how-to, reference, and
+  explanation homes. The first tutorial follows one `accounts` manifest from compile-time exact-byte
+  embedding through plan/list/check, fresh apply, strict verify, `AlreadyApplied` rerun, and atomic
+  `new` authoring. It imports only public facades and makes the absence of runtime file discovery
+  explicit. Formatting, MDX/TypeScript, production build, `git diff --check`, and the 465-file link
+  scan pass.
 
 
 ## Context and Orientation

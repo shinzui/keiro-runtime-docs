@@ -1,0 +1,255 @@
+---
+title: "Build your first migration plan"
+description: "Create an embedded component and application plan, mount all standard commands, apply it to a fresh PostgreSQL database, verify it, and extend it safely."
+---
+
+By the end of this tutorial you will have built a migration executable whose SQL is embedded in the
+binary, applied its plan to a fresh database, proved the ledger matches, rerun it idempotently, and
+created the next append-only migration.
+
+<Callout type="info">
+  This is a guided lesson. You need GHC 9.12, Cabal, and a disposable PostgreSQL 17 or 18 database.
+  Set `DATABASE_URL` to a Hasql/libpq connection string for that database. Do not point the tutorial
+  at a shared or production database.
+</Callout>
+
+## What you will build
+
+The executable owns one `accounts` component. The file
+`migrations/accounts/0001-create-accounts.sql` becomes the durable identity
+`accounts/0001-create-accounts`. The application embeds its exact bytes, constructs one
+`MigrationPlan`, and supplies that plan to `pg-migrate-cli`; production never reads the migration
+directory.
+
+## Steps
+
+<Steps>
+<Step>
+
+### Add the packages and source files
+
+Create an executable with these dependencies and include the authoring files in source
+distributions:
+
+```text
+executable my-service-migrate
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  other-modules:    Migrations
+  default-language: GHC2024
+  default-extensions:
+    DuplicateRecordFields
+    OverloadedStrings
+    TemplateHaskell
+  build-depends:
+    aeson                 >=2.2  && <2.3,
+    base                  >=4.20 && <4.22,
+    bytestring            >=0.12 && <0.13,
+    containers            >=0.7  && <0.8,
+    hasql                 >=1.10 && <1.11,
+    optparse-applicative  >=0.19 && <0.20,
+    pg-migrate            >=1.1  && <1.2,
+    pg-migrate-cli        >=1.1  && <1.2,
+    pg-migrate-embed      >=1.1  && <1.2,
+    text                  >=2.1  && <2.2
+
+extra-source-files:
+  migrations/accounts/*.sql
+  migrations/accounts/manifest
+```
+
+Use this layout:
+
+```text
+app/Main.hs
+app/Migrations.hs
+migrations/accounts/0001-create-accounts.sql
+migrations/accounts/manifest
+```
+
+</Step>
+<Step>
+
+### Write the ordered manifest and SQL
+
+Put one filename in `migrations/accounts/manifest`:
+
+```text
+0001-create-accounts.sql
+```
+
+Put this exact migration in the named file:
+
+```sql
+CREATE TABLE accounts (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email text NOT NULL UNIQUE,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+```
+
+Manifest order is execution order. The embedder rejects missing, duplicate, nested, unlisted, or
+non-`.sql` entries and embeds the SQL bytes unchanged.
+
+</Step>
+<Step>
+
+### Export the component and application plan
+
+Create `app/Migrations.hs`:
+
+```haskell
+{-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -fplugin=Database.PostgreSQL.Migrate.Embed.RecompilePlugin #-}
+
+module Migrations (applicationPlan) where
+
+import Data.List.NonEmpty (NonEmpty (..))
+import Data.Set qualified as Set
+import Database.PostgreSQL.Migrate
+import Database.PostgreSQL.Migrate.Embed
+
+applicationPlan :: Either DefinitionError (Either PlanError MigrationPlan)
+applicationPlan = do
+  accounts <-
+    migrationComponentFromEmbeddedSql
+      "accounts"
+      Set.empty
+      $(embedMigrationManifest "migrations/accounts/manifest")
+  pure (migrationPlan (accounts :| []))
+```
+
+The module-local plugin is required on GHC 9.12 so adding or removing a sibling SQL file reruns the
+strict membership audit. `DefinitionError` rejects an invalid component/migration/SQL definition;
+`PlanError` rejects an invalid dependency-ordered composition. Resolve both before connecting.
+
+</Step>
+<Step>
+
+### Mount the reusable CLI
+
+Create `app/Main.hs` with only public facades:
+
+```haskell
+module Main (main) where
+
+import Data.Aeson qualified as Aeson
+import Data.ByteString.Lazy.Char8 qualified as LazyByteString
+import Data.Text qualified as Text
+import Data.Text.IO qualified as Text.IO
+import Database.PostgreSQL.Migrate
+import Database.PostgreSQL.Migrate.CLI
+import Hasql.Connection.Settings qualified as Settings
+import Migrations (applicationPlan)
+import Options.Applicative
+import System.Environment (lookupEnv)
+import System.Exit qualified as Exit
+
+main :: IO ()
+main = do
+  plan <- case applicationPlan of
+    Left err -> fail (show err)
+    Right (Left err) -> fail (show err)
+    Right (Right valid) -> pure valid
+  command <- execParser (info (migrationCommandParser plan <**> helper) fullDesc)
+  databaseUrl <- lookupEnv "DATABASE_URL" >>= maybe (fail "DATABASE_URL is required") pure
+  let environment =
+        cliEnvironment
+          (Settings.connectionString (Text.pack databaseUrl))
+          plan
+          defaultRunOptions
+  outcome <- runMigrationCommand environment command
+  case outputFormat command of
+    TextOutput -> Text.IO.putStrLn (renderMigrationCommandText outcome)
+    JsonOutput -> LazyByteString.putStrLn (Aeson.encode (renderMigrationCommandJson outcome))
+  Exit.exitWith $ case exitClass outcome of
+    ExitSucceeded -> Exit.ExitSuccess
+    _ -> Exit.ExitFailure 1
+
+outputFormat :: MigrationCommand -> OutputFormat
+outputFormat command = case command of
+  Plan PlanOptions {output = OutputOptions value} -> value
+  List ListOptions {output = OutputOptions value} -> value
+  Check CheckOptions {output = OutputOptions value} -> value
+  Status StatusOptions {output = OutputOptions value} -> value
+  Verify VerifyOptions {output = OutputOptions value} -> value
+  Up UpOptions {output = OutputOptions value} -> value
+  Repair RepairOptions {output = OutputOptions value} -> value
+  New NewOptions {output = OutputOptions value} -> value
+```
+
+The application owns credentials, streams, logging, and process exit. The CLI library owns parsing,
+dispatch, reports, and rendering.
+
+</Step>
+<Step>
+
+### Build and inspect without changing PostgreSQL
+
+```bash
+cabal build my-service-migrate
+DATABASE_URL="$DATABASE_URL" cabal run my-service-migrate -- plan
+DATABASE_URL="$DATABASE_URL" cabal run my-service-migrate -- list
+DATABASE_URL="$DATABASE_URL" cabal run my-service-migrate -- \
+  check --manifest migrations/accounts/manifest
+```
+
+`plan` displays component order/dependencies. `list` displays the identity, component-local
+position, kind, transaction mode, and exact-byte SHA-256 checksum. `check --manifest` revalidates
+authoring-file membership; it does not run SQL or contact PostgreSQL.
+
+</Step>
+<Step>
+
+### Apply, verify, and rerun
+
+On the fresh disposable database:
+
+```bash
+DATABASE_URL="$DATABASE_URL" cabal run my-service-migrate -- status
+DATABASE_URL="$DATABASE_URL" cabal run my-service-migrate -- up
+DATABASE_URL="$DATABASE_URL" cabal run my-service-migrate -- verify
+DATABASE_URL="$DATABASE_URL" cabal run my-service-migrate -- up
+```
+
+Before the first apply, `status` classifies `accounts/0001-create-accounts` as pending. The first
+`up` creates/upgrades ledger schema v1, locks the whole plan, and reports `AppliedNow`. Strict
+`verify` then succeeds. The second `up` reports `AlreadyApplied` and executes no migration SQL.
+
+Verification proves the stored ledger is a matching applied prefix: identity, position, checksum,
+kind, and transaction mode agree. It does not inspect whether the `accounts` table was manually
+changed afterward.
+
+</Step>
+<Step>
+
+### Append migration 0002
+
+Use the mounted authoring command:
+
+```bash
+DATABASE_URL="$DATABASE_URL" cabal run my-service-migrate -- new \
+  --manifest migrations/accounts/manifest \
+  --name 0002-add-account-status \
+  --description "Add account status"
+```
+
+`new` creates the SQL file exclusively and replaces the manifest atomically; it never overwrites an
+existing file. Add the SQL, rebuild, and repeat `plan`, `list`, `check`, `status`, `up`, and
+`verify`.
+
+Never edit `0001-create-accounts.sql` after any environment applies it—even comment or whitespace
+changes alter its checksum. Correct old behavior with a new appended migration.
+
+</Step>
+</Steps>
+
+## What you built
+
+You now have one reviewable artifact containing its complete migration plan and all SQL bytes. It can
+inspect authoring state without PostgreSQL, advance a database under one session lock, verify durable
+history, and rerun without replaying applied work.
+
+Next, use the [How-To Guides](/docs/pg-migrate/how-to) to split component ownership across libraries
+and integrate production policy, or consult the [Reference](/docs/pg-migrate/reference) for the
+versioned contracts.
