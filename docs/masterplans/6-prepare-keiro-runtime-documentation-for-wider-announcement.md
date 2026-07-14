@@ -206,7 +206,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T19:23:08Z) EP-6 Milestone 4: reconcile cross-package operations.
 - [x] (2026-07-14T19:29:05Z) EP-7 Milestone 1: build the announcement discovery and compatibility
   path.
-- [ ] EP-7 Milestone 2: reconcile integrations and example-status language.
+- [x] (2026-07-14T19:36:25Z) EP-7 Milestone 2: reconcile integrations and
+  example-status language.
 - [ ] EP-7 Milestone 3: update repository metadata and source ledgers.
 - [ ] EP-7 Milestone 4: establish and run the whole-site release gate.
 
@@ -419,3 +420,9 @@ Compare the result against the original vision.
   an exact release/source matrix and upgrade order, and made adapter incompatibilities and the stale
   example boundary visible before installation. The production build and 506-file internal-link
   scan pass.
+- EP-7 Milestone 2 made the integration and landing-page story installable rather than merely
+  behaviorally comparable: Kiroku, PGMQ, and Kafka are the reviewed Shibuya 0.8 adapters, while the
+  Message DB 0.1 page is explicitly limited to its 0.5 core line. Root and integration navigation
+  now follow the product-first card order. The legacy jitsurei route preserves architecture context
+  but no longer advertises its old commands as current proof; the excluded example-app subtree and
+  source pointer remain untouched. The production build and 506-file internal-link scan pass.

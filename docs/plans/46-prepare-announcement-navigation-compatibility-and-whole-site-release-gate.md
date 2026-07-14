@@ -29,7 +29,8 @@ and navigation integrity.
 
 - [x] (2026-07-14T19:29:05Z) Milestone 1: build the announcement-facing discovery and
   compatibility path.
-- [ ] Milestone 2: reconcile integrations and example-status language.
+- [x] (2026-07-14T19:36:25Z) Milestone 2: reconcile integrations and
+  example-status language.
 - [ ] Milestone 3: update repository metadata and source ledgers.
 - [ ] Milestone 4: establish and run the whole-site release gate.
 
@@ -72,6 +73,14 @@ and navigation integrity.
   cutover order, pre-1.0 stability limits, the Message DB/Shibuya mismatch, and the excluded example
   status. Typecheck, formatting, production build, whitespace checks, and the 506-file internal-link
   scan pass.
+- Milestone 2 reconciled every integration page and product landing around current package lines,
+  schema ownership, and adapter failure boundaries. The integrations path now distinguishes the
+  three Shibuya 0.8 pairings from the Message DB adapter's 0.5-core bound, and the legacy jitsurei
+  page is an explicit architecture/status route rather than a runnable release claim. All positive
+  `just jitsurei-*` and `cabal run jitsurei` instructions were removed from announcement-reachable
+  Keiro paths; `content/docs/example-app/` and its source pointer remain unchanged. The existing
+  whole-site check passes with four pre-existing lint warnings, a production chunk-size warning,
+  and 506 source files with no broken internal links.
 
 
 ## Context and Orientation
