@@ -30,7 +30,8 @@ holes, running the harness, and classifying a changed spec with commands and out
 
 - [x] (2026-07-14T17:54:30Z) Milestone 1: rebuilt the 0.2 learning and upgrade path around the
   source-valid aggregate/read-model/router cold-start fixture.
-- [ ] Milestone 2: make the notation reference complete and navigable.
+- [x] (2026-07-14T18:02:54Z) Milestone 2: made the twelve-node notation reference complete and
+  navigable across overview, domain/read-side, runtime/integration, and CLI pages.
 - [ ] Milestone 3: add task-oriented authoring and evolution guides.
 - [ ] Milestone 4: reconcile keiro-dsl across the keiro documentation.
 
@@ -42,6 +43,9 @@ holes, running the harness, and classifying a changed spec with commands and out
   changelog explicitly records no user-facing changes, so the documented 0.2 surface is unchanged.
 - The upstream source tree acquired an untracked `mori.automation.dhall` during the audit. It is
   excluded from evidence and left untouched; all documentation claims come from committed files.
+- `WqFifoRoundRobin` is printed and parsed as `fifo-roundrobin`; the changelog calls it
+  `fifo-round-robin`. The reference follows `Parser.hs` and `PrettyPrint.hs`, and representative
+  committed fixtures confirm the spelling used by the live CLI.
 
 
 ## Decision Log
@@ -77,6 +81,11 @@ holes, running the harness, and classifying a changed spec with commands and out
   gates and transactional scaffold plan, and added a 0.1-to-0.2 migration guide. The current CLI
   accepts the documented fixture (with its intended policy warnings), and
   `keiro-dsl-conformance-newsurface` passes all aggregate, read-model, and router assertions.
+- Milestone 2 replaced the 0.1 monolith with a source-registry overview and focused CLI,
+  domain/read-side, and runtime/integration references. All twelve top-level node constructors and
+  the nested projection, snapshot, timer, patch, and continuation surfaces have one owner. Nine
+  representative committed fixtures spanning every family pass `check`; the docs build and
+  455-file internal-link scan pass.
 
 
 ## Context and Orientation

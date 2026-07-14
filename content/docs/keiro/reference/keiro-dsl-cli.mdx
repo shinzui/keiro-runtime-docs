@@ -1,0 +1,154 @@
+---
+title: "keiro-dsl CLI"
+description: "Commands, arguments, output, exit codes, scaffold protections, manifests, stale records, and the three-tier evolution gate."
+---
+
+Run `keiro-dsl` from an installed environment. In the Keiro source tree, use
+`cabal run keiro-dsl --` or put `keiro-dsl/bin` on `PATH`.
+
+## Command summary
+
+```text
+keiro-dsl new <kind>
+keiro-dsl parse <file.keiro>
+keiro-dsl check <file.keiro> [--emit]
+keiro-dsl scaffold <file.keiro> --out DIR \
+  [--module-root PREFIX] [--collocate] [--force-generated-overwrite]
+keiro-dsl diff --since <git-ref> <file.keiro>
+```
+
+`FILE` can be `/dev/stdin`.
+
+## `new`
+
+`new` prints a minimal, guaranteed-valid starter to stdout. The closed kind vocabulary is:
+
+```text
+aggregate process router contract intake emit publisher workqueue dispatch workflow operation
+```
+
+```bash
+keiro-dsl new aggregate > service.keiro
+keiro-dsl check service.keiro
+```
+
+`readmodel` is a top-level node but has no standalone starter. The `workqueue` starter includes the
+read models needed by its dispatch example. Each starter is compiled by the upstream skeleton
+conformance suite.
+
+## `parse`
+
+`parse` parses and pretty-prints the canonical spec. It exits 0 on success and nonzero with a located
+syntax error on failure.
+
+```bash
+keiro-dsl parse service.keiro
+```
+
+The parser rejects raw newlines in strings, duplicate singleton aggregate clauses (`wire`,
+`projection`), duplicate transition `goto`, invalid identifiers, overflowed `Int` literals, and
+missing grammar-mandatory policy arms before semantic validation runs.
+
+## `check`
+
+`check` runs all single-spec validators. With no error-severity diagnostic it prints `OK` and exits
+0. Warnings are printed and still exit 0. Any error exits nonzero.
+
+```bash
+keiro-dsl check service.keiro
+keiro-dsl check service.keiro --emit
+```
+
+`--emit` prints the canonical accepted spec instead of `OK`, combining parse, validation, and
+normalization.
+
+The diagnostic form is:
+
+```text
+service.keiro:<line>: <error|warning>[Code]: <message>
+```
+
+Fix the `.keiro` source. Scaffold calls the same validator and cannot generate an invalid spec.
+
+## `scaffold`
+
+```bash
+keiro-dsl scaffold service.keiro --out gen
+```
+
+The command has a plan-then-write boundary. Before any write it checks:
+
+1. semantic validation;
+2. exact and case-folded module-path collisions;
+3. faithful type and policy lowering;
+4. the symbolic-operator firewall; and
+5. that every existing generated target contains `-- @generated`.
+
+Any refusal exits 1 and writes nothing. `--force-generated-overwrite` bypasses only the fifth check;
+use it to adopt a reviewed file as generated output, never as a general recovery switch.
+
+Placement precedence is CLI flag, then spec clause, then default:
+
+```bash
+keiro-dsl scaffold service.keiro --out src --module-root Acme --collocate
+```
+
+On success, stderr lists every module and disposition (`overwritten`, `created`, or
+`skipped: already present`), the firewall verdict, harness modules, and manifest path.
+
+### Manifest
+
+`keiro-dsl-manifest.<context>.txt` contains paste-ready `other-modules:` and `build-depends:` blocks.
+It is the authority for wiring one concrete scaffold into Cabal.
+
+### Scaffold record and stale paths
+
+`keiro-dsl-scaffold-record.<context>.txt` records the planned paths. A later run reports paths it no
+longer emits under `stale:` and exits 0. Scaffold never deletes them:
+
+- `generated` entries are deletion candidates after review;
+- `hole` entries are hand-owned and require code inspection.
+
+If the report says the previous spec path differs, two specs share one context and output directory.
+Separate the outputs unless that ownership is deliberate.
+
+## `diff`
+
+`diff` loads the prior file with `git show`, parses both specs, and classifies the complete persisted
+decode and identity registry:
+
+```bash
+keiro-dsl diff --since HEAD service.keiro
+```
+
+Each line is regular:
+
+```text
+ADDITIVE: <node> <facet> <subject>: <detail>
+WARNING: <node> <facet> <subject>: <detail> [Code]
+BREAKING: <node> <facet> <subject>: <detail> [Code]
+```
+
+| Tier | Exit effect | Meaning |
+|---|---|---|
+| `ADDITIVE` | 0 | A compatible surface was added |
+| `WARNING` | 0 | Forward policy/behavior changed and requires review |
+| `BREAKING` | nonzero | Persisted bytes, rows, cursors, jobs, or derived IDs can remain under the old contract |
+
+Examples of breaking identity include an ID prefix, process category, workflow stable name, router
+stable name/key/target, read-model table/subscription, or queue identity. Event payload changes need
+a version bump and contiguous `upcast from v(N-1) = HOLE`; a removed event remains decodable with
+`deprecated event`.
+
+## CI gates
+
+```bash
+keiro-dsl check service.keiro
+keiro-dsl scaffold service.keiro --out generated
+cabal test your-generated-harness-component
+keiro-dsl diff --since origin/main service.keiro
+```
+
+`check` proves current validity. Scaffold proves the generated plan is safe. The harness proves
+hand-owned behavior agrees with generated facts. `diff` proves the upgrade does not contain an
+unapproved breaking persistence or identity change.

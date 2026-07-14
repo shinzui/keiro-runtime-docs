@@ -1,300 +1,100 @@
 ---
-title: "keiro-dsl notation and CLI"
-description: "The complete .keiro typed-spec notation for every node family (aggregate, process/timer, contract/intake/emit/publisher, workqueue/dispatch, workflow/operation) plus the parse/check/scaffold/diff CLI and its exit codes."
+title: "keiro-dsl notation"
+description: "The .keiro file structure, shared declarations, ownership model, and complete map to the focused domain, runtime, and CLI references."
 ---
 
-The `.keiro` notation is the typed-specification language for a keiro service. A file is
-`context <name>` followed by top-level declarations and nodes; `#` begins a line comment and
-whitespace is insignificant (structure comes from keywords). Every node family below is parsed,
-validated, and round-tripped by the toolchain. For the *why* — the firewall, the dangerous-decision
-checks, and the authoring loop — see [The keiro-dsl service
-toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain).
+A `.keiro` file is a typed service specification. It starts with one context, may choose module
+placement, declares shared types/rules, and then declares top-level nodes. The current grammar has
+twelve top-level node constructors; nested projections, snapshots, timers, and patches are
+documented with their owners below.
 
-<Callout type="info">
-Throughout, a `HOLE` (or a hand-filled body) marks a decision the scaffolder leaves to you in a
-create-if-absent module; everything else is emitted into overwrite-on-scaffold `-- @generated`
-modules. No generated line ever contains a keiki symbolic operator (the firewall).
-</Callout>
+## File structure
+
+```keiro-dsl
+context hospital-capacity
+module Acme.Services
+layout collocated
+
+id TransferReservationId prefix=rsv
+enum DivertStatus { Open=open TotalDivert=total-divert }
+rule lifeCriticalOverride : DivertStatus -> Bool
+  ex Open => true ; TotalDivert => false
+
+# top-level nodes follow
+```
+
+`#` begins a line comment. Whitespace and newlines separate tokens but indentation is not structural;
+keywords and braces define the grammar. Quoted strings support `\"`, `\\`, `\n`, `\t`, and `\r`;
+raw line breaks inside a quoted string are rejected.
+
+Identifiers use ASCII letters, digits, and underscores. Node/type/constructor names are
+`PascalCase` where the grammar expects generated constructors. Fields and registers begin with a
+lowercase letter or `_`. Haskell keywords, duplicate names, unsafe constructor forms, and generated
+vertex-constructor collisions are rejected.
+
+## Module placement
+
+Both placement clauses are optional:
+
+| Clause | Values/default | Effect |
+|---|---|---|
+| `module <Dotted.Prefix>` | no prefix | Prepends a PascalCase namespace to generated and hole modules |
+| `layout <style>` | `prefixed` | `prefixed` uses `Generated.<Ctx>…`; `collocated` uses `<Ctx>.<Node>.Generated…` |
+
+CLI `--module-root` and `--collocate` flags override the corresponding spec clauses. Precedence is
+CLI flag, then spec clause, then built-in default.
 
 ## Shared declarations
 
-```keiro-dsl
-context hospital-capacity
+- `id Name prefix=text` generates a `Text` newtype and records its durable prefix.
+- `enum Name { Constructor=wire-spelling … }` defines a closed enum and explicit wire spellings.
+- `rule name : Enum -> Bool` followed by `ex Constructor => expression` rows defines a total rule for
+  use in aggregate expressions.
 
-id   TransferReservationId  prefix=rsv          # an id newtype over Text
-enum DivertStatus { Open=open TotalDivert=total-divert }   # Ctor=wire-spelling
-rule lifeCriticalOverride : PatientAcuity -> Bool
-  ex RedTag => true ; YellowTag => false ; GreenTag => false
-```
+Rules must resolve their enum domain, cover every constructor exactly, and use known constructors.
+Changing an ID prefix or enum wire spelling is breaking evolution.
 
-- `id` declares a newtype over `Text` with a typeid-style `prefix`.
-- `enum` lists constructors with their wire spelling (`Ctor=wire-spelling`).
-- `rule` names a typed predicate/function with example rows (`ex …`) used by the harness.
+## Complete node inventory
 
-## Module placement (optional)
+| Grammar family | Nested clauses | Owning reference |
+|---|---|---|
+| `aggregate` | registers, states, commands, events, transitions, `wire`, `projection`, `snapshot` | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
+| `readmodel` | table/schema/columns, captured shape, consistency/scope/feed/subscription | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
+| `process` | handle/dispatch policy and one nested `timer` | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `router` | stable resolver, target bindings, dispatch identity and worker policy | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `contract` | topics and integration event schemas | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `intake` | bindings, persistence, decode and seven-outcome disposition | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `emit` | contract/topic map and deterministic ID holes | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `publisher` | ordering, attempt ceiling, backoff and stable outbox ID | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `workqueue` | captured queue names, ordering/group, provisioning, payload/retry/disposition | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `dispatch` | read-model source/fan-out, read-model/queue dedupe and enqueue target | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `workflow` | ordered steps/awaits/sleeps/children, `patch`, terminal `continueAsNew` | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `operation` | command, query, signal, or workflow-run entry point | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
 
-Two optional clauses may follow `context <name>` to control where the emitted modules land. Both are
-optional and a spec that omits them scaffolds exactly as before.
+`projection`, `snapshot`, and `timer` are not independent top-level nodes. A patch and
+`continueAsNew` are workflow body items. An operation is top-level but owns no persisted decode or
+identity surface of its own; it validates references to other nodes.
 
-```keiro-dsl
-context hospital-capacity
-module Acme.Services        # optional namespace prefix for every emitted module
-layout collocated          # optional placement style: `prefixed` (default) or `collocated`
-```
+## Ownership and generated output
 
-- `module <Dotted.Prefix>` prepends a PascalCase namespace prefix (e.g. `Acme` or `Acme.Services`) to
-  every generated and hole module.
-- `layout` selects the placement **style**:
-  - `prefixed` (the default) keeps today's layout — the generated layer goes under
-    `Generated.<Ctx>.<Node>.*` and holes under `<Ctx>.<Node>.*`, a parallel `Generated.*` tree.
-  - `collocated` places the generated layer as a **leaf under the domain** —
-    `<Ctx>.<Node>.Generated.*` — so it sits next to your hand-written domain code; holes stay at
-    `<Ctx>.<Node>.*`.
+`HOLE` means behavior remains hand-owned. Scaffold creates hole modules only when absent and
+overwrites only files marked `-- @generated`. Typical output is:
 
-With `module Acme` + `layout collocated`, the generated modules become `Acme.<Ctx>.<Node>.Generated.*`
-and holes `Acme.<Ctx>.<Node>.*`. The same placement is also available per-invocation via the
-`--module-root`/`--collocate` CLI flags (see [The CLI](#the-cli)), which override the spec clauses.
-Precedence is **CLI flag > spec clause > built-in default**.
+| Node | Generated | Hand-owned |
+|---|---|---|
+| aggregate | `Domain`, `Codec`, `EventStream`, `Projection`, `Harness` | `Holes` |
+| read model | `ReadModelTable`, `ReadModel`, `ReadModelHarness` | `ReadModelHoles` |
+| process | `Process`, `ProcessHarness` | `ProcessHoles` |
+| router | `Router`, `RouterHarness` | `RouterHoles` and runtime value/fill |
+| contract/intake/publisher | `Contract`, `Inbox`, `Publisher` | integration/transaction fills |
+| workqueue | `Queue`, `QueuePolicy` | fan-out, handler, and raw-SQL dedupe fills |
+| workflow | `WorkflowFacts`, `WorkflowRuntime` | workflow body module |
 
-## `aggregate` (+ evolution)
+Operations primarily validate and connect references; they do not produce a separate generated
+module. Always use the emitted manifest as the exact module/dependency inventory for a concrete spec.
 
-```keiro-dsl
-aggregate Reservation
-  regs
-    reservationState ReservationVertex = Unrequested      # name Type = initial
-  states Unrequested Held Confirmed Expired!              # trailing ! = terminal (no outgoing)
+## CLI and lifecycle
 
-  command RequestTransferReservation { reservationId hospitalId commandId divertStatus lifeCriticalOverride:Bool }
-  event   TransferReservationCreated = fields(RequestTransferReservation)
-  event   TransferReservationConfirmed v2 { reservationId hospitalId triageNote:Text }
-    upcast from v1 = HOLE                                 # vN>1 needs a contiguous upcaster hole
-  deprecated event LegacyOpened { reservationId }         # removed from write path, still decodable
-
-  Unrequested -- RequestTransferReservation -->
-    guard divertStatus != TotalDivert || lifeCriticalOverride   # a typed Expr, scope-checked
-    write reservationState := Held
-    emit  TransferReservationCreated
-    goto  Held
-
-  wire kind=ctorName fields=camelCase schemaVersion=1
-  projection transfer_decisions consistency=Strong key=reservationId
-    status-map { Created=>held Confirmed=>confirmed }    # event-suffix => status; must be total
-```
-
-A transition is `<from> -- <Command> -->` followed by an optional `guard`, register `write`s, the
-`emit`s, and `goto`. The `guard` is a typed `Expr` over the command's fields, declared enums, and
-`rule`s; it is scope-checked. **Holes you fill:** the transducer body (guards/writes/emits via keiki
-operators), the projection `apply` SQL, any `upcast from v(N-1)` body.
-
-**Checked:** status-map totality (`StatusMapNotTotal`), every command on a transition is declared
-(`UndeclaredCommand`), guards sample no clock (`ClockSampled`), and a versioned event has a contiguous
-upcaster (`EvtVersionMissingUpcaster`).
-
-## `process` + `timer`
-
-```keiro-dsl
-process HospitalSurge
-  name "hospital-surge"
-  input SurgeInput { hospitalId availableIcuBeds:Int observedAt:Time }
-  correlate input.hospitalId via idText
-  saga Surge stream="hospital-surge-" <> correlationId
-  target Hospital
-  projections [ hospitalReadiness ]
-  on SurgeInput
-    advance NoteSurgeThreshold { hospitalId timerId=timer.id }
-    dispatch Hospital@input.hospitalId ActivateSurge { hospitalId }
-      on-appended AckOk ; on-duplicate AckOk ; on-failed Retry
-    schedule surgeFollowUp
-  dispatch-id strategy=uuidv5 from=(name, correlationId, sourceEventId, emitIndex)   # runtime-owned; fixed
-  timer surgeFollowUp
-    id uuidv5 "hospital-surge-timer:" <> correlationId
-    fireAt input.observedAt + 5m                          # TIME INJECTED, not sampled
-    payload { kind="hospital-surge-follow-up" hospitalId }
-    fire dispatch Surge@correlationId MarkSurgeTimerFired { hospitalId timerId }
-      fired-event-id uuidv5 "hospital-surge-fired:" <> correlationId
-      on-ok Fired ; on-reject Fired ; on-error Retry ; not-mine Retry   # on-reject Fired = benign inversion
-    decode unknown-status => Cancelled
-    max-attempts 5 dead-letter "surge timer exceeded ceiling"   # forces the dangerous default OFF
-```
-
-**Checked:** `fireAt` must reference a `:Time` input field (`ProcessFireAtNotInjected`); no
-user-supplied dispatch-id (`ProcessDispatchIdSupplied`); the saga/target/fire targets resolve; and
-`max-attempts` is explicit (a missing ceiling is the dangerous default). The benign inversions
-(`on-reject Fired`, a rejected replay being benign success) pass with an informational warning. **Holes
-you fill:** the `handle` body, the deadline window, the fire command, the SQL.
-
-## `contract` / `intake` / `emit` / `publisher`
-
-```keiro-dsl
-contract emergency {
-  schemaVersion 1
-  discriminator messageType
-  topic incidentEvents "emergency.incident.events"
-  event IncidentTransferNeedDeclared on incidentEvents { incidentId: typeid "inc"; region: text; redCount: int }
-}
-
-intake incidentInbox {
-  contract emergency
-  topic incidentEvents
-  accept IncidentTransferNeedDeclared
-  bind messageId from header "keiro-message-id" required cross-check body
-  bind key from kafka-key
-  dedupe key messageId policy PreferIntegrationMessageId
-  decode { envelope strict-required lenient-optional ; body strict schemaVersion == 1 }
-  disposition {                                            # MANDATORY + COMPLETE (7 outcomes)
-    processed => ackOk
-    duplicate => ackOk                                     # inversion 1: replay is SUCCESS
-    inProgress => retry 5s
-    previouslyFailed => deadLetter "prior failure"          # inversion 2: NOT retry
-    decodeFailed => deadLetter                             # inversion 3: poison, NOT unbounded retry
-    dedupeFailed => deadLetter
-    storeFailed => retry 5s
-  }
-}
-
-emit reservationResponse {
-  contract emergency ; topic hospitalEvents ; source "hospital-capacity" ; key incidentId
-  map status { "confirmed" => TransferReservationAccepted  _ => skip }   # `_ => skip` is MANDATORY
-  messageId derive "msg" hole ; idempotencyKey derive hole
-}
-
-publisher hospitalPublisher {
-  emit reservationResponse ; ordering PerKeyHeadOfLine ; maxAttempts 10
-  backoff constant 2s ; outboxId stable from messageId
-}
-```
-
-- A `contract` is the cross-service message schema (topics, events, typed fields), defined once and
-  referenced by both producer and consumer.
-- An `intake` is the [inbox](/docs/keiro/reference/inbox): bind envelope rows, dedupe, decode, and a
-  **complete** disposition table.
-- An `emit` is the [outbox](/docs/keiro/reference/outbox) map; `_ => skip` is mandatory (skip-totality).
-- A `publisher` is the outbox publish policy (ordering, retries, backoff, stable outbox id).
-
-**Checked:** the disposition table is complete and the three inversions (duplicate⇒ackOk,
-previouslyFailed⇒deadLetter, decodeFailed⇒deadLetter) are flagged if stated the unsafe way; `_ => skip`
-is present; contract/topic/event coupling resolves; `publisher → emit` resolves.
-
-## `workqueue` / `dispatch`
-
-```keiro-dsl
-workqueue reservation_work {
-  queue logical = "hospital_capacity.reservation_work"
-  derive physical = "hospital_capacity_reservation_work"   # captured fixture; validator re-derives + checks drift
-         dlq = "hospital_capacity_reservation_work_dlq"
-         table = "pgmq.q_hospital_capacity_reservation_work"
-  payload ReservationWorkItem { reservationId -> "reservation_id" text required }
-  retry maxRetries = 3 delay = 5s dlq = on                 # dlq=on needs maxRetries>=1
-  disposition {
-    storeFailure -> retry 5s                               # transient: MUST retry
-    decodeFailure -> deadLetter                            # poison: MUST dead-letter
-    commandRejected -> deadLetter
-    onCodecReject -> deadLetter
-  }
-}
-
-dispatch reservation_work_dispatch {
-  source readModel = accepted_transfer_needs key = reservationId
-  fanout body = resolveTransferCandidates                  # effectful 1->N — HOLE
-  dedup key = reservationId
-        seenIn readModel = transfer_decisions field = reservation_id
-        seenIn queue = reservation_work field = reservation_id   # raw-SQL — HOLE
-  enqueue to = reservation_work
-}
-```
-
-This is the [background-jobs (keiro-pgmq)](/docs/keiro/reference/pgmq-jobs) surface. The `derive`
-block captures the physical queue/table names; the validator re-derives them from the logical name and
-flags any drift (`WqPhysicalDivergence`). **Checked:** physical-name divergence, the store/decode
-inversions, `dlq = on` requires `maxRetries >= 1`, and the `enqueue to` resolves. **Holes:** the
-`fanout` body and the dedup raw-SQL.
-
-## `workflow` / `operation`
-
-```keiro-dsl
-workflow HospitalTransferReservation
-  name "hospital-transfer-reservation"
-  in ReservationWorkflowInput { reservationId:Id hospitalId:Id }
-  out ReservationWorkflowSummary
-  id from input.reservationId via idText
-  body                                                     # ORDERED; replay matches on label
-    step  create-transfer-hold      -> ReservationHold
-    await reservation-confirmation  -> ReservationConfirmation
-    sleep cooling-off after coolingOffDelay               # TIME INJECTED
-    child ship-order id input via shipChildId -> Text     # child id MUST differ from parent's
-
-operation SignalReservationConfirmation
-  signal reservation-confirmation of HospitalTransferReservation   # MUST match an await label
-    key from reservationId via reservationWorkflowId
-    value ReservationConfirmation
-operation RunReservationWorkflow
-  run HospitalTransferReservation
-    input ReservationWorkflowInput
-    outcome -> ReservationWorkflowRun
-```
-
-A workflow `body` is **ordered**: on replay each entry matches on its label (so the
-[journal](/docs/keiro/reference/durable-workflows) is stable). The four step shapes are `step`,
-`await`, `sleep` (time injected), and `child` (whose id must differ from the parent's). The four
-operation shapes are `command on <Agg> …`, `query <ReadModel> …`, `signal <label> of <Wf> …`, and
-`run <Wf> …`. **Checked:** every `signal <label> of <wf>` matches an `await <label>` of that workflow
-(`AwaitSignalMismatch`) — otherwise the awakeable id never matches and the workflow waits forever.
-
-## The CLI
-
-Run from the keiro repo root. The tool is `keiro-dsl` (`cabal run keiro-dsl --`). A thin wrapper at
-`keiro-dsl/bin/keiro-dsl` lets you drop the `cabal run -v0 keiro-dsl --` prefix — put `keiro-dsl/bin`
-on your `PATH` and run `keiro-dsl <subcommand>` from anywhere.
-
-```bash
-keiro-dsl new      <kind>                      # print a minimal valid skeleton for a node kind
-keiro-dsl parse    <file.keiro>                # parse + pretty-print it back (proves it's a real spec)
-keiro-dsl check    <file.keiro> [--emit]       # validate; --emit pretty-prints the spec on success
-keiro-dsl scaffold <file.keiro> --out DIR \    # validate, then emit @generated modules + holes + manifest
-  [--module-root Acme] [--collocate]           # optional module placement (overrides the spec clauses)
-keiro-dsl diff     --since <git-ref> <file.keiro>   # classify changes ADDITIVE/BREAKING since a ref
-```
-
-<TypeTable
-  type={{
-    new: { type: "KIND", description: "Prints a minimal, guaranteed-valid .keiro skeleton to stdout for one of: aggregate, process, contract, intake, emit, publisher, workqueue, dispatch, workflow, operation. Unknown kinds error with the valid list. Each skeleton itself passes check (a test enforces it)." },
-    parse: { type: "FILE", description: "Parses the spec and prints it pretty-printed back. parse . pretty == id is a property. A parse error is line-numbered; exits non-zero." },
-    check: { type: "FILE [--emit]", description: "Runs validateSpec. Prints each Diagnostic (line-numbered). Prints OK and exits 0 only if no diagnostic has Error severity; warnings pass. With --emit, pretty-prints the parsed spec to stdout instead of OK (folds parse + check)." },
-    scaffold: { type: "FILE --out DIR [--module-root PREFIX] [--collocate]", description: "Validates first (refuses to emit an invalid spec), then emits the modules, a keiro-dsl-manifest.<context>.txt, and a stderr report. Generated modules are overwritten unconditionally; HoleStub modules (Holes.hs / ProcessHoles.hs) are written only if absent. Self-checks the firewall and exits non-zero on a breach. --module-root prefixes the namespace; --collocate places the generated layer under <Ctx>.<Node>.Generated." },
-    diff: { type: "--since GIT-REF FILE", description: "Parses the spec at <ref> (via git show) and on disk, diffs them, prints each change as ADDITIVE/BREAKING, and exits non-zero if any change is breaking." },
-  }}
-/>
-
-<Callout type="info">
-Exit codes are the gate: `check`, `scaffold`, and `diff` are meant to run in CI. A non-zero `check`
-names the rule and line — fix the **spec**, not the generated code. `scaffold` validates the spec
-first and exits non-zero **without writing modules** if any diagnostic is an error, and exits non-zero
-on a firewall breach. A non-zero `diff` means an on-disk event payload could now fail to decode — add a
-versioned event + `upcast from v(N-1) = HOLE`, or a `deprecated event`, until it reports `ADDITIVE`.
-Use `/dev/stdin` as `FILE` to read a spec from stdin (e.g. `keiro-dsl new aggregate | keiro-dsl check
-/dev/stdin`).
-</Callout>
-
-### What `scaffold` emits beyond the modules
-
-Every `scaffold` run also writes a **manifest** and prints a **report**:
-
-- **`keiro-dsl-manifest.<context>.txt`** (in `--out`) — a Cabal-pasteable `other-modules:` block
-  listing every generated and hole module (dotted), plus a `build-depends:` block derived from the
-  node kinds present. Paste both into the consuming test/library stanza instead of hand-transcribing
-  the module paths.
-- A **stderr report** — every module written with its disposition (`overwritten` / `created` /
-  `skipped: already present`), the firewall verdict (`firewall: OK (N generated modules scanned, 0
-  forbidden operators)`), the harness component(s) to run, and the manifest path. A firewall breach
-  is printed and the process exits non-zero, so the old manual `grep` is no longer needed.
-
-## See also
-
-- [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — the loop
-  end to end.
-- [The keiro-dsl service toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain) — the firewall and
-  the dangerous-decision rationale.
-- How-tos: [check a spec](/docs/keiro/how-to/check-a-service-spec),
-  [scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes),
-  [place generated modules and wire them into Cabal](/docs/keiro/how-to/place-generated-modules-and-wire-cabal),
-  [gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff).
+The command surface, exit codes, scaffold protections, manifests, stale records, and diff output are
+in the [keiro-dsl CLI reference](/docs/keiro/reference/keiro-dsl-cli). The practical sequence is
+`new/write → parse/check → scaffold → fill → harness → diff`.

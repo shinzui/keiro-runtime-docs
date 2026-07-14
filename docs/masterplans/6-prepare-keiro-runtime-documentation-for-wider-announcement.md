@@ -192,7 +192,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T17:26:57Z) EP-3 Milestone 2: refresh sharded delivery and dead-letter operations.
 - [x] (2026-07-14T17:42:25Z) EP-3 Milestone 3: refresh workflow and cross-worker operations.
 - [x] (2026-07-14T17:54:30Z) EP-4 Milestone 1: create the keiro-dsl 0.2 learning and upgrade path.
-- [ ] EP-4 Milestone 2: make the notation reference complete and navigable.
+- [x] (2026-07-14T18:02:54Z) EP-4 Milestone 2: make the notation reference complete and navigable.
 - [ ] EP-4 Milestone 3: add task-oriented authoring and evolution guides.
 - [ ] EP-4 Milestone 4: reconcile keiro-dsl across the keiro documentation.
 - [ ] EP-5 Milestone 1: create the pg-migrate section and fresh-database spine.
@@ -330,3 +330,7 @@ Compare the result against the original vision.
   aggregate/read-model/router cold-start fixture, documented the six authoring and upgrade gates,
   and added an explicit 0.1-to-0.2 migration checklist. The upstream check and newsurface
   conformance suite, docs build, and 452-file link scan all passed.
+- EP-4 Milestone 2 split the obsolete notation monolith into source-complete overview, domain/read-
+  side, runtime/integration, and CLI references. The twelve-node registry, nested policies,
+  generated/hole ownership, defaults, identities, scaffold records, and three-tier diff now have a
+  navigable owner; nine cross-family fixtures and the 455-file link scan passed.

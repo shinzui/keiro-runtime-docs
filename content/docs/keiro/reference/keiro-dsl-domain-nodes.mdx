@@ -1,0 +1,154 @@
+---
+title: "keiro-dsl domain and read-side nodes"
+description: "Aggregate, event evolution, projection, snapshot, and registered read-model notation, defaults, generated files, and validation rules."
+---
+
+This page owns `aggregate`, its nested `projection` and `snapshot`, and top-level `readmodel`.
+Shared `id`, `enum`, and `rule` declarations are summarized in the [notation
+overview](/docs/keiro/reference/keiro-dsl-notation).
+
+## Aggregate
+
+```keiro-dsl
+aggregate Reservation
+  regs
+    reservationId TransferReservationId = placeholder
+    reservationState ReservationVertex = Unrequested
+    note Text = "not requested"
+    attempts Int = 0
+  states Unrequested Held Confirmed Expired!
+
+  command RequestTransferReservation { reservationId hospitalId divertStatus lifeCriticalOverride:Bool }
+  event TransferReservationCreated = fields(RequestTransferReservation)
+  event TransferReservationConfirmed v2 { reservationId hospitalId triageNote:Text }
+    upcast from v1 = HOLE
+  deprecated event LegacyOpened { reservationId }
+
+  Unrequested -- RequestTransferReservation -->
+    guard divertStatus != TotalDivert || lifeCriticalOverride
+    write reservationState := Held
+    emit TransferReservationCreated
+    goto Held
+
+  wire kind=ctorName fields=camelCase schemaVersion=1
+```
+
+### Registers, states, and expressions
+
+The first state is initial; `!` marks a terminal state, which may not have outgoing transitions.
+Scaffoldable register/explicit field types are `Text`, `Int`, `Bool`, the generated
+`<Aggregate>Vertex`, and declared `id`/`enum` types. Initial forms are:
+
+- quoted string for `Text`;
+- signed in-range integer for `Int`;
+- `True`/`False` for `Bool`;
+- an in-domain enum/state constructor; or
+- bare `placeholder` for an ID register.
+
+Expression precedence is `||`, then `&&`, then `==`, `!=`, `<`, `<=`, `>`, `>=`. Atoms are booleans
+or names resolved as command fields, registers, enum constructors, or rules. Time may not be sampled.
+
+A transition has one source/command, optional guard, zero or more writes/emits, and exactly one
+`goto`. Durable state changes must emit history; the generated harness applies Keiki replay-safety
+validation to the hand-filled transducer.
+
+### Commands, events, wire format, and evolution
+
+An event body is `{ field[:Type] … }` or `= fields(Command)`. Version defaults to 1. `vN` with
+`N > 1` requires a contiguous `upcast from v(N-1) = HOLE`. `deprecated event` keeps an old payload
+decodable but forbids new transitions from emitting it.
+
+An aggregate permits at most one `wire`, `projection`, and `snapshot`. The wire clause captures event
+kind, field naming, and schema version; changes are diffed as persisted decode changes.
+
+### Generated and hand-owned files
+
+Generated: `Domain`, `Codec`, `EventStream`, `Projection`, and `Harness`. Hand-owned: `Holes`, which
+contains the symbolic transition, projection SQL, and upcaster bodies. The public generated stream is
+validated with `mkEventStreamOrThrow`; never replace it with the unchecked constructor.
+
+### Principal validation rules
+
+References, states, commands, events, register writes, initial values, guard atoms, reachability,
+terminal states, event versions/upcasters, deprecated writes, identifiers, duplicate names, and
+wire/schema coherence are all checked. Common codes include `UndeclaredCommand`, `WriteTargetNotRegister`,
+`RegisterInitialOutOfScope`, `GuardAtomOutOfScope`, `UnreachableState`, `TerminalHasOutgoing`,
+`ClockSampled`, `EvtVersionMissingUpcaster`, and `DeprecatedEventStillEmitted`.
+
+## Projection
+
+```keiro-dsl
+projection transfer_decisions key=reservationId
+  status-map {
+    TransferReservationCreated=>held
+    TransferReservationConfirmed=>confirmed
+  }
+```
+
+`consistency=Strong|Eventual` is accepted as legacy syntax; a same-named first-class read model owns
+the actual mode. A total status map must name every emitted event exactly. Use
+`status-map partial { … }` only when omitted events intentionally do not change projected status.
+Every included key must still name one declared event, without suffix matching or duplicates.
+
+An inline read model must be referenced by a same-named aggregate projection. Generated projection
+holes use the schema-qualified table constant from the first-class node.
+
+## Snapshot
+
+```keiro-dsl
+snapshot every 100
+  state-codec version=1 shape-hash="<captured-live-hash>"
+```
+
+The alternate policy is `snapshot on-terminal`. `every` must be at least 1; codec version must be at
+least 1; the captured hash must be non-empty. Scaffold lowers the policies to `Every n` or
+`OnTerminal` and `defaultStateCodec version`.
+
+The hash is the live module-qualified register/state shape, not the event wire hash. Start with a
+placeholder, scaffold, run `keiro-dsl-conformance-snapshot`, copy the printed live hash, regenerate,
+and rerun. A mismatch is a cache miss/replay concern, not a reason to decode incompatible state.
+Custom snapshot predicates are hand-owned and intentionally absent from the notation.
+
+## Read model
+
+```keiro-dsl
+readmodel transfer_decisions {
+  table = "transfer_decisions"
+  schema = "hospital_capacity"
+  columns {
+    reservation_id text required
+    hospital_id text required
+    status text required
+    decided_at timestamptz
+  }
+  version = 1
+  shape = "fnv1a:3717f6d9e3c44bd6"
+  consistency = Strong
+  scope = category "reservation"
+  feed = subscription
+  subscription = "hospital-capacity-transfer-decisions-sub"
+}
+```
+
+### Closed values and defaults
+
+| Clause | Values/default |
+|---|---|
+| column type | `text`, `int`, `bigint`, `bool`, `timestamptz`, `jsonb`, `numeric` |
+| nullability | omitted = nullable; `required` = not null |
+| consistency | `Strong` or `Eventual` |
+| scope | omitted = `entire-log`; `entire-log` or `category "name"`, only with `Strong` |
+| feed | `inline` or `subscription` |
+| subscription | omitted = `<context>-<node-with-hyphens>-sub` |
+
+The registry name is `<context>-<node_name_with_hyphens>`. Shape is FNV-1a-64 over the table and
+ordered `name:type:req|null` column surface. `check` prints the expected fixture on drift; changing
+the declared shape also requires a version bump.
+
+`Strong` requires `feed = subscription`; an inline-only model has no cursor for a strong read to
+await. `scope` is meaningful only for `Strong`. `feed = inline` must be owned by an aggregate
+projection. Query operations, routers, and dispatches resolve the node and its declared columns.
+
+Generated: `ReadModelTable`, `ReadModel`, `ReadModelHarness`. Hand-owned: `ReadModelHoles` for inline
+apply, async apply, and query behavior. SQL must interpolate the generated qualified-table constant,
+not depend on `search_path`.
