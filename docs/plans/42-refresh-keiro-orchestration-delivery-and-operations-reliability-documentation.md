@@ -46,7 +46,12 @@ workflow snapshot failure does not undo durable journal progress.
   telemetry wiring, and retained operator replay across reference, task, explanation, recipe, FAQ,
   roadmap, and walkthrough pages. Formatting, MDX/types, production build/prerender, the 450-file
   internal-link scan, and focused stale-term scans passed.
-- [ ] Milestone 3: refresh workflow and cross-worker operations.
+- [x] (2026-07-14T17:42:25Z) Milestone 3: refresh workflow and cross-worker operations. Corrected
+  workflow runner signatures and journal/snapshot failure boundaries, the timer worker's automatic
+  five-minute stale-row recovery, outbox transaction-start ordering limits, and cross-worker
+  terminal evidence. Added a production outcome-verification checklist spanning workflows,
+  dispatch, Kiroku subscriptions, inbox, outbox, and timers. Formatting, MDX/types, production
+  build/prerender, the 451-file internal-link scan, and focused stale-term scans passed.
 - [ ] Run final EP-3 validation and record EP-4/EP-7 handoffs.
 
 ## Surprises & Discoveries
@@ -70,6 +75,15 @@ workflow snapshot failure does not undo durable journal progress.
   `SomeAsyncException` escapes without a reply. Retry exhaustion and explicit source dead letters
   share Kiroku's atomic dead-letter/checkpoint statement; if that statement fails, progress does not
   advance.
+- Workflow snapshot writes occur after the corresponding journal step, completion, or new-generation
+  seed append. The runner's `Error StoreError` constraint exists so only that post-commit store
+  failure can be caught and counted; direct journal/store failure still surfaces to the caller.
+- `defaultTimerWorkerOptions` now performs a bulk `Firing -> Scheduled` sweep after five minutes.
+  Older docs alternated between “reclaimed on the next pass” and “operator recovery only”; both
+  missed the timeout and its concurrent-duplicate risk for long-running fire actions.
+- Outbox head-of-line order is deterministic over `(created_at, outbox_id)`, but `created_at` is
+  PostgreSQL transaction-start time. The canonical producer serializes same-key input; concurrent
+  inline enqueues require caller serialization when commit order is a domain invariant.
 
 
 ## Decision Log
@@ -95,6 +109,12 @@ workflow snapshot failure does not undo durable journal progress.
   expiry. Only the ack-coupled Kiroku disposition proves whether work can advance, retry, or enter
   durable terminal evidence.
   Date: 2026-07-14
+- Decision: Add one cross-worker outcome-verification guide instead of leaving terminal evidence in
+  six subsystem references.
+  Rationale: Operators need to distinguish success, retry, durable dead letter, and intentional
+  metric-only skip from one checklist. A table mapping each path to its durable truth, default retry,
+  terminal policy, and metric/table satisfies that task without weakening the detailed references.
+  Date: 2026-07-14
 
 
 ## Outcomes & Retrospective
@@ -109,6 +129,11 @@ workflow snapshot failure does not undo durable journal progress.
   cancellation, and proves terminal source failure with an atomic `kiroku.dead_letters` row plus
   member-checkpoint advance. The new replay guide makes retained rows repeatable operator evidence
   rather than implying destructive queue consumption.
+- Milestone 3 now gives workflow authors the exact typed store-error signatures and a clear one-way
+  durability boundary: journal success wins over advisory snapshot failure. Timer, inbox, and outbox
+  docs expose their production retention, retry, ordering, and timeout defaults. The new operations
+  checklist makes “not in backlog” insufficient evidence and maps every worker path to durable state,
+  explicit skip policy, metrics, and terminal tables.
 
 
 ## Context and Orientation

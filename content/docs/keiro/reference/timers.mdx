@@ -52,7 +52,7 @@ data TimerStatus = Scheduled | Firing | Fired | Cancelled | Dead
 <TypeTable
   type={{
     Scheduled: { type: "—", description: "Waiting for its fireAt; claimable." },
-    Firing: { type: "—", description: "Claimed by a worker and being processed (re-claimable if the worker crashes before completing)." },
+    Firing: { type: "—", description: "Claimed by a worker and being processed. It becomes claimable again only after requeueStuckTimers or requeueStuckTimer moves it back to Scheduled." },
     Fired: { type: "—", description: "Successfully fired; terminal." },
     Cancelled: { type: "—", description: "Withdrawn before firing (via cancelTimer); terminal. ALSO the decode fallback for an unrecognized stored value." },
     Dead: { type: "—", description: "Abandoned after exceeding the attempt ceiling (via deadLetterTimer or the maxAttempts auto-dead-letter); terminal; carries an explanatory last_error." },
@@ -139,10 +139,11 @@ countDueTimers :: (Store :> es) => UTCTime -> Eff es Int
 
 ## `runTimerWorker`
 
-Claim and fire at most one timer due at `now`, with no attempt ceiling. Atomically claims the
-earliest due timer (marking it `Firing`), runs `fire` on it, and — **if** `fire` returns the id of
-the event it produced — marks the timer `Fired`. Returns the claimed `TimerRow`, or `Nothing` when
-nothing is due.
+Claim and fire at most one timer due at `now`, using `defaultTimerWorkerOptions`: no attempt ceiling,
+and automatic requeue of `Firing` rows stale for five minutes. Each pass performs that stale-row sweep,
+atomically claims the earliest due timer (marking it `Firing`), runs `fire` on it, and — **if** `fire`
+returns the id of the event it produced — marks the timer `Fired`. Returns the claimed `TimerRow`, or
+`Nothing` when nothing is due.
 
 ```haskell
 runTimerWorker ::
@@ -153,9 +154,11 @@ runTimerWorker ::
   Eff es (Maybe TimerRow)
 ```
 
-A `fire` that returns `Nothing` (or a crash) leaves the timer `Firing`, to be retried on a later
-claim — this is what gives **at-least-once** firing. The caller drives this on a schedule (e.g. once
-per tick) and supplies `now`. The first argument is the opt-in
+A `fire` that returns `Nothing` (or a crash) leaves the timer `Firing`. With the default options, a
+pass at least five minutes later requeues it to `Scheduled`, after which it can be claimed again —
+this is what gives **at-least-once** firing. A `fire` that runs longer than that timeout can overlap a
+reclaim, so handlers must be idempotent. The caller drives this on a schedule (e.g. once per tick) and
+supplies `now`. The first argument is the opt-in
 [`KeiroMetrics`](/docs/keiro/reference/telemetry#metrics-surface) handle (`Nothing` disables all
 timer instruments); pass `Nothing` if you have not wired a `Meter`. See [Drive the timer
 worker](/docs/keiro/how-to/drive-the-timer-worker).
@@ -171,17 +174,29 @@ metrics surface landed (it was `(Store :> es) => UTCTime -> …` in 0.1.0.0). Ex
 Options controlling `runTimerWorkerWith`.
 
 ```haskell
-newtype TimerWorkerOptions = TimerWorkerOptions
-  { maxAttempts :: Maybe Int }
+data TimerWorkerOptions = TimerWorkerOptions
+  { maxAttempts      :: Maybe Int
+  , requeueStuckAfter :: Maybe NominalDiffTime }
 
-defaultTimerWorkerOptions :: TimerWorkerOptions   -- TimerWorkerOptions { maxAttempts = Nothing }
+defaultTimerWorkerOptions :: TimerWorkerOptions
+-- TimerWorkerOptions { maxAttempts = Nothing, requeueStuckAfter = Just 300 }
+
+data TimerWorkerConfigError
+  = InvalidTimerMaxAttempts Int
+  | InvalidTimerRequeueStuckAfter NominalDiffTime
+
+mkTimerWorkerOptions :: TimerWorkerOptions -> Either TimerWorkerConfigError TimerWorkerOptions
 ```
 
 <TypeTable
   type={{
     maxAttempts: { type: "Maybe Int", default: "Nothing", description: "When Just n, a claimed timer whose post-claim attempts exceeds n is moved to Dead (auto-dead-lettered) instead of fired, rather than ping-ponging forever on a timer that never completes. Nothing never auto-dead-letters." },
+    requeueStuckAfter: { type: "Maybe NominalDiffTime", default: "Just 300", description: "Before each pass, move Firing rows at least this old back to Scheduled. Nothing disables automatic recovery. A timeout shorter than the longest valid fire action can cause concurrent duplicate firing." },
   }}
 />
+
+Validate options once before starting the loop. `mkTimerWorkerOptions` rejects a negative attempt
+ceiling and a non-positive requeue timeout.
 
 ## `runTimerWorkerWith`
 
@@ -203,11 +218,18 @@ post-claim count: with `maxAttempts = Just 0` the very first claim dead-letters;
 third claim does. A dead-lettered timer is moved to `Dead` with an explanatory `last_error` (e.g.
 `"timer exceeded attempt ceiling of 2"`) and the `fire` action is **not** run.
 
+Before that claim, `requeueStuckAfter = Just ttl` runs `requeueStuckTimers ttl now` and records the
+count in `keiro.timer.requeued`. Requeued timers retain their original due time and are immediately
+eligible on a later claim; there is no retry backoff. Choose `ttl` above the longest legitimate fire
+duration, because a still-running action that crosses the timeout can be fired again.
+
 ## Recovery operations
 
-A timer left in `Firing` by a crash is normally re-claimed on the next due pass. When a timer cannot
-make progress — its `fire` action keeps failing, or the row is genuinely stranded — these operations
-let an operator inspect and resolve it. They live in `Keiro.Timer.Schema` (re-exported from
+A timer left in `Firing` by a crash is not directly claimable. The default worker first moves rows
+stale for five minutes back to `Scheduled`; callers that set `requeueStuckAfter = Nothing` own that
+recovery themselves. When a timer cannot make progress — its `fire` action keeps failing, or the row
+is genuinely stranded — these operations let an operator inspect and resolve it. They live in
+`Keiro.Timer.Schema` (re-exported from
 `Keiro.Timer`). For the runbook, see [Understanding durable timers](/docs/keiro/explanation/durable-timers).
 
 ### `StuckTimerFilter`
@@ -248,7 +270,15 @@ anyStuckTimer` as the [`keiro.timer.stuck`](/docs/keiro/reference/telemetry#metr
 countStuckTimers :: (Store :> es) => UTCTime -> StuckTimerFilter -> Eff es Int
 ```
 
-### `requeueStuckTimer`
+### `requeueStuckTimers` and `requeueStuckTimer`
+
+The bulk form moves every `Firing` timer at least `olderThan` old back to `Scheduled` and returns the
+number changed. `runTimerWorkerWith` invokes this before each claim when `requeueStuckAfter` is set.
+Because `fire_at` is unchanged, a due timer can be claimed in that same worker pass.
+
+```haskell
+requeueStuckTimers :: (Store :> es) => NominalDiffTime -> UTCTime -> Eff es Int
+```
 
 Move a timer from `Firing` back to `Scheduled` so the ordinary claim loop re-fires it. Leaves
 `fire_at` unchanged, so a due timer becomes immediately re-claimable. Idempotent (only `firing` rows
@@ -314,4 +344,5 @@ record, so operators read it directly from the table.
   <Card title="Keiro.ProcessManager reference" href="/docs/keiro/reference/process-manager" />
   <Card title="Understanding durable timers" href="/docs/keiro/explanation/durable-timers" />
   <Card title="Drive the timer worker" href="/docs/keiro/how-to/drive-the-timer-worker" />
+  <Card title="Verify durable worker outcomes" href="/docs/keiro/how-to/verify-durable-worker-outcomes" />
 </Cards>

@@ -1,6 +1,6 @@
 ---
 title: "08 — Snapshots and telemetry"
-description: "Keiro.Workflow.Snapshot's fixed-shape-hash workflowStateCodec and tail-replay seeding, and the six keiro.workflow.* instruments plus the withWorkflowSpan run span in Keiro.Telemetry."
+description: "Keiro.Workflow.Snapshot's fixed-shape-hash workflowStateCodec and tail-replay seeding, and the nine keiro.workflow.* instruments plus the withWorkflowSpan run span in Keiro.Telemetry."
 ---
 
 The final chapter covers the two cross-cutting concerns that ride on the replay loop: **snapshots**
@@ -57,11 +57,18 @@ events after the snapshot version — "tail replay" — and the result is byte-f
 version-0 replay would produce, because every `StepRecorded` at or before the snapshot version is
 already in the seed. So a stale or corrupt snapshot degrades performance at worst, never correctness.
 
-`writeWorkflowSnapshot` is the write side, called from the `step` miss path and the completion site with
-the `AppendResult`'s `streamId` and post-append `streamVersion`; the underlying upsert keeps only the
-highest version per stream, so a re-fire at an already-snapshotted version is a harmless no-op. The
-snapshot *policy* (when to write) is `WorkflowRunOptions.snapshotPolicy`, evaluated by `shouldSnapshot`
-on each append.
+`writeWorkflowSnapshot` is the direct write primitive. The runtime calls it from
+`writeWorkflowSnapshotAdvisory` only **after** the `step`, completion, or continue-as-new seed append
+has committed, passing the `AppendResult`'s `streamId` and post-append `streamVersion`. The advisory
+wrapper catches `StoreError`; a failure increments the shared `keiro.snapshot.write.failures` counter
+and cannot change the already-journaled workflow outcome. This boundary explains why `runWorkflow`,
+`runWorkflowWith`, and `runChildWorkflow` require `Error StoreError` in their effect row even when the
+workflow body does not.
+
+The underlying upsert keeps only the highest version per stream, so a re-fire at an
+already-snapshotted version is a harmless no-op. The snapshot *policy* (when to write) is
+`WorkflowRunOptions.snapshotPolicy`, evaluated by `shouldSnapshot` on each append; continue-as-new
+always offers its one-entry seed map, but failure still falls back to journal replay.
 
 ## The nine `keiro.workflow.*` instruments
 

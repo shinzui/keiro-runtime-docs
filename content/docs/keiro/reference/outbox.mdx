@@ -41,10 +41,19 @@ dedupe with the inbox.
 data OrderingPolicy = PerKeyHeadOfLine | PerSourceStream | StopTheLine | BestEffort
 ```
 
-`PerKeyHeadOfLine` (default) preserves per-key order by blocking later same-key rows behind a
-non-terminal one (null-keyed rows bypass); `PerSourceStream` blocks across all keys in a source;
+`PerKeyHeadOfLine` (default) preserves the outbox's `(created_at, outbox_id)` order per key by blocking
+later same-key rows behind a non-terminal one (null-keyed rows bypass); `PerSourceStream` applies the
+same order across all keys in a source;
 `StopTheLine` halts the worker on the first failure; `BestEffort` never blocks. See [Choose an
 outbox ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
+
+<Callout type="warn">
+**That is enqueue order, not database commit order.** PostgreSQL's `now()` fills `created_at` from the
+transaction start time. The canonical `IntegrationProducer` subscription serializes same-key
+enqueues, so its order is stable. Two callers using `enqueueIntegrationEventTx` concurrently for the
+same key or source can commit opposite their timestamps; `PerKeyHeadOfLine` and `PerSourceStream` are
+best-effort for that escape hatch unless the application serializes those enqueues.
+</Callout>
 
 ```mermaid
 flowchart TD
@@ -135,6 +144,10 @@ enqueueIntegrationEventTx :: OutboxId -> IntegrationEvent -> Tx.Transaction ()
 running in `runCommandWithSqlEvents`). Supply a **stable** `OutboxId` so retried command attempts
 coalesce on the `(source, message_id)` unique constraint. See [Publish with the
 outbox](/docs/keiro/how-to/publish-with-the-outbox).
+
+If concurrent transactions can enqueue the same message key or source, serialize them when strict
+ordering matters. `created_at` is their transaction-start timestamp, so commit order alone cannot
+repair the ordering after the fact.
 
 ## The producer helper
 
@@ -258,8 +271,9 @@ delay`. `requeueStuckOutbox maxAttempts olderThan now` reclaims stale `publishin
 earlier sibling?" predicate break ties on the **`(created_at, outbox_id)`** pair, not `created_at`
 alone — rows minted in the same transaction share a timestamp, and `UPDATE … RETURNING` does not
 otherwise guarantee row order. The claim re-orders its `RETURNING` rows through a CTE so a batch is
-returned in the same stable `(created_at, outbox_id)` order it was selected in. This keeps
-per-key ordering and replay byte-identical across equal timestamps.
+returned in the same stable `(created_at, outbox_id)` order it was selected in. This makes claim and
+retry order deterministic for the rows that were enqueued; it does not turn concurrent transaction
+start timestamps into commit order.
 </Callout>
 
 ## Kafka conversion (`Keiro.Outbox.Kafka`)
@@ -341,4 +355,5 @@ keys, and the sent-GC index keeps retention pruning cheap.
   <Card title="The outbox pattern" href="/docs/keiro/explanation/the-outbox-pattern" />
   <Card title="Integration event reference" href="/docs/keiro/reference/integration-event" />
   <Card title="Publish with the outbox" href="/docs/keiro/how-to/publish-with-the-outbox" />
+  <Card title="Verify durable worker outcomes" href="/docs/keiro/how-to/verify-durable-worker-outcomes" />
 </Cards>

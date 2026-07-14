@@ -69,6 +69,20 @@ Running the same `(name, id)` again replays the journal and short-circuits compl
 `runWorkflow` is itself the resume mechanism. In production you do not call it by hand on every wait —
 you [run the resume worker](/docs/keiro/how-to/run-the-workflow-resume-worker) on a loop.
 
+The runner's effect row must include `Error StoreError`:
+
+```haskell
+runOrder :: (IOE :> es, Store :> es, Error StoreError :> es) => OrderId -> Eff es (WorkflowOutcome Text)
+runOrder orderId =
+  runWorkflow (WorkflowName "order-fulfillment") (workflowIdFor orderId)
+    (orderFulfillmentWorkflow orderId)
+```
+
+This is the failure boundary, not a requirement on every workflow body. Journal-store errors surface
+through that channel. Once a journal append has committed, a snapshot write failure is advisory: the
+runner counts `keiro.snapshot.write.failures`, returns the journal-determined outcome, and a later run
+can reconstruct state by replaying the journal.
+
 ## Resolve and repair the waits
 
 - **Sleeps** fire when a timer worker drains `keiro_timers`. Run `runWorkflowTimerWorker` (it handles
@@ -103,8 +117,10 @@ outcome <- runWorkflowWith opts name wid (orderFulfillmentWorkflow orderId)
 ```
 
 The resume worker threads the same options through `WorkflowResumeOptions.runOptions`, so a resumed run
-honours them too. Snapshots are advisory: a stale or corrupt one degrades to a full replay, never a
-wrong result.
+honours them too. Snapshots are advisory: a stale or corrupt one degrades to a full replay, and a
+post-commit snapshot-store failure is counted without changing the successful step, completion, or
+rotation outcome. Alert on `keiro.snapshot.write.failures`; use the workflow journal to verify the
+durable result.
 
 ## Make step actions safe to re-run
 

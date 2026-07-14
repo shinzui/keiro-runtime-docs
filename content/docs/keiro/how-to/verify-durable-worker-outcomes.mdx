@@ -1,0 +1,87 @@
+---
+title: "Verify durable worker outcomes"
+description: "Production checklist for proving whether workflow, subscription, inbox, outbox, dispatch, and timer work succeeded, will retry, or reached an explicit terminal state."
+---
+
+Use this checklist when a worker is no longer showing an item in its active backlog. “Not pending” is
+not proof of success: the item may have completed, dead-lettered, been deliberately skipped, or moved
+behind a retention boundary. Start from the durable row or journal, then use metrics to detect and
+alert on changes.
+
+## Know the durable truth for each path
+
+| Path | Durable truth | Retry and default | Terminal or consumed outcome | Proof to inspect |
+| --- | --- | --- | --- | --- |
+| Durable workflow | The Kiroku `wf:<name>-<id>` journal; `keiro.keiro_workflows` and `keiro.keiro_workflow_steps` are operator/index views. | The resume worker re-invokes unfinished instances and records attempts/backoff after crashes. Store errors surface through `Error StoreError`. | Journaled completion, cancellation, or failure. `ContinuedAsNew` closes only one generation; the logical workflow remains running. | Query `keiro.keiro_workflows.status`, `attempts`, and `last_error`; inspect reserved terminal steps. Alert on `keiro.workflow.failed` and `keiro.workflow.resume.errors`. |
+| Workflow snapshot | Derived `keiro.keiro_snapshots` cache; never durable truth. | A miss or decode failure replays the journal. A post-journal store failure is swallowed. | No snapshot failure changes a workflow outcome. | `keiro.snapshot.write.failures` proves degraded acceleration; the workflow journal proves the transition. |
+| Process-manager/router target dispatch | Target and manager event streams. With `RejectedDeadLetter`, one row per failed target in `keiro.keiro_dead_letters`. | Transient failures return `AckRetry`; the Kiroku retry policy bounds source redelivery. The default rejection policy is `RejectedHalt`. | `RejectedDeadLetter` consumes the source with a durable target-failure row. `RejectedSkip` consumes it with metric-only evidence. | `keiro.dispatch.failed`, `keiro.dispatch.deadlettered`, target stream state, and `keiro.keiro_dead_letters`. The counter combines dead-letter and skip; the table distinguishes them. |
+| Kiroku source subscription, including sharded members | Per-member checkpoint and the source event log. | `Retry` leaves the checkpoint before the event; retry exhaustion is bounded by the Kiroku `RetryPolicy`. | `DeadLetter` inserts `kiroku.dead_letters` and advances that member checkpoint atomically. | Query `kiroku.dead_letters`; alert on `keiro.subscription.deadlettered` through `kirokuEventBridge`. |
+| Inbox | `keiro.keiro_inbox`, keyed by `(source, dedupe_key)`. | Handler failure rolls back, records an attempt, and retries below the configured ceiling. | `completed` is success. At the ceiling, `failed` remains as the operator-visible poison record and the consumer may advance. | Query `status`, `attempt_count`, and `last_error`; alert on `keiro.inbox.failed`, `keiro.inbox.poisoned`, and `keiro.inbox.backlog`. |
+| Outbox | `keiro.keiro_outbox`. | Publish failures use configured backoff; the defaults are ten attempts and constant two-second delay. A separate maintenance pass reclaims stale `publishing` rows. | `sent` is success; `dead` is terminal failure retained for inspection. | Query `status`, `attempt_count`, `next_attempt_at`, and `last_error`; alert on `keiro.outbox.retried`, `deadlettered`, `reclaimed`, and `backlog`. |
+| Durable timer, including workflow sleep | `keiro.keiro_timers`. | Default: requeue `Firing` after five minutes, no retry backoff, and **no attempt ceiling**. | `fired`, `cancelled`, and `dead` are terminal. `dead` occurs only under an explicit `maxAttempts`, `deadLetterTimer`, or operator policy. | Query `status`, `attempts`, `last_error`, and `fired_event_id`; alert on `keiro.timer.stuck` and `keiro.timer.requeued`. |
+
+## Check policy before checking traffic
+
+- Keep process-manager correlation order-insensitive. Events from different source streams can map to
+  one manager instance in either order, even when each source stream is ordered. Encode both arrival
+  orders in the manager state machine.
+- Treat outbox ordering as `(created_at, outbox_id)` ordering. `created_at` is transaction-start time,
+  not commit time. The canonical `IntegrationProducer` serializes same-key input; serialize concurrent
+  inline enqueues yourself when strict same-key or same-source commit order matters.
+- Set inbox completed-row retention beyond the longest redelivery window you promise. Once
+  `garbageCollectCompleted` removes a row, the same message is processed again. Failed rows are not
+  collected by that operation.
+- Set `requeueStuckAfter` above the longest legitimate timer `fire` duration. There is no retry
+  backoff, and a live action that crosses the timeout can overlap a reclaimed firing. Decide whether
+  `maxAttempts = Nothing` (the default) is acceptable for poison timers.
+- Keep `RejectedHalt` and `PoisonHalt` unless consuming the source is an explicit domain decision. If
+  you choose `RejectedSkip` or `PoisonSkip`, record the approval and alert on the corresponding metric;
+  there may be no durable failure row.
+
+## Query the terminal evidence
+
+Use the domain identity you already have; avoid broad table scans in a production incident.
+
+```sql
+SELECT workflow_name, workflow_id, generation, status, attempts, last_error
+FROM keiro.keiro_workflows
+WHERE workflow_name = $1 AND workflow_id = $2;
+
+SELECT source, dedupe_key, status, attempt_count, last_error
+FROM keiro.keiro_inbox
+WHERE source = $1 AND dedupe_key = $2;
+
+SELECT outbox_id, source, message_id, status, attempt_count, next_attempt_at, last_error
+FROM keiro.keiro_outbox
+WHERE outbox_id = $1;
+
+SELECT timer_id, status, attempts, fired_event_id, last_error
+FROM keiro.keiro_timers
+WHERE timer_id = $1;
+```
+
+For source-subscription failure, query `kiroku.dead_letters` by subscription/member and source
+position. For a rejected target, query `keiro.keiro_dead_letters` by dispatcher and
+`source_event_id`. These are different evidence domains: replay a Kiroku source row with
+[`replaySubscriptionDeadLetters`](/docs/keiro/how-to/replay-subscription-dead-letters); repair a Keiro
+target row with a domain-specific command or deterministic re-dispatch.
+
+## Sign off a production configuration
+
+- Every worker has a documented retry ceiling or an explicit decision to retry indefinitely.
+- Every consumed failure has durable evidence, unless a named skip policy deliberately chose
+  metric-only evidence.
+- Alerts exist for dead-letter/poison counters, workflow failures, snapshot write failures, timer
+  stuck/requeue activity, and inbox/outbox backlog.
+- Inbox and sent-outbox retention is longer than the investigation and redelivery window.
+- Timer handlers, workflow step actions, outbox consumers, and replay handlers are idempotent under
+  at-least-once execution.
+- Cross-stream process-manager tests cover both arrival orders; inline outbox producers serialize any
+  key whose strict order is a domain invariant.
+
+<Cards>
+  <Card title="Inspect a rejected dispatch" href="/docs/keiro/how-to/inspect-a-rejected-dispatch" />
+  <Card title="Replay subscription dead letters" href="/docs/keiro/how-to/replay-subscription-dead-letters" />
+  <Card title="Enable OpenTelemetry" href="/docs/keiro/how-to/enable-opentelemetry" />
+  <Card title="Migrations and schema" href="/docs/keiro/reference/migrations-and-schema" />
+</Cards>

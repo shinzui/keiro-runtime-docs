@@ -51,8 +51,9 @@ back into the owning process manager, and let many workers share the table safel
      | otherwise = Nothing
    ```
 
-   Returning `Nothing` leaves the timer `Firing` to be re-claimed later; returning `Just eventId`
-   marks it `Fired`. Because firing dispatches a command that the incident aggregate accepts only
+   Returning `Nothing` leaves the timer `Firing`; the default worker requeues it after five minutes,
+   after which it can be claimed again. Returning `Just eventId` marks it `Fired`. Because firing
+   dispatches a command that the incident aggregate accepts only
    from `Triaging`, a duplicate firing is a benign no-op — exactly what at-least-once delivery
    requires.
 
@@ -74,13 +75,31 @@ back into the owning process manager, and let many workers share the table safel
    workers each claim a **distinct** timer and never collide. Scale throughput by running more loops
    — there is nothing to partition or coordinate.
 
-5. **Cap retries and recover stuck timers (optional).** A timer whose `fire` action keeps failing
-   stays `Firing` and is re-claimed forever. To bound that, drive the worker with
-   `runTimerWorkerWith metrics options now fire` and set `maxAttempts = Just n` — the `n`-th over-limit
-   claim moves the timer to the terminal `Dead` state instead of firing it. For timers already
-   stranded, run the [stuck-row recovery API](/docs/keiro/reference/timers#recovery-operations)
-   (`findStuckTimers` → `requeueStuckTimer` / `cancelTimer` / `deadLetterTimer`) as a periodic
-   operational job; see [Understanding durable timers](/docs/keiro/explanation/durable-timers).
+5. **Choose recovery and terminal policy.** `defaultTimerWorkerOptions` never auto-dead-letters and
+   requeues `Firing` rows after five minutes. For production, set the requeue timeout above the longest
+   valid `fire` duration, decide whether poison timers may retry forever, and validate the result:
+
+   ```haskell
+   let raw = defaultTimerWorkerOptions
+               & #maxAttempts       .~ Just 10
+               & #requeueStuckAfter .~ Just 600
+   options <- either throwIO pure (mkTimerWorkerOptions raw)
+   _ <- runTimerWorkerWith metrics options now fire
+   ```
+
+   A timer that remains `Firing` past `requeueStuckAfter` moves back to `Scheduled`; it is immediately
+   eligible because timers have no retry-backoff column. If `maxAttempts = Just n`, the first claim
+   whose post-claim attempt count exceeds `n` moves the timer to terminal `Dead` without running
+   `fire`. Keep the [stuck-row recovery API](/docs/keiro/reference/timers#recovery-operations)
+   (`findStuckTimers` → `requeueStuckTimer` / `cancelTimer` / `deadLetterTimer`) for inspection and
+   deliberate operator resolution.
+
+<Callout type="warn">
+Choose `requeueStuckAfter` above the longest expected `fire` call. If an action is still running when
+another pass declares its row stale, the same timer can fire concurrently. Every fire target must be
+idempotent under both that timeout race and a crash after the external effect but before
+`markTimerFired`.
+</Callout>
 
 ## Verify it worked
 

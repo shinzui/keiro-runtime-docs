@@ -190,7 +190,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
   operations.
 - [x] (2026-07-14T17:16:13Z) EP-3 Milestone 1: refresh process-manager and router delivery.
 - [x] (2026-07-14T17:26:57Z) EP-3 Milestone 2: refresh sharded delivery and dead-letter operations.
-- [ ] EP-3 Milestone 3: refresh workflow and cross-worker operations.
+- [x] (2026-07-14T17:42:25Z) EP-3 Milestone 3: refresh workflow and cross-worker operations.
 - [ ] EP-4 Milestone 1: create the keiro-dsl 0.2 learning and upgrade path.
 - [ ] EP-4 Milestone 2: make the notation reference complete and navigable.
 - [ ] EP-4 Milestone 3: add task-oriented authoring and evolution guides.
@@ -241,6 +241,13 @@ interactions between child plans. Provide concise evidence.
   after expiry. Announcement guidance must say at-least-once: the ack-coupled Kiroku bridge prevents
   rebalance cancellation from checkpointing first, while idempotency absorbs lease overlap and
   batch-tail replay.
+- EP-3 found two easy-to-miss operational boundaries. Workflow journal progress remains successful
+  when a later snapshot store write fails, while timer recovery is automatic after five minutes by
+  default but has no retry backoff or attempt ceiling. Announcement guidance must distinguish
+  durable truth from advisory cache/metrics and state the timer timeout race explicitly.
+- EP-3 confirmed that ordered outbox policies sort transaction-start timestamps, not commit order.
+  The canonical producer's serialized input is stable; inline concurrent same-key/source enqueues
+  need application serialization when strict order is promised.
 - EP-2 established the runtime schema split consumed by EP-5 and EP-6: application projection data
   is schema-qualified outside both Keiro's `keiro` framework schema and Kiroku's `kiroku` store
   schema. The later migration plans own how those schemas are composed and deployed.
@@ -303,3 +310,8 @@ Compare the result against the original vision.
   `ShardAck`, bounded exception retry, batch-tail checkpoint semantics, atomic Kiroku dead-letter
   advancement, the store-level terminal metric bridge, and non-destructive operator replay. All
   milestone checks passed, including the 450-file internal-link scan.
+- EP-3 Milestone 3 completed workflow and cross-worker operations. Workflow docs now expose the
+  required typed store-error channel and post-journal advisory snapshot behavior; timer and outbox
+  docs state their actual recovery/ordering boundaries; and a new production checklist maps workflow,
+  dispatch, subscription, inbox, outbox, and timer outcomes to their durable record and telemetry.
+  All milestone checks passed, including the 451-file internal-link scan.

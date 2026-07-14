@@ -55,7 +55,7 @@ patterns are designed as a pair: at-least-once publish + idempotent receive = ex
 The claim query enforces an `OrderingPolicy`:
 
 - **`PerKeyHeadOfLine`** (the default) — within a `source`, a non-terminal row with key `k` blocks
-  every *later* row with the same key, preserving per-aggregate order; rows with a `Nothing` key
+  every *later* row with the same key, preserving the outbox sequence per aggregate; rows with a `Nothing` key
   bypass the block. This head-of-line blocking is **intentional**: it is how per-key order is
   preserved. One stuck aggregate cannot stall traffic on *other* aggregates.
 - **`PerSourceStream`** — any non-terminal row blocks every later row in the source (strict order
@@ -63,6 +63,12 @@ The claim query enforces an `OrderingPolicy`:
 - **`StopTheLine`** — the worker halts on the first failure and records it in `haltedOn` (for
   workflows that need manual review on every failure).
 - **`BestEffort`** — no blocking; opt-in only, safe when events have no per-key/causal relationship.
+
+These policies preserve the outbox's `(created_at, outbox_id)` sequence, not an independent notion of
+commit order. PostgreSQL supplies `created_at` at transaction start. The canonical producer
+subscription serializes same-key input; inline same-key/source enqueues from concurrent transactions
+must be serialized by the application when strict order matters, because those transactions can
+commit opposite their start timestamps.
 
 See [Choose an outbox ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
 

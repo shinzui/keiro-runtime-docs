@@ -57,6 +57,16 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     [Scaling the workers](/docs/keiro/explanation/scaling-the-workers).
   </Accordion>
 
+  <Accordion title="How do I prove a background item was not silently dropped?">
+    Start with durable state, not absence from a backlog. Workflow journals and
+    `keiro.keiro_workflows`, Kiroku member checkpoints / `kiroku.dead_letters`,
+    `keiro.keiro_inbox`, `keiro.keiro_outbox`, `keiro.keiro_timers`, and
+    `keiro.keiro_dead_letters` distinguish success, retry, and terminal failure. The defaults halt or
+    retry; metric-only consumption occurs only under explicit policies such as `RejectedSkip` or
+    `PoisonSkip`. The [durable worker outcome checklist](/docs/keiro/how-to/verify-durable-worker-outcomes)
+    maps each path to its table and alert.
+  </Accordion>
+
   <Accordion title="When should I use a Router vs. a process manager?">
     Ask one question: **does the next action depend on a history the coordinator must remember?** If
     *no* — each event maps to its targets independently (page the current on-call roster; record a
@@ -103,6 +113,11 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     the just-appended batch is also post-commit: it records `keiro.snapshot.apply.divergence` and the
     `keiro.replay.divergence` span attribute so you can stop further writes and investigate. See the
     [snapshot outcome table](/docs/keiro/reference/snapshot#caller-visible-and-operational-outcomes).
+
+    Durable workflows use the same boundary: their journal append is truth; a later snapshot-store
+    failure increments `keiro.snapshot.write.failures` and does not change the completed step,
+    completion, or continue-as-new outcome. That advisory catch is why workflow runners require the
+    typed `Error StoreError` effect even when the workflow body itself does not.
   </Accordion>
 
   <Accordion title="Is keiro Postgres-only?">

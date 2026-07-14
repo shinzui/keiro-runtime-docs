@@ -34,14 +34,14 @@ opaque JSON carried through to the firing code.
 
 ## The lifecycle
 
-A timer moves through four states (`Keiro.Timer.Schema.TimerStatus`):
+A timer moves through five states (`Keiro.Timer.Schema.TimerStatus`):
 
 ```mermaid
 stateDiagram-v2
   [*] --> Scheduled: scheduleTimerTx
   Scheduled --> Firing: claimDueTimer (fire_at <= now)
   Firing --> Fired: markTimerFired (fire returned Just eventId)
-  Firing --> Scheduled: worker crash / fire returned Nothing, then requeueStuckTimer
+  Firing --> Scheduled: requeueStuckTimers after timeout / operator requeue
   Scheduled --> Cancelled: cancelTimer
   Firing --> Cancelled: cancelTimer
   Firing --> Dead: deadLetterTimer / maxAttempts ceiling
@@ -53,7 +53,8 @@ stateDiagram-v2
 
 - **`Scheduled`** — waiting for its `fireAt`; claimable.
 - **`Firing`** — claimed by a worker and being processed. If the worker crashes before completing,
-  the row stays `Firing` until a recovery call (`requeueStuckTimer`) makes it claimable again.
+  the row stays `Firing` until the worker's configured stale-row sweep (five minutes by default) or
+  an operator call moves it back to `Scheduled`.
 - **`Fired`** — successfully fired; terminal.
 - **`Cancelled`** — withdrawn before firing via `cancelTimer`; terminal. `Cancelled` is **also the
   decode fallback** for an unrecognized stored status string (`statusFromText` maps anything unknown
@@ -64,8 +65,9 @@ stateDiagram-v2
 ## At-least-once firing
 
 The worker marks a timer `Fired` **only if** the firing action returns the id of an event it
-produced. A firing that returns `Nothing`, or a crash mid-fire, leaves the row `Firing` — and a
-`Firing` row is re-claimed on a later pass. The guarantee is therefore **at-least-once**: a timer
+produced. A firing that returns `Nothing`, or a crash mid-fire, leaves the row `Firing`. With the
+default `requeueStuckAfter = Just 300`, a pass after five minutes moves that row back to `Scheduled`,
+where a later claim can fire it again. The guarantee is therefore **at-least-once**: a timer
 may fire more than once (e.g. a crash after the side effect but before `markTimerFired`), so the
 firing action must be **idempotent**. In jitsurei this is automatic — the escalation timer
 dispatches `EscalateIncident`, which the incident aggregate accepts only from `Triaging`, so a
@@ -114,7 +116,8 @@ It claims **at most one** due timer, runs your `fire` action, and marks it `Fire
 - **no clock** — the caller supplies `now`, which makes the worker trivially testable and lets you
   drive logical time in tests;
 - **no supervisor** — you run it inside your own polling loop or a shibuya worker;
-- **no backoff** — a requeued timer is immediately re-claimable; nothing spaces retries out.
+- **no retry backoff** — a requeued timer is immediately claimable; `requeueStuckAfter` determines
+  when a `Firing` row is declared stale, but nothing spaces subsequent claims out.
 
 The leading `Maybe KeiroMetrics` is the opt-in metrics handle (`Nothing` = no instruments); each
 pass records the `keiro.timer.*` backlog/stuck/fire-lag/attempts instruments.
@@ -126,9 +129,11 @@ command. `Jitsurei/EscalationProcess.hs`'s `incidentIdFromTimer` does exactly th
 
 ## Recovering stuck timers
 
-A `Firing` row left by a crash (or a `fire` that keeps returning `Nothing`) does **not** re-claim
-itself — `claimDueTimer` only selects `Scheduled` rows. To resolve such timers, keiro ships a
-supported recovery API in `Keiro.Timer` / `Keiro.Timer.Schema`:
+A `Firing` row left by a crash (or a `fire` that keeps returning `Nothing`) is not directly claimable —
+`claimDueTimer` selects only `Scheduled` rows. `runTimerWorkerWith` first runs the bounded
+`requeueStuckTimers` sweep when `requeueStuckAfter = Just ttl`; the default is five minutes. Set the
+option to `Nothing` only when a separate recovery loop owns this transition. Keiro also ships a
+supported per-row recovery API in `Keiro.Timer` / `Keiro.Timer.Schema`:
 
 - **`findStuckTimers now filter`** — list `Firing` rows, filtered by how long they have been firing
   (`minAge`) and how many times claimed (`minAttempts`), oldest-first. `countStuckTimers` is the
@@ -141,15 +146,18 @@ supported recovery API in `Keiro.Timer` / `Keiro.Timer.Schema`:
   WHERE status = 'dead'`).
 
 To bound poison timers automatically, drive the worker with `runTimerWorkerWith` and set
-`TimerWorkerOptions { maxAttempts = Just n }` — the `n`-th over-limit claim dead-letters the timer
-instead of firing it. Run the find→requeue/cancel/dead-letter sweep as a periodic operational job.
+`maxAttempts = Just n` — the first post-claim attempt count greater than `n` dead-letters the timer
+instead of firing it. The default `Nothing` never produces that terminal outcome. Choose
+`requeueStuckAfter` above the longest legitimate fire duration: if a live action crosses the timeout,
+another worker pass can requeue and fire the same timer concurrently.
 
 ## Trade-offs
 
 A bare, caller-driven worker is less convenient than a managed scheduler, but it is dramatically
 simpler to reason about and to test: there is no background thread and no hidden clock. The recovery
-protocol is explicit — a stranded `Firing` row is resolved by an operator (or the `maxAttempts`
-ceiling), not by hidden retry magic. The cost is that *you* own the polling cadence and the loop, and
+protocol is explicit in `TimerWorkerOptions`: a stale `Firing` row is requeued after the configured
+timeout, and a timer becomes `Dead` only under a configured attempt ceiling or an operator call. The
+cost is that *you* own the polling cadence and the loop, and
 you must keep firing idempotent. The payoff is that timers live in the same Postgres as your events,
 claimed with the same `SKIP LOCKED` discipline as everything else — no new infrastructure to operate.
 See [Drive the timer worker](/docs/keiro/how-to/drive-the-timer-worker) for the polling loop, and the

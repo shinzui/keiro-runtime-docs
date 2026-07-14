@@ -152,6 +152,14 @@ For a workflow with a long journal, re-reading the whole stream on every run is 
 map so a resume hydrates from the snapshot plus the journal tail. Snapshots are advisory — a stale or
 corrupt one degrades to a full replay, never to a wrong answer.
 
+The commit boundary is deliberately one-way: keiro commits the step result, completion marker, or
+next-generation seed to the workflow journal **before** it writes the derived snapshot. A journal
+failure remains a workflow failure through the required `Error StoreError` effect; a later snapshot
+store failure is caught, increments `keiro.snapshot.write.failures`, and cannot turn that committed
+transition into a failed run. The next resume simply reconstructs the same map from the journal. In
+operational terms, inspect the journal for truth and the snapshot-failure counter for degraded replay
+performance.
+
 ## Evolving a running workflow: rotation and versioning
 
 Two questions come up once workflows are live: *how does an unbounded-length history stay bounded?* and

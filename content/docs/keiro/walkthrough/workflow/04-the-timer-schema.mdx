@@ -230,7 +230,17 @@ WHERE status = 'firing'
 ORDER BY updated_at, timer_id
 ```
 
-**`requeueStuckTimerStmt`** — put a stranded row back to `scheduled` so the ordinary claim loop
+**`requeueStuckTimersStmt`** — the worker's bounded recovery sweep. It moves every `firing` row older
+than the configured cutoff back to `scheduled` and returns the affected-row count for
+`keiro.timer.requeued`:
+
+```sql
+UPDATE keiro_timers
+SET status = 'scheduled', updated_at = now()
+WHERE status = 'firing' AND updated_at <= $1
+```
+
+**`requeueStuckTimerStmt`** — put one operator-selected row back to `scheduled` so the ordinary claim loop
 re-fires it. Only `firing` rows match, so it is idempotent; `fire_at` is untouched, so a due timer is
 immediately re-claimable:
 

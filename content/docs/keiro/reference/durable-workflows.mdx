@@ -134,15 +134,17 @@ type WorkflowState = Map Text Value   -- the accumulated step-name -> result map
 ```haskell
 data WorkflowOutcome a = Completed a | Suspended | Cancelled | Failed | ContinuedAsNew
 
-runWorkflow     :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
-runWorkflowWith :: (IOE :> es, Store :> es) => WorkflowRunOptions -> WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
+runWorkflow     :: (IOE :> es, Store :> es, Error StoreError :> es) => WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
+runWorkflowWith :: (IOE :> es, Store :> es, Error StoreError :> es) => WorkflowRunOptions -> WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
 ```
 
 `runWorkflowWith` is the **single canonical entry point**; `runWorkflow` is it with
 `defaultWorkflowRunOptions`. Each run first resolves the instance's *current* (highest) generation and
 operates only on it; a never-rotated workflow stays at generation 0, so naming, load, and append are
 byte-for-byte as before. The resume worker re-invokes through `runWorkflowWith`, so a resumed run
-honours the same options. The outcome is:
+honours the same options. The typed `Error StoreError` channel is required even when the workflow body
+does not use it: journal failures remain caller-visible, while the runner catches only post-commit
+snapshot-store failures so they cannot reverse an already-durable transition. The outcome is:
 
 <TypeTable
   type={{
@@ -244,8 +246,10 @@ pollerWorkflow = do
 A rotating run returns the [`ContinuedAsNew`](#running-a-workflow) outcome; the resume worker drives
 it forward on its current generation. The rotation is crash-safe: the next generation's seed step is
 appended **first** (advancing `currentGeneration`), so even a crash mid-rotation converges to
-"continue from the seed" and never re-runs the closed generation. The one-entry seed map is snapshotted
-unconditionally on rotation (regardless of `snapshotPolicy`), so the next generation hydrates in O(1).
+"continue from the seed" and never re-runs the closed generation. The one-entry seed map is offered
+to the snapshot store unconditionally on rotation (regardless of `snapshotPolicy`). A successful
+write makes the next generation hydrate in O(1); a failed write is counted and the next generation
+still converges by replaying its already-committed seed entry.
 
 ### `patch` — versioning in-flight workflows
 
@@ -378,7 +382,7 @@ The resume worker drives any workflow that is some parent's child through `runCh
 than bare `runWorkflowWith`) so a finished child wakes its waiting parent:
 
 ```haskell
-runChildWorkflow    :: (IOE :> es, Store :> es, ToJSON a) => WorkflowRunOptions -> WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
+runChildWorkflow    :: (IOE :> es, Store :> es, Error StoreError :> es, ToJSON a) => WorkflowRunOptions -> WorkflowName -> WorkflowId -> Eff (Workflow : es) a -> Eff es (WorkflowOutcome a)
 childCompletionHook :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> Value -> Eff es ()
 
 data WorkflowChildCancelled = WorkflowChildCancelled WorkflowName WorkflowId
@@ -476,6 +480,7 @@ every step.
 workflowStateCodec        :: StateCodec WorkflowState
 workflowStateShapeHash    :: Text   -- the fixed sentinel "keiro.workflow.stepmap.v1"
 workflowStateCodecVersion :: Int    -- 1
+lookupWorkflowSnapshot    :: (Store :> es) => StreamName -> Eff es (Either SnapshotMissReason (WorkflowState, StreamVersion))
 loadWorkflowSnapshot      :: (Store :> es) => StreamName -> Eff es (Maybe (WorkflowState, StreamVersion))
 writeWorkflowSnapshot     :: (Store :> es) => StreamId -> StreamVersion -> WorkflowState -> Eff es ()
 ```
@@ -486,6 +491,13 @@ names are dynamic runtime strings with no static slot list. A snapshot is adviso
 mismatched, or undecodable snapshot collapses to a full version-0 replay, so a stale snapshot degrades
 performance at worst, never correctness. Per-step result-type evolution stays each step's own
 `ToJSON`/`FromJSON` concern, surfaced at the `step` decode.
+
+`lookupWorkflowSnapshot` retains `SnapshotNoStream`, `SnapshotNotFound`, or
+`SnapshotDecodeFailed`; `loadWorkflowSnapshot` is the convenience form that collapses every miss to
+`Nothing`. `writeWorkflowSnapshot` is the direct store primitive and can fail. The runtime calls it
+only **after** the corresponding step, completion, or continue-as-new seed journal append commits,
+through an advisory wrapper: a `StoreError` increments `keiro.snapshot.write.failures` and leaves the
+workflow outcome successful. The journal is durable truth; a snapshot is replaceable acceleration.
 
 ## The step index and discovery
 
@@ -529,7 +541,7 @@ appendJournalEntryReturningId :: (IOE :> es, Store :> es) => WorkflowName -> Wor
 
 ## Tables
 
-Four tables in the **`kiroku` schema**, added by the workflow migrations. The journal streams
+Four tables in the **`keiro` schema**, added by the workflow migrations. The journal streams
 (`wf:<name>-<id>`) remain the source of truth for replay; these tables are derived indexes plus
 operator-visible state.
 
@@ -565,8 +577,9 @@ terminal workflow-sleep timers, and finally the instance row.
 
 ## Observability
 
-When you thread a `KeiroMetrics`/`Tracer` through `WorkflowRunOptions`, the runtime records six
-instruments under `keiro.workflow.*` and opens a `workflow <name>` span. See the
+When you thread a `KeiroMetrics`/`Tracer` through `WorkflowRunOptions`, the runtime records nine
+instruments under `keiro.workflow.*`, records advisory store failures through the shared
+`keiro.snapshot.write.failures` counter, and opens a `workflow <name>` span. See the
 [Telemetry reference](/docs/keiro/reference/telemetry#workflow-instruments).
 
 <Cards>
