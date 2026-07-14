@@ -211,7 +211,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T19:41:48Z) EP-7 Milestone 3: update repository metadata and
   source ledgers.
 - [ ] EP-7 Milestone 4: establish and run the whole-site release gate. Automated validation is
-  complete; rendered preview validation remains pending after two browser-backed attempts both found
+  complete; rendered preview validation remains pending after three browser-backed attempts all found
   no available backend.
 
 ## Surprises & Discoveries
@@ -293,6 +293,10 @@ interactions between child plans. Provide concise evidence.
   non-visual requirement: child-plan closure, current source boundaries, excluded-tree invariants,
   stale-claim classifications, navigation coverage, the full site gate, whitespace, and mori
   resolution.
+- A third browser-backed attempt at 2026-07-14T20:00:07Z started the healthy local preview, repeated
+  the required browser setup and troubleshooting flow, and again returned an empty browser
+  inventory. This is now a repeated external-environment blocker: no further in-repository work can
+  establish the required rendered evidence until a browser backend becomes available.
 
 
 ## Decision Log
@@ -458,10 +462,14 @@ Compare the result against the original vision.
   finding additional gaps. EP-7 and the MasterPlan remain open solely because no available browser
   can supply the required direct evidence for rendered navigation, six-product search, and visible
   component/diagram integrity.
+- The third browser-backed attempt produced the same empty inventory while the local preview was
+  healthy. The persistent implementation run is therefore blocked on browser availability; EP-7
+  remains In Progress rather than being marked complete without its explicit visual acceptance
+  evidence.
 
 
 ## Revision Note
 
-2026-07-14T19:56:58Z — Recorded the second unavailable-browser result and the fresh full-scope
-completion audit. EP-7 remains In Progress; the initiative is not marked complete until its manual
-rendered-preview acceptance criteria are directly verified.
+2026-07-14T20:00:07Z — Recorded the third consecutive unavailable-browser result and the resulting
+external blocker. EP-7 remains In Progress; resume the manual rendered-preview acceptance checks
+when a browser backend is available.

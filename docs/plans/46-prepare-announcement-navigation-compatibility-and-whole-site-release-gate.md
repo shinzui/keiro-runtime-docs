@@ -34,7 +34,7 @@ and navigation integrity.
 - [x] (2026-07-14T19:41:48Z) Milestone 3: update repository metadata and source
   ledgers.
 - [ ] Milestone 4: establish and run the whole-site release gate. The automated gate is complete;
-  the required manual preview remains pending after two browser-backed attempts both found no
+  the required manual preview remains pending after three browser-backed attempts all found no
   available browser backend.
 
 ## Surprises & Discoveries
@@ -62,6 +62,10 @@ and navigation integrity.
   audit reconfirmed all prerequisite plans closed, all nine upstream HEADs equal their ledgers, the
   two excluded dirty upstream files unchanged, and no initiative diff under `content/docs/example-app/`
   or `docs/keiro-runtime-jitsurei-source-sync.md`.
+- A third browser-backed attempt at 2026-07-14T20:00:07Z started the healthy Vite preview, repeated
+  the required setup and troubleshooting flow, and again returned an empty browser inventory. The
+  rendered acceptance check is blocked on external browser availability; no repository change can
+  substitute for the required direct sidebar, search, and component inspection.
 
 
 ## Decision Log
@@ -120,6 +124,9 @@ and navigation integrity.
   metadata files and 506 pages, internal links remain unbroken, source pointers still match current
   upstream commits, and the repository worktree remains clean. This strengthens every non-visual
   acceptance claim but does not substitute for the outstanding rendered preview.
+- The third preview attempt reproduced the same empty browser inventory while the development
+  server was healthy. Milestone 4 remains open, and further progress requires a browser backend to
+  become available so the direct rendered checks can be completed.
 
 
 ## Context and Orientation
@@ -311,6 +318,6 @@ gate and a consistent public discovery path over all completed domain docs.
 
 ## Revision Note
 
-2026-07-14T19:56:58Z — Recorded the second unavailable-browser result and the accompanying
-requirement-by-requirement completion audit. Milestone 4 remains open because automated evidence
-cannot prove the explicitly required rendered sidebar, search, and MDX-component behavior.
+2026-07-14T20:00:07Z — Recorded the third consecutive unavailable-browser result and the resulting
+external blocker. Milestone 4 remains open because automated evidence cannot prove the explicitly
+required rendered sidebar, search, and MDX-component behavior.
