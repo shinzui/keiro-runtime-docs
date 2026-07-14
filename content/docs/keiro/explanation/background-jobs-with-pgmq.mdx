@@ -99,17 +99,16 @@ built** — but when it is picked up it can reuse layer 1 without disturbing the
 
 ## Two cadences, both first-class
 
-The same `Job` API drives two genuinely different run shapes, validated against the two real
-consumers:
+The same `Job` API drives two genuinely different run shapes:
 
 | | `runJobWorkers` (continuous) | `runJobOnce` (one-shot drain) |
 |---|---|---|
-| Shape | Supervise N processors forever | Drain up to `n` messages, then stop |
+| Shape | Supervise N processors until caller-owned shutdown | Drain up to `n` messages, then stop |
 | Returns | An `AppHandle` (you decide when to block / shut down) | `()` after the drain |
 | Driven by | A long-lived worker process | An external scheduler (`pg_cron`, a [Router](/docs/keiro/reference/router) fan-out) |
 | Typical deployment | several queues under one supervisor | one queue, drained per scheduler tick |
 
-`runJobWorkers` is for a process you start once and leave running; it builds every processor with
+`runJobWorkers` is for a long-lived process; it builds every processor with
 `jobProcessor` and supervises them with shibuya's `runApp`, and you can `stopAppGracefully` the
 handle on a shutdown signal. `runJobOnce` is for a "drain a little, then exit" cadence: it takes `n`
 from the adapter's stream, processes each, and returns — ideal when something *else* (a cron tick, a

@@ -179,6 +179,14 @@ your write, the way the [outbox](/docs/keiro/reference/outbox) does. `keiro-pgmq
 
 ## Queue lifecycle
 
+These helpers create application queues only after the PGMQ schema exists.
+`keiro-pgmq` does not run schema migrations: compose
+`Pgmq.Migration.pgmqMigrations` into the application-owned `pg-migrate` plan,
+run that plan with connection settings, then start the pool and call the queue
+helpers. Existing 0.3 migration ledgers require the explicit predecessor import
+described in [Install or migrate the PGMQ
+schema](/docs/pgmq/how-to/install-or-migrate-schema).
+
 ```haskell
 ensureJobQueue :: (Pgmq :> es) => Job p -> Eff es ()
 ensureJobQueueWith :: (Pgmq :> es) => QueueProvision -> Job p -> Eff es ()
@@ -256,7 +264,7 @@ runJobOnceWithContext ::
 - **`jobProcessor`** builds one shibuya `QueueProcessor` from a job and its handler: a `pgmqAdapter`
   configured from the job's policy (`maxRetries`, DLQ routing) paired with the wrapped handler. Pass
   the resulting actions to `runJobWorkers`.
-- **`runJobWorkers`** is the **continuous, multi-processor** run shape (the `rei` cadence): it
+- **`runJobWorkers`** is the **continuous, multi-processor** run shape: it
   `sequence`s the `jobProcessor` actions and supervises them with shibuya's `runApp` under the given
   `SupervisionStrategy` and inbox size. It **returns the `AppHandle`** — it does not block; the
   caller decides whether to block on it (and can later `stopAppGracefully` it). `SupervisionStrategy`
@@ -265,7 +273,7 @@ runJobOnceWithContext ::
   with `extendLease`, zero-based `attempt`, and path-dependent `headers`.
 - **`runJobOnceWithContext`** is the tuned, context-aware one-shot drain and returns the number of
   messages disposed. `runJobOnce` uses `defaultJobTuning` and discards that count.
-- **`runJobOnce`** is the **one-shot drain** of up to `n` messages (the `hospital-capacity` cadence):
+- **`runJobOnce`** is the **one-shot drain** of up to `n` messages:
   it reads directly from PGMQ, runs the wrapped handler over available messages, acks each result,
   then **stops**. It returns promptly when the queue is empty or `n` messages have been disposed.
 

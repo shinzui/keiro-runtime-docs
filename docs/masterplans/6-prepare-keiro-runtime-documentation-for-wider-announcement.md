@@ -202,7 +202,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T19:00:30Z) EP-6 Milestone 1: replace old migration guidance with component
   composition.
 - [x] (2026-07-14T19:11:40Z) EP-6 Milestone 2: refresh Kiroku 0.3 user and operator behavior.
-- [ ] EP-6 Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
+- [x] (2026-07-14T19:19:04Z) EP-6 Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
 - [ ] EP-6 Milestone 4: reconcile cross-package operations.
 - [ ] EP-7 Milestone 1: build the announcement discovery and compatibility path.
 - [ ] EP-7 Milestone 2: reconcile integrations and example-status language.
@@ -268,6 +268,10 @@ interactions between child plans. Provide concise evidence.
   reference prose: checkpoint-load errors no longer rewind to zero, and stream shutdown no longer
   writes a sentinel through the bounded data queue. The release gate must preserve the loud-failure
   and crash-propagation contracts now documented in the 0.3 upgrade matrix.
+- EP-6 confirmed the PGMQ adapter's idle-shutdown defect was an empty-batch filter ordered before the
+  stop gate. Release 0.12 reverses those stages, so an empty source terminates on the next returned
+  poll chunk and Shibuya can drain. Kafka's only committed drift is 0.8.0.1 release metadata;
+  Shibuya core and the Message DB adapter remain aligned at their existing pins.
 
 
 ## Decision Log
@@ -395,3 +399,8 @@ Compare the result against the original vision.
   classifies new validation, store, transaction, subscription, stream, CLI, and adapter outcomes by
   boundary and recovery action; the source walkthroughs and package labels match the committed July
   releases. The production build and 505-file internal-link scan pass.
+- EP-6 Milestone 3 aligned pgmq-hs 0.4 and `shibuya-pgmq-adapter 0.12`, including application-owned
+  schema composition, dedicated connection settings, explicit predecessor import, and an observable
+  idle-shutdown timeline through Shibuya's drain result. It also recorded Kafka's metadata-only
+  0.8.0.1 bump and removed current-proof claims tied to the excluded example app. The production
+  build and 505-file internal-link scan pass.

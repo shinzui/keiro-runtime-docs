@@ -3,13 +3,6 @@ title: keiro ⇄ pgmq (background jobs)
 description: How keiro-pgmq composes keiro with the pgmq + shibuya stack into a typed background-job queue — the package layering, the two-layer boundary, its relationship to the shibuya-pgmq adapter and the outbox, and the deferred case B.
 ---
 
-<Callout type="info">
-  **Seen in a real service.** The `hospital-capacity` one-shot `runJobOnce` drain referenced here is
-  part of `keiro-runtime-jitsurei` — see
-  [the pgmq reservation work queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
-  for it wired into a running two-service application.
-</Callout>
-
 `keiro-pgmq` is the cross-package glue that turns [pgmq](/docs/pgmq) (the PostgreSQL-native message
 queue) plus [shibuya](/docs/shibuya) (the supervised worker substrate) into a **typed background-job
 queue** for [keiro](/docs/keiro) applications. This page is the *wiring* story — which packages
@@ -126,20 +119,15 @@ will add `Keiro.PGMQ`-flavoured transport codecs on top of **`Keiro.PGMQ.Runtime
 must *not* depend on `Keiro.PGMQ.Job` (layer 2). Today's job queue (case A) and a future
 event-transport (case B) thus share the runtime plumbing without entangling the abstractions.
 
-## Proven against two real cadences
+## Two supported cadences
 
-The abstraction was validated by migrating two real apps off hand-rolled plumbing onto the package,
-each exercising a different slice of the API:
-
-- **`rei`** — four queues (git sync, reminders, reflections, agent work) run **continuously** under
-  one supervisor with `runJobWorkers`, using `aesonJobCodec` and a shared no-DLQ policy.
-- **`hospital-capacity`** — one reservation-work queue **drained one-shot** directly from PGMQ with
-  `runJobOnce` on an external cadence, using a literal `JobCodec` (to preserve its exact wire format)
-  and a DLQ policy. The context-aware drain returns how many messages it disposed, which is useful for
-  scheduled workers and tests.
-
-Both shrank their queue modules to a `Job` declaration plus a domain handler, and both dropped their
-direct `shibuya-pgmq-adapter` dependency.
+The package supports two run shapes without changing the `Job` declaration or
+handler contract. `runJobWorkers` starts one or more continuously supervised
+processors and returns an `AppHandle` for caller-owned shutdown.
+`runJobOnceWithContext` drains up to a caller-selected number of messages and
+returns the number disposed; `runJobOnce` uses default tuning and discards that
+count. The first fits a long-lived worker process, while the second fits an
+external scheduler or bounded test drain.
 
 ## Where to go next
 

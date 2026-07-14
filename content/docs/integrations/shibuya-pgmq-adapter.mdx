@@ -9,12 +9,37 @@ archive table, topic routing tables, FIFO group indexes, and JSONB message
 payload. shibuya owns handler execution, runner policy, ack finalization,
 metrics, tracing, and shutdown.
 
+Current compatibility is `shibuya-pgmq-adapter 0.12.0.0`, the `pgmq-* 0.4`
+package family, and `shibuya-core 0.8.0.1`. The adapter's public constructor is
+unchanged from 0.11; the upgrade changes schema installation and fixes idle
+shutdown.
+
 <Callout type="info">
   **Building a keiro app?** You usually do not wire this adapter directly.
   [`keiro-pgmq`](/docs/integrations/keiro-with-pgmq) wraps it in a typed `Job`
   layer that derives queue names, constructs `PgmqAdapterConfig`, decodes the
   JSON payload, and maps `JobOutcome` back to shibuya ack decisions.
 </Callout>
+
+## Install the schema before starting the adapter
+
+The adapter consumes an existing PGMQ schema; it does not install database
+objects. With `pgmq-migration` 0.4, resolve `Pgmq.Migration.pgmqMigrations`,
+compose it with the application's other components through `migrationPlan`, and
+run that final plan through `runMigrationPlan` or a standard `pg-migrate-cli`
+host.
+
+The migration runner takes `Hasql.Connection.Settings.Settings`, not the
+`Pool` stored in `PgmqAdapterEnv`. It opens its own connection so the migration
+advisory lock is not tied to the runtime pool. Once the migration gate succeeds,
+create the pool, reconcile queue topology, and construct the adapter.
+
+An existing database created by `pgmq-migration` 0.3 or earlier needs a one-time
+verified import from `public.schema_migrations` before native `up`. The native
+runner never discovers predecessor history implicitly, and the import adopts
+bookkeeping without replaying PGMQ DDL. Follow [Install or migrate the PGMQ
+schema](/docs/pgmq/how-to/install-or-migrate-schema) for the fresh and
+predecessor-ledger paths.
 
 ## Runtime shape
 
@@ -40,10 +65,9 @@ validates `PgmqAdapterConfig` before it starts polling; invalid configs return
 
 The adapter name is `pgmq:<queueName>`. The source polls PGMQ, converts each
 leased `Message Value` into a shibuya `Envelope Value`, and attaches an
-`AckHandle` that performs the matching PGMQ operation. `shutdown` stops the
-source. In the normal non-prefetch path it releases already-read chunks that
-were not handed to shibuya; messages already in processing are redelivered by
-PGMQ if their visibility timeout expires without a final ack.
+`AckHandle` that performs the matching PGMQ operation. Messages already in
+processing are redelivered by PGMQ if their visibility timeout expires without
+a final ack.
 
 Use the adapter directly when you want the raw PGMQ payload and queue semantics.
 Use `keiro-pgmq` when the queue is a typed keiro background-job queue.
@@ -89,6 +113,27 @@ When prefetch is enabled, size the buffer against the lease:
 `visibilityTimeout`, or a message can become visible again before the handler
 acks it. Prefetched messages that are read but not handed to a handler before
 shutdown are not lost; PGMQ redelivers them after their visibility timeout.
+
+## Graceful shutdown timeline
+
+Call `stopAppGracefully` while the PGMQ effect and pool are still in scope. In
+0.12, an idle queue follows the same finite shutdown path as a busy one:
+
+1. shibuya invokes the adapter's `shutdown`, which sets its stop gate.
+2. The next returned PGMQ poll chunk reaches that gate **before** empty chunks
+   are filtered. An empty chunk therefore ends the source instead of starting
+   another poll forever. A non-empty chunk that has not reached shibuya is
+   released before the source ends.
+3. The ingester observes end-of-stream. The processor drains its bounded inbox
+   and finalizes in-flight messages.
+4. `stopAppGracefully` returns `True` when every processor finishes before
+   `drainTimeout`; otherwise it stops the master and returns `False`.
+
+The current poll must return before step 2. Standard polling is therefore
+bounded by its poll/sleep cadence; long polling is bounded by the configured
+server wait. With prefetch enabled, batches already held upstream of the stop
+gate can remain invisible for at most their visibility timeout and are then
+redelivered. They are not lost.
 
 ## Ack Mapping
 

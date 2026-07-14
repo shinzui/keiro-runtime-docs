@@ -30,7 +30,7 @@ commands, and guarantees.
 - [x] (2026-07-14T19:00:30Z) Milestone 1: replace old migration guidance with native component
   composition, explicit predecessor imports, and current operator CLIs.
 - [x] (2026-07-14T19:11:40Z) Milestone 2: refresh Kiroku 0.3 user and operator behavior.
-- [ ] Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
+- [x] (2026-07-14T19:19:04Z) Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
 - [ ] Milestone 4: reconcile cross-package operations and run final scoped scans.
 
 ## Surprises & Discoveries
@@ -54,6 +54,10 @@ commands, and guarantees.
   sentinel. The committed worker now fails checkpoint load loudly, while stream termination uses a
   separate close/crash TVar so cancellation cannot block on queue capacity and worker crashes reach
   the next pull.
+- The PGMQ idle-shutdown regression was a stream-stage ordering bug: empty poll chunks were filtered
+  before the adapter's stop gate could observe them. Version 0.12 checks the gate first, so the next
+  returned empty chunk ends the source and lets Shibuya drain normally. Prefetch remains
+  at-least-once safe but can delay redelivery of already-buffered leases until visibility timeout.
 
 
 ## Decision Log
@@ -93,6 +97,13 @@ commands, and guarantees.
   `LiveSource` and the crash-aware stream bridge, and all package version labels match the reviewed
   release. Typecheck, formatting, production build, whitespace/stale scans, and the 505-file
   internal-link scan pass.
+- Milestone 3 aligned the PGMQ landing and topology model with the `0.4.0.1` package family and the
+  Shibuya adapter with release `0.12.0.0`. The adapter page now separates connection-settings-owned
+  schema deployment from the runtime pool, links the explicit predecessor-ledger import, and traces
+  an idle source from stop gate through end-of-stream, inbox drain, and the graceful-shutdown return
+  value. Kafka's metadata-only `0.8.0.1` bump is recorded; Shibuya core, Message DB, and the already
+  refreshed Kiroku adapter required no behavioral rewrite. Typecheck, formatting, production build,
+  whitespace/stale scans, and the 505-file internal-link scan pass.
 
 
 ## Context and Orientation
