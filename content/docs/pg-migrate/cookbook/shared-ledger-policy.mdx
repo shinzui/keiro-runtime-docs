@@ -1,0 +1,38 @@
+---
+title: "Adopt a shared-ledger policy"
+description: "A minimal policy template for applications that intentionally store several plans in one pg-migrate ledger."
+---
+
+Separate ledger schemas are simpler. If organizational constraints require sharing, check in a policy
+beside deployment code with these fields:
+
+| Policy field | Required decision |
+| --- | --- |
+| Ledger identity | one validated schema and one advisory-lock key used by every participant |
+| Component registry | stable component name, owning application/team, and incident contact |
+| Foreign inventory | exact expected components/rows per application release |
+| Change control | review required to add, remove, or rename a component |
+| Deployment order | designated migrator and serialization procedure |
+| Verification | `status` acceptance for owned rows plus explicit foreign inventory comparison |
+| Incident rule | no row deletion, checksum change, lock-key bypass, or automatic ambiguous retry |
+
+Configure the policy deliberately:
+
+```haskell
+sharedLedger <- either fail pure (ledgerConfig "platform_migrations" 424242)
+
+let runOptions =
+      withUnknownMigrationsPolicy AllowUnknownMigrations
+        $ withLedger sharedLedger
+        $ defaultRunOptions
+```
+
+`AllowUnknownMigrations` permits execution, repair, import, and status to coexist with foreign rows.
+It does not weaken any check on owned rows. Compare `unknownMigrations` with the checked-in inventory
+before and after every deployment.
+
+Strict `verify` always reports foreign rows. Do not filter that into an empty report. If empty strict
+verification is a release requirement for every application, give each plan a separate ledger schema
+and lock key instead.
+
+See [Operate an intentionally shared ledger](/docs/pg-migrate/how-to/operate-a-shared-ledger).

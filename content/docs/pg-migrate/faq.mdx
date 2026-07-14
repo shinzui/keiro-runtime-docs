@@ -1,0 +1,110 @@
+---
+title: FAQ
+description: "Short answers about pg-migrate ownership, embedding, deployment, verification, recovery, and predecessor cutover."
+---
+
+## Is pg-migrate a standalone executable?
+
+No. `pg-migrate-cli` is a parser, dispatcher, renderer, and outcome library. The application embeds
+its plan, owns connection configuration, stdout/stderr, logging, and exit mapping, and ships the
+resulting migration executable.
+
+## Who owns migration order?
+
+Libraries own ordered `MigrationComponent` histories. The application owns the complete
+dependency-validated `MigrationPlan` and the deployment process that executes it.
+
+## Can production discover SQL files at runtime?
+
+No. `embedMigrationManifest` validates manifest membership and SQL at compile time and embeds exact
+bytes. Include the files in source distributions for builds, but production executes the artifact's
+embedded plan.
+
+## Why did changing a comment cause a checksum mismatch?
+
+Checksums cover exact bytes, including comments and whitespace. Once a payload has been applied in
+any durable environment, restore those bytes and append a new migration instead of editing it.
+
+## May I edit a migration that is still pending everywhere?
+
+Yes, before it becomes durable history. Rebuild the artifact and repeat manifest, plan, and database
+acceptance checks. Once any target records it, treat the definition as immutable.
+
+## Why does `verify` fail on a fresh database?
+
+Strict verification treats every pending migration as an issue. Before deployment, confirm the issue
+set is exactly the reviewed pending suffix. After `up`, strict verification should be empty for an
+isolated ledger.
+
+## Does verification prove the live schema matches the SQL?
+
+No. It proves declared plan and ledger history agree on identity, position, exact checksum, kind,
+mode, status, prefix, pending rows, and unknown rows. Use catalog checks, smoke tests, or schema-drift
+tooling for live-state invariants.
+
+## Does `status` create or upgrade the ledger?
+
+No. `status` and `verify` are read-only observations. Execution, repair, and import initialize or
+upgrade ledger v1 within their locked lifecycle.
+
+## Can I run only one component or the next N migrations?
+
+No. Inspection can filter output, but validation and `up` always use the complete application plan.
+Partial execution would create an unreviewed release state.
+
+## What happens when two migrators start?
+
+Operations using the same ledger lock key serialize on a PostgreSQL session advisory lock. Choose
+indefinite, bounded, or no-wait policy; never change the key merely to bypass a holder.
+
+## Does a statement timeout make nontransactional SQL safe to retry?
+
+No. A timeout bounds a statement but cannot make it atomic. A lost connection or timeout may leave
+all, some, or none of the effect present while the ledger says `Running` or `Failed`.
+
+## When should I use `MarkApplied` versus `Retry`?
+
+Use `MarkApplied` only after independent evidence proves the complete intended effect. Use `Retry`
+only after evidence proves repetition safe. Both require confirmation and a non-empty audited reason.
+
+## What does a successful report with `cleanupIssues` mean?
+
+The primary migration, repair, or import is already durable, but advisory unlock or timeout
+restoration had trouble. Preserve success, investigate the session/cleanup path, and do not rerun the
+primary action. `CleanupFailed` instead means the primary operation failed first and cleanup also
+failed.
+
+## Can several applications intentionally share one ledger?
+
+Yes, with `AllowUnknownMigrations`, one common schema and lock key, an explicit foreign-row inventory,
+and coordinated ownership. Strict `verify` still reports foreign rows. Use separate ledger schemas if
+each application requires an empty strict report.
+
+## Why are there no down migrations?
+
+DDL and data effects are rarely truly reversible. pg-migrate preserves append-only evidence: restore
+an unapplied definition or append a reviewed forward correction after apply. Application rollback is
+a separate compatibility decision.
+
+## Can I write a Haskell migration?
+
+Yes. `transactionMigration` accepts a typed Hasql transaction and `sessionMigration` a typed Hasql
+session, both with explicit fingerprints. The public API does not accept arbitrary `IO`. Prefer
+embedded SQL when it represents the change clearly.
+
+## Does history import execute old migrations?
+
+No. It verifies a gap-free predecessor prefix and atomically writes target applied rows plus audit
+rows under the target lock. Import before native apply; a native row cannot be adopted later.
+
+## When is `EquivalentState` appropriate?
+
+Only when source and target payloads differ but a domain-specific read-only validator proves the
+target state is already satisfied. It requires state evidence and explicit `AllowEquivalentHistory`;
+the default rejects it.
+
+## Which PostgreSQL versions are supported by 1.1?
+
+The reviewed release supports PostgreSQL 17 and 18 and rejects other majors. See
+[Compatibility](/docs/pg-migrate/reference/compatibility) for the GHC, Hasql, package, ledger,
+manifest, and JSON contracts.

@@ -1,0 +1,86 @@
+---
+title: "Import Codd history"
+description: "Cut over an exact supported Codd ledger into pg-migrate with source locking, manifest evidence, confirmation, and atomic target audit."
+---
+
+The Codd adapter reads exact V1–V4 `codd_schema.sql_migrations` shapes and the exact V5
+`codd.sql_migrations` shape. It never creates, updates, renames, or drops Codd objects.
+
+## 1. Freeze and inventory the source
+
+Quiesce every Codd process and take a backup. The adapter acquires a cooperating source advisory lock,
+but an unmodified Codd process may not honor that key. A maintenance window is still required.
+
+Select every legacy filename in the component prefix and retain the exact source payload bytes. Parse
+the checked-in lowercase SHA-256 manifest:
+
+```haskell
+manifest <- either (fail . show) pure (parseCoddManifest manifestText)
+
+config0 <-
+  either (fail . show) pure
+    $ coddSourceConfig
+        sourceProvider
+        ("20240101090000-create-accounts.sql" :| [])
+        True
+        sourcePayloads
+        (Just manifest)
+        "Codd cutover under change CR-1842"
+        Confirmed
+
+let config = withCoddLockKey defaultCoddLockKey config0
+```
+
+The default cooperating key is `0x6B69726F6B754D67`. Override it only when the predecessor wrapper
+actually used another signed 64-bit key—not to bypass a current holder.
+
+Strict source mode rejects unselected ledger rows, selected rows absent from the manifest, and
+manifest entries outside the selection. The adapter also rejects both Codd schemas appearing
+together, unknown table shapes, duplicate/missing filenames, partial migrations, and recorded
+nontransactional failures.
+
+## 2. Map evidence to the target prefix
+
+```haskell
+sourceKey <-
+  either (fail . show) pure
+    (coddEvidenceKey "20240101090000-create-accounts.sql")
+target <- either (fail . show) pure (migrationId "accounts" "0001-create-accounts")
+
+let mappings = historyMapping target (Evidence sourceKey) (SamePayload sourceKey) :| []
+```
+
+Codd stores no historical SQL checksum. Manifest verification proves that supplied bytes match the
+current legacy repository, not which bytes Codd originally executed. For that reason every
+`SamePayload` mapping requires both a manifest and explicit `Confirmed` acknowledgement.
+
+Without a manifest, the adapter emits ledger-only evidence. Such evidence cannot satisfy Codd's
+same-payload policy; it may participate in `EquivalentState` only with a domain-specific read-only
+validator and `AllowEquivalentHistory`.
+
+## 3. Import while both locks are held
+
+```haskell
+report <-
+  importCoddHistory
+    defaultImportOptions
+    config
+    targetProvider
+    plan
+    mappings
+```
+
+The adapter holds the Codd source lock first, then the generic importer acquires the target lock.
+Target ledger and audit rows commit atomically without executing target SQL.
+
+If target import commits but the Codd unlock fails, the successful `HistoryImportReport` remains
+successful and appends the source unlock problem to `cleanupIssues`. Preserve the durable success
+and do not rerun it blindly.
+
+Finish with strict target verification, run normal `up`, retain the report and source artifacts, and
+retire the predecessor only after the cutover gate closes.
+
+## Related
+
+- [Handle cleanup issues](/docs/pg-migrate/how-to/handle-cleanup-issues)
+- [Import generic migration history](/docs/pg-migrate/how-to/import-generic-history)

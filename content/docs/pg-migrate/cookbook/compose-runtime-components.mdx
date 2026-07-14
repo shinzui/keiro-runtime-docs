@@ -1,0 +1,44 @@
+---
+title: "Compose Kiroku, Keiro, PGMQ, and application migrations"
+description: "Build one release plan from runtime-library components while keeping final ordering and process policy application-owned."
+---
+
+Use the public component exports from `kiroku-store-migrations`, `keiro-migrations`, and
+`pgmq-migration`. Each library owns its exact embedded bytes; the service owns composition.
+
+```haskell
+import Data.List.NonEmpty (NonEmpty (..))
+import Database.PostgreSQL.Migrate (migrationPlan)
+import Keiro.Migrations qualified as Keiro
+import Kiroku.Store.Migrations qualified as Kiroku
+import Pgmq.Migration qualified as Pgmq
+
+serviceMigrationPlan = do
+  kiroku <- Kiroku.kirokuMigrations
+  keiro <- Keiro.keiroMigrations
+  pgmq <- Pgmq.pgmqMigrations
+  application <- applicationMigrations
+  migrationPlan (kiroku :| [keiro, pgmq, application])
+```
+
+The concrete order makes the release boundary reviewable:
+
+1. Kiroku installs the event-store schema.
+2. Keiro follows because its component declares a dependency on `kiroku`.
+3. PGMQ installs its independently owned `pgmq` schema.
+4. The application follows the libraries whose objects its SQL references.
+
+Define `applicationMigrations` with dependencies matching those references—for example `keiro` and
+`pgmq`. The planner rejects missing dependencies, reversed Kiroku/Keiro order, duplicate component
+names, and cycles before acquiring a database connection.
+
+Mount `migrationCommandParser serviceMigrationPlan` in the service's migration executable. Do not run
+each library component independently during startup: that splits plan verification, lock policy, and
+deployment evidence across uncoordinated entry points.
+
+If the application prefers dependency-derived order, pass the same component set to
+`resolveMigrationPlan`. Either way, commit the resolved plan output to release review and execute the
+complete plan with one `up`.
+
+See [Component ownership and plan
+composition](/docs/pg-migrate/explanation/component-ownership-and-plan-composition).

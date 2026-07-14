@@ -1,0 +1,49 @@
+---
+title: "Ledger schema v1"
+description: "The durable metadata, migration, import-audit, and repair-audit contract stored by pg-migrate 1.1."
+---
+
+`ledgerSchemaVersion == 1`. The default `LedgerConfig` uses schema `pgmigrate` and the package-defined
+advisory-lock key. `ledgerConfig` accepts another validated PostgreSQL schema identifier and signed
+64-bit lock key.
+
+## `ledger_metadata`
+
+The singleton metadata row stores a positive schema version, update time, and runner version.
+Initialization is idempotent. A binary may apply its supported append-only ledger upgrade path, but
+refuses a database newer than its supported version without mutation.
+
+## `migrations`
+
+Each row has primary key `(component, migration)` and a unique `(component, position)`. It stores:
+
+- component-local identity and positive position;
+- exactly 32 bytes of SHA-256 checksum;
+- kind: `sql` or `haskell`;
+- transaction mode: `transactional` or `nontransactional`;
+- status: `running`, `applied`, or `failed`;
+- start/finish time, execution duration, optional error, and runner version.
+
+Transactional rows can only be `applied`. State constraints require `running` to have no finish time
+or error, `applied` to have a finish time and no error, and `failed` to have a finish time and error.
+
+## `history_imports`
+
+An imported migration has one referenced audit row containing the source identifier, resolved JSONB
+evidence and mapping, non-empty reason, import time and role, and runner version. The migration row
+and audit row are written atomically. A native applied row without matching audit cannot be adopted
+by a later import.
+
+## `repairs`
+
+Repair audit is append-only. Each row identifies the migration, `mark-applied` or `retry` operation,
+old/new status, non-empty reason, repair time and role, and runner version.
+
+## Operator contract
+
+Treat all four tables as library-owned durable evidence. Published v1 never requires manual row
+editing, deletion, checksum replacement, or schema downgrade. Use public status, verification,
+repair, and history-import APIs so validation and audit remain coupled to every transition.
+
+See [Compatibility](/docs/pg-migrate/reference/compatibility) and [History import evidence and
+atomicity](/docs/pg-migrate/explanation/history-import-evidence-and-atomicity).

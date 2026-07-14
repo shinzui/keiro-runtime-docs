@@ -85,7 +85,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 | EP-2 | Refresh keiro command replay snapshot and read-model reliability documentation | `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md` | None | EP-1 | Complete |
 | EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Complete |
 | EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Complete |
-| EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | In Progress |
+| EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Complete |
 | EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | Not Started |
 | EP-7 | Prepare announcement navigation compatibility and whole-site release gate | `docs/plans/46-prepare-announcement-navigation-compatibility-and-whole-site-release-gate.md` | EP-1, EP-2, EP-3, EP-4, EP-5, EP-6 | None | Not Started |
 
@@ -198,7 +198,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T18:24:38Z) EP-5 Milestone 1: create the pg-migrate section and fresh-database spine.
 - [x] (2026-07-14T18:34:02Z) EP-5 Milestone 2: document authoring, composition, and CLI integration.
 - [x] (2026-07-14T18:40:31Z) EP-5 Milestone 3: document production execution and recovery.
-- [ ] EP-5 Milestone 4: document predecessor cutovers and practical recipes.
+- [x] (2026-07-14T18:48:14Z) EP-5 Milestone 4: document predecessor cutovers and practical recipes.
 - [ ] EP-6 Milestone 1: replace old migration guidance with component composition.
 - [ ] EP-6 Milestone 2: refresh Kiroku 0.3 user and operator behavior.
 - [ ] EP-6 Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
@@ -368,3 +368,13 @@ Compare the result against the original vision.
   and forward-only incident recovery. Separate transactional/nontransactional state machines and
   cleanup-outcome guidance prevent unsafe automatic retry or loss of durable success evidence. The
   production docs build and 490-file link scan pass.
+- EP-5 Milestone 4 completed predecessor cutover, ledger-v1, cookbook, and FAQ coverage. Generic,
+  Codd, and hasql-migration guides preserve exact evidence strength, gap-free prefixes,
+  import-before-native order, explicit equivalent-state opt-in, source identity, and atomic audit.
+  The registered Kiroku, Keiro, and PGMQ component exports anchor the runtime composition recipe. The
+  production docs build and 502-file link scan pass.
+- EP-5 is complete against pg-migrate 1.1.0.0 at committed source `f39d64e`. The new top-level
+  section covers authoring, APIs, deployment, verification, recovery, cutover, recipes, and FAQ;
+  the upstream public build and all 110 unit tests pass. EP-6 inherits this as the canonical runtime
+  migration model. EP-7 still owns final `mori.dhall`, README/source-ledger registration, and
+  announcement navigation ordering.

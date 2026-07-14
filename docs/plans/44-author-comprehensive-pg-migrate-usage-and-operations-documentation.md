@@ -33,7 +33,8 @@ failure classes to decide whether deployment may proceed.
   testing, and the public reference surface.
 - [x] (2026-07-14T18:40:31Z) Milestone 3: documented production execution, verification, cleanup,
   and recovery.
-- [ ] Milestone 4: document predecessor imports, practical recipes, FAQ, and final navigation.
+- [x] (2026-07-14T18:48:14Z) Milestone 4: documented predecessor imports, practical recipes, FAQ,
+  ledger v1, and final navigation.
 
 ## Surprises & Discoveries
 
@@ -51,6 +52,12 @@ failure classes to decide whether deployment may proceed.
 - Strict `verify` always reports foreign rows even when `RunOptions` allows them for execution and
   `status`. An intentionally shared ledger therefore needs an explicit foreign-row inventory; an
   application requiring empty strict verification should use its own ledger schema.
+- The Codd predecessor ledger cannot prove historical payload bytes: its manifest check only proves
+  the supplied bytes match the current repository. The adapter therefore requires both manifest
+  evidence and explicit confirmation for `SamePayload`.
+- The hasql-migration adapter can reproduce the predecessor's base64 MD5 from supplied bytes, then
+  separately use SHA-256 for target comparison. Its `executed_at` value is unzoned and remains
+  `LocalTimeWithoutZone` in audit evidence.
 
 
 ## Decision Log
@@ -98,6 +105,18 @@ failure classes to decide whether deployment may proceed.
   recovery. The guidance retains JSON evidence, forbids automatic ambiguous retry and ledger edits,
   and preserves durable success when cleanup has issues. Formatting, MDX/TypeScript, production
   build, `git diff --check`, and the 490-file link scan pass.
+- Milestone 4 added generic, Codd, and hasql-migration cutover guides; an evidence/atomicity
+  explanation; ledger-v1 reference; five practical recipes; and a consolidated FAQ. The runtime
+  composition recipe uses the registered public `kirokuMigrations`, `keiroMigrations`, and
+  `pgmqMigrations` exports. Cutover guidance enforces gap-free prefixes, import-before-native order,
+  exact checksums, explicit equivalent-state validation, and atomic immutable audit. Formatting,
+  MDX/TypeScript, production build, `git diff --check`, and the 502-file link scan pass.
+- The completed section now provides a continuous path from first embedded plan through public API
+  lookup, production deployment and recovery, predecessor cutover, runtime-family composition, and
+  incident triage. It stays within the 1.1 public facades at committed source `f39d64e`; the public
+  source build and all 110 unit tests pass. EP-6 can reconcile runtime-specific migration pages to
+  these canonical operations, while EP-7 owns final repository registration and source-ledger
+  metadata.
 
 
 ## Context and Orientation

@@ -1,0 +1,35 @@
+---
+title: "Triage a failed migration"
+description: "Route structured pg-migrate outcomes to the next safe operator action without rewriting history."
+---
+
+Preserve JSON, release identity, database, role, logs, and timestamps before following the tree.
+
+```mermaid
+flowchart TD
+  Start[Command did not cleanly pass] --> Report{Successful report?}
+  Report -->|yes| Cleanup{cleanupIssues empty?}
+  Cleanup -->|yes| Verify[Run strict post-verification]
+  Cleanup -->|no| Keep[Preserve durable success; investigate cleanup; do not rerun]
+  Report -->|no| Class{Primary class}
+  Class -->|definition / plan| Source[Fix pending source and rebuild]
+  Class -->|lock / acquisition| Holder[Identify holder or connection; keep same lock key]
+  Class -->|verification mismatch| Restore[Restore applied definition; append forward correction]
+  Class -->|transactional action| Tx[Inspect PostgreSQL error; transaction rolled back]
+  Class -->|nontransactional Running / Failed| Inspect[Quiesce and inspect live effect]
+  Inspect --> Decision{Evidence proves what?}
+  Decision -->|complete and correct| Mark[Confirmed MarkApplied with reason]
+  Decision -->|retry demonstrably safe| Retry[Confirmed Retry with reason]
+  Decision -->|unclear / partial| Stop[Keep quiesced; investigate or remediate forward]
+  Class -->|history import| Import[Fix source evidence, prefix, validator, or conflict]
+  Class -->|CleanupFailed| Both[Preserve primary plus cleanup failures; handle both]
+```
+
+After any correction or repair, use a fresh connection for status and strict verification. A schema
+or application invariant check may be needed in addition to ledger verification.
+
+Never edit ledger rows, replace a stored checksum, change the lock key to bypass a holder, automatically
+retry ambiguous SQL, or adopt an existing native row with a later history import.
+
+See [Troubleshoot a migration failure](/docs/pg-migrate/how-to/troubleshoot-a-migration-failure) for
+the structured error classes.

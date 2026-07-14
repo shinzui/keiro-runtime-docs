@@ -1,0 +1,95 @@
+---
+title: "Import generic migration history"
+description: "Record a verified predecessor prefix and audit evidence without executing target migration actions."
+---
+
+Use generic history import when an existing database already has the state represented by a
+pg-migrate component. Import is a one-time cutover operation, not a fallback inside normal `up`.
+
+<Callout type="warn">
+  Back up source and target, rehearse on a recent copy, disable the predecessor runner, and keep all
+  writers quiescent for the cutover window.
+</Callout>
+
+## 1. Build exact source evidence
+
+The following shape represents a predecessor whose stored checksum was reproduced from the exact
+legacy payload bytes:
+
+```haskell
+key <- either (fail . show) pure (evidenceKey "legacy:001-create-accounts.sql")
+target <- either (fail . show) pure (migrationId "accounts" "0001-create-accounts")
+
+sourceEvidence <-
+  either (fail . show) pure
+    $ sourceLedgerChecksumVerifiedEvidence
+        "001-create-accounts.sql"
+        sourceTimestamp
+        (Just (migrationFingerprint legacyBytes))
+        adapterDetails
+
+let mapping = historyMapping target (Evidence key) (SamePayload key)
+```
+
+`SamePayload` is valid only when evidence carries the exact source payload checksum and that SHA-256
+matches the target SQL payload. A filename, timestamp, or “applied” ledger flag alone is insufficient.
+
+## 2. Define and prevalidate the import
+
+```haskell
+cutover <-
+  either (fail . show) pure
+    $ historyImport
+        "legacy-runner"
+        (Map.singleton key sourceEvidence)
+        []
+        (mapping :| [])
+        "cut over under change CR-1842"
+
+either (fail . show) pure (validateHistoryMappingTargets plan (mapping :| []))
+```
+
+Mappings must name migrations in the target plan and form a gap-free prefix beginning at position 1
+for every affected component. Existing native target rows do not fill a missing mapping position.
+Import the legacy prefix before applying any migration from that component with pg-migrate.
+
+Evidence requirements can combine independent facts with `AllOf` and `AnyOf`. Avoid ambiguous
+requirements: exactly one satisfying evidence path must be auditable for a mapping.
+
+## 3. Use equivalent state only with a validator
+
+When source and target payloads differ but demonstrably establish the same database state, declare
+`EquivalentState`, require a `StateValidator`, and opt in explicitly:
+
+```haskell
+let validator = stateValidator stateKey readOnlyInvariantCheck
+    equivalent = historyMapping target (Evidence stateKey) EquivalentState
+    options = withEquivalentHistory AllowEquivalentHistory defaultImportOptions
+```
+
+The validator runs under the target lock in a read-only PostgreSQL transaction. It must inspect a
+domain-specific invariant; names or human assertion alone do not prove equivalence. The default
+policy is `RejectEquivalentHistory`.
+
+## 4. Import atomically
+
+```haskell
+result <- importMigrationHistory options targetProvider plan cutover
+```
+
+The importer acquires the target advisory lock, initializes/verifies ledger v1, runs validators, and
+writes applied target rows plus `history_imports` audit rows in one transaction. It never executes
+target migration actions.
+
+Retain the complete report, source identifier, reason, resolved evidence JSON, target artifact,
+database, role, and timestamps. An identical re-import returns `AlreadyImported`; changed source,
+reason, target metadata, mapping, or evidence conflicts instead of updating the audit.
+
+Finish with strict verification, then run normal `up` so the imported prefix reports
+`AlreadyApplied` and only later native migrations execute.
+
+## Related
+
+- [History import evidence and atomicity](/docs/pg-migrate/explanation/history-import-evidence-and-atomicity)
+- [Import Codd history](/docs/pg-migrate/how-to/import-codd-history)
+- [Import hasql-migration history](/docs/pg-migrate/how-to/import-hasql-migration-history)

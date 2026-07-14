@@ -1,0 +1,36 @@
+---
+title: "Run a pre-deploy migration job"
+description: "Separate privileged schema change from application startup and retain machine-readable evidence for the rollout gate."
+---
+
+Build one migration executable into the same immutable release artifact as the application plan.
+Give the deployment job schema-owner credentials; give the runtime application only the privileges it
+needs after migration.
+
+```console
+release-migrate plan --json > plan.json
+release-migrate status --json > status-before.json
+release-migrate verify --json > verify-before.json
+release-migrate up \
+  --lock-timeout 30000 \
+  --statement-timeout 120000 \
+  --json > up.json
+release-migrate verify --json > verify-after.json
+```
+
+Treat the expected pre-deploy pending suffix as reviewed input, not as an ignored failure. Stop before
+`up` if verification reports changed applied metadata, unresolved nontransactional state, gaps, or
+unknown rows.
+
+The job succeeds only when:
+
+- the complete `up` result is successful;
+- any `cleanupIssues` have been classified without rerunning durable work;
+- post-deploy strict verification has no issues or pending rows; and
+- all evidence files are attached to the release record with artifact, database, role, and time.
+
+Start the new application version only after that gate. Disable runtime schema initialization so
+ordinary process restarts cannot mutate the database or race the deployment job.
+
+On failure, keep writers quiesced when the effect may be ambiguous and use the [failure-triage decision
+tree](/docs/pg-migrate/cookbook/failure-triage-decision-tree).

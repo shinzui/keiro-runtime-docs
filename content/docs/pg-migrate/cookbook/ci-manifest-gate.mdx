@@ -1,0 +1,39 @@
+---
+title: "Gate manifests in CI"
+description: "Combine exact-byte embedding checks with plan review and database-backed acceptance before producing a release artifact."
+---
+
+Run the gate from the same source revision that produces the migration executable.
+
+## Fast authoring gate
+
+```console
+cabal build service-migrate
+cabal run service-migrate -- check --manifest migrations/accounts/manifest --json
+cabal run service-migrate -- plan --json
+cabal run service-migrate -- list --json
+```
+
+The build executes strict Template Haskell embedding. On GHC 9.12, keep
+`Database.PostgreSQL.Migrate.Embed.RecompilePlugin` enabled in every embedding module so new or removed
+sibling SQL files retrigger membership validation.
+
+The direct `check` gives focused diagnostics for order, filename safety, exact membership, UTF-8,
+directives, and SQL scanner rules. `plan` and `list` expose component dependencies, durable identities,
+positions, checksums, kinds, and transaction modes for review.
+
+## Database acceptance gate
+
+Use `pg-migrate-test-support` to run the complete plan against ephemeral supported PostgreSQL:
+
+1. Fresh database: status is pending, `up` applies all, strict verification succeeds.
+2. Idempotent rerun: every result is `AlreadyApplied`.
+3. Upgrade fixture: an older released prefix advances only by the appended suffix.
+4. Failure fixtures: transactional rollback and nontransactional ambiguity remain distinguishable.
+5. Matrix: run supported PostgreSQL 17 and 18 jobs before release.
+
+Do not approve only a filtered component or target count. The final application plan is the acceptance
+unit. Store no runtime SQL directory in the deploy artifact; the compiled binary already contains the
+reviewed bytes.
+
+See [Check migrations in CI](/docs/pg-migrate/how-to/check-migrations-in-ci).

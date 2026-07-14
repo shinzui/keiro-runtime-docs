@@ -1,0 +1,78 @@
+---
+title: "Import hasql-migration history"
+description: "Verify predecessor base64 MD5 checksums from exact payload bytes, then atomically import the mapped target prefix."
+---
+
+The hasql-migration adapter reads a validated schema-qualified predecessor table. It defaults to
+`public.schema_migrations` and never relies on `search_path`.
+
+## 1. Freeze and validate the predecessor
+
+Quiesce the old runner, back up the database, and select a complete source prefix. Supply the exact
+legacy SQL bytes for every selected filename:
+
+```haskell
+sourceTable <-
+  either (fail . show) pure
+    (qualifiedTable "public.schema_migrations")
+
+config <-
+  either (fail . show) pure
+    $ hasqlMigrationSourceConfig
+        sourceProvider
+        sourceTable
+        ("001_create_accounts.sql" :| [])
+        True
+        sourcePayloads
+        []
+        "hasql-migration cutover under change CR-1842"
+```
+
+Strict source mode rejects any unselected predecessor row. The table must have exactly the supported
+`filename`, `checksum`, and `executed_at` column sequence. The adapter rejects missing tables, other
+shapes, duplicate filenames, missing selections, and missing payloads.
+
+The adapter recomputes the predecessor's base64 MD5 from each supplied payload and compares it with
+the stored checksum. Only then does it emit `SourceLedgerChecksumVerified` evidence. It also computes
+SHA-256 over the same bytes for comparison with a pg-migrate SQL target.
+
+## 2. Map verified rows
+
+```haskell
+sourceKey <-
+  either (fail . show) pure
+    (hasqlMigrationEvidenceKey "001_create_accounts.sql")
+target <- either (fail . show) pure (migrationId "accounts" "0001-create-accounts")
+
+let mappings = historyMapping target (Evidence sourceKey) (SamePayload sourceKey) :| []
+```
+
+Names and stored MD5 are not sufficient for `EquivalentState`. When the payloads differ, add a
+read-only `StateValidator` to the source config, map `EquivalentState` to that evidence, and pass
+`withEquivalentHistory AllowEquivalentHistory defaultImportOptions`.
+
+## 3. Import and close the cutover
+
+```haskell
+report <-
+  importHasqlMigrationHistory
+    defaultImportOptions
+    config
+    targetProvider
+    plan
+    mappings
+```
+
+The adapter's source read is not a predecessor write lock, so quiescence remains mandatory. The
+generic importer serializes and atomically writes target ledger/audit rows without executing target
+actions.
+
+Audit JSON preserves the quoted qualified source table and the predecessor's unzoned
+`timestamp without time zone` as `LocalTimeWithoutZone`; it does not invent a timezone. Retain the
+report and exact payload artifacts, run strict target verification, then apply only later native
+migrations with normal `up`.
+
+## Related
+
+- [History import evidence and atomicity](/docs/pg-migrate/explanation/history-import-evidence-and-atomicity)
+- [Import generic migration history](/docs/pg-migrate/how-to/import-generic-history)
