@@ -86,7 +86,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 | EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Complete |
 | EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Complete |
 | EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Complete |
-| EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | In Progress |
+| EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | Complete |
 | EP-7 | Prepare announcement navigation compatibility and whole-site release gate | `docs/plans/46-prepare-announcement-navigation-compatibility-and-whole-site-release-gate.md` | EP-1, EP-2, EP-3, EP-4, EP-5, EP-6 | None | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -203,7 +203,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
   composition.
 - [x] (2026-07-14T19:11:40Z) EP-6 Milestone 2: refresh Kiroku 0.3 user and operator behavior.
 - [x] (2026-07-14T19:19:04Z) EP-6 Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
-- [ ] EP-6 Milestone 4: reconcile cross-package operations.
+- [x] (2026-07-14T19:23:08Z) EP-6 Milestone 4: reconcile cross-package operations.
 - [ ] EP-7 Milestone 1: build the announcement discovery and compatibility path.
 - [ ] EP-7 Milestone 2: reconcile integrations and example-status language.
 - [ ] EP-7 Milestone 3: update repository metadata and source ledgers.
@@ -404,3 +404,9 @@ Compare the result against the original vision.
   idle-shutdown timeline through Shibuya's drain result. It also recorded Kafka's metadata-only
   0.8.0.1 bump and removed current-proof claims tied to the excluded example app. The production
   build and 505-file internal-link scan pass.
+- EP-6 Milestone 4 completed the runtime ownership handoff across installation and integration pages:
+  one application plan owns Kiroku, Keiro, PGMQ, and service components; predecessor imports are
+  explicit one-time cutovers; and pools, topology reconciliation, and adapters start afterwards. The
+  cross-package schema table now correctly places Keiro framework objects in `keiro`. Final source
+  boundaries and intentionally excluded dirty files are recorded in EP-6; the production build and
+  505-file internal-link scan pass.

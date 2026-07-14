@@ -50,6 +50,21 @@ headers, batch sends, traced sends, and FIFO message groups; queue provisioning 
 unlogged, partitioned, and ordered/FIFO-indexed queues; operator helpers cover DLQ read/redrive,
 archive/purge, queue metrics, and retention.
 
+## Schema setup is below the job runtime
+
+`keiro-pgmq`, `shibuya-pgmq-adapter`, and `PgmqAdapterEnv` do not install the
+PGMQ schema. The application migration executable composes
+`Pgmq.Migration.pgmqMigrations` into its final `pg-migrate` plan and runs that
+plan with connection settings. In a service that also uses Keiro, the complete
+order is Kiroku, Keiro, PGMQ, then application components.
+
+A database created by `pgmq-migration` 0.3 or earlier needs its verified
+`public.schema_migrations` history imported once before native `up`; the import
+does not replay PGMQ DDL. Only after the migration gate succeeds should the
+service create its Hasql pool, reconcile application queues, and start job
+workers. See [Install or migrate the PGMQ
+schema](/docs/pgmq/how-to/install-or-migrate-schema).
+
 ## The two-layer boundary
 
 The package is split into two layers, on purpose:

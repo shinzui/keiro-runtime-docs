@@ -31,7 +31,8 @@ commands, and guarantees.
   composition, explicit predecessor imports, and current operator CLIs.
 - [x] (2026-07-14T19:11:40Z) Milestone 2: refresh Kiroku 0.3 user and operator behavior.
 - [x] (2026-07-14T19:19:04Z) Milestone 3: refresh PGMQ, Shibuya, and adapter behavior.
-- [ ] Milestone 4: reconcile cross-package operations and run final scoped scans.
+- [x] (2026-07-14T19:23:08Z) Milestone 4: reconcile cross-package operations and run final scoped
+  scans.
 
 ## Surprises & Discoveries
 
@@ -104,6 +105,21 @@ commands, and guarantees.
   value. Kafka's metadata-only `0.8.0.1` bump is recorded; Shibuya core, Message DB, and the already
   refreshed Kiroku adapter required no behavioral rewrite. Typecheck, formatting, production build,
   whitespace/stale scans, and the 505-file internal-link scan pass.
+- Milestone 4 made application ownership explicit from installation through integration: libraries
+  export components, the application composes and runs the complete Kiroku → Keiro → PGMQ →
+  application plan, verified predecessor imports happen once, and runtime pools/adapters start only
+  after the migration gate. It also corrected the remaining integration-table claim that Keiro
+  inbox/outbox objects lived in `kiroku`; framework objects live in `keiro`. Final typecheck,
+  formatting, production build, whitespace/stale scans, and the 505-file internal-link scan pass.
+
+  Final reviewed committed boundaries are Keiro `c68dcc7b9cea8d9c180d1c04254a72aa43804cac`
+  (excluding user-untracked `mori.automation.dhall`), Kiroku
+  `58aff77b3a6d6093e3613753a0543aab62db9fac`, pgmq-hs
+  `f4a101843ea6f5c055277fd84859ece02865eff4`, Shibuya
+  `172df245f40a454af46dd7f4cde855eaa4414c5a`, shibuya-pgmq-adapter
+  `85931b45702faecc035d89bb5cff381e8679f793`, shibuya-kafka-adapter
+  `65111ae11fdabd161b2147ce478647a5ed1737f9`, and shibuya-message-db-adapter
+  `43072558a58d9613cce46c3624157d6fc3e5b6b0` (excluding the user's modified `mori.dhall`).
 
 
 ## Context and Orientation

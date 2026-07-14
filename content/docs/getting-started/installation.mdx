@@ -5,16 +5,13 @@ description: Prerequisites and how to get the keiro runtime libraries.
 
 This page covers what you need before using the keiro runtime libraries.
 
-<Callout type="info">
-  Installation details are being finalized. The steps below describe the general shape; per-library
-  specifics land with each library's content set.
-</Callout>
-
 ## Prerequisites
 
 - A recent **GHC** and **Cabal** (the Haskell toolchain).
-- For kiroku: a running **PostgreSQL** instance. kiroku does not run your
-  migrations — create its schema first, then point kiroku at the database.
+- A running **PostgreSQL** instance for Kiroku, Keiro's PostgreSQL features,
+  PGMQ, and the PostgreSQL-backed adapters you select.
+- Permission for a migration connection to create the schemas and tables owned
+  by the selected runtime components.
 
 ## Getting the libraries
 
@@ -23,7 +20,57 @@ project's build configuration:
 
 ```text
 -- in your .cabal build-depends
-build-depends: kiroku, keiro, keiki, shibuya
+build-depends:
+  keiki,
+  keiro,
+  kiroku-store,
+  shibuya-core
 ```
 
-Then see each library's **Tutorials** section to get started.
+Add integration packages only when you need them—for example `keiro-pgmq`,
+`pgmq-effectful`, or a `shibuya-*-adapter` package.
+
+## Install the database schemas
+
+The runtime libraries export migration components; your application owns the
+final plan and executable. A full PostgreSQL service composes these in dependency
+order:
+
+```text
+kirokuMigrations
+  -> keiroMigrations
+  -> pgmqMigrations
+  -> applicationMigrations
+```
+
+Kiroku owns `kiroku`, Keiro owns `keiro`, PGMQ owns `pgmq`, and the application
+owns read-model and service schemas. Resolve the components as one `pg-migrate`
+plan, inspect it, and run it with connection settings before opening application
+pools. The [runtime composition recipe](/docs/pg-migrate/cookbook/compose-runtime-components)
+shows the Haskell shape; [deploy a migration
+plan](/docs/pg-migrate/how-to/deploy-a-migration-plan) provides the production
+gate.
+
+<Callout type="warn">
+  Do not point native `up` at an existing predecessor-managed database first.
+  Kiroku/Keiro Codd ledgers and PGMQ `public.schema_migrations` ledgers require
+  their explicit, verified one-time import paths. Imports adopt history without
+  replaying target DDL.
+</Callout>
+
+Use [Upgrade a Keiro 0.1 database](/docs/keiro/how-to/upgrade-a-0-1-database)
+for the framework-schema relocation and [Install or migrate
+PGMQ](/docs/pgmq/how-to/install-or-migrate-schema) for PGMQ's predecessor
+histories. Fresh databases skip those imports.
+
+## Start runtime resources
+
+After the migration gate succeeds, create Hasql pools, reconcile application
+queue topology, construct adapters, and start workers. Migration connections and
+runtime pools have different ownership: `pg-migrate` acquires its own connection
+for the advisory-lock lifecycle, while stores and adapters use caller-owned
+pools during normal operation.
+
+Then continue with the tutorial for the highest-level library you selected:
+[keiki](/docs/keiki/tutorials), [Kiroku](/docs/kiroku/tutorials),
+[Keiro](/docs/keiro/tutorials), or [Shibuya](/docs/shibuya/tutorials).

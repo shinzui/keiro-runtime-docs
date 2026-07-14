@@ -6,6 +6,23 @@ description: How the keiro runtime libraries fit together — cross-package glue
 The keiro runtime libraries are designed to compose. This section documents the
 cross-package glue: the adapters and patterns that wire one library to another.
 
+## Database setup precedes runtime wiring
+
+For a service that uses the full PostgreSQL stack, schema ownership is split by
+component: Kiroku owns `kiroku`, Keiro owns `keiro`, PGMQ owns `pgmq`, and the
+application owns its read-model and service tables. The application migration
+executable resolves `kirokuMigrations`, `keiroMigrations`, `pgmqMigrations`, and
+its own component as one `pg-migrate` plan in Kiroku → Keiro → PGMQ →
+application order, then runs it with connection settings before creating
+runtime pools or adapters.
+
+Existing databases need a one-time history cutover before native `up`: import
+verified Codd history for Kiroku/Keiro, and verified `hasql-migration` history
+for PGMQ. Those imports adopt ledger evidence without replaying target DDL;
+they are not recurring startup steps. See [Compose runtime
+components](/docs/pg-migrate/cookbook/compose-runtime-components) and the
+[installation path](/docs/getting-started/installation).
+
 <Cards>
   <Card
     title="shibuya adapter comparison"

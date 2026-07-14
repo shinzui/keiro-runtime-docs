@@ -11,6 +11,24 @@ delegate durability to different systems.
 Use this page to choose the right adapter and to understand where source-specific
 behavior begins.
 
+## Schema and runtime ownership
+
+No Shibuya adapter owns application schema deployment. Provision the source
+system first, then construct the adapter inside the source effect or client
+lifecycle:
+
+| Adapter | Setup owner | Runtime owner |
+| --- | --- | --- |
+| pgmq | The application composes `pgmqMigrations` into its final `pg-migrate` plan, then reconciles queue topology. | `PgmqAdapterEnv` uses the application pool for polling and finalization. |
+| kiroku | The application runs the Kiroku component, plus Keiro and application components when used. | Kiroku owns subscriptions, checkpoints, retries, and dead letters; the adapter translates them to Shibuya. |
+| Kafka | The deployment provisions brokers, topics, and consumer-group policy outside Shibuya. | The caller's `KafkaConsumer` effect owns the session and offsets. |
+| Message DB | The deployment provisions Message DB and the application's checkpoint store. | The supplied `MessageDb` and `CheckpointStore` effects own reads and durable progress. |
+
+Migration runners use connection settings and finish before runtime pools start.
+Predecessor ledger imports are one-time deployment operations, never adapter
+startup behavior. See the [runtime component composition
+recipe](/docs/pg-migrate/cookbook/compose-runtime-components).
+
 ## At a Glance
 
 | Adapter | Source model | Payload | Progress owner | Best fit |
