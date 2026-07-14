@@ -568,74 +568,102 @@ stepEither ::
 
 ### Replay
 
-These invert outputs back into state by walking outgoing edges, inverting each edge's `output` via
-`solveOutput`, verifying the guard on the recovered input, and applying the edge's update.
+Replay inverts persisted events through the same edges that handle commands. New code should use the
+structured `Either` functions: they distinguish corrupt or incompatible history from an ordinary
+command rejection and identify exactly where hydration stopped. The older `Maybe` functions remain
+compatibility wrappers and deliberately discard this evidence.
 
-`applyEvent` applies one observed output to the state. It handles ε-edges (skipped) and letter edges
-(inverted against the head of the output list); for true streaming replay across multi-event edges,
-use `applyEventStreaming`.
-
-```haskell
-applyEvent ::
-    (BoolAlg phi (RegFile rs, ci), Eq co) =>
-    SymTransducer phi rs s ci co ->
-    s ->
-    RegFile rs ->
-    co ->
-    Maybe (s, RegFile rs)
-```
-
-`InFlight` is the streaming-replay state wrapper. `Settled s` is the state at a stable vertex (the
-next event must be the first emission of some outgoing edge of `s`); `InFlight s [e2, ..., eN]` is
-the mid-chain state whose queue holds the remaining *evaluated* expected events in order — the next
-observed event must equal the head, popping it, until the queue empties and the wrapper transitions
-back to `Settled`.
+`InFlight` is the streaming carrier. `Settled s` is a stable vertex. `InFlight s pending` means the
+edge update has already run and replay must still match the evaluated tail of that edge's multi-event
+output; consuming a tail event must not apply the update again.
 
 ```haskell
-data InFlight s co = Settled !s | InFlight !s ![co]
+data InFlight s co
+    = Settled !s
+    | InFlight !s ![co]
     deriving (Eq, Show)
 ```
 
-`applyEventStreaming` applies one observed output to a streaming-replay state. From `Settled` it
-commits to the unique edge whose output head inverts to a valid guard-satisfying input, runs the
-update, and queues the evaluated tail (returning `Settled` for a letter edge, `InFlight` for a
-multi-event edge). From `InFlight` it equality-checks the queue head against the observed event and
-advances the queue with no register update; an out-of-order event yields `Nothing`.
+A one-event failure is one of three replay-specific cases:
 
 ```haskell
-applyEventStreaming ::
+data ReplayStepFailure s co
+    = ReplayNoInvertingEdge s [RejectedEdgeSummary s]
+    | ReplayAmbiguousInversions s [MatchedEdgeSummary s]
+    | ReplayQueueMismatch s co [co]
+    deriving stock (Eq, Show)
+```
+
+`ReplayNoInvertingEdge` means no outgoing edge could recover a guard-satisfying command from the
+observed event. `ReplayAmbiguousInversions` means multiple edges recovered one, which is a durable
+soundness defect rather than ordinary rejection. `ReplayQueueMismatch` records the stable target,
+the observed event, and the pending queue when a multi-event tail arrived out of order.
+
+List-level failures add the zero-based event index and the wrapper state immediately before failure.
+Strict replay also reports a log that ends with pending tail events:
+
+```haskell
+data ReplayFailureReason s co
+    = ReplayEventFailed (ReplayStepFailure s co)
+    | ReplayLogTruncated [co]
+    deriving stock (Eq, Show)
+
+data ReplayFailure s co = ReplayFailure
+    { replayFailedIndex  :: Int
+    , replayFailedState  :: InFlight s co
+    , replayFailureReason :: ReplayFailureReason s co
+    }
+    deriving stock (Eq, Show)
+```
+
+`applyEventStreamingEither` consumes one observed event. From `Settled`, it selects the unique
+inverting edge, applies its update once, and records any evaluated tail. From `InFlight`, it only
+matches and pops the queue head.
+
+```haskell
+applyEventStreamingEither ::
     (BoolAlg phi (RegFile rs, ci), Eq co) =>
     SymTransducer phi rs s ci co ->
     InFlight s co ->
     RegFile rs ->
     co ->
-    Maybe (InFlight s co, RegFile rs)
+    Either (ReplayStepFailure s co) (InFlight s co, RegFile rs)
 ```
 
-`reconstitute` rebuilds `(state, registers)` from a log of outputs by replaying each event through
-the `InFlight`-aware `applyEventStreaming` from the transducer's initial state. A log that ends
-mid-chain through a multi-event edge returns `Nothing`.
+`replayEvents` starts from any streaming seed and intentionally permits a page to end `InFlight`, so
+a paginated event-store reader can carry that wrapper into the next page.
 
 ```haskell
-reconstitute ::
+replayEvents ::
     (BoolAlg phi (RegFile rs, ci), Eq co) =>
     SymTransducer phi rs s ci co ->
+    (InFlight s co, RegFile rs) ->
     [co] ->
-    Maybe (s, RegFile rs)
+    Either (ReplayFailure s co) (InFlight s co, RegFile rs)
 ```
 
-`applyEvents` is the same replay from a caller-supplied start state rather than the initial state, so
-a runtime adapter can chunk-replay the events of one logical command from any current state. A chunk
-that ends mid-flight returns `Nothing`.
+`applyEventsEither` is strict chunk replay from a caller-supplied settled state. `reconstituteEither`
+is the same strict behavior from the transducer's initial state. Both reject a truncated chain with
+`ReplayLogTruncated`; its failure index is the input length, where the missing tail event belonged.
 
 ```haskell
-applyEvents ::
+applyEventsEither ::
     (BoolAlg phi (RegFile rs, ci), Eq co) =>
     SymTransducer phi rs s ci co ->
     (s, RegFile rs) ->
     [co] ->
-    Maybe (s, RegFile rs)
+    Either (ReplayFailure s co) (s, RegFile rs)
+
+reconstituteEither ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    SymTransducer phi rs s ci co ->
+    [co] ->
+    Either (ReplayFailure s co) (s, RegFile rs)
 ```
+
+The compatibility names are implemented by erasing the `Left`: `applyEventStreaming`, `applyEvents`,
+and `reconstitute` return `Maybe`; `applyEvent` is additionally letter-only. Prefer them only when a
+bare accepted/rejected answer is truly sufficient.
 
 ## Step diagnostics
 

@@ -18,7 +18,7 @@ The foundations chapter spells out the central insight: any FST has two acceptor
   `evolve` — the *event*-language acceptor; its language is the set of event sequences the aggregate
   could have produced, i.e. the replayable logs.
 
-In `Keiki.Core` these projections are *implicit*: π₁ is `delta`, π₂ is `applyEvent`. This module makes
+In `Keiki.Core` these projections are *implicit*: π₁ is `delta`, π₂ is `applyEventStreaming`. This module makes
 them concrete `Acceptor` values.
 
 ## The `Acceptor` type
@@ -50,8 +50,8 @@ is no separate reject signal.
 
 ## `inputAcceptor` (π₁) and `outputAcceptor` (π₂)
 
-Both projections are thin wrappers that pin `aStep` to one of the core step functions and share the
-same `(s, RegFile rs)` carrier. The input acceptor's step is `delta`:
+Both projections pin `aStep` to a Core step function and hide the register file inside their state
+carrier. The input acceptor's step is `delta`:
 
 ```haskell
 -- keiki/src/Keiki/Acceptor.hs
@@ -66,30 +66,32 @@ inputAcceptor t = Acceptor
   }
 ```
 
-The output acceptor's step is `applyEvent`:
+The output acceptor uses `applyEventStreaming`, because the event side must remember the pending tail
+of a multi-event edge:
 
 ```haskell
 -- keiki/src/Keiki/Acceptor.hs
 outputAcceptor
   :: (BoolAlg phi (RegFile rs, ci), Eq co)
   => SymTransducer phi rs s ci co
-  -> Acceptor co (s, RegFile rs)
+  -> Acceptor co (InFlight s co, RegFile rs)
 outputAcceptor t = Acceptor
-  { aStep    = \(s, regs) co -> applyEvent t s regs co
-  , aInitial = (initial t, initialRegs t)
-  , aIsFinal = \(s, _regs) -> isFinal t s
+  { aStep    = \(wrapper, regs) co -> applyEventStreaming t wrapper regs co
+  , aInitial = (Settled (initial t), initialRegs t)
+  , aIsFinal = \(wrapper, _regs) -> case wrapper of
+      Settled s  -> isFinal t s
+      InFlight{} -> False
   }
 ```
 
-The carrier is `(s, RegFile rs)` in both because edge guards depend on the register file as well as the
-control vertex — and `applyEvent` threads that register file through replay. `aIsFinal` ignores the
-register file and consults `isFinal t` on the control vertex alone. The richer return type of `delta` /
-`applyEvent` (which thread an updated `RegFile`) is preserved by hiding the register file *inside* the
-acceptor's `s`.
+The command carrier is `(s, RegFile rs)`. The event carrier is
+`(InFlight s co, RegFile rs)`: `Settled s` names a stable vertex, while `InFlight s pending` records
+the evaluated events still required to finish the already-applied transition. Ending on `InFlight`
+therefore preserves useful diagnostic state but cannot satisfy `aIsFinal`.
 
 <Callout type="info">
-The output acceptor *is* the `evolve` acceptor the foundations chapter derives — π₂ named as a value.
-Its `Eq co` constraint mirrors `applyEvent`'s, because inverting ω needs to compare emitted events.
+The output acceptor is the event-language projection the foundations chapter derives — π₂ named as
+a value. Its `Eq co` constraint supports matching observed tail events against the pending queue.
 </Callout>
 
 ## Running an acceptor: `runAcceptor` and `accepts`
@@ -143,19 +145,18 @@ it "rejects ConfirmAccount from PotentialCustomer" $
 ## The reconstitute round-trip
 
 The output acceptor and `Keiki.Core.reconstitute` are two views of the same replay. `accepts
-(outputAcceptor t) events` is `True` iff successively applying `applyEvent` to each event reaches a
-final control vertex — equivalently, iff `reconstitute t events` returns `Just` a final `(s, regs)`.
-`AcceptorSpec` asserts the two agree under `fst` on the canonical log:
+(outputAcceptor t) events` is `True` exactly when strict replay reaches a final settled vertex.
+`AcceptorSpec` asserts this on the canonical log:
 
 ```haskell
 -- keiki/test/Keiki/AcceptorSpec.hs
 it "agrees with reconstitute on the canonical log" $
-  fmap fst (runAcceptor (outputAcceptor emailDelivery) canonicalEmailLog)
-    `shouldBe`
-      fmap fst (reconstitute emailDelivery canonicalEmailLog)
+  accepts (outputAcceptor emailDelivery) canonicalEmailLog
+    `shouldBe` maybe False (isFinal emailDelivery . fst)
+      (reconstitute emailDelivery canonicalEmailLog)
 ```
 
-A log no edge could have produced is rejected, because `applyEvent` returns `Nothing` on the first
+A log no edge could have produced is rejected, because `applyEventStreaming` returns `Nothing` on the first
 unreplayable event:
 
 ```haskell
@@ -163,7 +164,7 @@ unreplayable event:
 it "rejects an event that no edge from PotentialCustomer produces" $ do
   -- userReg's only outgoing edge from PotentialCustomer produces
   -- 'RegistrationStarted'; 'AccountConfirmed' has no matching
-  -- inverse, so applyEvent returns Nothing on the first step.
+  -- inverse, so applyEventStreaming returns Nothing on the first step.
   let badLog =
         [AccountConfirmed
           (AccountConfirmedData "alice@x" "Z9F4" (t 0))]
@@ -181,16 +182,14 @@ it "matches isFinal on userReg under fst" $ do
   aIsFinal a (PotentialCustomer, initialRegs userReg) `shouldBe` False
 ```
 
-<Callout type="info">
-The acceptor projections relate to the [Decider façade](/docs/keiki/walkthrough/derivations/07-decider-facade)
-by sharing the `(s, RegFile rs)` carrier and the same "register file travels inside `s`" decision — but
-the acceptors keep `aStep`'s `Maybe` explicit rather than absorbing failure the way the façade's
-defensive `evolve` does.
-</Callout>
+The multi-event tests make the new carrier observable. After only the head event,
+`runAcceptor (outputAcceptor userReg)` returns `Just (InFlight RequiresConfirmation pending, regs)`;
+`accepts` still returns `False` because the transition is incomplete. Supplying the expected tail
+returns to `Settled`, and complete, truncated, and foreign logs all agree with `reconstitute`.
 
 The full export surface is catalogued in the [Acceptor reference](/docs/keiki/reference/acceptor).
 
 ---
 
-Previous: [07 — The Decider façade](/docs/keiki/walkthrough/derivations/07-decider-facade) ·
+Previous: [06 — deriveView: B-presentation](/docs/keiki/walkthrough/derivations/06-deriveview-b-presentation) ·
 Next: [09 — The shape hash](/docs/keiki/walkthrough/derivations/09-shape-hash)

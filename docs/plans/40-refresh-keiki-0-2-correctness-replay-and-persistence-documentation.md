@@ -30,8 +30,10 @@ is exported at the reviewed source commit, and by navigating the site without li
 
 - [x] (2026-07-14T15:35:24Z) Resolve `shinzui/keiki` through mori and verify the clean
   `ce5748b5f2311de1355e648db564da8b404e42f2` source boundary and 0.2.0.0 package version.
-- [ ] Milestone 1: remove the dead Decider API documentation and establish explicit output intent,
-  structured replay, and `InFlight`-aware acceptors.
+- [x] (2026-07-14T15:46:08Z) Milestone 1: remove the dead Decider API documentation and establish
+  explicit output intent, structured replay, and `InFlight`-aware acceptors. `pnpm run typecheck`,
+  `pnpm run format:check`, `pnpm build`, the 447-file internal-link scan, the removed-path scan, and
+  `git diff --check` all passed.
 - [ ] Milestone 2: refresh builder validation, symbolic soundness, and checked composition.
 - [ ] Milestone 3: refresh shape hashes, JSON persistence evolution, and the keiro integration
   handoff.
@@ -39,7 +41,17 @@ is exported at the reviewed source commit, and by navigating the site without li
 
 ## Surprises & Discoveries
 
-(None yet.)
+- Observation: The three removed Decider pages were not the only callable-looking remnants.
+  `content/docs/keiki/explanation/the-symbolic-ci-gate.mdx` still claimed keiki derived a facade,
+  and `content/docs/keiki/explanation/mealy-vs-fst.mdx` still displayed the removed record as shipped
+  API. Both now explain the 0.2 split between `stepEither` and structured Core replay.
+  Evidence: `rg -n -i 'decider (facade|façade)|facade.*decider|façade.*decider' content/docs/keiki`
+  now finds only explicitly historical or removed-surface prose.
+- Observation: The one intentional `Keiki.Decider` allow-list entry is
+  `content/docs/keiki/explanation/the-symtransducer.mdx`, which states that 0.2 does not export the
+  record and explains why. All links and callable symbols for the deleted facade are gone.
+  Evidence: `rg -n 'toDecider|/docs/keiki/reference/decider|07-decider-facade|decider-facade-and-when-to-use-it' content/docs`
+  returns no results.
 
 
 ## Decision Log
@@ -66,7 +78,11 @@ is exported at the reviewed source commit, and by navigating the site without li
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+Milestone 1 removed the obsolete Decider reference, explanation, and walkthrough pages and repaired
+their navigation. New-reader paths now build with explicit edge output intent, surface located
+builder defects, distinguish `StepFailure` from `ReplayFailure`, and show how `outputAcceptor`
+preserves `InFlight` state for complete and truncated multi-event logs. The production site builds
+successfully without crawling a removed route.
 
 
 ## Context and Orientation

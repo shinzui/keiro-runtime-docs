@@ -1,9 +1,10 @@
 ---
-title: "Step failure"
-description: "The runtime step explainer stepEither and its StepFailure, EdgeRef, RejectedEdgeSummary, and MatchedEdgeSummary types in Keiki.Core."
+title: "Command and replay failures"
+description: "The structured StepFailure and ReplayFailure taxonomies returned by Keiki.Core command and hydration entry points."
 ---
 
-`stepEither` is the explaining sibling of [`step`](/docs/keiki/reference/core). Where `step`
+`Keiki.Core` keeps forward command failure and persisted-history failure separate. `stepEither` is
+the explaining sibling of [`step`](/docs/keiki/reference/core). Where `step`
 collapses every failure to `Nothing`, `stepEither` returns a precise `StepFailure` on the `Left`
 telling you *why* a step could not advance — while returning **exactly** the same success triple on
 the `Right`. It is purely additive: `step` is left unchanged. All of these live in `Keiki.Core`.
@@ -28,7 +29,7 @@ returns exactly that triple inside `Right`, identical to what `step` returns ins
 
 <Callout type="warn">
 `stepEither` decides guards by **concrete evaluation**, never z3 — just like `delta`, `omega`,
-`step`, and `reconstitute`. Each candidate edge is tested with `models (guard e) (regs, ci)`,
+`step`, and the structured replay functions. Each candidate edge is tested with `models (guard e) (regs, ci)`,
 which for keiki's predicate carriers reduces to `evalPred`. The z3-backed surface
 ([`Keiki.Symbolic`](/docs/keiki/reference/symbolic)) is build/CI-time only and is never on the
 per-event hot path.
@@ -126,10 +127,81 @@ Reach for `stepEither` whenever a runtime needs to surface *why* a command did n
 rejection log, a 4xx response, a defect alert on `AmbiguousEdges`); reach for `step` when a bare
 `Maybe` is enough.
 
+## Replay failures are not command rejections
+
+Hydration uses `ReplayStepFailure`, `ReplayFailureReason`, and `ReplayFailure`. An observed event that
+cannot be replayed is evidence about persisted history or the deployed model; it must not be mapped
+to `NoMatchingEdge` or treated as a rejected command.
+
+```haskell
+data ReplayStepFailure s co
+  = ReplayNoInvertingEdge s [RejectedEdgeSummary s]
+  | ReplayAmbiguousInversions s [MatchedEdgeSummary s]
+  | ReplayQueueMismatch s co [co]
+
+data ReplayFailureReason s co
+  = ReplayEventFailed (ReplayStepFailure s co)
+  | ReplayLogTruncated [co]
+
+data ReplayFailure s co = ReplayFailure
+  { replayFailedIndex :: Int
+  , replayFailedState :: InFlight s co
+  , replayFailureReason :: ReplayFailureReason s co
+  }
+```
+
+The structured replay entry points are:
+
+```haskell
+applyEventStreamingEither
+  :: (BoolAlg phi (RegFile rs, ci), Eq co)
+  => SymTransducer phi rs s ci co
+  -> InFlight s co
+  -> RegFile rs
+  -> co
+  -> Either (ReplayStepFailure s co) (InFlight s co, RegFile rs)
+
+replayEvents
+  :: (BoolAlg phi (RegFile rs, ci), Eq co)
+  => SymTransducer phi rs s ci co
+  -> (InFlight s co, RegFile rs)
+  -> [co]
+  -> Either (ReplayFailure s co) (InFlight s co, RegFile rs)
+
+applyEventsEither
+  :: (BoolAlg phi (RegFile rs, ci), Eq co)
+  => SymTransducer phi rs s ci co
+  -> (s, RegFile rs)
+  -> [co]
+  -> Either (ReplayFailure s co) (s, RegFile rs)
+
+reconstituteEither
+  :: (BoolAlg phi (RegFile rs, ci), Eq co)
+  => SymTransducer phi rs s ci co
+  -> [co]
+  -> Either (ReplayFailure s co) (s, RegFile rs)
+```
+
+Read the reasons operationally:
+
+- `ReplayNoInvertingEdge` means the observed event cannot be produced from the current settled
+  vertex under any valid recovered command.
+- `ReplayAmbiguousInversions` means more than one outgoing edge can explain the same event. Like
+  `AmbiguousEdges`, this is a model defect.
+- `ReplayQueueMismatch` means a multi-event transition was already selected, but the next observed
+  event did not match its pending evaluated tail.
+- `ReplayLogTruncated` means strict replay reached the end of input while that pending tail was
+  non-empty. `replayFailedIndex` is then the input length.
+
+The `Maybe` functions `applyEventStreaming`, `applyEvents`, and `reconstitute` are compatibility
+wrappers that erase these variants. Prefer the `Either` functions whenever a runtime hydrates
+durable state or must decide whether to reject, retry, quarantine, or alert.
+
 ## See also
 
-- [Keiki.Core](/docs/keiki/reference/core) — `step`, `delta`, `omega`, `reconstitute`, and the
+- [Keiki.Core](/docs/keiki/reference/core) — command execution, `InFlight`, and the full replay
   predicate algebra.
 - [Validate](/docs/keiki/reference/validate) — the build-time `NondeterministicPair` whose runtime
   witness is `AmbiguousEdges`.
-- The behaviours on this page are exercised in `test/Keiki/StepEitherSpec.hs`.
+- The behaviours on this page are exercised in `test/Keiki/StepEitherSpec.hs` and
+  `test/Keiki/ReplayEitherSpec.hs`.

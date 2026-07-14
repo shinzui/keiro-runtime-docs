@@ -177,7 +177,8 @@ scan, cross-library cards, and announcement-facing path through `content/docs/in
 Track milestone-level progress across all child plans. Each entry names the child plan
 and the milestone. This section provides an at-a-glance view of the entire initiative.
 
-- [ ] EP-1 Milestone 1: remove the dead Decider API and teach structured replay.
+- [x] (2026-07-14T15:46:08Z) EP-1 Milestone 1: remove the dead Decider API and teach
+  structured replay.
 - [ ] EP-1 Milestone 2: refresh builder, validation, symbolic, and composition contracts.
 - [ ] EP-1 Milestone 3: refresh persistence, codecs, and the keiro integration handoff.
 - [ ] EP-2 Milestone 1: refresh event-stream validation, hydration, and command failures.

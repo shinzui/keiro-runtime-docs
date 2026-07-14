@@ -182,26 +182,16 @@ symbols rather than one.
   the shipped source, not the note.
 </Callout>
 
-The shipped `SymTransducer` (keiki `0.1.0.0`, commit `344c4ca`) takes the **output-widening**
+The shipped `SymTransducer` (keiki `0.2.0.0`, commit `ce5748b`) takes the **output-widening**
 route instead. An edge's `output` field is a *list*, `output :: [OutTerm rs ci co]`, so one
 edge can emit zero, one, or many output terms directly — the GSM capability is first-class in
-the AST, with no internal scaffolding vertices. The retired EP-20 façades (`toMultiDecider`
-and `DriverConfig`) are gone; the projected decider returns the full list straight from
-`omega`:
-
-```haskell
-data Decider c e s s_streaming = Decider
-  { decide          :: c -> s -> [e]              -- = omega t s regs cmd (the whole list)
-  , evolve          :: s -> e -> s                -- letter-only replay (output length 0 or 1)
-  , evolveStreaming :: s_streaming -> e -> Maybe s_streaming
-  , initialState    :: s
-  , isTerminal      :: s -> Bool
-  }
-```
+the AST, with no internal scaffolding vertices. The retired EP-20 helpers (`toMultiDecider`
+and `DriverConfig`) are gone. Forward execution uses `stepEither`, which returns the complete event
+list, while hydration uses Core's structured replay functions.
 
 Replaying events one at a time across a length-2-or-more edge needs a mid-chain state — "I
 have observed event 1 and expect event 2 next." The shipped design exposes this through the
-`InFlight` wrapper and `applyEventStreaming`, surfaced as the `evolveStreaming` field:
+`InFlight` wrapper and `applyEventStreamingEither`:
 
 ```haskell
 data InFlight s co
@@ -209,11 +199,10 @@ data InFlight s co
   | InFlight !s ![co]   -- at a vertex with a remaining event queue still to be matched
 ```
 
-The two replay verbs agree on edges that emit zero or one event; they diverge only on the
-multi-event edges, where the streaming path stays `InFlight` between events while the
-letter-only `evolve` handles the length-0/1 case. The `Decider` record here is shown as
-**prior-art shape** — the published decider vocabulary keiki can project *to* — not as the
-library's recommended authoring surface, which remains the `SymTransducer` itself.
+`replayEvents` may return an `InFlight` carrier so a paginated reader can resume. The strict
+`applyEventsEither` and `reconstituteEither` entry points instead reject a truncated tail with
+`ReplayLogTruncated`. Keiki 0.2 deliberately exports no Decider facade: a four-field record cannot
+represent both the multi-event carrier and located replay failures without losing information.
 
 ## Why it matters in practice
 

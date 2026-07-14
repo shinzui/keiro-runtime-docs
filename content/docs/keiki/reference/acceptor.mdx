@@ -8,7 +8,7 @@ type, the two acceptor projections that every keiki (継起) `SymTransducer` car
 projection** over the command language and the **output projection** over the event language.
 
 In [`Keiki.Core`](/docs/keiki/reference/core) these projections are *implicit* — π₁ is `delta` and π₂
-is `applyEvent`. This module *names* them so downstream code (UI, validation, generated
+is `applyEventStreaming`. This module *names* them so downstream code (UI, validation, generated
 documentation) can pattern-match on a known shape instead of plumbing the step functions by hand. For
 the conceptual model of a transducer's two languages, read
 [The SymTransducer](/docs/keiki/explanation/the-symtransducer).
@@ -57,20 +57,21 @@ control vertex, and is rejected as soon as any step finds zero or multiple satis
 
 ## `outputAcceptor` — the π₂ projection
 
-The acceptor over the **event** alphabet, whose `aStep` is `applyEvent`. Its language is the set of
+The acceptor over the **event** alphabet, whose `aStep` is `applyEventStreaming`. Its language is the set of
 event sequences the aggregate could have produced — the set of **replayable logs**.
 
 ```haskell
 outputAcceptor
   :: (BoolAlg phi (RegFile rs, ci), Eq co)
   => SymTransducer phi rs s ci co
-  -> Acceptor co (s, RegFile rs)
+  -> Acceptor co (InFlight s co, RegFile rs)
 ```
 
-The carrier is again `(s, RegFile rs)` because `applyEvent` threads the register file through replay.
-`accepts (outputAcceptor t) events` is `True` iff applying `applyEvent` to each event reaches a final
-control vertex — equivalently, iff `reconstitute t events` returns `Just` a final `(s, regs)`. The
-output acceptor *is* the `evolve` acceptor the foundations derive.
+The carrier is `(InFlight s co, RegFile rs)` because replay may be between the events emitted by one
+edge. It starts at `Settled (initial t)`. A tail event advances the pending queue without applying
+the edge update twice; a complete queue returns to `Settled`. `aIsFinal` accepts only `Settled s`
+where `isFinal t s` is true, so a truncated multi-event log finishes with an inspectable `InFlight`
+carrier but is not accepted.
 
 ## Folding helpers
 
@@ -97,18 +98,19 @@ accepts a xs = case runAcceptor a xs of
 
 ## Two projections of one transducer
 
-Both acceptors share the carrier `(s, RegFile rs)` and use `isFinal` as `aIsFinal`; they differ only
-in their alphabet and step function. They are the two faces of the same machine:
+Both acceptors hide the register file inside their carrier and use `isFinal` for settled control
+vertices. The output side additionally preserves a pending multi-event tail:
 
 | Projection | Function | Alphabet | `aStep` | Language |
 | --- | --- | --- | --- | --- |
 | π₁ input | `inputAcceptor` | commands `ci` | `delta` | command sequences the aggregate accepts |
-| π₂ output | `outputAcceptor` | events `co` | `applyEvent` | replayable event logs |
+| π₂ output | `outputAcceptor` | events `co` | `applyEventStreaming` | replayable event logs, including multi-event chains |
 
-The output acceptor agrees with `reconstitute` on the control vertex — the **round-trip property**:
+The output acceptor agrees with strict replay on acceptance — the **round-trip property**:
 
 ```haskell
-fmap fst (runAcceptor (outputAcceptor t) log) == fmap fst (reconstitute t log)
+accepts (outputAcceptor t) log
+  == maybe False (isFinal t . fst) (reconstitute t log)
 ```
 
 ## Tested behaviour
@@ -117,19 +119,18 @@ fmap fst (runAcceptor (outputAcceptor t) log) == fmap fst (reconstitute t log)
 
 - **`inputAcceptor`** accepts the canonical `userReg` command sequence and rejects `ConfirmAccount`
   issued from `PotentialCustomer` (no satisfied edge).
-- **`outputAcceptor`** accepts the canonical `emailDelivery` event log and rejects a log whose first
-  event (`AccountConfirmed`) no edge from `PotentialCustomer` produces — `applyEvent` returns
-  `Nothing` on the first step.
-- **The round-trip property** holds: `fmap fst (runAcceptor (outputAcceptor emailDelivery)
-  canonicalEmailLog)` equals `fmap fst (reconstitute emailDelivery canonicalEmailLog)`.
+- **`outputAcceptor`** accepts complete letter and multi-event logs and rejects a foreign first
+  event because `applyEventStreaming` returns `Nothing` on that step.
+- **Truncation is visible:** running only the first event of the user-registration entrance returns
+  `Just (InFlight RequiresConfirmation [ConfirmationEmailSent ...], regs)` but `accepts` is `False`.
+- **The round-trip property** holds for complete, truncated, and foreign logs: output acceptance
+  agrees with whether `reconstitute` reaches a final settled state.
 - **`aIsFinal`** matches `isFinal` under `fst` (`Deleted` final; `Confirmed` and `PotentialCustomer`
   not).
 
 ## See also
 
-- [`Keiki.Core`](/docs/keiki/reference/core) — `delta`, `applyEvent`, `reconstitute`, and the
+- [`Keiki.Core`](/docs/keiki/reference/core) — `delta`, `applyEventStreaming`, `reconstituteEither`, and the
   register file the carrier hides.
 - [The SymTransducer](/docs/keiki/explanation/the-symtransducer) — the control-graph / register
   split the two projections share.
-- [Decider](/docs/keiki/reference/decider) — the Chassaing-shape façade built from the same step
-  functions.

@@ -283,32 +283,10 @@ given a log of events, recover the `(state, registers)` that produced them. The 
 each vertex's outgoing edges, invert each edge's `output` via `solveOutput` (chapter 05), check the
 guard on the recovered input, and apply the update.
 
-The letter-flavoured `applyEvent` is the single-event step:
-
-```haskell
--- keiki/src/Keiki/Core.hs
-applyEvent ::
-    (BoolAlg phi (RegFile rs, ci), Eq co) =>
-    SymTransducer phi rs s ci co ->
-    s ->
-    RegFile rs ->
-    co ->
-    Maybe (s, RegFile rs)
-applyEvent t s regs co =
-    case [ (target e, applyEdgeUpdate e regs ci)
-         | e <- edgesOut t s
-         , o : _ <- [output e]
-         , Just ci <- [solveOutput o regs co]
-         , models (guard e) (regs, ci)
-         ] of
-        [single] -> Just single
-        _ -> Nothing
-```
-
-`applyEvent` only inverts against the **head** of each edge's output list, so it is correct only for
-letter-only logs. The source warns that for true multi-event replay — where the intermediate events
-of a chain must be matched against the *tail* of a prior edge's output — you need the streaming
-variant.
+The old `applyEvent` entry point is letter-flavoured: it inverts only an edge's output head and
+returns `Nothing` for both no match and ambiguity. Keiki 0.2 keeps it for compatibility, but durable
+hydration starts with `applyEventStreamingEither`, which preserves multi-event state and the exact
+failure reason.
 
 ### `InFlight`: settled or mid-chain
 
@@ -328,7 +306,7 @@ edge of `s`". `InFlight s [e2, …, eN]` is "mid-chain at the target vertex `s` 
 already applied); the queue holds the remaining *evaluated* expected events, and the next observed
 event must equal the head, popping it; when the queue empties, transition back to `Settled s`."
 
-`applyEventStreaming` is the `InFlight`-aware step. From a `Settled` state it commits to the unique
+`applyEventStreamingEither` is the `InFlight`-aware step. From a `Settled` state it commits to the unique
 edge whose output head inverts to a valid input, applies the update, evaluates the *tail* against the
 pre-transition snapshot, and lands either back in `Settled` (a letter edge) or in `InFlight` (a
 multi-event edge). From an `InFlight` state it just equality-checks the queue head — **no register
@@ -336,70 +314,73 @@ update**, because the registers were updated at the `Settled → InFlight` trans
 
 ```haskell
 -- keiki/src/Keiki/Core.hs
-applyEventStreaming _ (InFlight s queue) regs co = case queue of
-    [] -> Nothing
-    [q1]
-        | q1 == co -> Just (Settled s, regs)
-        | otherwise -> Nothing
-    (q1 : rest)
-        | q1 == co -> Just (InFlight s rest, regs)
-        | otherwise -> Nothing
+applyEventStreamingEither _ (InFlight s queue) regs co = case queue of
+  q1 : rest
+    | q1 == co ->
+        Right
+          ( case rest of
+              [] -> Settled s
+              _  -> InFlight s rest
+          , regs
+          )
+  _ -> Left (ReplayQueueMismatch s co queue)
 ```
 
 This is where the `Eq co` constraint on the replay functions comes from: the in-flight queue is
 matched by event equality. Most aggregate event types derive `Eq`.
 
-### `reconstitute` and `applyEvents`
+### Located replay failures
 
-`reconstitute` is the top-level fold: replay a whole log from the transducer's initial state.
-
-```haskell
--- keiki/src/Keiki/Core.hs
-reconstitute ::
-    (BoolAlg phi (RegFile rs, ci), Eq co) =>
-    SymTransducer phi rs s ci co ->
-    [co] ->
-    Maybe (s, RegFile rs)
-reconstitute t = applyEvents t (initial t, initialRegs t)
-```
-
-It delegates to `applyEvents`, which is the same fold from a *caller-supplied* start state — useful
-when a runtime preserves command boundaries and wants to replay one command's events atomically:
+The one-event function distinguishes failure to invert an event, multiple valid inversions, and an
+in-flight queue mismatch:
 
 ```haskell
 -- keiki/src/Keiki/Core.hs
-applyEvents t (s0, regs0) cos_ = go (Settled s0) regs0 cos_
-  where
-    go (Settled s) regs [] = Just (s, regs)
-    go (InFlight _ _) _ [] = Nothing -- chunk ended mid-flight
-    go inFlight regs (co : rest) = do
-        (inFlight', regs') <- applyEventStreaming t inFlight regs co
-        go inFlight' regs' rest
+data ReplayStepFailure s co
+  = ReplayNoInvertingEdge s [RejectedEdgeSummary s]
+  | ReplayAmbiguousInversions s [MatchedEdgeSummary s]
+  | ReplayQueueMismatch s co [co]
 ```
 
-Read the fold's two base cases together: a chunk that ends in `Settled` unwraps to `Just (s, regs)`;
-a chunk that ends `InFlight` returns `Nothing`, because there is no valid `(s, regs)` to surface from
-a truncated chain. For a letter-only transducer the wrapper is always `Settled` and the result is
-identical to the pre-multi-event letter fold.
-
-`CoreSpec` anchors the empty-log boundary:
+The list fold wraps that reason with the zero-based input position and the wrapper state before the
+failure. Strict replay also detects an input that ends mid-chain:
 
 ```haskell
--- keiki/test/Keiki/CoreSpec.hs
-it "returns the initial state for the empty log" $
-  case reconstitute synthetic ([] :: [String]) of
-    Just (s, _) -> s `shouldBe` False
-    Nothing     -> expectationFailure "expected Just (initial, _)"
+-- keiki/src/Keiki/Core.hs
+data ReplayFailureReason s co
+  = ReplayEventFailed (ReplayStepFailure s co)
+  | ReplayLogTruncated [co]
+
+data ReplayFailure s co = ReplayFailure
+  { replayFailedIndex :: Int
+  , replayFailedState :: InFlight s co
+  , replayFailureReason :: ReplayFailureReason s co
+  }
 ```
 
-The User Registration spec exercises the multi-event path: its `applyEvents` test replays the
-two-event entrance chunk through the `InFlight` wrapper and asserts the landing vertex matches both
-authoring forms (we read that builder in chapter 08).
+`replayEvents` is the resumable fold. It accepts an arbitrary `(InFlight s co, RegFile rs)` seed and
+may return `Right (InFlight ..., regs)` when one page ends mid-chain. The next page resumes from that
+exact wrapper.
+
+`applyEventsEither` is stricter: it starts from a caller-supplied settled `(s, RegFile rs)` and
+requires the chunk to finish settled. `reconstituteEither` supplies the transducer's initial state
+and registers to that strict fold:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+reconstituteEither t = applyEventsEither t (initial t, initialRegs t)
+```
+
+In `test/Keiki/ReplayEitherSpec.hs`, corrupting event index 1 produces a `ReplayFailure` with
+`replayFailedIndex = 1`, the preceding `InFlight` wrapper, and
+`ReplayEventFailed (ReplayQueueMismatch ...)`. Replaying only the first event through
+`reconstituteEither` fails at index 1 with `ReplayLogTruncated pending`; replaying the same page
+through `replayEvents` succeeds with the resumable `InFlight` carrier.
 
 <Callout type="info">
-`reconstitute` is the recommended replay entry point on the transducer surface. There is a
-single-event `evolve`-style façade reachable through the decider derivation, but you should reach for
-`reconstitute` / `applyEvents` directly when working against a `SymTransducer`.
+Use `reconstituteEither` for full hydration, `applyEventsEither` for a complete command-sized chunk,
+and `replayEvents` for pagination. `reconstitute`, `applyEvents`, and `applyEventStreaming` remain
+`Maybe` compatibility wrappers that erase the structured `Left`.
 </Callout>
 
 With the forward and backward evaluators in hand, the rest of the tour is about *authoring* these
