@@ -33,6 +33,10 @@ source walkthroughs.
 chore(release): 0.8.0.1
 ```
 
+EP-6 rechecked the complete Shibuya 0.8 documentation against this unchanged
+committed boundary and found no later behavioral drift. The source tree was
+clean at the reviewed SHA.
+
 ## Current source-backed claims
 
 - Public application code should import the `Shibuya` umbrella module.

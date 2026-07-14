@@ -31,7 +31,8 @@ and navigation integrity.
   compatibility path.
 - [x] (2026-07-14T19:36:25Z) Milestone 2: reconcile integrations and
   example-status language.
-- [ ] Milestone 3: update repository metadata and source ledgers.
+- [x] (2026-07-14T19:41:48Z) Milestone 3: update repository metadata and source
+  ledgers.
 - [ ] Milestone 4: establish and run the whole-site release gate.
 
 ## Surprises & Discoveries
@@ -40,6 +41,9 @@ and navigation integrity.
   compatible member of the current 0.8 adapter set. Its behavior documentation remains source-backed
   at the unchanged reviewed commit, but announcement pages must label the release-line mismatch
   rather than imply it can be selected alongside Shibuya 0.8.
+- Every final child-plan SHA still equals its upstream `HEAD`. Keiro has only the previously excluded
+  untracked `mori.automation.dhall`; Message DB has only the user's existing `mori.dhall` edit. Both
+  remain outside the evidence boundary and untouched.
 
 
 ## Decision Log
@@ -81,6 +85,13 @@ and navigation integrity.
   Keiro paths; `content/docs/example-app/` and its source pointer remain unchanged. The existing
   whole-site check passes with four pre-existing lint warnings, a production chunk-size warning,
   and 506 source files with no broken internal links.
+- Milestone 3 registered `shinzui/pg-migrate` and the local pg-migrate documentation tree in
+  `mori.dhall`, and updated the README's product map, layout, and example status. A new pg-migrate
+  source ledger records the clean 1.1.0.0 boundary, while the Keiki, Keiro, Kiroku, pgmq-hs,
+  Shibuya, and adapter ledgers now record the exact final reviewed SHAs and concise source-backed
+  range summaries. The jitsurei pointer remains byte-for-byte unchanged. `mori show --full`
+  resolves all seven dependencies and ten local documentation references; formatting and whitespace
+  checks pass.
 
 
 ## Context and Orientation

@@ -208,7 +208,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
   path.
 - [x] (2026-07-14T19:36:25Z) EP-7 Milestone 2: reconcile integrations and
   example-status language.
-- [ ] EP-7 Milestone 3: update repository metadata and source ledgers.
+- [x] (2026-07-14T19:41:48Z) EP-7 Milestone 3: update repository metadata and
+  source ledgers.
 - [ ] EP-7 Milestone 4: establish and run the whole-site release gate.
 
 ## Surprises & Discoveries
@@ -426,3 +427,9 @@ Compare the result against the original vision.
   now follow the product-first card order. The legacy jitsurei route preserves architecture context
   but no longer advertises its old commands as current proof; the excluded example-app subtree and
   source pointer remain untouched. The production build and 506-file internal-link scan pass.
+- EP-7 Milestone 3 registered pg-migrate as the seventh mori dependency and tenth local docs
+  reference, updated the repository product/layout description, and made the final source review
+  boundaries reproducible. New and refreshed ledgers cover pg-migrate 1.1, Keiki 0.2, Keiro 0.3,
+  Kiroku 0.3, pgmq-hs 0.4, Shibuya 0.8, and all four adapters while preserving every prior pointer.
+  Dirty upstream files remain excluded and untouched, and the jitsurei ledger is unchanged.
+  `mori show --full`, formatting, and whitespace checks pass.

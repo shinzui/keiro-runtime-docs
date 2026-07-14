@@ -14,16 +14,25 @@ the pinned commit to `HEAD`, update the affected pages, then bump the pointer be
 - Relevant packages: `kiroku-store` (core store + subscription FSM), `shibuya-kiroku-adapter`
   (worker adapter); the source tree also carries the metrics, CLI, and OpenTelemetry packages
   documented below.
+- **Reviewed releases:** `kiroku-store 0.3.0.1`, migrations `0.3.0.0`,
+  `kiroku-otel 0.2.0.1`, `kiroku-cli 0.2.0.0`, `kiroku-metrics 0.1.0.1`, and
+  `shibuya-kiroku-adapter 0.4.0.0`.
 
 ## Last reviewed commit
 
 ```
-dac1a0b5ff39f400ad512e826265a0d24553b4a9  (dac1a0b)
-2026-07-05T08:40:32-07:00
-chore(migrations): rename SQL migrations to real commit-date timestamps
+58aff77b3a6d6093e3613753a0543aab62db9fac  (58aff77)
+2026-07-14T07:09:19-07:00
+chore(release): kiroku-store 0.3.0.1, kiroku-store-migrations 0.3.0.0
 ```
 
-> **Note.** The `4312aa8..dac1a0b` range is the July lifecycle refresh. It added the
+> **Current range.** The `dac1a0b..58aff77` review covers Kiroku 0.3: corrected backward reads,
+> eager stream and batch validation, typed link and transaction failures, close-the-book markers,
+> explicit subscription live sources, loud checkpoint failures, crash-aware adapter termination,
+> updated CLI/metrics/OTel packages, and the native pg-migrate component plus predecessor-history
+> cutover. The source tree was clean at the reviewed SHA.
+>
+> **Note (prior range).** The `4312aa8..dac1a0b` range is the July lifecycle refresh. It added the
 > reversible per-stream `truncateBefore` marker plus `setStreamTruncateBefore` /
 > `clearStreamTruncateBefore`, documented here as close-the-book logical compaction.
 > Ordered per-stream reads honor the marker; `$all`, category reads, subscriptions,
@@ -59,6 +68,8 @@ chore(migrations): rename SQL migrations to real commit-date timestamps
 
 ### Previous pointers (for traceability)
 
+- `dac1a0b5ff39f400ad512e826265a0d24553b4a9` (`dac1a0b`, 2026-07-05) — baseline
+  before the 0.3 behavior, operations, native migration, and release review.
 - `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a` (`4312aa8`, 2026-06-14, event existence lookup) —
   baseline before the July lifecycle refresh. The `4312aa8..dac1a0b` range added close-the-book
   stream compaction via `truncateBefore`, `setStreamTruncateBefore`, and
@@ -85,8 +96,8 @@ chore(migrations): rename SQL migrations to real commit-date timestamps
 1. List what changed since the pointer:
    ```sh
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline dac1a0b..HEAD
-   git -C "$KIROKU" diff --stat dac1a0b..HEAD
+   git -C "$KIROKU" log --oneline 58aff77..HEAD
+   git -C "$KIROKU" diff --stat 58aff77..HEAD
    ```
    Kiroku also keeps its own `docs/`, `CHANGELOG.md` files, and `docs/plans|masterplans`
    entries — the prose diff there is the fastest way to understand intent before touching

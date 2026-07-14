@@ -25,10 +25,14 @@ runnable examples.
 ## Last reviewed commit
 
 ```text
-468a218cb51bd494e670aea5f8fe4bf97c32a215  (468a218)
-2026-07-04T16:45:10-07:00
-chore(release): 0.8.0.0
+65111ae11fdabd161b2147ce478647a5ed1737f9  (65111ae)
+2026-07-05T08:47:47-07:00
+chore(release): 0.8.0.1
 ```
+
+The `468a218..65111ae` range is a metadata and dependency-bounds patch; the
+reviewed 0.8 adapter behavior below is unchanged. The source tree was clean at
+the reviewed SHA.
 
 ## Current source-backed claims
 
@@ -52,6 +56,8 @@ chore(release): 0.8.0.0
 
 ## Previous pointers
 
+- `468a218cb51bd494e670aea5f8fe4bf97c32a215` (`468a218`), 2026-07-04 —
+  0.8.0.0 behavior baseline before the metadata-only 0.8.0.1 patch.
 - `424a4c25d96333f9cf8aa13eaae3b306bbb775c5 (424a4c2)`, 2026-06-05:
   header-surfacing baseline before the 0.8 adapter break covering finalized
   safe adapter API, seek-based retry, fatal ack classification, bounded
@@ -62,8 +68,8 @@ chore(release): 0.8.0.0
 1. List what changed since the pointer:
    ```text
    KAFKA=$(mori registry show shinzui/shibuya-kafka-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KAFKA" log --oneline 468a218..HEAD
-   git -C "$KAFKA" diff --stat 468a218..HEAD
+   git -C "$KAFKA" log --oneline 65111ae..HEAD
+   git -C "$KAFKA" diff --stat 65111ae..HEAD
    ```
 2. Inspect source modules and `shibuya-kafka-adapter-jitsurei/app/`.
 3. Update `content/docs/integrations/shibuya-kafka-adapter.mdx` and the shared

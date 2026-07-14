@@ -1,19 +1,24 @@
 # keiro-runtime-docs
 
-The documentation site for the **keiro runtime** — a family of five Haskell libraries for building
-event-sourced systems on PostgreSQL. It is a [Fumadocs](https://fumadocs.dev) content site rendered as
-a static [TanStack Start](https://tanstack.com/start) SPA; all the prose lives as MDX under
-`content/docs/`.
+The documentation site for the **keiro runtime** — five Haskell runtime libraries for building
+event-sourced systems on PostgreSQL, plus the pg-migrate schema toolkit they compose with. It is a
+[Fumadocs](https://fumadocs.dev) content site rendered as a static
+[TanStack Start](https://tanstack.com/start) SPA; all the prose lives as MDX under `content/docs/`.
 
 The libraries it documents:
 
-| Library     | 漢字 | What it is                                                               |
-| ----------- | ---- | ------------------------------------------------------------------------ |
-| **kiroku**  | 記録 | An append-only PostgreSQL event store — the persistence foundation.      |
-| **keiro**   | 経路 | An event-sourcing framework and durable workflow engine.                 |
-| **keiki**   | 継起 | A pure, dependency-free mathematical core (the decision semantics).      |
-| **shibuya** | 渋谷 | Supervised, Broadway-style queue processing.                             |
-| **pgmq**    | —    | A PostgreSQL-native message queue — the queue substrate (via `pgmq-hs`). |
+| Surface        | 漢字 | What it is                                                               |
+| -------------- | ---- | ------------------------------------------------------------------------ |
+| **keiro**      | 経路 | An event-sourcing framework and durable workflow engine.                 |
+| **kiroku**     | 記録 | An append-only PostgreSQL event store — the persistence foundation.      |
+| **keiki**      | 継起 | A pure, dependency-free mathematical core (the decision semantics).      |
+| **shibuya**    | 渋谷 | Supervised queue processing with explicit acknowledgement decisions.     |
+| **pgmq**       | —    | A PostgreSQL-native message queue — the queue substrate (via `pgmq-hs`). |
+| **pg-migrate** | —    | Embedded migration components, application-owned plans, and operations.  |
+
+The preserved `content/docs/example-app/` tree documents an older
+`keiro-runtime-jitsurei` architecture. It is pending modernization and is not
+release evidence for the July 2026 package matrix.
 
 ## Getting started
 
@@ -47,12 +52,13 @@ Open the URL Vite prints (default <http://localhost:3000>).
 
 ```text
 content/docs/        # all documentation, as MDX — the source of truth
-  <product>/         # kiroku, keiro, keiki, shibuya, pgmq
+  <product>/         # keiro, kiroku, keiki, shibuya, pgmq, pg-migrate
     tutorials/  how-to/  reference/  explanation/  cookbook/  walkthrough/  faq.mdx
     meta.json        # per-folder sidebar order (the `pages` array)
   integrations/      # cross-product integration guides
-  example-app/       # walkthrough of keiro-runtime-jitsurei, the reference app
+  example-app/       # older keiro-runtime-jitsurei tour; pending modernization
   _templates/        # per-doc-type starting points (hidden from the sidebar)
+docs/*-source-sync.md # exact upstream SHAs reviewed by each source-backed tree
 src/                 # the TanStack Start app shell, routes, and MDX components
 scripts/             # check-doc-links.mjs, copy-fonts.mjs
 ```

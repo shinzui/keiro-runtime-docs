@@ -10,7 +10,7 @@ in  Schema.Project::{
       , language = Schema.Language.Haskell
       , lifecycle = Schema.Lifecycle.Active
       , description = Some
-          "Fumadocs site documenting the keiro runtime — five Haskell libraries (kiroku, keiro, keiki, shibuya, pgmq) plus their integrations and a worked example app"
+          "Fumadocs site documenting five keiro runtime libraries, pg-migrate, their integrations, and a pending-modernization example architecture"
       , domains = [ "EventSourcing", "Workflow" ]
       }
     , repos =
@@ -26,6 +26,7 @@ in  Schema.Project::{
       , "shinzui/shibuya"
       , "shinzui/shibuya-pgmq-adapter"
       , "shinzui/pgmq-hs"
+      , "shinzui/pg-migrate"
       ]
     , docs =
       [ Schema.DocRef::{
@@ -82,6 +83,14 @@ in  Schema.Project::{
         , location = Schema.DocLocation.LocalDir "content/docs/pgmq"
         }
       , Schema.DocRef::{
+        , key = "pg-migrate"
+        , kind = Schema.DocKind.Guide
+        , audience = Schema.DocAudience.Module
+        , description = Some
+            "Hasql-native migration components, application plans, deployment, verification, and predecessor history import"
+        , location = Schema.DocLocation.LocalDir "content/docs/pg-migrate"
+        }
+      , Schema.DocRef::{
         , key = "integrations"
         , kind = Schema.DocKind.Guide
         , audience = Schema.DocAudience.Module
@@ -94,7 +103,7 @@ in  Schema.Project::{
         , kind = Schema.DocKind.Guide
         , audience = Schema.DocAudience.Module
         , description = Some
-            "End-to-end worked example wiring the runtime together (keiro-runtime-jitsurei)"
+            "Older keiro-runtime-jitsurei architecture tour; pending modernization for current releases"
         , location = Schema.DocLocation.LocalDir "content/docs/example-app"
         }
       ]

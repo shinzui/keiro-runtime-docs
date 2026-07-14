@@ -12,7 +12,7 @@ Content-authored. The integration page now documents runtime shape,
 environment callbacks, configuration validation, split poll/ack retry policies,
 ack mapping, idempotent finalization, dead letters, FIFO and topic helpers,
 envelope mapping, optional prefetch, operational notes, and related links. This
-pass checked the prose against the 0.11.0.0 adapter source and bundled user
+pass checked the prose against the 0.12.0.0 adapter source and bundled user
 guides.
 
 ## Upstream source
@@ -36,10 +36,15 @@ guides.
 ## Last reviewed commit
 
 ```text
-99e997e8a05f4a0deb92ddede4d419351f6da3d8  (99e997e)
-2026-07-04T16:45:08-07:00
-chore(release): 0.11.0.0
+85931b45702faecc035d89bb5cff381e8679f793  (85931b4)
+2026-07-14T07:53:25-07:00
+chore(release): 0.12.0.0
 ```
+
+The `99e997e..85931b4` review covers the pgmq-hs 0.4/pg-migrate dependency
+upgrade and the idle-shutdown fix: an empty poll reaches the stop gate, ends the
+source, and lets Shibuya drain instead of waiting forever. The source tree was
+clean at the reviewed SHA.
 
 ## Current source-backed claims
 
@@ -68,9 +73,13 @@ chore(release): 0.11.0.0
   group, zero-based attempt, and raw JSON payload. `headers` is intentionally
   `Nothing` because PGMQ JSONB headers are not exposed as an ordered broker
   header stream.
+- On shutdown, the stop gate observes the next poll result before empty chunks
+  are filtered; an idle source therefore ends and lets the Shibuya runner drain.
 
 ## Previous pointers
 
+- `99e997e8a05f4a0deb92ddede4d419351f6da3d8` (`99e997e`), 2026-07-04 —
+  0.11.0.0 baseline before the 0.12 dependency and idle-shutdown pass.
 - `71a7b82223449d84c395b64e480c9cfe4ff274f1 (71a7b82)`, 2026-06-14:
   0.8.0.0 source-backed pass before the 0.11 adapter break that added
   `PgmqAdapterEnv`, split ack retry config, hardened finalization, and
@@ -84,8 +93,8 @@ chore(release): 0.11.0.0
 1. List what changed since the pointer:
    ```text
    ADAPTER=$(mori registry show shinzui/shibuya-pgmq-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$ADAPTER" log --oneline 99e997e..HEAD
-   git -C "$ADAPTER" diff --stat 99e997e..HEAD
+   git -C "$ADAPTER" log --oneline 85931b4..HEAD
+   git -C "$ADAPTER" diff --stat 85931b4..HEAD
    ```
    Also inspect `README.md`, `CHANGELOG.md`, `docs/user/`, and the source
    modules listed above. Because the adapter sits on `pgmq-hs`, check

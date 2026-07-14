@@ -33,6 +33,12 @@ consumer groups, and runnable examples.
 build(nix): migrate flake to flake-parts dev shell on the haskell-nix-dev base flake
 ```
 
+EP-6 and EP-7 rechecked the behavior at this unchanged committed boundary.
+`shibuya-message-db-adapter 0.1.0.0` remains bounded to
+`shibuya-core ^>=0.5.0.0`; it is not an installable member of the current 0.8
+adapter set. The user's modified upstream `mori.dhall` was excluded from review
+and left untouched.
+
 ## Current source-backed claims
 
 - `messageDbAdapter` returns `Adapter es MessageDb.Message` and requires

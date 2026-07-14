@@ -15,18 +15,26 @@ the affected pages, then bump the pointer below.
   executable and embedded schema), `keiro-pgmq` (the typed background-job queue — `Keiro.PGMQ.*`),
   `keiro-dsl` (the typed-spec authoring toolchain + CLI — `Keiro.Dsl.*`; authoring-only, the code it
   scaffolds depends only on keiro/keiki),
-  `keiro-test-support` (test fixtures); `jitsurei` (the runnable worked example).
+  `keiro-test-support` (test fixtures). The in-repository `jitsurei` package remains a legacy source
+  anchor and is not current release evidence.
+- **Reviewed release:** the Keiro package family at `0.3.0.0`.
 
 ## Last reviewed commit
 
 ```text
-601f9f36f016d6c9f3f762cda093f65f7dea5225  (601f9f3)
-2026-07-05T07:51:10-07:00
-feat(release): add project-specific Hackage release skill
-keiro 0.1.0.0 development line; docs reviewed against the validated-event-stream/replay-safety HEAD
+c68dcc7b9cea8d9c180d1c04254a72aa43804cac  (c68dcc7)
+2026-07-14T08:24:53-07:00
+chore(release): 0.3.0.0
 ```
 
-> **Note.** The `a9cecda..601f9f3` range contains the breaking validated-stream API change and its
+> **Current range.** The `601f9f3..c68dcc7` review covers the final validated command boundary,
+> typed hydration/replay/snapshot/read-model failures, target-scoped orchestration idempotency,
+> sharded at-least-once delivery, durable worker outcomes, workflow versioning and rotation, the
+> complete keiro-dsl 0.2 authoring surface, native Kiroku-before-Keiro migration components in the
+> `keiro` schema, and the 0.3 package release. The upstream tree had one user-untracked
+> `mori.automation.dhall`; it was excluded from review and left untouched.
+
+> **Note (prior range).** The `a9cecda..601f9f3` range contains the breaking validated-stream API change and its
 > follow-up release/documentation work. Public command-side runners now accept
 > `ValidatedEventStream` instead of a bare `EventStream`; `Keiro.EventStream.Validate` exports
 > `ValidatedEventStream`, `unvalidated`, `mkEventStream`, `mkEventStreamWith`, and
@@ -230,6 +238,9 @@ keiro 0.1.0.0 development line; docs reviewed against the validated-event-stream
 
 ### Previous pointers (for traceability)
 
+- `601f9f36f016d6c9f3f762cda093f65f7dea5225` (`601f9f3`, 2026-07-05, Keiro
+  0.1 development line) — baseline before the 127-commit reliability, keiro-dsl, native migration,
+  dependency-upgrade, and 0.3 release review recorded above.
 - `f1d67a01b7457387a4861e7268d1c521ef82287d` (`f1d67a0`, 2026-06-15, keiro 0.1.0.0) — the baseline
   before the post-hardening `keiro-dsl` ergonomics pass and the July inbox/outbox throughput
   overhaul. The `f1d67a0..a9cecda` range changed `keiro-dsl` placement/manifest/firewall/new-command
@@ -298,8 +309,8 @@ keiro 0.1.0.0 development line; docs reviewed against the validated-event-stream
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline a9cecda..HEAD
-   git -C "$KEIRO" diff --stat a9cecda..HEAD
+   git -C "$KEIRO" log --oneline c68dcc7..HEAD
+   git -C "$KEIRO" diff --stat c68dcc7..HEAD
    ```
    keiro also keeps its own `docs/`, `CHANGELOG.md`, and `docs/plans|masterplans` entries — the
    prose diff there is the fastest way to understand intent before touching the source. Note that

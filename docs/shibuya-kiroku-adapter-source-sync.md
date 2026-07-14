@@ -25,10 +25,15 @@ mapping, consumer groups, and handler exception behavior.
 ## Last reviewed commit
 
 ```text
-9a52aa62380c28b0ec36eeb9b517f49e40900fd8  (9a52aa6)
-2026-06-24
-test(kiroku-store): TruncateBefore suite + docs (M4)
+58aff77b3a6d6093e3613753a0543aab62db9fac  (58aff77)
+2026-07-14T07:09:19-07:00
+chore(release): kiroku-store 0.3.0.1, kiroku-store-migrations 0.3.0.0
 ```
+
+The `9a52aa6..58aff77` review covers `shibuya-kiroku-adapter 0.4.0.0`, including
+the 0.3 Kiroku dependency, explicit live-source selection, guarded synchronous
+handler failures, loud checkpoint failure, and crash-aware stream termination.
+The source tree was clean at the reviewed SHA.
 
 ## Current source-backed claims
 
@@ -44,13 +49,18 @@ test(kiroku-store): TruncateBefore suite + docs (M4)
 - Consumer-group helpers require serial member execution and present the group
   as partitioned in-order.
 
+## Previous pointers
+
+- `9a52aa62380c28b0ec36eeb9b517f49e40900fd8` (`9a52aa6`), 2026-06-24 —
+  adapter baseline before the Kiroku 0.3 and Shibuya adapter 0.4 review.
+
 ## Update procedure
 
 1. List what changed since the pointer:
    ```text
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 9a52aa6..HEAD -- shibuya-kiroku-adapter docs/user
-   git -C "$KIROKU" diff --stat 9a52aa6..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" log --oneline 58aff77..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" diff --stat 58aff77..HEAD -- shibuya-kiroku-adapter docs/user
    ```
 2. Update `content/docs/integrations/shibuya-kiroku-adapter.mdx` and any Kiroku
    pages that repeat adapter-specific behavior.
