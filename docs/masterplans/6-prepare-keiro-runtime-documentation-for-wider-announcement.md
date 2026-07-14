@@ -82,7 +82,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | EP-1 | Refresh keiki 0.2 correctness replay and persistence documentation | `docs/plans/40-refresh-keiki-0-2-correctness-replay-and-persistence-documentation.md` | None | None | Complete |
-| EP-2 | Refresh keiro command replay snapshot and read-model reliability documentation | `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md` | None | EP-1 | Not Started |
+| EP-2 | Refresh keiro command replay snapshot and read-model reliability documentation | `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md` | None | EP-1 | In Progress |
 | EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Not Started |
 | EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Not Started |
 | EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Not Started |
@@ -183,7 +183,8 @@ and the milestone. This section provides an at-a-glance view of the entire initi
   composition contracts.
 - [x] (2026-07-14T16:35:26Z) EP-1 Milestone 3: refresh persistence, codecs, and the keiro
   integration handoff.
-- [ ] EP-2 Milestone 1: refresh event-stream validation, hydration, and command failures.
+- [x] (2026-07-14T16:49:29Z) EP-2 Milestone 1: refresh event-stream validation, hydration, and
+  command failures.
 - [ ] EP-2 Milestone 2: refresh snapshot correctness and recovery behavior.
 - [ ] EP-2 Milestone 3: refresh read models, projections, and rebuild operations.
 - [ ] EP-3 Milestone 1: refresh process-manager and router delivery.
@@ -225,6 +226,9 @@ interactions between child plans. Provide concise evidence.
   default compatible additive fields, and require a complete one-envelope migration chain. EP-2 and
   EP-4 should consume these generated surfaces instead of documenting constructor names as durable
   wire identities.
+- EP-2 began from clean keiro `c68dcc7`, two commits beyond the planned source boundary. Keiro and
+  keiro-core 0.3.0.0 contain no user-facing or source changes; the new release only realigns
+  migration/PGMQ dependencies and test-support setup, so EP-2's state-integrity API scope is stable.
 
 
 ## Decision Log

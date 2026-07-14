@@ -16,20 +16,21 @@ builds directly on it.
 
 An **EventStream** marries a keiki **SymTransducer** (the pure decision machine) to a **Codec** and a
 snapshot policy. A command runs the same three phases every write does — **Hydrate** (rebuild the
-`(state, registers)` pair from stored events), **Transduce** (`Keiki.step` produces the next pair plus
-events), **Append** (encode via the codec and write):
+`(state, registers)` pair from stored events), **Transduce** (`Keiki.stepEither` produces a structured
+decision or the next pair plus events), **Append** (encode via the codec and write):
 
 ```mermaid
 flowchart LR
   Cmd["command (ci)"] --> H["Hydrate: rebuild (state, registers)"]
-  H --> T{"Transduce: Keiki.step (state, regs) ci"}
-  T -- "Nothing" --> Rej["CommandRejected"]
-  T -- "Just (s', regs', events)" --> Enc["encode events via Codec"]
+  H --> T{"Transduce: Keiki.stepEither (state, regs) ci"}
+  T -- "no match" --> Rej["CommandRejected"]
+  T -- "multiple matches" --> Amb["CommandAmbiguous"]
+  T -- "Right (s', regs', events)" --> Enc["encode events via Codec"]
   Enc --> A["Append at expectedVersion"]
 ```
 
 The `(state, registers)` **pair** is the thread running through every box: hydration rebuilds it,
-`step` consumes and returns it, and a snapshot persists it.
+`stepEither` consumes and returns it, and a snapshot persists it.
 
 ## The chapters
 

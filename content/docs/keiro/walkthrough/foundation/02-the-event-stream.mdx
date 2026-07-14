@@ -153,20 +153,36 @@ mkEventStreamOrThrow ::
   Text ->
   EventStream (HsPred rs ci) rs s ci co ->
   ValidatedEventStream (HsPred rs ci) rs s ci co
+
+mkEventStreamUnchecked ::
+  EventStream phi rs s ci co ->
+  ValidatedEventStream phi rs s ci co
 ```
 
 `mkEventStream` runs two classes of checks:
 
-- **keiki transducer validation** via `validateTransducer`: hidden input (replay safety),
+- **keiki transducer validation** via `validateTransducer`: hidden input, first-event
+  recoverability, inversion ambiguity, guarded input reads, state-changing output-free edges,
   structural determinism, and structural dead-edge detection under `defaultValidationOptions`.
-- **keiro stream-level validation** via `snapshotWarnings`: any policy other than `Never` with
-  `stateCodec = Nothing` is rejected, because the stream asks for snapshots it can never encode.
+- **keiro stream-level validation**: any policy other than `Never` with `stateCodec = Nothing` is
+  rejected, and a present codec is forced over the initial `(state, registers)` so an uninitialized
+  register thunk fails before the service accepts commands.
+
+Keiro is stricter than a generic keiki caller. `mkEventStreamWith` applies custom options but then
+force-enables `checkHeadRecoverability` and `checkStateChangingEpsilon`; persisted events are the
+only durable state, so those checks cannot be opted out of at this boundary. Every remaining enabled
+warning also rejects construction.
 
 On success the smart constructor returns `Right validated`. On failure it returns labelled
 `EventStreamWarning`s whose `eswStreamLabel` is the caller's label and whose `eswReason` renders the
-specific hidden-input, nondeterminism, dead-edge, opaque-guard, or snapshot-coherence problem. The
+specific hidden-input, head-recoverability, inversion-ambiguity, guarded-read, state-changing-
+epsilon, nondeterminism, dead-edge, opaque-guard, or snapshot problem. The
 public command runners unwrap with `unvalidated` internally, but only after the type system has forced
 callers to present this validated wrapper.
+
+`mkEventStreamOrThrow` is partial and belongs in generated modules or fixtures whose sibling tests
+prove validation remains green. `mkEventStreamUnchecked` skips every check and belongs only in tests
+or emergency forensics; using it in application wiring removes the durable boundary entirely.
 
 ## The load-bearing facts
 
@@ -179,6 +195,8 @@ callers to present this validated wrapper.
    now rejects that incoherent pair instead of letting it become a silent no-op.
 3. **Snapshots are about the pair.** Because `snapshotPolicy` and `stateCodec` are both over
    `(s, RegFile rs)`, the persisted blob always carries the control state *and* the registers.
+4. **A no-op cannot hide a durable change.** Keiro always rejects an output-free edge that changes
+   the control vertex or can write a register. Without an event, hydration could not recover it.
 
 ## The jitsurei anchor — both ends
 

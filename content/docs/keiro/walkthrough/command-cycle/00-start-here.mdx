@@ -18,23 +18,25 @@ retries on conflict:
 ```mermaid
 flowchart LR
   Cmd["command (ci)"] --> H["Hydrate"]
-  H --> D{"Transduce: Keiki.step"}
-  D -- "Nothing" --> Rej["CommandRejected"]
-  D -- "Just (_, _, [])" --> NoOp["no-op CommandResult"]
-  D -- "Just (_, _, events)" --> Enc["encode via Codec"]
+  H -- "typed replay / gap error" --> HydErr["history needs repair"]
+  H --> D{"Transduce: Keiki.stepEither"}
+  D -- "no match" --> Rej["CommandRejected"]
+  D -- "many matches" --> Amb["CommandAmbiguous"]
+  D -- "Right (_, _, [])" --> NoOp["no-op: globalPosition Nothing"]
+  D -- "Right (_, _, events)" --> Enc["encode via Codec"]
   Enc --> A["Append at expectedVersion"]
   A -- "retryable conflict" --> H
-  A -- "ok" --> Snap["writeSnapshotIfNeeded"]
-  Snap --> Res["CommandResult"]
+  A -- "committed" --> Verify["verify replay; snapshot if configured"]
+  Verify --> Res["CommandResult"]
 ```
 
 ## The chapters
 
 <Cards>
-  <Card title="01 — Command types and errors" href="/docs/keiro/walkthrough/command-cycle/01-command-types-and-errors" description="CommandResult, the six CommandError constructors, RunCommandOptions, and the internal plan types." />
-  <Card title="02 — Hydration" href="/docs/keiro/walkthrough/command-cycle/02-hydration" description="hydrate, hydrateFull, the replay fold, and the Settled-vs-InFlight finish rule." />
-  <Card title="03 — The command processor" href="/docs/keiro/walkthrough/command-cycle/03-the-command-processor" description="runCommand, prepareCommandPlan, appendOnce, the inline snapshot, and retryOrFail." />
-  <Card title="04 — The transactional write path" href="/docs/keiro/walkthrough/command-cycle/04-the-transactional-write-path" description="Three runners over one primitive, Tx.condemn, and reconstructRecorded." />
+  <Card title="01 — Command types and errors" href="/docs/keiro/walkthrough/command-cycle/01-command-types-and-errors" description="CommandResult, typed hydration reasons, command ambiguity, RunCommandOptions, and the internal plan types." />
+  <Card title="02 — Hydration" href="/docs/keiro/walkthrough/command-cycle/02-hydration" description="Snapshot seeds, contiguous paged decoding, structured replay failures, truncation gaps, and the Settled finish rule." />
+  <Card title="03 — The command processor" href="/docs/keiro/walkthrough/command-cycle/03-the-command-processor" description="runCommand, stepEither, append-time replay verification, advisory snapshots, and retryOrFail." />
+  <Card title="04 — The transactional write path" href="/docs/keiro/walkthrough/command-cycle/04-the-transactional-write-path" description="Resource-aware SQL runners, enrichment, Tx.condemn, callback lock scope, and reconstructRecorded." />
   <Card title="05 — The codec on the boundary" href="/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary" description="The Codec record, six CodecError constructors, migrateToCurrent, and the jitsurei upcaster." />
   <Card title="06 — The typed handles" href="/docs/keiro/walkthrough/command-cycle/06-the-typed-handles" description="EventStream, SnapshotPolicy, StateCodec, and the phantom-typed Stream." />
   <Card title="07 — The router" href="/docs/keiro/walkthrough/command-cycle/07-the-router" description="Router, RouterResult, deterministic ids, and the worker ack policy." />

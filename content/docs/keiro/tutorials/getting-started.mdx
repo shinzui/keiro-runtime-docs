@@ -176,7 +176,7 @@ from `runCommand`:
 ```haskell
 case outcome of
   Left storeErr               -> putStrLn ("store error: " <> show storeErr)
-  Right (Left cmdErr, _)      -> putStrLn ("command rejected: " <> show cmdErr)
+  Right (Left cmdErr, _)      -> putStrLn ("command failed: " <> show cmdErr)
   Right (Right res, recorded) -> do
     putStrLn ("appended " <> show (res ^. #eventsAppended) <> " event(s)")
     putStrLn ("stream version now " <> show (res ^. #streamVersion))
@@ -184,9 +184,12 @@ case outcome of
 ```
 
 A `CommandResult` carries `target`, `streamVersion`, `globalPosition`, and `eventsAppended`. A
-`CommandError` is one of: `HydrationDecodeFailed`, `HydrationReplayFailed`, `CommandRejected` (the
-transducer rejected the command in the hydrated state), `EncodeFailed`, `StoreFailed`, or
-`RetryExhausted` (optimistic-concurrency retries ran out).
+no-op result has `eventsAppended = 0` and `globalPosition = Nothing`. A `CommandError` can report
+decode failure, a typed replay failure, a truncation gap, ordinary `CommandRejected`,
+`CommandAmbiguous` (multiple matching edges, which is a definition bug), encode/store failure,
+exhausted retries, or a conflict fixpoint. See [Diagnose command and replay
+failures](/docs/keiro/how-to/diagnose-command-replay-failures) before deciding whether an error is a
+business outcome or an integrity incident.
 
 </Step>
 <Step>

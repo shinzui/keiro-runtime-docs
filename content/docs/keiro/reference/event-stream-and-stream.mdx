@@ -37,11 +37,11 @@ uses `snapshotPolicy = Never`, `stateCodec = Nothing`, while `snapshotOrderEvent
 ## `ValidatedEventStream` and replay-safety validation
 
 An `EventStream` is only as safe to replay as the keiki transducer inside it.
-`Keiro.EventStream.Validate` lifts keiki's pure umbrella check (`validateTransducer`, keiki EP-56)
-to the `EventStream` boundary, so a service can assert every stream is sound **before** it is ever
-hydrated — with no SMT solver. keiki can prove statically that a transducer is *replay-safe* (every
-command field an edge consumes is recoverable from the event(s) it emits), that its guards are
-deterministic, and that no edge is dead.
+`Keiro.EventStream.Validate` lifts keiki's pure umbrella check (`validateTransducer`) to the
+`EventStream` boundary, so a service can reject an unsafe durable stream **before** it is ever
+hydrated — with no SMT solver. The check covers hidden input, first-event recoverability, ambiguous
+event inversion, unguarded input reads, state-changing output-free edges, structural determinism,
+and dead edges. Keiro also validates snapshot configuration and forces the initial snapshot encode.
 
 This is now a breaking API boundary: `runCommand`, `runCommandWithSql`,
 `runCommandWithSqlEvents`, `runCommandWithProjections`, routers, and process managers accept a
@@ -79,6 +79,9 @@ mkEventStreamOrThrow ::
   ValidatedEventStream (HsPred rs ci) rs s ci co
 
 unvalidated :: ValidatedEventStream phi rs s ci co -> EventStream phi rs s ci co
+
+mkEventStreamUnchecked ::
+  EventStream phi rs s ci co -> ValidatedEventStream phi rs s ci co
 ```
 
 - `validateEventStream label es` runs the check with `defaultValidationOptions` and returns the
@@ -90,6 +93,8 @@ unvalidated :: ValidatedEventStream phi rs s ci co -> EventStream phi rs s ci co
 - `mkEventStreamOrThrow label es` is the partial constructor used by generated modules and fixtures
   that have a sibling validation proof. Hand-authored service boot code should usually prefer
   `mkEventStream` and handle `Left` explicitly.
+- `mkEventStreamUnchecked es` skips **every** keiki and keiro check. It exists for tests and
+  emergency forensics only; it is not a production escape hatch.
 
 The bare `EventStream { … }` record literal stays available for construction, validation, and
 low-level internals. It is not enough to call the command runners.
@@ -117,15 +122,26 @@ runner fails to typecheck until the stream has a validated wrapper.
 With `defaultValidationOptions`, `mkEventStream` accepts only streams whose transducer passes these
 enabled checks:
 
-- **Hidden-input / replay-safety.** If an edge reads a command field, the emitted event(s) must carry
-  enough data for replay to recover that field. Otherwise hydration can never reconstruct the same
-  register writes or guard outcomes from the event log alone.
-- **Structural determinism.** The check rejects overlaps it can prove among outgoing edges for the
-  same state/command shape, so one command does not select multiple transitions.
-- **Structural reachability.** The check flags edges that are statically dead or whose source cannot
-  be reached under the visible graph.
-- **Snapshot coherence.** Keiro adds the non-keiki check: `snapshotPolicy /= Never` requires
-  `stateCodec = Just …`.
+- **Hidden input.** Every command field read while producing an event chain must be recoverable from
+  persisted output.
+- **Head recoverability.** The first event in a chain must recover every command field needed to
+  choose and replay its edge. Later events cannot repair an ambiguous first event.
+- **Inversion ambiguity.** Outgoing edges whose first events could identify more than one original
+  transition are rejected conservatively.
+- **Guarded input reads.** A command-field read must be protected by an earlier matching-constructor
+  guard.
+- **State-changing output-free edges.** An edge that emits nothing may not change durable state or
+  write registers, because there would be no event from which to recover that change.
+- **Structural determinism and reachability.** Proven command-side overlaps and statically dead
+  edges are warnings, and therefore construction failures at this durable boundary.
+- **Snapshot coherence and initial encodability.** A non-`Never` policy requires a `StateCodec`.
+  When a codec is present, validation forces it over `(initialState, initialRegisters)` so an
+  `uninit: <slot>` thunk installed by `emptyRegFile` fails startup instead of the first snapshot.
+
+`mkEventStreamWith` still accepts custom `ValidationOptions`, but keiro force-enables
+`checkHeadRecoverability` and `checkStateChangingEpsilon` after applying the caller's options.
+Persisted events are the only durable state, so those two checks cannot be disabled here. Every
+remaining enabled warning is also a `Left`; only narrow another check for a documented benign case.
 
 ### What validation does not prove
 
@@ -144,9 +160,8 @@ Replayability is not one check; keiro layers several independent guards:
   hydrated `(state, registers)`. There is no effectful decide/evolve callback hidden in the stream.
 - **Compile-time runner boundary.** Public command and projection runners require
   `ValidatedEventStream`, so a bare record cannot accidentally reach the write path.
-- **Build-time stream validation.** `validateEventStream` runs hidden-input, determinism, and
-  reachability checks over the transducer. Hidden-input warnings are the replay-safety failures:
-  they mean an edge read command data that its emitted events do not preserve.
+- **Build-time stream validation.** `validateEventStream` runs keiki's full default replay contract,
+  plus snapshot coherence and initial-encode checks. Every warning rejects construction.
 - **Snapshot coherence.** `mkEventStream` rejects snapshotting policies without a `stateCodec`, and
   snapshot reuse is gated by `stateCodecVersion` plus `shapeHash`. A stale or undecodable snapshot is
   a cache miss, so hydration falls back to full event replay.
@@ -162,8 +177,10 @@ Replayability is not one check; keiro layers several independent guards:
 
 The `label` is echoed into every `EventStreamWarning` so a multi-aggregate service can tell *which*
 stream is at fault; `eswReason` renders the underlying keiki warning (`hidden-input @…`,
-`nondeterministic @…`, `possibly-dead @…`, or `opaque-guard @…`, each tagged with the source
-vertex). The check requires the control state `s` to satisfy `(Bounded s, Enum s, Ord s, Show s)` —
+`head-unrecoverable @…`, `inversion-ambiguity @…`, `unguarded-input-read @…`,
+`state-changing-epsilon @…`, `nondeterministic @…`, `possibly-dead @…`, or `opaque-guard @…`, each
+tagged with its source). The check requires the control state `s` to satisfy
+`(Bounded s, Enum s, Ord s, Show s)` —
 it walks `[minBound .. maxBound]` exactly as the renderers and `defaultStateCodec` shape hash do —
 and the transducer must use keiki's standard `HsPred` guard carrier.
 
@@ -172,6 +189,10 @@ The enabled checks come from keiki's `ValidationOptions` (carried through `valid
 <TypeTable
   type={{
     failOnEpsilonReadsInput: { type: "Bool", description: "Run the hidden-input (replay-safety) check: every command field an edge consumes must be recoverable from the events it emits.", default: "True" },
+    checkHeadRecoverability: { type: "Bool", description: "Require the first emitted event to recover fields needed by replay; keiro always forces this on.", default: "True" },
+    checkInversionAmbiguity: { type: "Bool", description: "Conservatively flag outgoing edges whose first events could invert to more than one edge.", default: "True" },
+    checkGuardImpliesInputRead: { type: "Bool", description: "Require an input-field read to be protected by an earlier matching-constructor guard.", default: "True" },
+    checkStateChangingEpsilon: { type: "Bool", description: "Reject output-free edges that change durable state or write registers; keiro always forces this on.", default: "True" },
     checkDeterminism: { type: "Bool", description: "Run the (pure, structural) determinism check on guards.", default: "True" },
     checkReachability: { type: "Bool", description: "Run the (structural) dead-edge check.", default: "True" },
     warnOpaqueGuards: { type: "Bool", description: "Audit edges whose guard branches on an opaque term the symbolic analyses cannot see through (opt-in).", default: "False" },

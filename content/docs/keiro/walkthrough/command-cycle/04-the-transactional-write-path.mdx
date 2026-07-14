@@ -1,6 +1,6 @@
 ---
 title: "04 — The transactional write path"
-description: "Three runners over one primitive: runCommand, runCommandWithSql, and runCommandWithSqlEvents; one Hasql transaction for append plus callback; Tx.condemn on conflict; and arithmetic RecordedEvent reconstruction."
+description: "The resource-aware SQL runners: Kiroku enrichment, one Hasql transaction for append plus callback, Tx.condemn on conflict, and RecordedEvent reconstruction."
 ---
 
 This chapter reads the transactional runner in `keiro/src/Keiro/Command.hs` — the primitive that inline
@@ -9,10 +9,10 @@ all build on. Read
 [03 — The command processor](/docs/keiro/walkthrough/command-cycle/03-the-command-processor) first; the
 hydrate/transduce front-end is shared with the append-only runner you read there.
 
-## Three runners, one primitive
+## Three runners, two append paths
 
-`Keiro.Command` exposes three public runners, and the third is the only one that does real work — the
-other two are conveniences over it:
+`Keiro.Command` exposes one append-only runner and two transactional runners. `runCommandWithSql` is
+a convenience over the general transactional primitive `runCommandWithSqlEvents`:
 
 ```haskell
 runCommand ::
@@ -26,7 +26,8 @@ runCommand ::
 
 runCommandWithSql ::
   forall phi rs s ci co a es.
-  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
+   KirokuStoreResource :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
   RunCommandOptions ->
   ValidatedEventStream phi rs s ci co ->
   Stream (EventStream phi rs s ci co) ->
@@ -36,7 +37,8 @@ runCommandWithSql ::
 
 runCommandWithSqlEvents ::
   forall phi rs s ci co a es.
-  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
+   KirokuStoreResource :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
   RunCommandOptions ->
   ValidatedEventStream phi rs s ci co ->
   Stream (EventStream phi rs s ci co) ->
@@ -62,9 +64,13 @@ runCommandWithSql options eventStream targetStream command afterAppend =
 The runners immediately unwrap the `ValidatedEventStream` internally and use the underlying
 `EventStream` for hydration, transduction, stream-name resolution, codecs, and snapshots. That
 wrapper is the public guardrail: a bare record can be built and validated, but it cannot be passed to
-the write path. One primitive, three ergonomic surfaces. Both `Maybe a`-returning runners return
+the write path. Both `Maybe a`-returning runners return
 `Just` the callback's result on an append and `Nothing` for a no-op (the callback never runs when
 nothing is appended).
+
+The transactional signatures also require `KirokuStoreResource`. Install it with
+`withKirokuStore` and interpret `Store` with `runStoreResource`; that shared resource exposes the
+configured Kiroku `enrichEvent` hook to the transaction path.
 
 ## One transaction: append, then the callback
 
@@ -72,9 +78,11 @@ nothing is appended).
 single Hasql transaction together with the caller's callback:
 
 ```haskell
-    appendWithSqlOnce remaining current events encoded = do
+    appendWithSqlOnce mSpan attemptNo current events encoded = do
       liftIO (options ^. #beforeAppend)
-      prepared <- prepareEventsIO encoded
+      store <- getKirokuStore
+      enriched <- liftIO (enrichEventsIO store encoded)
+      prepared <- prepareEventsIO enriched
       now <- liftIO getCurrentTime
       let streamName = (eventStream ^. #resolveStreamName) targetStream
           expected = expectedVersion (current ^. #streamVersion)
@@ -91,14 +99,23 @@ single Hasql transaction together with the caller's callback:
       ...   -- on success: writeSnapshotIfNeeded then appendedResult; on conflict: retryOrFail
 ```
 
-Two things to notice. First, on a conflict the code calls **`Tx.condemn`** — marking the Hasql
+Three things to notice. First, `enrichEventsIO` runs before event preparation, so the callback's
+reconstructed `RecordedEvent`s contain the same enriched metadata that is persisted. The plain
+`runCommand` append path applies Kiroku's hook too; callers do not need to duplicate enrichment.
+
+Second, on a conflict the code calls **`Tx.condemn`** — marking the Hasql
 transaction for rollback — and hands `appendConflictToStoreError conflict` to the same `retryOrFail`
 from chapter 03. Because the append and the callback share `body`, a conflict rolls back *both*: the
 read-model write never lands without its events. Second, on success the callback receives
 `Prelude.zip events recordeds` — each emitted domain event paired with its persisted `RecordedEvent` —
 so an inline projection can write a row keyed by the event's real `streamVersion`/`globalPosition`
-*inside* the same transaction. After the transaction commits, control returns to the effect, where
-`writeSnapshotIfNeeded` and `appendedResult` run exactly as in the append-only runner. The no-op branch
+*inside* the same transaction. Third, the append updates Kiroku's global `$all` stream and holds that
+PostgreSQL row lock until the callback completes. Keep callback work small, batch SQL, and avoid
+network calls or unnecessary round trips inside the serialization window.
+
+After the transaction commits, control returns to the effect, where `verifyAndSnapshot` and
+`appendedResult` run exactly as in the append-only runner. A replay divergence or snapshot failure is
+post-commit telemetry evidence and does not rewrite the successful result. The no-op branch
 short-circuits before any of this: it returns `(result, Nothing)`, and the callback never runs.
 
 ## Why `reconstructRecorded` instead of a re-read

@@ -35,19 +35,45 @@ Why a command did not complete.
 ```haskell
 data CommandError
   = HydrationDecodeFailed !CodecError       -- a stored event could not be decoded while rehydrating
-  | HydrationReplayFailed !StreamVersion    -- replay stalled: the machine rejected a committed event
-  | CommandRejected                         -- the transducer rejected the command in the hydrated state
+  | HydrationReplayFailed !StreamVersion !HydrationReplayReason
+  | HydrationGapDetected !StreamVersion !StreamVersion -- expected, observed
+  | CommandRejected                         -- no edge matched the command
+  | CommandAmbiguous ![Int]                 -- zero-based matched-edge indices, in declaration order
   | EncodeFailed !CodecError                -- an emitted event could not be encoded for append
   | StoreFailed !StoreError                 -- the store rejected the append (non-retryable)
   | RetryExhausted !Int !StoreError         -- optimistic-concurrency retries ran out (limit, last error)
   | ConflictFixpoint !StreamVersion !StoreError -- retry observed no stream-version progress
   deriving stock (Generic, Eq, Show)
+
+data HydrationReplayReason
+  = HydrationNoInvertingEdge
+  | HydrationAmbiguousInversion
+  | HydrationQueueMismatch
+  | HydrationTruncatedChain
+  deriving stock (Generic, Eq, Show)
 ```
 
+Hydration preserves enough structure to distinguish repair paths:
+
+- `HydrationDecodeFailed` means persisted bytes or schema metadata do not decode under the current
+  `Codec`.
+- `HydrationReplayFailed version reason` means decoded events contradict the transducer. The reason
+  says whether no edge could have emitted an event, multiple edges could have emitted it, a later
+  event did not match an in-flight multi-event chain, or the log ended before that chain completed.
+  The version identifies the failing stored event; for `HydrationTruncatedChain`, it is the final
+  stored event after which more output was required.
+- `HydrationGapDetected expected observed` means a per-stream read skipped committed versions. The
+  usual cause is Kiroku stream truncation whose hidden prefix is not covered by the hydration seed.
+  Restore visibility with `clearStreamTruncateBefore` or provide a covering snapshot before retrying.
+- `CommandRejected` is an ordinary domain outcome: no edge matched. `CommandAmbiguous` is different:
+  two or more edges matched, so the aggregate definition is nondeterministic. Its indices are
+  zero-based and follow edge declaration order.
+
 <Callout type="warn">
-Tell three outcomes apart: **rejected** (`Left CommandRejected` — no edge for this command in the
-hydrated state, nothing written), **no-op** (`Right CommandResult { eventsAppended = 0 }` — accepted
-but emitted nothing, nothing written, *not* a rejection), and **store failure**
+Tell four outcomes apart: **rejected** (`Left CommandRejected` — no matching edge, nothing written),
+**ambiguous** (`Left (CommandAmbiguous matches)` — multiple matching edges, an aggregate-definition
+bug), **no-op** (`Right CommandResult { eventsAppended = 0, globalPosition = Nothing }` — accepted but
+emitted nothing, nothing written), and **store failure**
 (`Left (StoreFailed …)` / `Left (RetryExhausted …)`). They flow through the same
 `Either CommandError CommandResult` and are easy to conflate.
 </Callout>
@@ -64,6 +90,7 @@ Knobs for a single command invocation.
     beforeAppend: { type: "IO ()", description: "Hook run before each append attempt (test seam)", default: "pure ()" },
     retryBackoffMicros: { type: "Int", description: "Base OCC retry backoff; capped at 100ms and jittered; 0 disables", default: "5000" },
     metrics: { type: "Maybe KeiroMetrics", description: "Optional command/snapshot metrics handle", default: "Nothing" },
+    verifyReplayOnAppend: { type: "Bool", description: "Replay each successful append from its pre-command state and report divergence; snapshot-enabled streams fold regardless", default: "True" },
     tracer: { type: "Maybe Tracer", description: "Optional OpenTelemetry tracer", default: "Nothing" },
     metadata: { type: "Maybe Value", description: "JSON merged into every event's metadata", default: "Nothing" },
   }}
@@ -71,7 +98,8 @@ Knobs for a single command invocation.
 
 ```haskell
 -- Defaults: 3 retries, 256-event read pages, no caller ids, no-op hook,
--- 5ms base retry backoff, no metrics, no tracer, no metadata.
+-- 5ms base retry backoff, no metrics, replay verification enabled,
+-- no tracer, no metadata.
 defaultRunCommandOptions :: RunCommandOptions
 ```
 
@@ -86,13 +114,19 @@ Retry behavior:
   `keiro.command.duplicates` when metrics are enabled.
 - Snapshot writes happen after a successful append. If the snapshot write fails, the command result
   still succeeds and `keiro.snapshot.write.failures` is incremented.
+- With `verifyReplayOnAppend = True`, every committed batch is replayed immediately from the
+  pre-command state. A divergence is post-commit evidence: the runner records
+  `keiro.snapshot.apply.divergence` and the `keiro.replay.divergence` span attribute but still returns
+  the successful append result. Setting the option to `False` skips this fold only for a stream
+  without a `StateCodec`; snapshot-enabled streams still need the fold to produce snapshot state.
 
 ## `runCommand` — append only
 
 ```haskell
 runCommand ::
   forall phi rs s ci co es.
-  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
+   BoolAlg phi (RegFile rs, ci), Eq co) =>
   RunCommandOptions ->
   ValidatedEventStream phi rs s ci co ->
   Stream (EventStream phi rs s ci co) ->
@@ -109,7 +143,8 @@ model atomically). The callback sees the `AppendResult`; its return is surfaced 
 ```haskell
 runCommandWithSql ::
   forall phi rs s ci co a es.
-  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
+   KirokuStoreResource :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
   RunCommandOptions ->
   ValidatedEventStream phi rs s ci co ->
   Stream (EventStream phi rs s ci co) ->
@@ -117,6 +152,12 @@ runCommandWithSql ::
   (AppendResult -> Tx.Transaction a) ->
   Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co), Maybe a))
 ```
+
+Both transactional runners require `KirokuStoreResource`. Install it with `withKirokuStore`, then
+interpret `Store` with `runStoreResource`. Before preparing the append, the runner applies the
+configured Kiroku `enrichEvent` hook; the callback therefore observes the same enriched metadata
+that is persisted. The append holds Kiroku's global `$all` row lock until the callback finishes, so
+keep callback SQL small, batched, and free of avoidable round trips.
 
 ## `runCommandWithSqlEvents` — the general primitive
 
@@ -128,7 +169,8 @@ persisted `RecordedEvent`. This is the primitive that
 ```haskell
 runCommandWithSqlEvents ::
   forall phi rs s ci co a es.
-  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
+   KirokuStoreResource :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
   RunCommandOptions ->
   ValidatedEventStream phi rs s ci co ->
   Stream (EventStream phi rs s ci co) ->

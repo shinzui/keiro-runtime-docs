@@ -1,0 +1,80 @@
+---
+title: "Diagnose command and replay failures"
+description: "Classify rejection, ambiguity, corrupt or incomplete history, truncation gaps, and append-time replay divergence without guessing whether an append committed."
+---
+
+Use the constructor, not an error-message substring, to decide whether a command was rejected by the
+domain, exposed an aggregate-definition defect, or found damaged history.
+
+## Classify the outcome
+
+```haskell
+classifyCommand = \case
+  Right result
+    | result ^. #eventsAppended == 0 -> AcceptedNoOp
+    | otherwise -> Appended result
+  Left CommandRejected -> BusinessRejection
+  Left (CommandAmbiguous edgeIndices) -> AggregateDefinitionBug edgeIndices
+  Left (HydrationDecodeFailed codecError) -> PersistedCodecFailure codecError
+  Left (HydrationReplayFailed version reason) -> PersistedReplayFailure version reason
+  Left (HydrationGapDetected expected observed) -> HiddenStreamPrefix expected observed
+  Left other -> CommandInfrastructureFailure other
+```
+
+| Signal | What it means | Did this invocation append? | First response |
+|---|---|---:|---|
+| `CommandRejected` | No outgoing edge matched the command in the hydrated state | No | Return the domain rejection; inspect routing only if the command should have been valid |
+| `CommandAmbiguous [i, …]` | Multiple declared edges matched | No | Treat as an aggregate-definition defect; inspect the zero-based edges in declaration order |
+| `HydrationDecodeFailed e` | A stored event cannot be decoded by the current codec | No | Check event type, schema-version metadata, and the upcaster chain |
+| `HydrationReplayFailed v r` | Decoded history cannot be replayed through the transducer | No | Use the typed reason and failing version to inspect the aggregate definition and stored chain |
+| `HydrationGapDetected expected observed` | The per-stream read skipped versions | No | Inspect Kiroku's truncation marker; restore visibility or provide a snapshot that covers the hidden prefix |
+| `keiro.replay.divergence` on a successful span | The batch committed, then failed immediate replay verification | **Yes** | Stop further writes to the affected stream and investigate before normal hydration encounters the same failure |
+
+An accepted no-op is also a success, but it appends nothing and always reports
+`globalPosition = Nothing`. Do not fabricate `GlobalPosition 0` or reuse an earlier event's position.
+
+## Interpret typed replay reasons
+
+- `HydrationNoInvertingEdge`: no outgoing edge's first output could have produced the stored event.
+  Look for an incompatible transducer change or an event written outside the aggregate runner.
+- `HydrationAmbiguousInversion`: more than one edge could have produced the event. Make first-event
+  shapes distinct enough to identify the original transition.
+- `HydrationQueueMismatch`: a later event did not match the next event expected from a multi-event
+  transition. Inspect order, payload, and any partial/manual append.
+- `HydrationTruncatedChain`: the stream ended while replay was still waiting for more events from a
+  multi-event transition. The attached version is the last stored event, not a missing-event version.
+
+These are projections of keiki's structured `ReplayFailure` vocabulary. They are not ordinary
+`CommandRejected` values: rejection concerns a new command; hydration failures concern facts that
+are already persisted.
+
+## Check the validation boundary
+
+Before repairing data, confirm the current definition passes the durable stream boundary:
+
+```haskell
+case mkEventStream "orders" orderEventStreamDef of
+  Left warnings -> refuseToStart warnings
+  Right validated -> startService validated
+```
+
+`mkEventStream` rejects every enabled keiki warning plus keiro's snapshot checks. In particular,
+keiro always forces first-event recoverability and state-changing output-free-edge checks on.
+`mkEventStreamUnchecked` is reserved for tests and emergency forensics; using it to make production
+startup green can admit the exact stream shape that hydration is refusing.
+
+## Respond to append-time divergence
+
+`defaultRunCommandOptions` sets `verifyReplayOnAppend = True`. After a successful append, keiro folds
+the just-committed events from the pre-command state. If that fold diverges, the command still
+returns its successful `CommandResult` because the transaction has already committed. With telemetry
+installed, keiro increments `keiro.snapshot.apply.divergence` and attaches a compact
+`keiro.replay.divergence` reason to the command span.
+
+Alert on that evidence as a stream-integrity incident. Capture the stream name, returned stream
+version, and divergence attribute; block or drain further commands for that stream; reproduce replay
+against the reviewed transducer and codec; then repair the definition or history under your normal
+data-repair procedure. Do not automatically retry the original command: it already committed.
+
+For the full constructor and option definitions, see the [Command reference](/docs/keiro/reference/command).
+For the underlying inversion model, see keiki's [Structured step and replay failures](/docs/keiki/reference/step-failure).

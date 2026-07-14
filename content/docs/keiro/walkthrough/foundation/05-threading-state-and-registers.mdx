@@ -1,6 +1,6 @@
 ---
 title: "05 — Threading state and registers"
-description: "The real keiro call site: how evaluateCommand passes both halves of the hydrated (state, registers) pair into Keiki.step, and why both must be carried."
+description: "The real keiro call site: how evaluateCommand passes both halves of the hydrated (state, registers) pair into Keiki.stepEither, and why both must be carried."
 ---
 
 <Callout type="info">
@@ -13,7 +13,7 @@ description: "The real keiro call site: how evaluateCommand passes both halves o
 `keiro/src/Keiro/Command.hs` — the real call site that runs the
 [transducer step](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step) from the previous
 chapter against a hydrated stream. This is the linchpin the whole tour builds to: it shows *both* halves
-of the `(state, registers)` pair being passed into `Keiki.step`.
+of the `(state, registers)` pair being passed into `Keiki.stepEither`.
 
 ## The hydrated record
 
@@ -26,14 +26,14 @@ data Hydrated rs s = Hydrated
   { state          :: !s
   , registers      :: !(RegFile rs)
   , streamVersion  :: !StreamVersion
-  , globalPosition :: !(Maybe GlobalPosition)
   }
   deriving stock (Generic)
 ```
 
 The two fields that matter here are `state` and `registers` — the same `(s, RegFile rs)` pair the
-transducer steps on. `streamVersion` and `globalPosition` are the store coordinates the append path
-uses; they are not part of the machine's configuration.
+transducer steps on. `streamVersion` is the per-stream coordinate the append path uses; it is not
+part of the machine's configuration. Hydration does not invent a global position from a per-stream
+read, which is why a no-op `CommandResult` reports `globalPosition = Nothing`.
 
 ## The call site
 
@@ -46,23 +46,28 @@ evaluateCommand ::
   ci ->
   Either CommandError [co]
 evaluateCommand eventStream current command =
-  case Keiki.step (eventStream ^. #transducer) (state current, registers current) command of
-    Nothing             -> Left CommandRejected
-    Just (_, _, events) -> Right events
+  case Keiki.stepEither (eventStream ^. #transducer) (state current, registers current) command of
+    Left Keiki.NoOutgoingEdges{} -> Left CommandRejected
+    Left Keiki.NoMatchingEdge{} -> Left CommandRejected
+    Left (Keiki.AmbiguousEdges _ matches) ->
+      Left (CommandAmbiguous [Keiki.edgeIndex (Keiki.matchedEdge m) | m <- matches])
+    Right (_, _, events) -> Right events
 ```
 
 This is the line the tour exists to explain:
 
 ```haskell
-Keiki.step (eventStream ^. #transducer) (state current, registers current) command
+Keiki.stepEither (eventStream ^. #transducer) (state current, registers current) command
 ```
 
 It reads the `transducer` out of the `EventStream`, builds the pair `(state current, registers
 current)` from the hydrated record — **both halves** — and passes the command. The result maps
-directly onto `step`'s return shape from the previous chapter:
+directly onto `stepEither`'s return shape from the previous chapter:
 
-- `Nothing` becomes `Left CommandRejected` — no edge's guard was satisfied.
-- `Just (_, _, events)` becomes `Right events` — the emitted events to encode and append. (The next
+- `NoOutgoingEdges` and `NoMatchingEdge` become `Left CommandRejected`.
+- `AmbiguousEdges` becomes `Left (CommandAmbiguous indices)`, preserving the zero-based declaration
+  indices instead of hiding a definition bug as a business rejection.
+- `Right (_, _, events)` becomes `Right events` — the emitted events to encode and append. (The next
   state and next registers in the first two slots are discarded *here*; they are recomputed on the
   write path when a snapshot needs to be written.)
 
@@ -74,7 +79,7 @@ same vertex can hold different register values, so knowing the vertex tells you 
 register file. That single fact forces the whole pair through every stage:
 
 - **Hydration** replays the stored events to rebuild *both* the state and the registers (via keiki's
-  `applyEventStreaming`), producing the `Hydrated` record above.
+  structured `replayEvents`), producing the `Hydrated` record above.
 - **The step** consumes the whole pair: `(state current, registers current)`.
 - **A snapshot** must persist the whole pair, because a snapshot that stored only the state could never
   reconstruct the registers.

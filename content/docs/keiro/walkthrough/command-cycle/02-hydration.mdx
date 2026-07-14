@@ -1,195 +1,153 @@
 ---
 title: "02 — Hydration"
-description: "Reading hydrate and hydrateFull: rebuilding (state, registers, version) from the event log, the snapshot-seed fast path with silent fallback, the replay fold, and the Settled-vs-InFlight finish rule."
+description: "Reading hydrate and hydrateSeeded: snapshot seeds, contiguous paged decoding, structured keiki replay failures, truncation gaps, and the final Settled rule."
 ---
 
 This chapter reads the hydration machine in `keiro/src/Keiro/Command.hs` — the half of the command
-cycle that *rebuilds* current state from stored events before a command is ever transduced. The old
-sampling tour skipped it; it is a chapter's worth of material on its own. Read
+cycle that rebuilds current state from stored events before a command is transduced. Read
 [01 — Command types and errors](/docs/keiro/walkthrough/command-cycle/01-command-types-and-errors)
-first, since this chapter uses `Hydrated`, `Replay`, and the `CommandError` constructors throughout.
+first, since this chapter uses `Hydrated`, `HydrationReplayReason`, and the `CommandError`
+constructors throughout.
 
-Hydration is **Hydrate**, the first phase of the cycle. Its job: replay a stream's stored events
-through the keiki transducer to recover the current `Hydrated rs s` — the `(state, registers)` pair and
-the stream's current `StreamVersion`.
+Hydration must recover `(state, registers, streamVersion)` from the event log. A snapshot may provide
+the starting point, but events remain authoritative.
 
-## The two doors: `hydrate` and `hydrateFull`
+## The two doors: snapshot seed or initial state
 
 ```haskell
--- keiro/src/Keiro/Command.hs
 hydrate options eventStream targetStream =
   snapshotSeed >>= \case
     Nothing -> hydrateFull options eventStream targetStream
     Just seed -> do
-      replayed <- replayFrom seed
+      replayed <-
+        hydrateSeeded options eventStream targetStream
+          (seed ^. #state)
+          (seed ^. #registers)
+          (seed ^. #streamVersion)
       case replayed of
-        Left _ -> hydrateFull options eventStream targetStream   -- silent fallback
+        Left _ -> hydrateFull options eventStream targetStream
         Right hydrated -> pure (Right hydrated)
-  where
-    snapshotSeed =
-      case eventStream ^. #stateCodec of
-        Nothing -> pure Nothing
-        Just codec ->
-          hydrateWithSnapshot ((eventStream ^. #resolveStreamName) targetStream) codec
 ```
 
-`hydrate` is the front door. It first asks `snapshotSeed` whether there is a snapshot to fast-forward
-from. The answer is `Nothing` whenever the stream has no `stateCodec` — so a stream configured without
-snapshotting (like jitsurei's `orderEventStream`) *always* takes the `hydrateFull` path. When there
-*is* a `stateCodec`, `hydrateWithSnapshot` may return a `seed`, and `replayFrom` then folds the events
-recorded *after* the snapshot on top of it.
+When the stream has no `StateCodec`, `snapshotSeed` is `Nothing`. With a codec,
+`lookupSnapshotSeed` either returns `SnapshotHit seed` or `SnapshotUnavailable reason`. Hits increment
+`keiro.snapshot.read.hits`; unavailable results increment `keiro.snapshot.read.misses`, and a decode
+failure also increments `keiro.snapshot.decode.failures`.
+
+Any replay error from a snapshot seed falls back to `hydrateFull`, which calls the same replay engine
+from `initialState`, `initialRegisters`, and `StreamVersion 0`. That does not hide a real history
+problem: if full replay encounters it too, that typed error is returned. It only prevents a stale or
+incorrect cache entry from becoming authoritative.
+
+## Decode contiguous pages, then replay the valid prefix
+
+`hydrateSeeded` reads forward after the seed in bounded pages. `pageSize` is clamped to at least one,
+and each page is decoded into the longest valid, contiguous prefix:
+
+```haskell
+decodePrefix previousRecorded = go [] [] startingVersion
+  where
+    go recordedAcc eventAcc lastSeen = \case
+      [] -> (reverse recordedAcc, reverse eventAcc, Nothing)
+      recorded : rest ->
+        let observed = recorded ^. #streamVersion
+            expected = nextStreamVersion lastSeen
+        in if observed /= expected
+             then (reverse recordedAcc, reverse eventAcc,
+                   Just (HydrationGapDetected expected observed))
+             else case decodeRecorded (eventStream ^. #eventCodec) recorded of
+               Left err ->
+                 (reverse recordedAcc, reverse eventAcc,
+                  Just (HydrationDecodeFailed err))
+               Right event ->
+                 go (recorded : recordedAcc) (event : eventAcc) observed rest
+```
+
+The decoded prefix is replayed **before** the pending gap or decode error is returned. That ordering
+is intentional: if an earlier valid event already contradicts the transducer, its replay failure is
+more precise than a later bad event in the same page.
+
+The continuity check matters because Kiroku supports per-stream truncation markers. If a marker hides
+versions that the initial state or snapshot does not cover, the first visible event has a higher
+version than expected and hydration returns `HydrationGapDetected expected observed`. Restore stream
+visibility with `clearStreamTruncateBefore`, or provide a retained snapshot at least as new as the
+last hidden event. Truncation hides events from per-stream reads; it does not delete them from `$all`
+or category/subscription reads.
 
 <Callout type="warn">
-Notice the **silent fallback**: any `Left` out of `replayFrom` drops straight to `hydrateFull`. A
-stale snapshot, or one whose state shape no longer matches the current `StateCodec`, can never wedge
-hydration — it just costs a full replay that turn. The snapshot is an optimization, never a dependency.
+A truncation marker above the current stream head can make the per-stream read appear empty. A later
+append then collides with the still-existing stream; repeated hydration with no visible progress ends
+as `ConflictFixpoint`, not `HydrationGapDetected`.
 </Callout>
 
-The snapshot read side — `hydrateWithSnapshot`, the `keiro_snapshots` table, and the
-`stateCodecVersion`/`shapeHash` reuse gate — belongs to the read side. This tour only walks the *call
-site*; for the mechanics see the [snapshot reference](/docs/keiro/reference/snapshot) and the read-side
-chapter [Snapshots in the command and hydration path](/docs/keiro/walkthrough/read-side/02-snapshots-in-the-command-and-hydration-path).
+## `replayEvents` preserves the reason
 
-## The replay fold
-
-When there is no seed (or the seed was abandoned), `hydrateFull` folds the whole stream from
-`StreamVersion 0`:
+Each decoded page is passed to keiki's structured replay API with the previous page's
+`InFlight`/`Settled` carrier and register file:
 
 ```haskell
-hydrateFull options eventStream targetStream =
-  finishReplay
-    <$> Streamly.fold
-      (Fold.foldlM' applyRecorded (pure (Right initialReplay)))
-      (readStreamForwardStream ((eventStream ^. #resolveStreamName) targetStream) (StreamVersion 0) (options ^. #pageSize))
-  where
-    initialReplay = Replay
-      { replayHydrated = Hydrated
-          { state = eventStream ^. #initialState
-          , registers = eventStream ^. #initialRegisters
-          , streamVersion = StreamVersion 0
-          , globalPosition = Nothing }
-      , replayState = Keiki.Settled (eventStream ^. #initialState)
-      , lastObservedStreamVersion = StreamVersion 0 }
+case Keiki.replayEvents transducer (wrapper, registers) decodedEvents of
+  Left replayFailure ->
+    Left (hydrationReplayError previousRecorded decodedRecorded replayFailure)
+  Right (nextWrapper, nextRegisters) ->
+    case pendingInputFailure of
+      Just err -> Left err
+      Nothing -> Right (nextWrapper, nextRegisters, latestRecorded ...)
 ```
 
-The fold reads the stream forward in `pageSize`-event batches (`readStreamForwardStream … (StreamVersion 0)
-(options ^. #pageSize)`) — a streaming read, so a long stream never has to be held in memory at once.
-The accumulator is the `Replay` from chapter 01, seeded with the event stream's `initialState` and
-`initialRegisters` and a `Keiki.Settled` replay state. Each event runs through `applyRecorded`:
+Keiro maps `ReplayFailureReason` to its public, monomorphic vocabulary:
+
+| keiki reason | `HydrationReplayReason` | Meaning |
+|---|---|---|
+| `ReplayNoInvertingEdge` | `HydrationNoInvertingEdge` | No edge's first output could have produced the event |
+| `ReplayAmbiguousInversions` | `HydrationAmbiguousInversion` | More than one edge could have produced it |
+| `ReplayQueueMismatch` | `HydrationQueueMismatch` | A later event did not equal the next output expected from an in-flight chain |
+| `ReplayLogTruncated` | `HydrationTruncatedChain` | Input ended before a multi-event output chain completed |
+
+The result is `HydrationReplayFailed failureVersion reason`. For an event failure, `failureVersion`
+is the stored version at `replayFailedIndex`. For a truncated chain, it is the latest stored version
+consumed before the missing tail. Callers no longer have to infer these cases from one unstructured
+"replay failed" value.
+
+## Why replay runs backward from events
+
+The transducer's forward direction turns a command into events. Hydration has only those persisted
+events, so replay uses the first event as a witness of which edge originally fired. It solves the
+edge's first output back to candidate command data, checks the guard, applies the register update,
+and queues any remaining outputs from that edge.
+
+This explains all four reasons. No candidate is `HydrationNoInvertingEdge`; multiple candidates are
+`HydrationAmbiguousInversion`; a queued output mismatch is `HydrationQueueMismatch`; and ending while
+the queue is non-empty is `HydrationTruncatedChain`. The corresponding keiki checks catch many such
+definitions before startup, which is why public runners require a `ValidatedEventStream`.
+
+For the inversion mechanics, see keiki's
+[Structured step and replay failures](/docs/keiki/reference/step-failure) and
+[Validation](/docs/keiki/reference/validate).
+
+## The final `Settled` rule
+
+A page may end `InFlight`; `hydrateSeeded` carries that wrapper into the next page. Only the end of
+the entire stream must be settled:
 
 ```haskell
-    applyRecorded (Left err) _ = pure (Left err)
-    applyRecorded (Right current) recorded =
-      case decodeRecorded (eventStream ^. #eventCodec) recorded of
-        Left err -> pure (Left (HydrationDecodeFailed err))
-        Right event -> pure (applyEvent current recorded event)
-
-    applyEvent current recorded event =
-      case Keiki.applyEventStreaming
-        (eventStream ^. #transducer)
-        (replayState current)
-        (registers (replayHydrated current))
-        event of
-        Nothing -> Left (HydrationReplayFailed (recorded ^. #streamVersion))
-        Just (nextReplayState, nextRegisters) ->
-          Right current { replayHydrated = updateHydrated nextReplayState nextRegisters
-                        , replayState = nextReplayState
-                        , lastObservedStreamVersion = recorded ^. #streamVersion }
+finishReplay = \case
+  Left err -> Left err
+  Right (Keiki.Settled finalState, finalRegisters, lastRecorded) ->
+    Right Hydrated
+      { state = finalState
+      , registers = finalRegisters
+      , streamVersion = maybe seedVersion (^. #streamVersion) lastRecorded
+      }
+  Right (Keiki.InFlight{}, _, lastRecorded) ->
+    Left
+      (HydrationReplayFailed
+        (maybe seedVersion (^. #streamVersion) lastRecorded)
+        HydrationTruncatedChain)
 ```
 
-Two steps per event, and each maps to one `CommandError` constructor. First `decodeRecorded` turns the
-`RecordedEvent` back into a domain event; a `CodecError` here becomes `HydrationDecodeFailed` (the same
-boundary we read in [05 — The codec on the boundary](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary)).
-Then `Keiki.applyEventStreaming` steps the transducer with that event — the next section unpacks what
-that step *actually does* with the event — and a `Nothing` becomes
-`HydrationReplayFailed (recorded ^. #streamVersion)`. The first `Left` short-circuits the rest of the
-fold: `applyRecorded (Left err) _ = pure (Left err)`.
-
-The registers are threaded on *every* step via `nextRegisters`, even across steps that leave the
-machine `InFlight`. That matters because keiki's register file is the durable side-channel the
-transducer carries between events; dropping it on an in-flight step would corrupt the rebuild. For the
-conceptual model of `applyEventStreaming`, the register file, and what a transducer *is*, see
-[Why a SymTransducer, not a Decider](/docs/keiro/explanation/why-symtransducer-not-decider) and the
-foundation tour chapter
-[The SymTransducer and step](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step).
-
-```mermaid
-flowchart LR
-  Page["read page (pageSize)"] --> Dec["decodeRecorded"]
-  Dec -- "Left" --> HDF["HydrationDecodeFailed"]
-  Dec -- "Right event" --> Step["Keiki.applyEventStreaming"]
-  Step -- "Nothing" --> HRF["HydrationReplayFailed"]
-  Step -- "Just (state', regs')" --> Next["thread Replay forward"]
-  Next --> Page
-  Next --> Fin["finishReplay"]
-```
-
-## What an event *does* to the machine — output inversion
-
-The line doing the real work is `Keiki.applyEventStreaming … event`, and it is worth slowing down on,
-because the move is not the obvious one. The transducer's *forward* direction turns a **command** into
-events (`ci → [co]`); hydration runs it **backwards**, from the events. So a recorded event is never
-"applied" the way a command is. It is used as a **witness of which edge fired**.
-
-From a `Settled s` state, `applyEventStreaming` walks the outgoing edges of the current control state
-`s` and, for each, tries to *invert* that edge's output against the recorded event: `solveOutput` asks
-"what command input `ci` would this edge have emitted to produce exactly this event?" The unique edge
-whose output inverts to a `ci` that *also* satisfies the edge's guard **is** the transition that
-originally happened. keiro commits to it, runs that edge's register update, and advances to its target
-vertex. If no edge inverts — or more than one does — the step is `Nothing`, which is the
-`HydrationReplayFailed` we just saw. This is the inversion the foundation tour previews as
-[the event-replay inverse](/docs/keiro/walkthrough/foundation/04-the-symtransducer-and-step); the full
-mechanics — `solveOutput`, and the shared-index trick that makes output invertible without
-`unsafeCoerce` — live in keiki's
-[output and predicate](/docs/keiki/walkthrough/core-and-builder/05-output-and-predicate) and
-[edges and step semantics](/docs/keiki/walkthrough/core-and-builder/06-edges-and-step-semantics)
-chapters.
-
-That covers the common case — a *letter edge*, one event per transition. But a single edge may emit
-**several** events (`output = [o1, …, oN]`). On replay the first event, `o1`, selects the edge and runs
-the update exactly as above; the remaining `[o2, …, oN]` are evaluated up front and parked in a queue.
-That queue *is* what `InFlight` holds: the machine sitting at the target vertex with a list of
-**expected** events still owed by the in-flight transition. Each subsequent recorded event is then
-**equality-checked** against the queue head — no edge search, no register update, because the update
-already ran when the edge was chosen — popping the queue until it empties and the wrapper snaps back to
-`Settled`. (A mismatch there means the log's events for that transition are out of order, and is the
-other source of a `Nothing`.)
-
-So across a multi-event transition the replay momentarily reads as `InFlight`, then settles. Which is
-exactly why the finish rule below cares which of the two a completed replay lands in.
-
-<Callout type="info">
-  This inversion is also why a register can be *populated for streams that already exist*: adding a new
-  guard-backing register and writing it from the edges lets hydration re-derive its value by folding the
-  existing log — but only when that value is recoverable from the events. See
-  [Back a new rule with a register](/docs/keiro/how-to/back-a-rule-with-a-register).
-</Callout>
-
-## `Settled` vs. `InFlight` — the finish rule
-
-The fold produces a `Replay`; `finishReplay` turns it into a `Hydrated`:
-
-```haskell
-    finishReplay = \case
-      Left err -> Left err
-      Right replayed ->
-        case replayState replayed of
-          Keiki.Settled{} -> Right (replayHydrated replayed)
-          Keiki.InFlight{} -> Left (HydrationReplayFailed (lastObservedStreamVersion replayed))
-```
-
-This is the subtle invariant a contributor needs to internalize. keiki's replay state is one of two
-things at any moment. `Settled s` means the machine has come to rest in a control state `s` — every
-event consumed so far completed a transition. `InFlight` means the machine is *mid-walk* between
-control states, partway through a multi-event transition, having consumed some but not all of the
-events that transition requires.
-
-A healthy stream always *ends* `Settled`: the last committed event finished whatever transition it was
-part of. A stream that ends `InFlight` is therefore corrupt — the log stopped partway through a
-multi-event transition, leaving the machine suspended. There is no valid current state to return, so
-`finishReplay` refuses with `HydrationReplayFailed (lastObservedStreamVersion replayed)`, pointing at
-the last version it managed to consume. The same finish rule guards `hydrate`'s snapshot-seeded
-`replayFrom`, so a seed that replays into an `InFlight` tail falls back to a full replay exactly as a
-decode error would.
+A healthy stream ends `Settled`: every output promised by its final transition is present. A final
+`InFlight` value has no valid current aggregate state, so hydration reports the typed truncated-chain
+failure rather than returning partial state.
 
 Next: [03 — The command processor](/docs/keiro/walkthrough/command-cycle/03-the-command-processor).

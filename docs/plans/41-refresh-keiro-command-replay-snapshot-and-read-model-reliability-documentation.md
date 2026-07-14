@@ -27,19 +27,38 @@ and finding the same types and defaults in the reviewed keiro source.
 
 ## Progress
 
-
+- [x] (2026-07-14T16:37:38Z) Resolve `shinzui/keiro` through mori and review the clean committed
+  `c68dcc7b9cea8d9c180d1c04254a72aa43804cac` boundary. The two commits after the planned SHA release
+  the package set at 0.3.0.0 but make no source change to `keiro` or `keiro-core`; EP-2's 0.2 state
+  integrity contracts are unchanged.
+- [x] (2026-07-14T16:49:29Z) Milestone 1: refresh event-stream validation, hydration, and command
+  failures. Documented keiro's forced validation floor, unchecked boundary, typed replay reasons,
+  truncation gaps, command ambiguity, no-op positions, post-commit replay evidence, and resource-aware
+  transactional enrichment; added the command/replay diagnosis how-to.
+- [ ] Milestone 2: refresh snapshot correctness and recovery behavior.
+- [ ] Milestone 3: refresh read models, projections, and rebuild operations.
+- [ ] Run the complete EP-2 validation and stale-claim scans, then record the EP-7 handoff.
 
 ## Surprises & Discoveries
 
-(None yet.)
+- The old source tour carried a removed `Replay` accumulator and a `globalPosition` field on
+  `Hydrated`. Current hydration delegates page replay to keiki's structured `replayEvents` and tracks
+  only per-stream version, which is why no-op results must use `globalPosition = Nothing` even for a
+  non-empty stream.
+- `runCommand` and the SQL runners share enrichment behavior but not the same interpreter constraint:
+  only `runCommandWithSql` and `runCommandWithSqlEvents` require `KirokuStoreResource`. The guide now
+  shows `withKirokuStore` plus `runStoreResource` without incorrectly adding the resource to the
+  append-only signature.
 
 
 ## Decision Log
 
-- Decision: Review committed keiro SHA `87bf3ff173b2f4ce274e36cea64923ad33817d7c`, while
-  excluding its four uncommitted files observed during planning.
-  Rationale: Source-sync documentation must be reproducible and must not absorb the user's
-  in-progress changes to `cabal.project`, `keiro-pgmq`, or test support.
+- Decision: Review committed keiro SHA `c68dcc7b9cea8d9c180d1c04254a72aa43804cac`.
+  Rationale: The source advanced cleanly by two commits after the planned `87bf3ff` boundary. The
+  0.3.0.0 release realigns migration/PGMQ dependencies and test-support migration setup, but its
+  changelog explicitly records no user-facing or source changes to `keiro` or `keiro-core`. The
+  command, snapshot, and read-side contracts in this plan remain the 0.2 APIs at a newer reproducible
+  release boundary.
   Date: 2026-07-14
 - Decision: Split keiro 0.2 documentation by failure domain.
   Rationale: Command hydration, replay, snapshots, projections, and read models form a state
@@ -56,7 +75,12 @@ and finding the same types and defaults in the reviewed keiro source.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+- Milestone 1 established one failure taxonomy across reference, explanation, tutorial, how-to, FAQ,
+  and source walkthrough pages. `CommandRejected` is a no-match domain outcome;
+  `CommandAmbiguous` is a definition defect; stored-history problems retain their replay reason or
+  gap coordinates; and append-time divergence is explicitly post-commit telemetry evidence.
+- Milestone 1 validation passed `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the
+  448-file internal-link scan, and `git diff --check`.
 
 
 ## Context and Orientation
@@ -65,8 +89,9 @@ The docs site keeps keiro content under `content/docs/keiro/` and its last sourc
 `docs/keiro-source-sync.md`, currently pinned to
 `601f9f36f016d6c9f3f762cda093f65f7dea5225`. Resolve source with
 `mori registry show shinzui/keiro --full`; during planning it was
-`/Users/shinzui/Keikaku/bokuno/keiro`. The committed range to `87bf3ff` contains 125 commits and the
-0.2.0.0 release, so this is not a pointer-only refresh.
+`/Users/shinzui/Keikaku/bokuno/keiro`. The committed range to `c68dcc7` contains 127 commits and the
+0.2.0.0 state-integrity release followed by a dependency-only 0.3.0.0 package-set release, so this is
+not a pointer-only refresh.
 
 `keiro-core/src/Keiro/EventStream/Validate.hs` is the durable boundary between keiki and keiro.
 `ValidatedEventStream` construction now force-enables keiki 0.2's head-recoverability and
@@ -166,9 +191,9 @@ At planning time the committed SHA was:
 87bf3ff173b2f4ce274e36cea64923ad33817d7c
 ```
 
-The upstream status included four user-owned modifications. Do not read those diffs as released
-API. If the changes become committed before implementation, extend the review deliberately and
-record the new SHA. Use these source and docs searches to build the edit map:
+Implementation reviewed the clean successor `c68dcc7b9cea8d9c180d1c04254a72aa43804cac`; its two
+additional commits do not alter `keiro` or `keiro-core` source. Use these source and docs searches to
+build the edit map:
 
 ```bash
 rg -n 'data CommandError|data HydrationReplayReason|data RunCommandOptions' "$KEIRO/keiro/src/Keiro/Command.hs"

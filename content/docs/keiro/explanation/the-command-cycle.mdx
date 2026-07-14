@@ -9,17 +9,22 @@ aggregate's **stream** (its ordered slice of the log).
 
 The public runners accept a `ValidatedEventStream`, not a bare `EventStream`. That wrapper is built
 by `mkEventStream`/`mkEventStreamWith` after keiki has checked the transducer for hidden input,
-structural determinism, and dead edges, and after keiro has checked snapshot-policy coherence.
+first-event recoverability, inversion ambiguity, guarded input reads, state-changing output-free
+edges, structural determinism, and dead edges, and after keiro has checked snapshot-policy coherence
+and the initial snapshot encode. The durable boundary always forces head-recoverability and
+state-changing-output-free checks on, even when custom validation options request otherwise.
 
 1. **Hydrate** — replay the stream's stored events (optionally fast-forwarding from a snapshot)
    through the keiki transducer to recover the current `(state, registers)` and the stream's current
-   `StreamVersion`.
+   `StreamVersion`. Replay failures retain a typed reason; a non-contiguous per-stream read is a
+   separate truncation gap.
 2. **Transduce** — step the transducer with the command. The transducer either rejects the command
-   (yielding `CommandRejected`) or accepts it and emits a list of events. An accepted command that
-   emits *no* events is a **no-op**.
+   (yielding `CommandRejected`), matches more than one edge (yielding `CommandAmbiguous`), or accepts
+   it and emits a list of events. An accepted command that emits *no* events is a **no-op**.
 3. **Append** — encode the emitted events with the stream's `Codec` and append them at the expected
    version. A concurrency conflict triggers a bounded rehydrate-and-retry; exhausting the budget
-   yields `RetryExhausted`.
+   yields `RetryExhausted`. After a successful append, keiro replays the new batch from the
+   pre-command state by default, witnessing an unreplayable append immediately.
 
 <Callout type="info">
   New to **transducers**? A transducer is a state machine that, on each input, both moves to a next
@@ -54,14 +59,16 @@ won the race to create the stream) are treated as **retryable** conflicts. A los
 therefore *retried*, not surfaced — your caller never sees `StreamAlreadyExists`.
 </Callout>
 
-## Three outcomes, one return type
+## Command outcomes are not interchangeable
 
-`runCommand` returns `Either CommandError (CommandResult …)`. Three things a caller must tell apart:
+`runCommand` returns `Either CommandError (CommandResult …)`. Four things a caller must tell apart:
 
 - **Rejected** — `Left CommandRejected`: the transducer had no edge for this command in the hydrated
   state. Nothing was written.
+- **Ambiguous** — `Left (CommandAmbiguous edgeIndices)`: multiple edges matched. Nothing was written,
+  but this is an aggregate-definition defect, not a business rejection.
 - **No-op** — `Right CommandResult { eventsAppended = 0 }`: the command was accepted but produced no
-  events. Nothing was written, but it was *not* a rejection.
+  events. Nothing was written, `globalPosition = Nothing`, and it was *not* a rejection.
 - **Store failure** — `Left (StoreFailed …)` or `Left (RetryExhausted …)`: the events could not be
   persisted.
 
@@ -70,15 +77,35 @@ therefore *retried*, not surfaced — your caller never sees `StreamAlreadyExist
 ```mermaid
 flowchart LR
   Cmd["command (ci)"] --> H["Hydrate: replay events (maybe via snapshot)"]
-  H --> D{"Transduce: Keiki.step"}
-  D -- "Nothing" --> Rej["CommandRejected"]
-  D -- "Just (s, regs, [])" --> NoOp["no-op CommandResult"]
-  D -- "Just (s, regs, events)" --> Enc["encode via Codec"]
+  H -- "decode / replay / gap failure" --> HydErr["typed hydration error"]
+  H --> D{"Transduce: Keiki.stepEither"}
+  D -- "no matching edge" --> Rej["CommandRejected"]
+  D -- "multiple matches" --> Amb["CommandAmbiguous"]
+  D -- "Right (_, _, [])" --> NoOp["no-op: position Nothing"]
+  D -- "Right (_, _, events)" --> Enc["encode via Codec"]
   Enc --> A["Append at expectedVersion"]
   A -- "conflict" --> H
-  A -- "ok" --> Snap["writeSnapshotIfNeeded"]
-  Snap --> Res["CommandResult"]
+  A -- "committed" --> Verify["replay appended batch"]
+  Verify -- "diverged" --> Evidence["metric + span evidence; no rollback"]
+  Verify -- "replayed" --> Snap["snapshot if policy fires"]
+  Evidence --> Res["successful CommandResult"]
+  Snap --> Res
 ```
+
+## Hydration failures point to different repairs
+
+`HydrationDecodeFailed` is a codec/schema problem. `HydrationReplayFailed version reason` is a
+decoded-history problem: the reason is `HydrationNoInvertingEdge`, `HydrationAmbiguousInversion`,
+`HydrationQueueMismatch`, or `HydrationTruncatedChain`. `HydrationGapDetected expected observed`
+means the per-stream sequence was not contiguous, usually because a Kiroku truncation marker hid a
+prefix that the chosen snapshot did not cover. Kiroku does not delete those events from `$all`; fix
+stream visibility or supply a covering snapshot before retrying the command.
+
+Append-time replay verification is deliberately post-commit. If it detects divergence, it records
+`keiro.snapshot.apply.divergence` and annotates the command span with `keiro.replay.divergence`; it
+cannot truthfully return failure for a transaction that already committed. The next hydration will
+surface the corresponding typed replay failure. `verifyReplayOnAppend` defaults to `True`; a
+snapshot-enabled stream always performs the fold because the resulting state feeds snapshotting.
 
 <Cards>
   <Card title="Codec and schema evolution" href="/docs/keiro/explanation/codec-and-schema-evolution" />

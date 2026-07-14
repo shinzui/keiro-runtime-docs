@@ -174,8 +174,8 @@ the `Either CommandError a` the runner returned: on `Right`, it records `keiro.e
 the count is pulled out with the `eventsOf` projection the caller passes (`(^. #eventsAppended)`),
 so the same seam serves both the plain and the SQL-callback runners. On `Left`, it sets
 `error.type` to a **low-cardinality** class string and sets the span status to `Error`, carrying the
-fully-rendered `CommandError` as the status description (high-cardinality detail goes in the
-description, not the metric-friendly `error.type`).
+rendered `CommandError` as the status description, truncated to 256 characters (high-cardinality
+detail goes in the description, not the metric-friendly `error.type`).
 
 The classifier maps each `CommandError` constructor to a stable string:
 
@@ -184,16 +184,22 @@ The classifier maps each `CommandError` constructor to a stable string:
 commandErrorClass :: CommandError -> Text
 commandErrorClass = \case
   HydrationDecodeFailed{} -> "hydration_decode_failed"
-  HydrationReplayFailed{} -> "hydration_replay_failed"
+  HydrationReplayFailed _ HydrationNoInvertingEdge -> "hydration_replay_no_inverting_edge"
+  HydrationReplayFailed _ HydrationAmbiguousInversion -> "hydration_replay_ambiguous_inversion"
+  HydrationReplayFailed _ HydrationQueueMismatch -> "hydration_replay_queue_mismatch"
+  HydrationReplayFailed _ HydrationTruncatedChain -> "hydration_replay_truncated_chain"
+  HydrationGapDetected{}  -> "hydration_gap_detected"
   CommandRejected         -> "command_rejected"
+  CommandAmbiguous{}      -> "command_ambiguous"
   EncodeFailed{}          -> "encode_failed"
   StoreFailed{}           -> "store_failed"
   RetryExhausted{}        -> "retry_exhausted"
   ConflictFixpoint{}      -> "conflict_fixpoint"
 ```
 
-Six cases, six stable values — exactly the right cardinality for an `error.type` attribute you want
-to group and alert on. For the errors themselves, read [Command types and
+Replay reasons deliberately get distinct stable values, while every other constructor keeps one
+low-cardinality class — the right shape for an `error.type` attribute you want to group and alert
+on. For the errors themselves, read [Command types and
 errors](/docs/keiro/walkthrough/command-cycle/01-command-types-and-errors).
 
 <Callout type="warn">

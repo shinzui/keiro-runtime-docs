@@ -8,8 +8,8 @@ command's events, so they are never out of step. keiro's transactional runners r
 the *same* Hasql transaction as the append.
 
 <Callout type="info">
-  Assumes you already have a `ValidatedEventStream` and can run the `Store` effect (see
-  [Get started with keiro](/docs/keiro/tutorials/getting-started)).
+  Assumes you already have a `ValidatedEventStream`. Transactional runners also require
+  `KirokuStoreResource`; the setup below installs it and interprets `Store` with the same resource.
 </Callout>
 
 ## Goal
@@ -19,7 +19,21 @@ together.
 
 ## Steps
 
-1. Pick the runner. Use `runCommandWithSql` when your callback only needs the `AppendResult`; use
+1. Install the resource-aware Kiroku interpreter around the part of your service that runs commands:
+
+   ```haskell
+   runEff $
+     withKirokuStore connectionSettings $
+       runErrorNoCallStack $
+         runStoreResource $
+           commandProgram
+   ```
+
+   The exact placement of `runErrorNoCallStack` depends on your application stack, but
+   `withKirokuStore` must leave `KirokuStoreResource` available to `commandProgram`, and
+   `runStoreResource` must interpret its `Store` effect.
+
+2. Pick the runner. Use `runCommandWithSql` when your callback only needs the `AppendResult`; use
    `runCommandWithSqlEvents` when it needs each emitted event paired with its persisted
    `RecordedEvent` (for example to write one read-model row per event):
 
@@ -35,7 +49,7 @@ together.
            traverse_ (\(event, recorded) -> Tx.statement (rowFor event recorded) upsertSummaryStmt) emitted)
    ```
 
-2. Handle the result. Both transactional runners return
+3. Handle the result. Both transactional runners return
    `Either CommandError (CommandResult …, Maybe a)` — the `Maybe a` is your callback's return.
 
 <Callout type="warn">
@@ -44,11 +58,20 @@ command (the transducer emitted no events) the callback does **not** run and the
 `Nothing`.
 </Callout>
 
+Before preparing the append, the transactional runner invokes the `enrichEvent` hook configured in
+Kiroku's `ConnectionSettings`. The callback's `RecordedEvent` values therefore carry the same
+enriched metadata that commits to the store. Do not enrich them a second time in the callback.
+
+The append updates Kiroku's global `$all` stream and holds its PostgreSQL row lock until your
+callback finishes. Precompute outside the callback where possible, batch SQL writes, and avoid
+network calls or unnecessary database round trips inside it.
+
 ## Verify it worked
 
 Query the read-model table after a successful command: the derived row and the appended events are
-both present. Force a callback exception in a test and confirm *neither* the row nor the events were
-committed.
+both present, and assert that any configured enrichment metadata is visible both in the callback's
+`RecordedEvent` and in a subsequent store read. Force a callback exception in a test and confirm
+*neither* the row nor the events were committed.
 
 ## Related
 
