@@ -1,57 +1,70 @@
 ---
 title: "03 — The read-model query path"
-description: "Reading Keiro.ReadModel: runQueryWith validates schema, then maybe waits, then queries — with the keiro_read_models registry, drift hard-errors, and Strong consistency."
+description: "Read Keiro.ReadModel and Keiro.ReadModel.Schema: explicit registration, qualified application data, consistency scopes, and query gates."
 ---
 
-This chapter reads `keiro/src/Keiro/ReadModel.hs` and `keiro/src/Keiro/ReadModel/Schema.hs` — the
-path every `runQuery` takes, and the registry that gates it. Read
+This chapter follows `runQuery` through `keiro/src/Keiro/ReadModel.hs` and the registry in
+`Keiro/ReadModel/Schema.hs`. Read
 [02 — Snapshots in the command and hydration path](/docs/keiro/walkthrough/read-side/02-snapshots-in-the-command-and-hydration-path)
 first.
 
-## The `ReadModel` and its consistency modes
-
-A read model is a queryable projection table plus the metadata that guards it:
+## The definition separates application data from framework metadata
 
 ```haskell
--- keiro/src/Keiro/ReadModel.hs
 data ReadModel q r = ReadModel
-  { name :: !Text
-  , tableName :: !Text
-  , subscriptionName :: !Text
-  , version :: !Int
-  , shapeHash :: !Text
-  , defaultConsistency :: !ConsistencyMode
-  , query :: !(q -> Tx.Transaction r)
-  }
-
-data ConsistencyMode
-  = Strong
-  | Eventual
-  | PositionWait !PositionWaitOptions
-  deriving stock (Generic, Eq, Show)
-
-data PositionWaitOptions = PositionWaitOptions
-  { target :: !(Maybe GlobalPosition)   -- Nothing => skip waiting
-  , timeoutMicros :: !Int
-  , pollMicros :: !Int
+  { name               :: Text
+  , tableName          :: Text
+  , schema             :: Text
+  , subscriptionName   :: Text
+  , version            :: Int
+  , shapeHash          :: Text
+  , defaultConsistency :: ConsistencyMode
+  , strongScope        :: StrongScope
+  , query              :: q -> Tx.Transaction r
   }
 ```
 
-The errors a query can return:
+`schema` and `tableName` identify an application-owned data table. `qualifiedTableName` combines
+them through `Keiro.Connection.qualifyTable`, producing a double-quoted name such as
+`"app_reads"."order_summary"`. Keiro does not rewrite the SQL in `query`, so the application must
+use that qualified table in its create/read/write statements.
+
+The registry is separate: `name`, `version`, `shapeHash`, and status live in
+`keiro.keiro_read_models`. The application schema is deliberately not persisted as registry
+identity.
+
+## Registration is startup work
+
+The public query path calls `ensureReadModel`, but “ensure” means *look up and validate*, not insert.
+Applications call this once during startup:
 
 ```haskell
--- keiro/src/Keiro/ReadModel.hs
-data ReadModelError
-  = ReadModelStaleSchema !Text !Int !Int !Text !Text
-  | ReadModelWaitTimeout !Text !GlobalPosition !GlobalPosition
-  | ReadModelNotLive     !Text !ReadModelStatus
-  deriving stock (Generic, Eq, Show)
+registerReadModel
+  (readModel ^. #name)
+  (readModel ^. #version)
+  (readModel ^. #shapeHash)
 ```
+
+`registerReadModel` inserts a `Live` row when absent. Its conflict clause updates only `name`, so an
+existing version, hash, and status remain unchanged. This makes startup idempotent without erasing
+evidence that the code definition drifted from stored metadata.
+
+A query never creates the row. The first gate can therefore return:
+
+```haskell
+data ReadModelError
+  = ReadModelUnregistered Text
+  | ReadModelStaleSchema Text Int Int Text Text
+  | ReadModelWaitTimeout Text GlobalPosition GlobalPosition
+  | ReadModelNotLive Text ReadModelStatus
+```
+
+Tests exercise the boundary directly: repeated queries do not change registry state, concurrent
+explicit registration converges on one row, and an unregistered query leaves the registry empty.
 
 ## `runQueryWith`: validate, wait, query
 
 ```haskell
--- keiro/src/Keiro/ReadModel.hs
 runQueryWith metrics consistency readModel input = do
   schemaCheck <- ensureReadModel readModel
   case schemaCheck of
@@ -63,130 +76,60 @@ runQueryWith metrics consistency readModel input = do
         Right () -> Right <$> runTransaction ((readModel ^. #query) input)
 ```
 
-The order is deliberate: **schema first**, then maybe wait, then read. A read can fail before it ever
-touches the table. (`runQuery metrics` is just `runQueryWith metrics` applied to the model's
-`defaultConsistency`.) The leading `metrics :: Maybe KeiroMetrics` is the opt-in
-[metrics](/docs/keiro/reference/telemetry#metrics-surface) handle, threaded only as far as `waitFor`,
-which records a timeout (below).
+The order is a correctness boundary. Missing registration, stale schema, or non-`Live` lifecycle
+status fails before any wait or application-table read. `runQuery metrics` selects
+`defaultConsistency`; `runQueryWith` overrides it.
 
-## `validateMetadata`: drift is a hard error
-
-`ensureReadModel` registers the model (idempotently) and validates it against the stored registry row
-via `validateMetadata`:
+## Strong waits now have a scope
 
 ```haskell
--- keiro/src/Keiro/ReadModel.hs
-validateMetadata readModel metadata
-  | metadata ^. #version /= readModel ^. #version = stale
-  | metadata ^. #shapeHash /= readModel ^. #shapeHash = stale
-  | metadata ^. #status /= Live = Left (ReadModelNotLive (readModel ^. #name) (metadata ^. #status))
-  | otherwise = Right ()
+data ConsistencyMode = Strong | Eventual | PositionWait PositionWaitOptions
+
+data StrongScope
+  = EntireLog
+  | CategoryHead Text
 ```
 
-Because `registerReadModel` (below) **never overwrites** the stored `version`/`shapeHash`, a mismatch
-means your code drifted from the registered schema → `ReadModelStaleSchema`. A non-`Live` status (for
-example mid-rebuild) → `ReadModelNotLive`.
-
-<Callout type="info">
-**Note the failure-mode asymmetry with snapshots.** Schema drift here is a *hard* failure that aborts
-the read — it guards user-facing data. A snapshot miss (chapter 02) is the opposite: it is *silent*
-and just falls back to a full replay. Read models fail loud; snapshots fail quiet.
-</Callout>
-
-## `waitIfNeeded`: where the modes diverge
+`Eventual` skips the wait. `PositionWait` uses a caller-supplied target, and `target = Nothing` also
+skips it. `Strong` selects a target from the model:
 
 ```haskell
--- keiro/src/Keiro/ReadModel.hs
 waitIfNeeded metrics Strong readModel = do
-  target <- storeHeadPosition
+  target <- case readModel ^. #strongScope of
+    EntireLog -> storeHeadPosition
+    CategoryHead category -> categoryHeadPosition category
   waitFor metrics (defaultStrongWaitOptions & #target ?~ target) readModel target
-waitIfNeeded _ Eventual _ = pure (Right ())
-waitIfNeeded metrics (PositionWait options) readModel =
-  case options ^. #target of
-    Nothing -> pure (Right ())
-    Just targetPosition -> waitFor metrics options readModel targetPosition
 ```
 
-`Strong` captures the store head at query start and then calls `waitFor` with that position.
-`Eventual` returns immediately. A `PositionWait` with `target = Nothing` also returns immediately;
-with a `Just target`, it polls `subscriptions.last_seen` until the target `GlobalPosition` is reached
-or `timeoutMicros` elapses. On a genuine give-up `waitFor` records the
-[`keiro.projection.wait.timeouts`](/docs/keiro/reference/telemetry#metric-catalogue) counter (a no-op
-under a `Nothing` handle) before returning `ReadModelWaitTimeout`. `waitFor`'s poll SQL:
+`EntireLog` reads the `$all` head. `CategoryHead` finds the maximum `$all` membership position whose
+original stream belongs to the chosen category:
 
 ```sql
-SELECT min(last_seen)
-FROM subscriptions
-WHERE subscription_name = $1
+SELECT COALESCE(max(se.stream_version), 0)
+FROM streams s
+JOIN stream_events se
+  ON se.original_stream_id = s.stream_id
+ AND se.stream_id = 0
+WHERE s.category = $1;
 ```
 
-(The `subscriptions` table is **kiroku-owned** — it is not in keiro's own migration.)
+The `$all` membership `stream_version` is the global position. This target advances only when the
+category does, so unrelated traffic cannot hold a category worker behind. That matters because
+Kiroku currently does not advance category checkpoints on empty fetches.
 
-<Callout type="warn">
-Do not use `Strong` for an inline-only model with no subscription worker: the cursor cannot advance
-while the query is waiting, so it will time out. Read-your-writes against an *async* projection is
-usually best served by `PositionWait` with the command's `GlobalPosition` as `target`. (An *inline*
-projection, by contrast, already committed with the events — see chapter 04.) See
-[Choose a consistency mode](/docs/keiro/how-to/choose-a-consistency-mode).
-</Callout>
+`waitFor` polls the minimum `subscriptions.last_seen` for `subscriptionName`. Defaults are five
+seconds with a 10 ms poll. On deadline it records `keiro.projection.wait.timeouts` and returns the
+target plus last observed position.
 
-## The `keiro_read_models` registry
-
-The registry lives in `Keiro.ReadModel.Schema`:
+## Registry status gates rebuilds
 
 ```haskell
--- keiro/src/Keiro/ReadModel/Schema.hs
-data ReadModelStatus = Live | Rebuilding | Paused | Abandoned | UnknownStatus Text
-  deriving stock (Generic, Eq, Show)
-
-data ReadModelMetadata = ReadModelMetadata
-  { name :: !Text
-  , version :: !Int
-  , shapeHash :: !Text
-  , lastBuiltAt :: !(Maybe UTCTime)
-  , status :: !ReadModelStatus
-  }
-
-registerReadModel :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMetadata
-lookupReadModel   :: (Store :> es) => Text -> Eff es (Maybe ReadModelMetadata)
-markRebuilding    :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMetadata
-markLive          :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMetadata
-markAbandoned     :: (Store :> es) => Text -> Int -> Text -> Eff es ReadModelMetadata
+data ReadModelStatus
+  = Live | Rebuilding | Paused | Abandoned | UnknownStatus Text
 ```
 
-`registerReadModel`'s statement is an **idempotent** insert that returns the *existing* row unchanged
-when one is already present — it never overwrites the stored `version`/`shape_hash`:
-
-```sql
--- registerReadModelStmt: insert-if-absent, then return whichever row stands
-INSERT INTO keiro_read_models (name, version, shape_hash, status, last_built_at)
-VALUES ($1, $2, $3, 'live', now())
-ON CONFLICT (name) DO UPDATE
-  SET name = EXCLUDED.name
-RETURNING name, version, shape_hash, last_built_at, status
-```
-
-That "never overwrite" behavior is exactly what lets `validateMetadata` detect drift: the stored row
-is the source of truth, and your in-code `version`/`shapeHash` are compared against it. The three
-status transitions (`markRebuilding`/`markLive`/`markAbandoned`) all go through one
-`transitionReadModelStmt` upsert. Decoding is defensive: `statusFromText` maps an unrecognized status
-text to `UnknownStatus raw` rather than throwing away the database value.
-
-The DDL:
-
-```sql
--- keiro-migrations/.../2026-05-17-00-00-00-keiro-bootstrap.sql
-CREATE TABLE IF NOT EXISTS keiro_read_models (
-  name          TEXT PRIMARY KEY,
-  version       BIGINT NOT NULL,
-  shape_hash    TEXT NOT NULL,
-  last_built_at TIMESTAMPTZ,
-  status        TEXT NOT NULL,           -- no CHECK constraint on status
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
-
-For the full lookup table of read-model signatures, see the
-[Read-model reference](/docs/keiro/reference/read-model).
+Only `Live` passes `ensureReadModel`. Unknown database text remains visible as `UnknownStatus raw`
+instead of failing during decoding. The next chapter shows how `startRebuild` first transitions this
+row to `Rebuilding`, making the same registry row gate queries and fence concurrent live writers.
 
 Next: [04 — Projections and the rebuild path](/docs/keiro/walkthrough/read-side/04-projections-and-the-rebuild-path).

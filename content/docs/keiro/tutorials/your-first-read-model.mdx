@@ -1,117 +1,124 @@
 ---
 title: "Your first read model"
-description: "Define an inline projection, run a command that updates it transactionally, and query the read model."
+description: "Create an application-schema table, register a read model explicitly, update it inline, and query it."
 ---
 
-By the end of this tutorial you will have a working read model: you will attach an **inline
-projection** to a command, run the command so the projection updates a table *in the same
-transaction* as the event append, and then query the read model. Every snippet uses keiro's real API
-and mirrors the `jitsurei` order-summary example (`jitsurei/src/Jitsurei/ReadModels.hs`).
+By the end of this tutorial you will have a small order-summary read model. Its table lives in an
+application schema, an inline projection updates it in the event append transaction, and startup
+registers its schema identity before the first query.
 
 <Callout type="info">
-  This is a tutorial — follow every step in order. You should already be able to run a command (see
-  [Get started with keiro](/docs/keiro/tutorials/getting-started)). By the end you will have written
-  and queried derived state.
+  This tutorial starts after [Get started with Keiro](/docs/keiro/tutorials/getting-started): you
+  already have a migrated Kiroku/Keiro database and a `ValidatedEventStream` for orders.
 </Callout>
 
-## What you will build
+## 1. Create an application-owned table
 
-An order-summary read model: a table that holds one row per order, kept up to date by an inline
-projection that folds each `OrderEvent`, and queried with strong consistency.
+Choose an application schema, such as `app_reads`, and create the table through your normal
+migration process:
 
-## Before you begin
+```sql
+CREATE SCHEMA IF NOT EXISTS app_reads;
 
-- A migrated database and a `ValidatedEventStream` for your aggregate (the order aggregate from the
-  getting-started tutorial).
-- The read-model's table created (the jitsurei example creates `jitsurei_order_summary` in its
-  `just jitsurei-migrate` target).
+CREATE TABLE app_reads.order_summary (
+  order_id text PRIMARY KEY,
+  status text NOT NULL
+);
+```
 
-## Steps
+Keiro's registry stays in `keiro.keiro_read_models`; projection data should not. In development or
+tests, `ensureProjectionSchema "app_reads"` can create the schema, but Keiro never calls it
+automatically. Use `keiroConnectionSettings connectionString "app_reads"` (or
+`withProjectionSchema`) when the pool should also resolve that application schema.
 
-<Steps>
-<Step>
+## 2. Define qualified projection statements
 
-### Define the inline projection
+Both the writer and reader should name the application table explicitly:
 
-An `InlineProjection` names a fold from a domain event into your table. The jitsurei one is:
+```sql
+INSERT INTO "app_reads"."order_summary" (order_id, status)
+VALUES ($1, $2)
+ON CONFLICT (order_id) DO UPDATE SET status = EXCLUDED.status;
+
+SELECT status
+FROM "app_reads"."order_summary"
+WHERE order_id = $1;
+```
+
+`qualifyTable "app_reads" "order_summary"` and, once the model exists,
+`qualifiedTableName orderSummaryReadModel` both produce the safely quoted table reference. Keiro
+does not rewrite the SQL inside `query` or `apply`.
+
+## 3. Define the inline projection and read model
 
 ```haskell
--- jitsurei/src/Jitsurei/ReadModels.hs
 orderSummaryInlineProjection :: InlineProjection OrderEvent
 orderSummaryInlineProjection = InlineProjection
-  { name  = "jitsurei-order-summary-inline"
-  , apply = applyOrderEvent      -- folds each OrderEvent into jitsurei_order_summary
+  { name = "order-summary-inline"
+  , apply = \event recorded ->
+      Tx.statement (summaryParams event recorded) upsertOrderSummaryStmt
   }
-```
 
-</Step>
-<Step>
-
-### Define the read model
-
-A `ReadModel` is the queryable noun: its identity, schema version, consistency mode, and query. The
-jitsurei one reads `jitsurei_order_summary` with `Strong` consistency:
-
-```haskell
-orderSummaryReadModel :: ReadModel OrderSummaryQuery (Maybe OrderSummary)
+orderSummaryReadModel :: ReadModel OrderId (Maybe Text)
 orderSummaryReadModel = ReadModel
-  { name               = "jitsurei-order-summary"
-  , tableName          = "jitsurei_order_summary"
-  , subscriptionName   = "jitsurei-order-summary-inline"
+  { name               = "order-summary"
+  , tableName          = "order_summary"
+  , schema             = "app_reads"
+  , subscriptionName   = "order-summary-inline"
   , version            = 1
-  , shapeHash          = "jitsurei-order-summary-v1"
-  , defaultConsistency = Strong
-  , query              = \(OrderSummaryQuery orderId) ->
-      Tx.statement (orderIdText orderId) selectOrderSummaryStmt
+  , shapeHash          = "order-summary-v1"
+  , defaultConsistency = Eventual
+  , strongScope        = EntireLog
+  , query              = \orderId -> Tx.statement orderId selectOrderSummaryStmt
   }
 ```
 
-</Step>
-<Step>
+The model is inline-only, so `Eventual` is the correct default: its row commits with the event and
+there is no async subscription cursor for `Strong` to wait on. `strongScope` is still an explicit
+part of every `ReadModel`; it matters if this model later becomes async-fed.
 
-### Run the command with the projection
+## 4. Register the model at startup
 
-`runCommandWithProjections` runs the command and applies the inline projections **in the append
-transaction** — so the events and the read-model row commit together:
+After migrations have created the table, register the definition before serving commands or reads:
 
 ```haskell
-result <- runCommandWithProjections options orderEventStream targetStream command
+_ <- registerReadModel
+       (orderSummaryReadModel ^. #name)
+       (orderSummaryReadModel ^. #version)
+       (orderSummaryReadModel ^. #shapeHash)
+```
+
+Registration is idempotent. It does not overwrite an existing version or hash, which preserves
+schema-drift detection. A query does not register on demand: missing startup wiring returns
+`ReadModelUnregistered "order-summary"`.
+
+## 5. Run a command with the projection
+
+Under your configured `KirokuStoreResource` interpreter, run:
+
+```haskell
+result <- runCommandWithProjections
+            defaultRunCommandOptions
+            orderEventStream
+            targetStream
+            command
             [orderSummaryInlineProjection]
 ```
 
-If the projection throws, the whole transaction rolls back — the events are not written either.
+`runCommandWithProjections` uses the resource-aware SQL command path, so Kiroku enrichment happens
+before projection callbacks observe the recorded events. If the projection fails, the append and
+table update both roll back.
 
-</Step>
-<Step>
-
-### Query the read model
-
-`runQuery` validates the registered schema, then (because the mode is `Strong`) reads with no
-waiting:
+## 6. Query the registered model
 
 ```haskell
-summary <- runQuery Nothing orderSummaryReadModel (OrderSummaryQuery theOrderId)   -- Strong: no waiting
--- the leading `Nothing` is the opt-in metrics handle
+summary <- runQuery Nothing orderSummaryReadModel orderId
 ```
 
-`summary` is `Either ReadModelError (Maybe OrderSummary)` — a `Left ReadModelStaleSchema` if your
-code's `version`/`shapeHash` drifted from the registered row, otherwise the queried value.
+After a successful inline command, `summary` sees the committed row without waiting. Its result is
+`Either ReadModelError (Maybe Text)`: an unregistered definition, stale version/hash, or non-`Live`
+status fails before the table query runs.
 
-</Step>
-</Steps>
-
-<Callout type="warn">
-Because the mode is `Strong`, this query does **not** wait for anything — and `Eventual` behaves the
-same. The inline projection already committed in the command's transaction, so a `Strong` read
-*after* a successful `runCommandWithProjections` sees the update. If you read a model fed by an
-**async** projection and need read-your-writes, use `PositionWait`; see
-[Choose a consistency mode](/docs/keiro/how-to/choose-a-consistency-mode).
-</Callout>
-
-## What you built
-
-You defined an inline projection and a read model, ran a command that updated the projection
-transactionally, and queried it. Run the real thing with `just jitsurei-fulfillment`. From here:
-
-- [Choose a consistency mode](/docs/keiro/how-to/choose-a-consistency-mode) — when to wait.
-- [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots) — the modes and the hydration fast path.
+You now have an application-schema read model with explicit startup registration and an atomic
+inline update. Next, use [Choose a consistency mode](/docs/keiro/how-to/choose-a-consistency-mode)
+when moving the projection to an asynchronous worker.

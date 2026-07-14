@@ -39,8 +39,13 @@ and finding the same types and defaults in the reviewed keiro source.
   Documented observable lookup reasons, forced initial/post-command encoding, advisory failure
   outcomes, rollback-aware row replacement, the keiki 0.2 one-time shape miss, and the complete
   snapshot/replay telemetry surface.
-- [ ] Milestone 3: refresh read models, projections, and rebuild operations.
-- [ ] Run the complete EP-2 validation and stale-claim scans, then record the EP-7 handoff.
+- [x] (2026-07-14T17:05:09Z) Milestone 3: refresh read models, projections, and rebuild operations.
+  Documented explicit startup registration, application-schema qualification, strong scopes,
+  fenced async outcomes, dedup retention, and the atomic start/unfenced-replay/guarded-finish
+  lifecycle.
+- [x] (2026-07-14T17:05:09Z) Run the complete EP-2 validation and stale-claim scans, then record the
+  EP-7 handoff. All site gates passed; the only `globalPosition.*GlobalPosition 0` scan match is the
+  intentional warning not to fabricate that value for no-op results.
 
 ## Surprises & Discoveries
 
@@ -56,6 +61,13 @@ and finding the same types and defaults in the reviewed keiro source.
   codec version and shape hash are unchanged; an incompatible row may replace a newer one so a
   rolled-back binary can reclaim the single cache slot. Mixed-version deployments can therefore
   thrash cache rows while preserving event-log correctness.
+- `finishRebuild` is a narrow catastrophic-empty-replay guard, not proof of replay completeness. It
+  counts newly recreated dedup keys and prevents promotion only when the log advanced beyond
+  `replayFrom` but named async projections applied nothing. Operators still verify the application
+  table and subscription cursor before promotion.
+- The read-model `schema` is application runtime configuration, not stored registry identity.
+  Keiro's metadata and dedup tables stay in `keiro`, Kiroku's store and cursor tables stay in
+  `kiroku`, and all application projection SQL must qualify its separate data schema.
 
 
 ## Decision Log
@@ -93,6 +105,17 @@ and finding the same types and defaults in the reviewed keiro source.
   consistent across reference, explanation, how-to, FAQ, telemetry, and source walkthrough pages.
   Validation again passed typecheck, formatting, production build, the 448-file link scan, and
   `git diff --check`.
+- Milestone 3 replaced the obsolete auto-registration, bare async transaction, and status-only
+  rebuild stories across 12 reference, tutorial, how-to, explanation, integration, and source-tour
+  pages. The canonical live-worker disposition is now `AsyncApplied`/`AsyncDuplicate` => acknowledge
+  and checkpoint, `AsyncFenced` => fail or park without checkpoint; the canonical rebuild is
+  `startRebuild`, replay through `applyAsyncProjectionUnfenced`, verify, then guarded
+  `finishRebuild`.
+- Final EP-2 validation passed `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the
+  448-file internal-link scan, and `git diff --check`. The EP-7 handoff is source boundary
+  `c68dcc7b9cea8d9c180d1c04254a72aa43804cac`; announcement vocabulary should retain
+  `CommandAmbiguous`, typed `HydrationReplayReason`, post-commit replay evidence, advisory snapshot
+  fallback, `ReadModelUnregistered`, `StrongScope`, and the three `AsyncApplyOutcome` constructors.
 
 
 ## Context and Orientation

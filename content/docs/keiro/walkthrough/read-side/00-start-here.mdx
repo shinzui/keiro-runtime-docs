@@ -52,22 +52,23 @@ flowchart LR
   Inline --> RM[("read model (noun)")]
   Append -- "verify replay + strict advisory write" --> Snap[("keiro_snapshots (cache)")]
   Snap -. "hydrate fast path" .-> Cmd
-  RM --> Query["runQueryWith (ConsistencyMode)"]
+  RM --> Query["registered runQueryWith (ConsistencyMode + StrongScope)"]
   Append -. "async boundary (no shipped worker)" .-> Async["applyAsyncProjection"]
-  Async -.-> RM
+  Async -. "Applied / Duplicate / Fenced" .-> RM
 ```
 
-A **snapshot** is a cache on the *write* side that speeds hydration; a **read model** is a queryable
-projection table on the *read* side; a **projection** is the verb that writes a read model — inline
-(in the append transaction) or async (a bare transaction you drive yourself).
+A **snapshot** is a cache on the *write* side that speeds hydration; a **read model** is an explicitly
+registered query over a schema-qualified application table; a **projection** is the verb that writes
+that table — inline in the append transaction, or async through the dedup-and-fence transaction an
+application-owned worker drives.
 
 ## The chapters
 
 <Cards>
   <Card title="01 — The snapshot codec and the register pair" href="/docs/keiro/walkthrough/read-side/01-the-snapshot-codec-and-the-register-pair" description="defaultStateCodec, initial and strict encoding, observable lookup outcomes, stable shape hashes, and why both state and registers are serialized." />
   <Card title="02 — Snapshots in the command and hydration path" href="/docs/keiro/walkthrough/read-side/02-snapshots-in-the-command-and-hydration-path" description="lookupSnapshotSeed, full-replay fallback, verifyAndSnapshot, policy spans, telemetry, and rollback-aware replacement." />
-  <Card title="03 — The read-model query path" href="/docs/keiro/walkthrough/read-side/03-the-read-model-query-path" description="runQueryWith, schema validation, and the consistency-mode wait." />
-  <Card title="04 — Projections and the rebuild path" href="/docs/keiro/walkthrough/read-side/04-projections-and-the-rebuild-path" description="Inline vs async projections, and the skeleton rebuild status transitions." />
+  <Card title="03 — The read-model query path" href="/docs/keiro/walkthrough/read-side/03-the-read-model-query-path" description="Explicit registration, qualified application data, runQueryWith gates, and category-scoped strong waits." />
+  <Card title="04 — Projections and the rebuild path" href="/docs/keiro/walkthrough/read-side/04-projections-and-the-rebuild-path" description="Atomic inline writes, fenced async outcomes, and start/replay/guarded-finish rebuilds." />
 </Cards>
 
 The source files this tour reads:
@@ -79,10 +80,11 @@ keiro/src/Keiro/Snapshot/Schema.hs       -- keiro_snapshots table + lookupSnapsh
 keiro-core/src/Keiro/Snapshot/Policy.hs  -- shouldSnapshot / shouldSnapshotSpan
 keiro-core/src/Keiro/EventStream.hs      -- StateCodec, SnapshotPolicy, EventStream
 keiro/src/Keiro/Command.hs               -- hydrate + verifyAndSnapshot
-keiro/src/Keiro/ReadModel.hs             -- runQueryWith, validateMetadata, waitIfNeeded
+keiro/src/Keiro/ReadModel.hs             -- explicit lookup, runQueryWith, StrongScope
 keiro/src/Keiro/ReadModel/Schema.hs      -- the keiro_read_models registry
-keiro/src/Keiro/ReadModel/Rebuild.hs     -- rebuild / promote / abandonRebuild (skeleton)
-keiro/src/Keiro/Projection.hs            -- runCommandWithProjections, applyAsyncProjection
+keiro/src/Keiro/ReadModel/Rebuild.hs     -- atomic start and guarded finish lifecycle
+keiro/src/Keiro/Projection.hs            -- inline runner, async outcomes, rebuild replay
+keiro/src/Keiro/Connection.hs            -- qualified application schemas
 ```
 
 For the conceptual version, read

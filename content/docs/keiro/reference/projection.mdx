@@ -1,57 +1,31 @@
 ---
 title: "Projection"
-description: "Keiro.Projection: InlineProjection, AsyncProjection, runCommandWithProjections, and applyAsyncProjection."
+description: "Keiro.Projection: atomic inline updates, fenced async outcomes, deduplication, and rebuild replay."
 ---
 
-The types and functions on this page live in `Keiro.Projection`. A projection folds events into a
-read-side table; see
+The types and functions on this page live in `Keiro.Projection`. A projection folds events into an
+application-owned read-model table; see
 [Projections, read models, and snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots)
 for the conceptual distinction.
 
 ## `InlineProjection`
 
-Runs in the **same** transaction as the command's append (strong consistency). An exception in
-`apply` aborts the append, so events and the read-model update commit together or not at all.
-
 <TypeTable
   type={{
     name: { type: "Text", description: "Logical name of the projection" },
-    apply: { type: "co -> RecordedEvent -> Tx.Transaction ()", description: "Fold one decoded event (and its RecordedEvent) into the table, in the append transaction" },
+    apply: { type: "co -> RecordedEvent -> Tx.Transaction ()", description: "Fold one decoded and recorded event into the application table" },
   }}
 />
 
-## `AsyncProjection`
-
-Meant to run **later**, off a subscription, with at-least-once delivery — hence an idempotency key.
-
-<TypeTable
-  type={{
-    name: { type: "Text", description: "Logical name of the projection" },
-    subscriptionName: { type: "Text", description: "Checkpoint cursor name the worker advances" },
-    applyRecorded: { type: "RecordedEvent -> Tx.Transaction ()", description: "Fold one RecordedEvent into the table" },
-    idempotencyKey: { type: "RecordedEvent -> EventId", description: "Dedupe key used to suppress duplicate application on redelivery" },
-  }}
-/>
-
-<Callout type="warn">
-keiro ships **no** async-projection worker loop. The boundary is the bare
-`RecordedEvent -> Tx.Transaction ()` returned by `applyAsyncProjection`; wiring it to a kiroku
-subscription and advancing the checkpoint is **your** job. See
-[Make an async projection idempotent](/docs/keiro/how-to/make-an-async-projection-idempotent).
-</Callout>
-
-## `runCommandWithProjections`
-
-Run a command and apply a list of inline projections in the append transaction. It **delegates to**
-`runCommandWithSqlEvents` (see the [Command reference](/docs/keiro/reference/command)): it runs the
-command and applies each `InlineProjection`'s `apply` to every `(decoded event, RecordedEvent)` pair
-the command emitted, in the same transaction.
+`runCommandWithProjections` delegates to `runCommandWithSqlEvents`; the append and every inline
+`apply` share one transaction. A projection failure aborts the append, so events and read-model rows
+commit together or not at all. Like the other SQL command runners, this function requires
+`KirokuStoreResource` so Kiroku enrichment runs before the callback sees recorded events.
 
 ```haskell
 runCommandWithProjections ::
-  forall phi rs s ci co es.
   ( HasCallStack, IOE :> es, Store :> es, Error StoreError :> es
-  , BoolAlg phi (RegFile rs, ci), Eq co ) =>
+  , KirokuStoreResource :> es, BoolAlg phi (RegFile rs, ci), Eq co ) =>
   RunCommandOptions ->
   ValidatedEventStream phi rs s ci co ->
   Stream (EventStream phi rs s ci co) ->
@@ -60,36 +34,79 @@ runCommandWithProjections ::
   Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co)))
 ```
 
-## `applyAsyncProjection`
+## `AsyncProjection`
 
-Apply one event to an `AsyncProjection`, yielding the `Tx` the (caller-supplied) worker runs.
-Keiro inserts `(projection_name, event_id)` into `keiro_projection_dedup` in the same transaction as
-`applyRecorded`. If the insert conflicts, the event was already applied within the retained dedup
-window and `applyRecorded` is skipped.
+<TypeTable
+  type={{
+    name: { type: "Text", description: "Logical projection name and dedup namespace" },
+    readModelName: { type: "Text", description: "Registry row whose status fences live application" },
+    subscriptionName: { type: "Text", description: "Checkpoint cursor advanced by the caller-supplied worker" },
+    applyRecorded: { type: "RecordedEvent -> Tx.Transaction ()", description: "Fold one recorded event into the qualified application table" },
+    idempotencyKey: { type: "RecordedEvent -> EventId", description: "Dedup key, normally the recorded event id" },
+  }}
+/>
 
-```haskell
-applyAsyncProjection :: AsyncProjection -> RecordedEvent -> Tx.Transaction ()
-pruneAsyncProjectionDedupBefore :: (Store :> es) => UTCTime -> Eff es Int64
-```
+Keiro supplies the per-event transaction, deduplication, and registry fence. It does not supply the
+subscription polling loop or checkpoint acknowledgement policy.
 
-Only prune dedup rows older than the subscription system can redeliver. Pruning intentionally
-re-opens those events for application if they are replayed later.
-
-## `recordProjectionLag`
-
-Measure how far an `AsyncProjection` trails the log and record it on the opt-in
-[metrics](/docs/keiro/reference/telemetry#metrics-surface) handle. It reads the `$all` log head and
-the projection's checkpoint position (via
-[`readSubscriptionPosition`](/docs/keiro/reference/read-model#readsubscriptionposition)) and records
-the gap — `max 0 (head − checkpoint)` — as the
-[`keiro.projection.lag`](/docs/keiro/reference/telemetry#metric-catalogue) gauge. Since keiro ships no
-async-projection worker loop, **the application calls this** on its own drain loop (a no-op under a
-`Nothing` handle).
+## Live application outcomes
 
 ```haskell
-recordProjectionLag :: (IOE :> es, Store :> es) => Maybe KeiroMetrics -> AsyncProjection -> Eff es ()
+data AsyncApplyOutcome
+  = AsyncApplied
+  | AsyncDuplicate
+  | AsyncFenced
+
+applyAsyncProjection ::
+  AsyncProjection -> RecordedEvent -> Tx.Transaction AsyncApplyOutcome
 ```
 
-The worked example is `jitsurei` `orderSummaryInlineProjection` (`jitsurei/src/Jitsurei/ReadModels.hs`),
-which folds each `OrderEvent` into `jitsurei_order_summary`. See
-[Your first read model](/docs/keiro/tutorials/your-first-read-model).
+`applyAsyncProjection` reads `readModelName` from `keiro.keiro_read_models` with `FOR SHARE` in the
+same transaction as the dedup insert and application write.
+
+| Outcome | Database effect | Worker disposition |
+| --- | --- | --- |
+| `AsyncApplied` | Dedup key and read-model update commit together. | Acknowledge/checkpoint when the enclosing delivery transaction succeeds. |
+| `AsyncDuplicate` | Existing retained dedup key suppresses `applyRecorded`. | Treat as idempotent success and acknowledge/checkpoint. |
+| `AsyncFenced` | Registry row is missing or not `Live`; no dedup or model write occurs. | Do **not** acknowledge or checkpoint past the event. Fail/park it and retry after promotion. |
+
+That last rule is essential: checkpointing `AsyncFenced` would permanently skip an event while a
+rebuild owns the model.
+
+## Rebuild-only application
+
+```haskell
+applyAsyncProjectionUnfenced ::
+  AsyncProjection -> RecordedEvent -> Tx.Transaction AsyncApplyOutcome
+```
+
+This bypasses the registry status check so the designated rebuilder can write while the model is
+`Rebuilding`. It still inserts the projection/event dedup key, so its outcomes are `AsyncApplied` or
+`AsyncDuplicate`. Live workers must use `applyAsyncProjection`; never use the unfenced function to
+avoid handling `AsyncFenced`.
+
+## Dedup retention
+
+```haskell
+pruneAsyncProjectionDedupBefore :: UTCTime -> Eff es Int64
+```
+
+The dedup key and `applyRecorded` run in the same transaction. Prune only before the oldest event the
+subscription system can redeliver; pruning intentionally reopens older events for application. It
+is not a rebuild reset. `startRebuild` clears only the named projections' keys atomically with the
+writer fence, table truncation, and checkpoint reset.
+
+## Projection lag
+
+```haskell
+recordProjectionLag ::
+  Maybe KeiroMetrics -> AsyncProjection -> Eff es ()
+```
+
+Call this from the application-owned drain loop, normally after applying a batch. It records
+`keiro.projection.lag` as the non-negative `$all` head minus the projection subscription checkpoint;
+`Nothing` makes it a no-op.
+
+See [Make an async projection idempotent](/docs/keiro/how-to/make-an-async-projection-idempotent)
+for a complete outcome handler and
+[Rebuild a read model](/docs/keiro/how-to/rebuild-a-read-model) for fenced replay.

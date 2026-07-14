@@ -1,53 +1,134 @@
 ---
 title: "Rebuild a read model"
-description: "Bump the schema, mark the model rebuilding, repopulate it manually, and promote it back to live."
+description: "Fence live writers, reset the in-place model atomically, replay through the rebuild entry point, and promote with the zero-apply guard."
 ---
 
-You changed a read model's shape or logic and need to rebuild its table. keiro gives you the status
-transitions; the repopulation itself is yours to drive.
-
-<Callout type="info">
-  Assumes you have a registered read model (see [Read model reference](/docs/keiro/reference/read-model)).
-</Callout>
-
-## Goal
-
-Take a read model through a schema change: bump its identity, rebuild, repopulate, and promote.
-
-## Steps
-
-1. **Bump `version` and/or `shapeHash`** in your `ReadModel` definition so it no longer matches the
-   registered row. The next `runQuery` would otherwise hard-fail with `ReadModelStaleSchema`.
-
-2. **Mark it rebuilding.** `rebuild model` transitions the registry row to `Rebuilding`:
-
-   ```haskell
-   _ <- rebuild myReadModel       -- markRebuilding: status -> Rebuilding
-   ```
-
-3. **Repopulate the table — manually.** Replay the relevant events into the (new-shape) table
-   yourself. There is no built-in replay.
-
-4. **Promote it back to live** (or abandon):
-
-   ```haskell
-   _ <- promote myReadModel        -- markLive: status -> Live
-   -- or, on failure:
-   _ <- abandonRebuild myReadModel -- markAbandoned: status -> Abandoned
-   ```
+Use this procedure after changing a read model's table shape or projection logic. Keiro implements a
+destructive, in-place rebuild: queries become unavailable, live writers are fenced, and the
+designated rebuilder repopulates the same qualified application table.
 
 <Callout type="warn">
-`rebuild`, `promote`, and `abandonRebuild` are status transitions **only** — there is no shadow-table
-swap and no automated replay. Repopulation between `rebuild` and `promote` is your job, and while the
-model is not `Live`, `runQuery` returns `ReadModelNotLive`. The research design's multi-step rebuild
-protocol is **not** implemented.
+  There is no shadow table or online cutover. Plan an availability window. `runQuery` returns
+  `ReadModelNotLive` from `startRebuild` until a successful `finishRebuild`.
 </Callout>
 
-## Verify it worked
+## Before the window
 
-After `rebuild`, confirm `runQuery` returns `ReadModelNotLive`. After repopulating and `promote`,
-confirm `runQuery` succeeds and returns the new-shape data.
+1. Deploy the application-table migration in the model's declared `schema`.
+2. Update the `ReadModel` definition's `version` and/or `shapeHash` and keep all SQL schema-qualified.
+3. Identify every `AsyncProjection.name` that feeds the model.
+4. Choose `replayFrom`. Use `GlobalPosition 0` for a full rebuild unless you have a separately
+   verified base state covering an earlier prefix.
+5. Ensure startup normally calls `registerReadModel`; queries never register automatically.
 
-## Related
+For the examples below:
 
-- [Read model reference](/docs/keiro/reference/read-model) — `ReadModelStatus`, the `mark*` functions.
+```haskell
+projectionNames = [ordersProjection ^. #name]
+replayFrom = GlobalPosition 0
+```
+
+Pass the same `projectionNames` and `replayFrom` to both lifecycle calls.
+
+## 1. Start the rebuild atomically
+
+```haskell
+metadata <- startRebuild ordersReadModel projectionNames replayFrom
+```
+
+In one transaction, `startRebuild`:
+
+1. transitions the registry row to `Rebuilding` and establishes the writer fence;
+2. truncates `qualifiedTableName ordersReadModel`;
+3. removes dedup rows for only `projectionNames`; and
+4. resets every member of `subscriptionName` to `replayFrom`.
+
+The registry transition runs first. A concurrent live `applyAsyncProjection` takes a shared lock on
+that row, so it either completes before the destructive transaction or observes the non-`Live`
+status afterward. PostgreSQL keeps the truncate transactional with the other reset operations.
+
+## 2. Keep live workers behind the fence
+
+Live workers continue using `applyAsyncProjection`. While the model is rebuilding it returns
+`AsyncFenced` without inserting dedup keys or changing the table.
+
+```haskell
+case liveOutcome of
+  AsyncApplied   -> acknowledgeAndCheckpoint
+  AsyncDuplicate -> acknowledgeAndCheckpoint
+  AsyncFenced    -> failOrParkWithoutCheckpoint
+```
+
+Do not checkpoint the fenced event. It must remain available after promotion.
+
+## 3. Replay through the rebuild-only entry point
+
+The designated rebuilder reads the relevant events from `replayFrom` and runs each through:
+
+```haskell
+outcome <- runTransaction $
+  applyAsyncProjectionUnfenced ordersProjection recorded
+
+case outcome of
+  AsyncApplied   -> continueReplay
+  AsyncDuplicate -> continueReplay
+  AsyncFenced    -> error "unreachable: the unfenced entry point does not fence"
+```
+
+`applyAsyncProjectionUnfenced` bypasses registry status but retains dedup insertion and atomic table
+application. It is exclusively for rebuild replay. The application still owns event selection,
+batching, and checkpoint advancement; Keiro does not run a replay worker for you.
+
+After reaching the intended head, verify the application table and the subscription cursor. The
+promotion guard detects the especially dangerous “non-empty log, zero applications” case, but it
+does not prove that every relevant event or expected row was processed.
+
+## 4. Finish with the guard
+
+```haskell
+finish <- finishRebuild ordersReadModel projectionNames replayFrom
+
+case finish of
+  Right liveMetadata -> serveReadsAgain liveMetadata
+  Left (RebuildProducedNoApplies modelName headPosition) ->
+    investigateReplay modelName headPosition
+```
+
+`finishRebuild` reads the store head, counts new dedup rows for `projectionNames`, and transitions to
+`Live` in the same transaction only when its guard passes. If the head is beyond `replayFrom` but a
+non-empty projection list produced no dedup rows, it returns `RebuildProducedNoApplies` and leaves
+the model `Rebuilding`.
+
+For an inline-only model, pass `[]`. That deliberately skips the async dedup guard because no async
+projection keys can exist; you must supply and verify its repopulation procedure yourself.
+
+## 5. Abandon a failed rebuild
+
+If repair cannot continue safely:
+
+```haskell
+_ <- abandonRebuild ordersReadModel
+```
+
+The model becomes `Abandoned` and remains unavailable to queries. Diagnose and start a new rebuild
+when ready.
+
+<Callout type="warn">
+  `rebuild` and `promote` are low-level status transitions. They do not perform the atomic reset, and
+  `promote` bypasses `RebuildProducedNoApplies`. Do not use them for this supported workflow.
+</Callout>
+
+## Acceptance test
+
+A complete test should demonstrate this sequence:
+
+1. register the model and apply a live event (`AsyncApplied`);
+2. call `startRebuild` and observe `ReadModelNotLive` from queries;
+3. attempt live application and observe `AsyncFenced` with no write or checkpoint;
+4. replay through `applyAsyncProjectionUnfenced`;
+5. call guarded `finishRebuild` and observe `Live`;
+6. retry the parked live event; and
+7. run a `Strong` query with `CategoryHead` matching the worker's category.
+
+See [Read model](/docs/keiro/reference/read-model) and
+[Projection](/docs/keiro/reference/projection) for exact signatures.

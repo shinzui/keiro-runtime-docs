@@ -1,59 +1,76 @@
 ---
 title: "Make an async projection idempotent"
-description: "Use AsyncProjection's idempotency key and keiro_projection_dedup so at-least-once redelivery is safe."
+description: "Deduplicate redelivery, honor the read-model writer fence, and checkpoint every async outcome correctly."
 ---
 
-An async projection runs off a subscription with **at-least-once** delivery, so the same event may be
-applied twice. `AsyncProjection` now centralizes the first line of defense: `applyAsyncProjection`
-inserts `(projection_name, event_id)` into `kiroku.keiro_projection_dedup` in the same transaction as
-your read-model update, and skips the update when that row already exists.
+An async projection receives at-least-once delivery. Keiro makes each application idempotent within
+the retained dedup window and returns a distinct outcome when a rebuild fences the live worker.
 
-<Callout type="info">
-  Assumes you understand the projection primitives (see
-  [Projections, read models, and snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots)).
-</Callout>
+## Define the projection
 
-## Goal
+Register the read model at startup, then make the projection name that registry identity:
 
-Apply each event at most once per projection within the retained dedup window, even under redelivery.
+```haskell
+ordersProjection :: AsyncProjection
+ordersProjection = AsyncProjection
+  { name             = "orders-summary-async"
+  , readModelName    = "orders-summary"
+  , subscriptionName = "orders-summary-sub"
+  , applyRecorded    = \recorded ->
+      Tx.statement (params recorded) upsertQualifiedSummaryStmt
+  , idempotencyKey   = \recorded -> recorded ^. #eventId
+  }
+```
 
-## Steps
+`upsertQualifiedSummaryStmt` should address the application table with a schema-qualified name such
+as `"app_reads"."order_summary"`.
 
-1. **Key the projection off the event id** via `idempotencyKey`, then put the real table update in
-   `applyRecorded`:
+## Apply and classify every outcome
 
-   ```haskell
-   myAsyncProjection :: AsyncProjection
-   myAsyncProjection = AsyncProjection
-     { name             = "orders-summary-async"
-     , subscriptionName = "orders-summary-async"
-     , applyRecorded    = \recorded -> Tx.statement (params recorded) upsertSummaryStmt
-     , idempotencyKey   = \recorded -> recorded ^. #eventId
-     }
-   ```
+Run `applyAsyncProjection ordersProjection recorded` in the delivery transaction, then couple the
+delivery acknowledgement/checkpoint to the result:
 
-   The subscription worker should run `applyAsyncProjection myAsyncProjection recorded`, not call
-   `applyRecorded` directly. Keiro writes the dedup row first; only the first delivery for that
-   `(projection, event)` runs `applyRecorded`.
+```haskell
+case outcome of
+  AsyncApplied ->
+    acknowledgeAndCheckpoint
+  AsyncDuplicate ->
+    acknowledgeAndCheckpoint
+  AsyncFenced ->
+    failOrParkWithoutCheckpoint
+```
 
-2. **Keep table writes domain-idempotent when practical.** The central dedup table protects ordinary
-   redelivery. Still prefer natural upserts in the read model when the business key allows it; they
-   make manual rebuilds, operator replays after dedup pruning, and future migrations easier to reason
-   about.
+- `AsyncApplied` inserts `(projection_name, event_id)` and runs `applyRecorded` in the same
+  transaction.
+- `AsyncDuplicate` finds that retained key and skips the table update; it is idempotent success.
+- `AsyncFenced` means the registry row is missing or not `Live`. It performs neither dedup nor table
+  writes.
 
 <Callout type="warn">
-keiro ships **no** async-projection worker. `applyAsyncProjection myAsyncProjection recorded` hands
-you the `Tx.Transaction ()`; you must wire it to a kiroku subscription and advance the checkpoint
-(`subscriptionName`) yourself. The idempotency key keeps that loop safe under at-least-once delivery.
+  Never acknowledge or advance the subscription checkpoint for `AsyncFenced`. Doing so skips the
+  event while the rebuild owns the model. Fail or park the delivery and retry it after guarded
+  promotion returns the model to `Live`.
 </Callout>
 
-## Verify it worked
+Keep natural-key upserts in `applyRecorded` when practical. The central dedup table handles normal
+redelivery, while domain-idempotent writes make operator replay and deliberate dedup pruning easier
+to reason about.
 
-Apply the same `RecordedEvent` twice in a test through `applyAsyncProjection`: the first call writes
-one `keiro_projection_dedup` row and updates the read model; the second call conflicts on the dedup
-primary key and skips `applyRecorded`.
+## Retain dedup keys long enough
 
-## Related
+Use `pruneAsyncProjectionDedupBefore` only before the oldest event the subscription system can
+redeliver. Pruning reopens those events for application. It is not the rebuild mechanism:
+`startRebuild` atomically clears only the named projections' keys while fencing writers, truncating
+the model table, and resetting the checkpoint.
 
-- [Projection reference](/docs/keiro/reference/projection) — `AsyncProjection`, `applyAsyncProjection`.
-- [Make commands idempotent](/docs/keiro/how-to/make-commands-idempotent) — the write-path analogue.
+## Verify all three paths
+
+In integration tests:
+
+1. Apply an event while the model is `Live`; expect `AsyncApplied` and one table update.
+2. Redeliver it; expect `AsyncDuplicate` and no second update.
+3. Call `startRebuild`, then try the live entry point; expect `AsyncFenced`, no dedup row, no table
+   update, and no checkpoint advance.
+
+See [Projection](/docs/keiro/reference/projection) for the exact surface and
+[Rebuild a read model](/docs/keiro/how-to/rebuild-a-read-model) for the unfenced replay entry point.

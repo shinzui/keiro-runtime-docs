@@ -1,60 +1,75 @@
 ---
 title: "Projections, read models, and snapshots"
-description: "Three read-side primitives that are easy to confuse — a verb, a noun, and a cache — and how they differ in visibility and failure mode."
+description: "Separate the read-side verb, the queryable noun, and the hydration cache—and understand their different correctness boundaries."
 ---
 
-keiro's read side has **three** distinct primitives. They are easy to conflate because all three
-touch derived state, but they answer different questions and fail in different ways.
-
-A **projection** is the *verb*: the worker that folds events into a table. A **read model** is the
-*noun*: a named, versioned table plus the query that reads it, with an explicit consistency mode.
-A **snapshot** is a *cache*: a folded copy of one aggregate's state, used only to skip replay
-during hydration and **never** queried by application code.
-
-<Callout type="warn">
-The failure modes are deliberately asymmetric. A read model whose schema has drifted **hard-fails**
-the query (`ReadModelStaleSchema`) — it guards user-facing data. A snapshot that is missing, stale,
-or undecodable is a **silent cache miss**: hydration falls back to a full replay. One protects
-correctness; the other only protects latency.
-</Callout>
-
-## Where each one lives on the flow
+Keiro's read side has three related primitives. A **projection** is the verb that folds events into
+derived application data. A **read model** is the named, registered noun that queries that data. A
+**snapshot** is an advisory cache used only to accelerate aggregate hydration.
 
 ```mermaid
 flowchart LR
-  Cmd["runCommandWithProjections"] --> Append[("events (kiroku)")]
-  Cmd -- "same transaction" --> Inline["InlineProjection.apply"]
-  Inline --> RM[("read-model table")]
-  Append -- "later, eventual" --> Async["AsyncProjection (no shipped worker)"]
-  Async --> RM
-  RM --> Q["runQuery -> ConsistencyMode"]
-  Append -. "hydrate fast path" .-> Snap[("keiro_snapshots")]
-  Snap -. "advisory: miss => full replay" .-> Cmd
+  Cmd["command"] --> Append[("event log")]
+  Cmd -- "same transaction" --> Inline["inline projection"]
+  Inline --> Table[("qualified application table")]
+  Append -- "subscription" --> Live["live async projection"]
+  Live -- "Applied / Duplicate / Fenced" --> Table
+  Table --> RM["registered read model query"]
+  Append -. "hydration fast path" .-> Snapshot[("snapshot cache")]
 ```
 
-## A projection is a verb
+## Projection: the writer
 
-A projection folds events into a read-side table. keiro ships two flavors. An **inline** projection
-(`InlineProjection`) runs in the *same* transaction as the command's append — strong consistency, and
-an exception in its `apply` aborts the append. An **async** projection (`AsyncProjection`) is meant to
-run *later*, off a subscription, with at-least-once delivery (hence an idempotency key). See
-[The command cycle](/docs/keiro/explanation/the-command-cycle) for the write path the inline flavor
-rides on.
+An `InlineProjection` runs inside the event append transaction. If its table update fails, the
+events roll back too. This is ideal when the write cost is small and immediate visibility matters.
 
-## A read model is a noun
+An `AsyncProjection` is driven later by an application-owned Kiroku subscription worker. Keiro
+supplies transactional deduplication and a registry fence, then reports:
 
-A read model is the queryable thing: a `name`, a `tableName`, a schema identity
-(`version` + `shapeHash`), a `subscriptionName` cursor, a `defaultConsistency` mode, and the `query`
-itself. You read it with `runQuery`, which first checks the registered schema and the model's
-liveness, then (depending on the mode) maybe waits, then runs the query.
+- `AsyncApplied`: the dedup key and application update committed;
+- `AsyncDuplicate`: retained dedup state suppressed a redelivery; or
+- `AsyncFenced`: the read model is missing or not `Live`, so nothing was written.
 
-## A snapshot is a cache
+The worker may checkpoint the first two outcomes. It must not checkpoint `AsyncFenced`, because a
+rebuild currently owns the model and the event must be retried after promotion.
 
-A snapshot is a folded copy of one aggregate's `(state, registers)` at some version, stored in
-`keiro_snapshots`. It exists for exactly one reason: to let hydration skip replaying the whole log.
-Application code never queries it. If it is absent or incompatible, hydration simply replays from the
-beginning — correctness is unaffected, only speed.
+Both projection flavors write an application-owned, schema-qualified table. Keiro's framework
+tables live in `keiro`; Kiroku's store tables live in `kiroku`. `qualifiedTableName` and
+`qualifyTable` keep those namespaces explicit.
 
-Continue with [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots) for the
-modes and the hydration fast path, or jump to
-[Your first read model](/docs/keiro/tutorials/your-first-read-model).
+## Read model: the guarded query
+
+A `ReadModel` names the application table and schema, registry identity (`name`, `version`, and
+`shapeHash`), subscription cursor, default consistency, strong wait scope, and query transaction.
+The application must call `registerReadModel` at startup. Querying is intentionally read-only with
+respect to the registry: a missing row returns `ReadModelUnregistered`.
+
+For a registered model, `runQuery` validates version/hash and `Live` status, optionally waits, then
+runs the query. Drift and lifecycle state are hard failures because the data is user-facing.
+`StrongScope` makes the wait match the worker: `EntireLog` targets `$all`, while
+`CategoryHead category` targets only the latest event originating in that category.
+
+## Snapshot: the disposable hydration cache
+
+A snapshot stores one aggregate's folded `(state, registers)` at a stream version. Application
+queries never read it. A missing, incompatible, or undecodable snapshot falls back to replaying the
+event log; correctness is unchanged and only hydration latency suffers.
+
+That contrasts deliberately with a read model:
+
+| Primitive problem | Runtime response | Why |
+| --- | --- | --- |
+| Snapshot missing or incompatible | Full event replay | The event log remains durable truth. |
+| Read model unregistered or schema-stale | Reject the query | Serving an unknown table shape would expose incorrect user-facing data. |
+| Read model rebuilding | Fence live async writers and reject queries | One rebuilder must own destructive in-place repopulation. |
+
+## Rebuild ownership
+
+`startRebuild` changes the registry to `Rebuilding`, truncates the qualified table, clears only the
+named projection dedup keys, and resets the subscription cursor in one transaction. Live writers
+then return `AsyncFenced`. The rebuilder alone uses `applyAsyncProjectionUnfenced`, verifies the
+result, and calls guarded `finishRebuild`. This is an offline in-place workflow, not a shadow-table
+swap.
+
+Continue with [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots), or
+build the path in [Your first read model](/docs/keiro/tutorials/your-first-read-model).

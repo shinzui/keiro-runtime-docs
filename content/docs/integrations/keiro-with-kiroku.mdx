@@ -18,6 +18,7 @@ Keiro layers typed domain APIs and worker run loops over that store.
 | --- | --- |
 | `runCommand` | Reads a stream, appends emitted events with optimistic concurrency, and retries conflict-safe commands. |
 | Event streams and snapshots | Store stream events plus optional keiro snapshot rows keyed by stream id/version. |
+| Async projections and read models | Supply subscription checkpoints and recorded events; Keiro adds deduplication, registry fencing, consistency waits, and rebuild coordination. |
 | Process managers and routers | Consume Kiroku subscriptions and dispatch deterministic target commands. |
 | Inbox/outbox | Use keiro tables in Kiroku's schema and transactions to make integration-message consume/publish paths replay-safe. |
 | Durable workflows | Journal workflow steps into `wf:<name>-<id>` streams and maintain workflow lifecycle tables beside them. |
@@ -44,6 +45,25 @@ Kiroku now exposes point lookups such as `eventExistsInStream`, stricter stream-
 typed append/link failures, and pipelined multi-stream append. Keiro's current command/read-side docs
 use those semantics directly.
 
+## Read-model schemas and checkpoints
+
+Keep the three namespaces distinct:
+
+- Kiroku owns event-store and subscription tables in `kiroku`.
+- Keiro owns registry and projection-dedup metadata in `keiro`.
+- The application owns read-model tables in a declared schema such as `app_reads`.
+
+Set each `ReadModel.schema`, qualify its create/read/write SQL with `qualifiedTableName` or
+`qualifyTable`, and call `registerReadModel` explicitly at startup. `withProjectionSchema` adds the
+application schema to a Kiroku connection's `extraSearchPath` while deliberately leaving Kiroku's
+`schema = "kiroku"`; changing that field would also change its notification channel. Schema creation
+is application migration work—`ensureProjectionSchema` is only an opt-in helper.
+
+For async workers, Keiro reads Kiroku's `subscriptions.last_seen` to implement `PositionWait` and
+`Strong`. Pair a category subscription with `StrongScope = CategoryHead category`; `EntireLog`
+targets `$all` and can be unreachable for a worker whose category cursor does not advance on
+unrelated traffic. During a rebuild, `AsyncFenced` must not be acknowledged or checkpointed.
+
 ## Subscriptions and workers
 
 Kiroku owns subscription checkpoints, retry/dead-letter behavior, consumer groups, filtering, and
@@ -58,6 +78,8 @@ subscriptions, use [Subscription sharding](/docs/keiro/reference/subscription-sh
 <Cards>
   <Card title="Kiroku Store effect" href="/docs/kiroku/reference/store-effect" />
   <Card title="Keiro command reference" href="/docs/keiro/reference/command" />
+  <Card title="Keiro read-model reference" href="/docs/keiro/reference/read-model" />
+  <Card title="Keiro projection reference" href="/docs/keiro/reference/projection" />
   <Card title="Process manager workers" href="/docs/keiro/reference/process-manager" />
   <Card title="Durable workflows" href="/docs/keiro/reference/durable-workflows" />
 </Cards>

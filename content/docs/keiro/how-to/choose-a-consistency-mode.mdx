@@ -1,69 +1,78 @@
 ---
 title: "Choose a consistency mode"
-description: "Pick Strong, Eventual, or PositionWait for a read-model query — and get read-your-writes right."
+description: "Choose Eventual, PositionWait, or Strong—and scope a strong wait to the log your projection consumes."
 ---
 
-You are about to query a read model and need to decide how fresh the result must be. keiro offers
-three `ConsistencyMode`s: one for immediate reads, one for "catch up to the head as of query start",
-and one for "catch up to this specific command result".
+Choose the mode from how the projection is fed and what freshness the caller needs. All modes first
+require an explicitly registered, `Live`, schema-compatible read model.
 
-<Callout type="info">
-  Assumes you have a read model (see [Your first read model](/docs/keiro/tutorials/your-first-read-model)).
-</Callout>
-
-## Goal
-
-Choose the right `ConsistencyMode` for a query, and use either `Strong` or `PositionWait` when an
-async projection must catch up before the query runs.
-
-## The decision
+## Decision guide
 
 ```mermaid
 flowchart TD
-  Q{"Do you need freshness beyond whatever is already projected?"}
-  Q -- "No" --> E["Eventual: no wait"]
-  Q -- "Yes" --> A{"Was the projection inline (same tx as the command)?"}
-  A -- "Yes" --> E2["Eventual: the row already committed with the events"]
-  A -- "No, async" --> W{"Do you have a specific command GlobalPosition?"}
-  W -- "Yes" --> P["PositionWait with target = that GlobalPosition"]
-  W -- "No" --> S["Strong: wait for store head captured at query start"]
+  Q{"Need freshness beyond the current table?"}
+  Q -- "No" --> E["Eventual"]
+  Q -- "Yes" --> I{"Projection updated inline with this command?"}
+  I -- "Yes" --> E2["Eventual: append and row already committed together"]
+  I -- "No, async" --> P{"Have the command's GlobalPosition?"}
+  P -- "Yes" --> W["PositionWait for that position"]
+  P -- "No" --> S{"What does the subscription consume?"}
+  S -- "One category" --> C["Strong + CategoryHead category"]
+  S -- "Whole log" --> A["Strong + EntireLog"]
 ```
 
-- **Inline projection** → the read-model row commits in the *same* transaction as the events, so a
-  plain `Eventual` read after a successful command already sees it.
-- **Async projection, known write** → pass the `GlobalPosition` the command returned as the
-  `PositionWait` target:
+### `Eventual`
+
+Read the table immediately. This is the normal mode for inline projections because the read-model
+write and emitted events commit in the same transaction.
+
+### `PositionWait`
+
+When an async projection must reflect a known command, wait for that command result's
+`GlobalPosition`:
 
 ```haskell
-let waitOpts = PositionWaitOptions
-      { target        = Just (result ^. #globalPosition)   -- from the command you just ran
+let waitOptions = PositionWaitOptions
+      { target = result ^. #globalPosition
       , timeoutMicros = 2_000_000
-      , pollMicros    = 50_000
+      , pollMicros = 50_000
       }
-runQueryWith Nothing (PositionWait waitOpts) orderSummaryReadModel (OrderSummaryQuery oid)
--- leading `Nothing` = opt-in metrics handle; pass `Just metrics` to record keiro.projection.wait.timeouts
+
+runQueryWith Nothing (PositionWait waitOptions) orderSummaryReadModel orderId
 ```
 
-`PositionWait` polls `subscriptions.last_seen` until the target position is reached or
-`timeoutMicros` elapses (→ `ReadModelWaitTimeout`).
-- **Async projection, no specific write** → use `Strong`. It captures the `$all` head position at
-  query start and waits until the projection subscription reaches that position. This gives "as fresh
-  as the store was when I asked", not a permanent linearizable lock on future appends.
+`CommandResult.globalPosition` is already a `Maybe GlobalPosition`; a no-op command supplies
+`Nothing`, and a `PositionWait` with `target = Nothing` skips waiting. A deadline returns
+`ReadModelWaitTimeout name target observed` and records `keiro.projection.wait.timeouts` when metrics
+are enabled.
+
+### `Strong`
+
+`Strong` captures a head at query start and waits for the model's `subscriptionName` cursor:
+
+```haskell
+ordersReadModel = ReadModel
+  { defaultConsistency = Strong
+  , strongScope = CategoryHead "order"
+  , ...
+  }
+```
+
+- Use `CategoryHead "order"` when the worker consumes the `order` category. The target is the latest
+  global position originating in that category; unrelated traffic cannot create an unreachable
+  target.
+- Use `EntireLog` only when the worker observes the whole log. It targets the `$all` head.
+- For a model fed by several categories, use a known `PositionWait` target or an all-stream worker
+  with `EntireLog`.
+
+Kiroku currently does not move a category checkpoint when an empty fetch sees only unrelated
+traffic. Pairing a category worker with `EntireLog` can therefore time out even though it has
+processed every relevant event.
 
 <Callout type="warn">
-Do not use `Strong` for an inline-only read model with no subscription worker. It will wait for a
-subscription checkpoint that cannot advance and eventually return `ReadModelWaitTimeout`. Use
-`Eventual` for inline models and `PositionWait` when you have a command result's `GlobalPosition`.
+  Do not use `Strong` for an inline-only model: no worker can advance its subscription cursor while
+  the query waits. Also ensure startup called `registerReadModel`; otherwise the query returns
+  `ReadModelUnregistered` before performing any wait.
 </Callout>
 
-## Verify it worked
-
-Run an async-fed query immediately after a command with `Eventual` and observe a stale/empty result;
-switch to `PositionWait` with the command's `GlobalPosition` and observe the fresh row. For a general
-"latest as of now" read, use `Strong` and confirm it returns only after the subscription reaches the
-head captured when the query started.
-
-## Related
-
-- [Read model reference](/docs/keiro/reference/read-model) — `ConsistencyMode`, `PositionWaitOptions`.
-- [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots) — the modes explained.
+See [Read model](/docs/keiro/reference/read-model) for exact defaults and position helpers.
