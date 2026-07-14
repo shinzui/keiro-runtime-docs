@@ -1,0 +1,43 @@
+---
+title: "Check migrations in CI"
+description: "Layer fast manifest and plan checks with fresh-database, upgrade, and PostgreSQL compatibility tests."
+---
+
+One successful parser check does not prove PostgreSQL can execute the complete application plan.
+Build a pipeline from cheap definition checks to database behavior.
+
+## Fast, database-free gates
+
+```bash
+cabal build all
+my-service-migrate check --manifest migrations/accounts/manifest
+my-service-migrate plan
+my-service-migrate list
+```
+
+Compilation reruns Template Haskell embedding, manifest membership, and SQL definition validation.
+Also evaluate `applicationPlan` in a pure test and fail on either `DefinitionError` or `PlanError`.
+Keep the GHC 9.12 `RecompilePlugin` pragma on every embedding module so a newly added unlisted SQL
+file invalidates CI.
+
+## Database gates
+
+1. Apply the final composed plan to a fresh ephemeral PostgreSQL instance.
+2. Assert objects and application behavior through a new connection.
+3. Run the plan again and assert every result is `AlreadyApplied`.
+4. Run strict verification after apply.
+5. For data changes, apply the last released plan, seed representative old rows, apply the new plan,
+   and assert the transformation.
+6. Run the supported PostgreSQL 17 and 18 matrix.
+
+Use the same component versions and plan order that the release artifact embeds. Do not rewrite old
+fixture SQL to make an upgrade test pass; that stops modeling durable history.
+
+## Preserve structured failures
+
+Record `DefinitionError`, `PlanError`, `MigrationError`, and nested Hasql results instead of reducing
+them to booleans. CI automation should consume JSON schema v1 or Haskell constructors, never human
+text.
+
+See [Test with ephemeral PostgreSQL](/docs/pg-migrate/how-to/test-with-ephemeral-postgres) and
+[Compatibility](/docs/pg-migrate/reference/compatibility).

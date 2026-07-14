@@ -1,0 +1,87 @@
+---
+title: "Author an embedded manifest"
+description: "Create a strict manifest v1, embed exact SQL bytes, and make GHC notice membership changes."
+---
+
+Use one manifest beside one component's SQL files. This guide produces a compile-time-validated,
+runtime-independent migration sequence.
+
+## Create the directory and ordered list
+
+```text
+migrations/accounts/
+├── 0001-create-accounts.sql
+├── 0002-add-status.sql
+└── manifest
+```
+
+`manifest` contains exactly one top-level `.sql` filename per line, in execution order:
+
+```text
+0001-create-accounts.sql
+0002-add-status.sql
+```
+
+Manifest v1 has no comments or header. It rejects blank lines, surrounding whitespace, absolute or
+nested paths, `..`, duplicates, missing files, unlisted sibling SQL, invalid UTF-8, a BOM, and empty
+or non-lowercase-`.sql` basenames.
+
+## Choose the transaction mode in SQL
+
+Transactional SQL is the default and may contain multiple statements. The runner commits its SQL
+and ledger row atomically. Do not write `BEGIN`, `COMMIT`, psql meta-commands, or `COPY FROM STDIN`.
+
+For a command PostgreSQL forbids in a transaction, put the one supported directive in the leading
+line-comment region:
+
+```sql
+-- pg-migrate: no-transaction
+CREATE INDEX CONCURRENTLY accounts_email_idx ON accounts (email);
+```
+
+A nontransactional file must contain exactly one statement. Unknown, duplicate, block-comment, or
+post-SQL directives are rejected. Ship nontransactional work only with an operator repair plan.
+
+## Embed and track the directory
+
+```haskell
+{-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -fplugin=Database.PostgreSQL.Migrate.Embed.RecompilePlugin #-}
+
+import Data.Set qualified as Set
+import Database.PostgreSQL.Migrate
+import Database.PostgreSQL.Migrate.Embed
+
+accountsMigrations :: Either DefinitionError MigrationComponent
+accountsMigrations =
+  migrationComponentFromEmbeddedSql
+    "accounts"
+    Set.empty
+    $(embedMigrationManifest "migrations/accounts/manifest")
+```
+
+The splice embeds `(filename, exact ByteString)` entries in order and registers listed inputs as GHC
+dependencies. GHC 9.12 cannot track future directory members, so the module-local recompilation
+plugin reruns the sibling-file audit on each build check. It is not a runtime plugin.
+
+Include the inputs in source distributions:
+
+```text
+extra-source-files:
+  migrations/accounts/*.sql
+  migrations/accounts/manifest
+```
+
+## Verify it worked
+
+```bash
+cabal build accounts-library
+my-service-migrate check --manifest migrations/accounts/manifest
+my-service-migrate list --component accounts
+```
+
+The build catches manifest and SQL-definition errors; `check` reports membership and exact-byte
+checksums; `list` proves the embedded component was constructed. None reads migration files at
+runtime in production.
+
+See [Embedding and manifest v1](/docs/pg-migrate/reference/embedding-and-manifest-v1).

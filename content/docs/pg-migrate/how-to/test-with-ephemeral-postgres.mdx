@@ -1,0 +1,61 @@
+---
+title: "Test a plan with ephemeral PostgreSQL"
+description: "Apply the complete plan to a temporary server and assert schema behavior through a fresh Hasql connection."
+---
+
+Add `pg-migrate-test-support` to a test suite only. It starts an isolated server, migrates it, and
+gives the assertion a different connection from the runner.
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+
+import Database.PostgreSQL.Migrate
+import Database.PostgreSQL.Migrate.Test
+import Hasql.Connection qualified as Connection
+import Hasql.Session qualified as Session
+import Test.Tasty.HUnit
+
+assertAccountSchema :: MigrationPlan -> Assertion
+assertAccountSchema plan = do
+  result <-
+    withMigratedDatabase plan $ \connection ->
+      Connection.use connection
+        (Session.script "INSERT INTO accounts (email) VALUES ('reader@example.com')")
+  case result of
+    Right (Right ()) -> pure ()
+    other -> assertFailure ("unexpected database result: " <> show other)
+```
+
+The nested `Either` matters: the outer layer is `MigratedDatabaseError`; the inner layer is the
+normal Hasql result returned by the callback.
+
+Choose the smallest helper:
+
+```haskell
+withMigratedDatabase
+  :: MigrationPlan
+  -> (Connection.Connection -> IO value)
+  -> IO (Either MigratedDatabaseError value)
+
+withMigratedDatabaseOptions
+  :: RunOptions
+  -> MigrationPlan
+  -> (Connection.Connection -> IO value)
+  -> IO (Either MigratedDatabaseError value)
+
+withMigratedDatabaseConfig
+  :: EphemeralPg.Config
+  -> RunOptions
+  -> MigrationPlan
+  -> (Connection.Connection -> IO value)
+  -> IO (Either MigratedDatabaseError value)
+```
+
+The configurable forms cover custom ledger/lock/timeout policy and server settings. Structured
+errors distinguish startup, migration, callback connection acquisition, callback exception, and
+callback-plus-cleanup failure. Asynchronous callback exceptions propagate after cleanup; a
+successful callback value wins over release failure because the temporary server is immediately
+discarded.
+
+Verify real constraints, indexes, functions, and application queries—not only that `up` returned.
+For transformations, add an old-plan-to-new-plan upgrade test.

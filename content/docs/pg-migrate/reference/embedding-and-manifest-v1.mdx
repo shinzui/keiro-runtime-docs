@@ -1,0 +1,49 @@
+---
+title: "Embedding and manifest format v1"
+description: "Reference for strict manifest membership, exact SQL bytes, SQL validation, GHC recompilation tracking, and exclusive authoring."
+---
+
+The stable facade is `Database.PostgreSQL.Migrate.Embed`.
+
+```haskell
+manifestFormatVersion :: Int
+checkMigrationManifest
+  :: FilePath -> IO (Either ManifestError (NonEmpty (FilePath, ByteString)))
+embedMigrationManifest :: FilePath -> Q Exp
+
+newMigrationOptions
+  :: FilePath -> Maybe FilePath -> ByteString
+  -> Either AuthoringError NewMigrationOptions
+newMigration :: NewMigrationOptions -> IO (Either AuthoringError FilePath)
+```
+
+`manifestFormatVersion == 1`. The file has no in-band version marker and contains a non-empty ordered
+list of unique top-level relative lowercase-`.sql` filenames, one per line. CRLF is normalized only
+at the line terminator. Blank/comment lines, surrounding whitespace, traversal, nesting, duplicates,
+missing/unlisted SQL, invalid UTF-8, and a leading BOM are errors.
+
+`embedMigrationManifest` validates membership, registers the manifest and current listed SQL as
+compiler dependencies, and embeds exact bytes in order. SQL checksums cover those bytes unchanged.
+On GHC 9.12, every embedding module must load:
+
+```haskell
+{-# OPTIONS_GHC -fplugin=Database.PostgreSQL.Migrate.Embed.RecompilePlugin #-}
+```
+
+This reruns the sibling-file audit when a future SQL filename appears or disappears.
+
+## SQL contract
+
+Transactional SQL is the default. Empty SQL, invalid UTF-8/BOM, unterminated constructs, explicit
+transaction commands, psql commands, and `COPY FROM STDIN` are rejected. The scanner understands
+line/nested block comments, strings, quoted identifiers, and dollar-quoted bodies.
+
+The exact leading directive `-- pg-migrate: no-transaction` selects nontransactional mode and
+requires exactly one statement. Unknown, duplicate, or misplaced directives are distinct errors.
+
+## Authoring contract
+
+`newMigration` validates first, creates a file exclusively, and atomically replaces the manifest. It
+does not overwrite. If replacement fails it attempts to remove the new file and reports cleanup
+failure distinctly. Concurrent authoring is unsupported. The authoring helper requires POSIX; manifest
+checking and embedding remain portable.

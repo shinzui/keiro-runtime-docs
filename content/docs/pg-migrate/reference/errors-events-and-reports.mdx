@@ -1,0 +1,68 @@
+---
+title: "Errors, events, and reports"
+description: "Structured definition, plan, runner, cleanup, repair, import, and test outcomes and their durable boundaries."
+---
+
+## Pure construction errors
+
+`DefinitionError` covers invalid component/migration names, SQL, embedded filenames, and ledger
+schema identifiers. `PlanError` covers duplicate components/migrations, missing or misordered
+dependencies, and cycles. They occur before connection acquisition.
+
+## Runner errors
+
+`MigrationError` preserves these categories separately:
+
+- connection/session/server-version failure;
+- invalid lock wait or statement timeout;
+- advisory-lock unavailable or timed out;
+- ledger initialization or plan verification failure;
+- condemned/invalid migration action;
+- event-handler failure, retaining an existing primary error;
+- transactional or nontransactional action/transition failure;
+- failure to record a nontransactional failure; and
+- `CleanupFailed primary issues` when a primary failure is accompanied by cleanup failure.
+
+Do not branch automation on rendered messages. Pattern match constructors or consume JSON v1.
+
+## Lifecycle events
+
+```haskell
+data MigrationEvent
+  = LockWaitStarted LockWait
+  | LockAcquired NominalDiffTime
+  | PlanValidated {alreadyAppliedCount :: Int, pendingCount :: Int}
+  | MigrationStarted MigrationId
+  | MigrationCompleted MigrationId NominalDiffTime
+  | MigrationFailureObserved MigrationId NominalDiffTime
+  | MigrationPlanCompleted NominalDiffTime
+```
+
+Events are observational at defined lifecycle/durable boundaries. A callback cannot choose commit,
+rollback, or retry behavior.
+
+## Successful reports and cleanup
+
+```haskell
+data MigrationOutcome = AlreadyApplied | AppliedNow
+
+data MigrationReport = MigrationReport
+  { startedAt :: UTCTime
+  , finishedAt :: UTCTime
+  , results :: NonEmpty MigrationResult
+  , cleanupIssues :: [CleanupIssue]
+  }
+
+data CleanupIssue
+  = AdvisoryUnlockReturnedFalse
+  | AdvisoryUnlockFailed Errors.SessionError
+  | StatementTimeoutRestoreFailed Errors.SessionError
+```
+
+`MigrationReport`, `RepairReport`, and `HistoryImportReport` preserve durable success even when
+cleanup later fails. Retain the report, alert/investigate cleanup, and verify durable state; do not
+blindly rerun the primary operation. `CleanupFailed` exists only when primary work failed first.
+
+Repair and history import add structured validation/conflict/audit errors. Source adapters further
+distinguish catalog shape, duplicates, missing evidence, checksum, strict-source, source-lock, and
+target-import failures.

@@ -29,7 +29,8 @@ failure classes to decide whether deployment may proceed.
 
 - [x] (2026-07-14T18:24:38Z) Milestone 1: created the top-level pg-migrate section and a
   fresh-database tutorial covering embedding, CLI mounting, apply, verify, rerun, and append.
-- [ ] Milestone 2: document authoring, composition, CLI integration, testing, and public reference.
+- [x] (2026-07-14T18:34:02Z) Milestone 2: documented authoring, composition, CLI integration,
+  testing, and the public reference surface.
 - [ ] Milestone 3: document production execution, verification, cleanup, and recovery.
 - [ ] Milestone 4: document predecessor imports, practical recipes, FAQ, and final navigation.
 
@@ -40,6 +41,9 @@ failure classes to decide whether deployment may proceed.
   required.
 - The documentation site's Shiki configuration has no `cabal` language lexer. Cabal stanzas use
   plain `text` fences so production rendering remains deterministic without changing their syntax.
+- The CLI facade exposes every command and options constructor but intentionally has no
+  `commandOutputFormat` helper. Applications select the renderer with an exhaustive
+  `MigrationCommand` match, so a newly added command becomes a compile-time integration task.
 
 
 ## Decision Log
@@ -74,6 +78,12 @@ failure classes to decide whether deployment may proceed.
   embedding through plan/list/check, fresh apply, strict verify, `AlreadyApplied` rerun, and atomic
   `new` authoring. It imports only public facades and makes the absence of runtime file discovery
   explicit. Formatting, MDX/TypeScript, production build, `git diff --check`, and the 465-file link
+  scan pass.
+- Milestone 2 added seven focused authoring, composition, CLI, CI, and test how-tos plus six public
+  reference pages for the package map, core API, embedding/manifest v1, CLI/JSON v1, reports, and
+  compatibility. Library components stay library-owned while final plan order, connection policy,
+  rendering, and exit behavior remain application-owned. The upstream public build and all 110 unit
+  tests pass; formatting, MDX/TypeScript, production build, `git diff --check`, and the 478-file link
   scan pass.
 
 

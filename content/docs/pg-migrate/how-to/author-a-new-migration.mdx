@@ -1,0 +1,38 @@
+---
+title: "Author the next migration"
+description: "Create one SQL file exclusively, append it to manifest v1 atomically, and preserve applied history."
+---
+
+Use the mounted `new` command instead of hand-editing a manifest and file in two race-prone steps.
+
+```bash
+my-service-migrate new \
+  --manifest migrations/accounts/manifest \
+  --name 0003-add-preferences \
+  --description "Add account preferences"
+```
+
+The `.sql` suffix on `--name` is optional. The description must be one line without control
+characters. The command validates inputs, creates the file exclusively, writes the description as an
+initial SQL comment, and atomically replaces the manifest. It never overwrites an existing file. If
+replacement fails, it removes the new file when possible and reports a structured cleanup failure
+otherwise.
+
+For a consistently zero-padded numeric manifest, omit `--name` to increment the largest prefix while
+preserving width. Irregular basenames require an explicit name. When the next number exceeds the
+established width, choose and review a new naming strategy explicitly.
+
+## Fill, check, and rebuild
+
+```bash
+my-service-migrate check --manifest migrations/accounts/manifest
+cabal build my-service-migrate
+my-service-migrate list --component accounts
+```
+
+Review the SQL, transaction mode, derived identity, and checksum. A new unapplied file may be fixed
+before any environment applies it. Once applied anywhere, never rename, reorder, remove, reformat,
+or change it; append another corrective migration.
+
+`newMigration` and CLI `new` require POSIX because exclusive creation uses the `unix` package. See
+[Embedding and manifest v1](/docs/pg-migrate/reference/embedding-and-manifest-v1).

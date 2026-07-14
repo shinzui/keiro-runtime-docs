@@ -85,7 +85,7 @@ site pointers, and pg-migrate adds an entirely new six-package family.
 | EP-2 | Refresh keiro command replay snapshot and read-model reliability documentation | `docs/plans/41-refresh-keiro-command-replay-snapshot-and-read-model-reliability-documentation.md` | None | EP-1 | Complete |
 | EP-3 | Refresh keiro orchestration delivery and operations reliability documentation | `docs/plans/42-refresh-keiro-orchestration-delivery-and-operations-reliability-documentation.md` | None | EP-2 | Complete |
 | EP-4 | Rebuild keiro-dsl 0.2 authoring and evolution documentation | `docs/plans/43-rebuild-keiro-dsl-0-2-authoring-and-evolution-documentation.md` | None | EP-1, EP-2, EP-3 | Complete |
-| EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | Not Started |
+| EP-5 | Author comprehensive pg-migrate usage and operations documentation | `docs/plans/44-author-comprehensive-pg-migrate-usage-and-operations-documentation.md` | None | None | In Progress |
 | EP-6 | Reconcile runtime migrations kiroku pgmq shibuya and adapters | `docs/plans/45-reconcile-runtime-migrations-kiroku-pgmq-shibuya-and-adapters.md` | EP-5 | EP-2, EP-3 | Not Started |
 | EP-7 | Prepare announcement navigation compatibility and whole-site release gate | `docs/plans/46-prepare-announcement-navigation-compatibility-and-whole-site-release-gate.md` | EP-1, EP-2, EP-3, EP-4, EP-5, EP-6 | None | Not Started |
 
@@ -196,7 +196,7 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] (2026-07-14T18:12:28Z) EP-4 Milestone 3: add task-oriented authoring and evolution guides.
 - [x] (2026-07-14T18:19:23Z) EP-4 Milestone 4: reconcile keiro-dsl across the keiro documentation.
 - [x] (2026-07-14T18:24:38Z) EP-5 Milestone 1: create the pg-migrate section and fresh-database spine.
-- [ ] EP-5 Milestone 2: document authoring, composition, and CLI integration.
+- [x] (2026-07-14T18:34:02Z) EP-5 Milestone 2: document authoring, composition, and CLI integration.
 - [ ] EP-5 Milestone 3: document production execution and recovery.
 - [ ] EP-5 Milestone 4: document predecessor cutovers and practical recipes.
 - [ ] EP-6 Milestone 1: replace old migration guidance with component composition.
@@ -358,3 +358,8 @@ Compare the result against the original vision.
   Readers can now embed exact SQL bytes, construct a component and plan, mount the reusable CLI,
   inspect/apply/verify/rerun it, and append the next migration without runtime discovery. The
   production build and 465-file link scan pass.
+- EP-5 Milestone 2 established the supported authoring and API boundary with seven task guides and
+  six reference pages. It documents library-owned components, application-owned plan and process
+  policy, exact-byte manifests, all eight CLI commands, JSON v1, report and cleanup semantics, and
+  the six-package compatibility surface. The upstream public build and all 110 unit tests pass;
+  the production docs build and 478-file link scan pass.

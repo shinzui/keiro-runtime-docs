@@ -1,0 +1,61 @@
+---
+title: "Export a library-owned migration component"
+description: "Publish exact migration bytes and dependency names from a stable module without owning database execution."
+---
+
+A reusable library should export one `MigrationComponent` construction result. The application—not
+the library—owns the final plan, connection, lock policy, CLI, and deployment.
+
+## Define a stable public module
+
+```haskell
+{-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -fplugin=Database.PostgreSQL.Migrate.Embed.RecompilePlugin #-}
+
+module Accounts.Migrations (accountsMigrations) where
+
+import Data.Set qualified as Set
+import Database.PostgreSQL.Migrate
+import Database.PostgreSQL.Migrate.Embed
+
+accountsMigrations :: Either DefinitionError MigrationComponent
+accountsMigrations =
+  migrationComponentFromEmbeddedSql
+    "accounts"
+    Set.empty
+    $(embedMigrationManifest "migrations/accounts/manifest")
+```
+
+The component name is part of every durable identity. Never rename `accounts` after release. Local
+filenames may repeat across libraries because `accounts/0001` and `billing/0001` remain distinct.
+
+## Declare schema prerequisites by name
+
+If billing creates a foreign key to an accounts-owned table:
+
+```haskell
+billingMigrations =
+  migrationComponentFromEmbeddedSql
+    "billing"
+    (Set.singleton "accounts")
+    $(embedMigrationManifest "migrations/billing/manifest")
+```
+
+Billing states the requirement but does not import or run accounts. The final application must
+supply the concrete `accounts` component earlier in its plan.
+
+## Keep the package boundary honest
+
+- Depend on `pg-migrate` and `pg-migrate-embed`, not `pg-migrate-cli`.
+- Export the validated component result, not file paths or a runtime directory scanner.
+- Include manifest and SQL files in `extra-source-files`.
+- Append releases; never edit an already published migration.
+- Do not import modules containing `Internal`.
+
+## Verify it worked
+
+Compile the library, then have an application resolve `DefinitionError` and include the component in
+a `MigrationPlan`. `plan --component accounts` should show the component and declared dependencies;
+the library should contain no call to `runMigrationPlan`.
+
+Continue with [Compose multiple components](/docs/pg-migrate/how-to/compose-multiple-components).

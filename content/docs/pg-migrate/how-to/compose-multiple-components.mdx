@@ -1,0 +1,52 @@
+---
+title: "Compose multiple migration components"
+description: "Resolve library construction results into one explicit dependency-ordered application plan."
+---
+
+The final application owns the complete plan. Prefer visible source order for a small fixed set of
+components.
+
+```haskell
+import Accounts.Migrations (accountsMigrations)
+import Billing.Migrations (billingMigrations)
+import Data.List.NonEmpty (NonEmpty (..))
+import Database.PostgreSQL.Migrate
+
+applicationPlan :: Either DefinitionError (Either PlanError MigrationPlan)
+applicationPlan = do
+  accounts <- accountsMigrations
+  billing <- billingMigrations
+  pure (migrationPlan (accounts :| [billing]))
+```
+
+`migrationPlan` preserves the listed order and rejects a dependency placed after its consumer. When
+components arrive from a registry and cannot naturally be listed in order, use
+`resolveMigrationPlan`; it performs a stable topological sort and preserves input order among ready,
+unrelated components.
+
+## Handle construction failures before PostgreSQL
+
+Fail initialization on every `DefinitionError` or `PlanError`. Do not continue with a subset.
+
+| Plan error | Required correction |
+| --- | --- |
+| `DuplicateComponentName` | restore one stable owner or assign names before release |
+| `DuplicateMigrationName` | rename the unapplied duplicate within its component |
+| `MissingComponentDependency` | include the concrete component or correct the dependency |
+| `DependencyPlacedAfterConsumer` | reorder explicit input or deliberately use the resolver |
+| `ComponentDependencyCycle` | redesign circular schema ownership |
+
+## Inspect without changing execution scope
+
+```bash
+my-service-migrate plan
+my-service-migrate list
+my-service-migrate plan --component billing
+my-service-migrate list --migration 0001-create-invoices --json
+```
+
+Filters affect display only. `up` always verifies and advances the entire plan. After deployment,
+append within existing components and add new components after their dependencies; never move a
+stored migration between components.
+
+See [Core API](/docs/pg-migrate/reference/core-api).

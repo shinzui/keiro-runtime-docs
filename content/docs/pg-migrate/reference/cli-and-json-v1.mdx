@@ -1,0 +1,65 @@
+---
+title: "CLI and JSON schema v1"
+description: "Reference for the reusable migration command parser, command options, output formats, exit classes, and JSON automation contract."
+---
+
+`Database.PostgreSQL.Migrate.CLI` exports parser, environment, dispatcher, renderers, and public
+command/outcome types.
+
+```haskell
+migrationCommandParser :: MigrationPlan -> Parser MigrationCommand
+cliEnvironment :: Settings.Settings -> MigrationPlan -> RunOptions -> CliEnvironment
+cliEnvironmentWithConnectionProvider
+  :: ConnectionProvider -> MigrationPlan -> RunOptions -> CliEnvironment
+runMigrationCommand :: CliEnvironment -> MigrationCommand -> IO CliOutcome
+
+renderMigrationCommandText :: CliOutcome -> Text
+jsonSchemaVersion :: Int
+renderMigrationCommandJson :: CliOutcome -> Value
+renderHistoryImportJson :: Text -> HistoryImportReport -> Value
+```
+
+## Commands
+
+| Command | Database | Important options |
+| --- | --- | --- |
+| `plan` | no | `--component`, `--migration`, `--json` |
+| `list` | no | `--component`, `--migration`, `--json` |
+| `check` | no | required `--manifest PATH`, `--json` |
+| `status` | yes | display filters, `--database-url`, `--json` |
+| `verify` | yes | display filters, `--database-url`, `--json` |
+| `up` | yes | database, wait, statement-timeout, `--json` |
+| `repair ID` | yes | `--mark-applied` or `--retry`, `--reason`, `--confirm`, execution options |
+| `new` | no | `--manifest`, optional `--name`, required `--description`, `--json` |
+
+Inspection filters affect rendered selection only. Complete validation determines the exit class;
+`up` never exposes a subset target.
+
+Execution overrides are explicit. Lock flags `--wait`, `--no-wait`, and
+`--lock-timeout MILLISECONDS` are mutually exclusive. Timeout flags
+`--statement-timeout MILLISECONDS` and `--no-statement-timeout` are mutually exclusive. Omitted flags
+preserve application defaults. Positive durations are required.
+
+## Exit classes
+
+```haskell
+data ExitClass
+  = ExitSucceeded
+  | ExitVerificationFailed
+  | ExitUsageFailed
+  | ExitExecutionFailed
+```
+
+The host application maps these to process exit codes.
+
+## JSON schema v1
+
+`jsonSchemaVersion == 1`. Every command object contains `schemaVersion`, `command`, and `ok`, plus
+either `data` or structured `error`. Checksums are lowercase exact hex; timestamps are UTC; enum
+spellings, nulls, and array order are stable.
+
+Successful up, repair, and history-import data contains `cleanup_issues`. A non-empty array means the
+primary operation succeeded durably but lock release or statement-timeout restoration needs
+investigation. It must not be reclassified as command failure.
+
+Rendered text and `Show` are diagnostic, not automation protocols.

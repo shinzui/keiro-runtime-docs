@@ -1,0 +1,70 @@
+---
+title: "Integrate the migration CLI"
+description: "Mount all standard commands while retaining application ownership of configuration, output, logging, and process exit."
+---
+
+`pg-migrate-cli` is a library, not a standalone executable. Mount its parser in the same artifact
+that contains the application plan.
+
+## Build the environment
+
+```haskell
+command <- execParser (info (migrationCommandParser plan <**> helper) fullDesc)
+
+let options =
+      withEventHandler emitMigrationEvent
+        $ withStatementTimeout (Just 120)
+        $ withLockWait (WaitFor 30)
+        $ defaultRunOptions
+    environment = cliEnvironment settings plan options
+
+outcome <- runMigrationCommand environment command
+```
+
+Use `cliEnvironmentWithConnectionProvider` when the application has a bracket that can hold one
+dedicated Hasql connection for the whole operation. Never implement the provider by checking out a
+different pool connection per statement.
+
+An explicit `--database-url` overrides the environment default. When omitted, configured runner
+defaults remain in force. `--no-wait`, `--lock-timeout`, and `--wait` explicitly replace lock policy;
+`--statement-timeout` and `--no-statement-timeout` explicitly replace timeout policy.
+
+## Render once and map exits deliberately
+
+```haskell
+case commandOutputFormat command of
+  TextOutput -> Text.IO.putStrLn (renderMigrationCommandText outcome)
+  JsonOutput -> LazyByteString.putStrLn (Aeson.encode (renderMigrationCommandJson outcome))
+
+let exitCode = case exitClass outcome of
+      ExitSucceeded -> ExitSuccess
+      ExitVerificationFailed -> ExitFailure 2
+      ExitUsageFailed -> ExitFailure 64
+      ExitExecutionFailed -> ExitFailure 1
+```
+
+`commandOutputFormat` is an application helper, not part of the library facade. Define it by
+exhaustively matching `MigrationCommand` and extracting `OutputOptions` from each command-specific
+options record. Keeping that match exhaustive makes a new upstream command a compile-time integration
+task instead of silently selecting the wrong renderer.
+
+Text is human diagnostic output. JSON schema v1 is the automation contract; do not parse `Show` or
+rendered text.
+
+## Expose the complete command set
+
+| Command | Database | Contract |
+| --- | --- | --- |
+| `plan` | no | component order and dependencies |
+| `list` | no | declared identity, position, checksum, kind, mode |
+| `check --manifest PATH` | no | authoring membership and exact bytes |
+| `status` | yes | applied, pending, unknown, inconsistent state |
+| `verify` | yes | strict plan/ledger equality including no pending rows |
+| `up` | yes | verify and advance the complete plan |
+| `repair COMPONENT/MIGRATION` | yes | one confirmed nontransactional repair |
+| `new` | no | exclusive file creation plus atomic manifest append |
+
+All support `--json`. Inspection filters never narrow validation or execution, and `up` has no
+component/count/target option.
+
+See [CLI and JSON v1](/docs/pg-migrate/reference/cli-and-json-v1).

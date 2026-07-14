@@ -1,0 +1,104 @@
+---
+title: "Core API"
+description: "Public pg-migrate identifiers, definition and plan constructors, runner options, inspection, execution, repair, and history-import operations."
+---
+
+All common definitions are exported from `Database.PostgreSQL.Migrate`. Identifier, migration,
+component, plan, ledger, provider, repair-request, and evidence values are opaque and created through
+smart constructors.
+
+## Definition and plan construction
+
+```haskell
+componentName :: Text -> Either DefinitionError ComponentName
+migrationName :: Text -> Either DefinitionError MigrationName
+migrationId :: Text -> Text -> Either DefinitionError MigrationId
+migrationFingerprint :: ByteString -> MigrationChecksum
+
+sqlMigration :: Text -> ByteString -> Either DefinitionError Migration
+transactionMigration
+  :: Text -> MigrationChecksum -> Hasql.Transaction.Transaction ()
+  -> Either DefinitionError Migration
+sessionMigration
+  :: Text -> MigrationChecksum -> Hasql.Session.Session ()
+  -> Either DefinitionError Migration
+
+migrationComponent
+  :: Text -> Set Text -> NonEmpty Migration
+  -> Either DefinitionError MigrationComponent
+migrationComponentFromEmbeddedSql
+  :: Text -> Set Text -> NonEmpty (FilePath, ByteString)
+  -> Either DefinitionError MigrationComponent
+
+migrationPlan :: NonEmpty MigrationComponent -> Either PlanError MigrationPlan
+resolveMigrationPlan :: NonEmpty MigrationComponent -> Either PlanError MigrationPlan
+```
+
+Names must be non-empty printable ASCII without `/` or surrounding whitespace and at most 200 UTF-8
+bytes. `migrationPlan` validates already-ordered input; `resolveMigrationPlan` performs a stable
+topological sort. Both reject duplicate owners/names, missing dependencies, and cycles.
+
+## Run options and dedicated connections
+
+```haskell
+defaultRunOptions :: RunOptions
+withLedger :: LedgerConfig -> RunOptions -> RunOptions
+withLockWait :: LockWait -> RunOptions -> RunOptions
+withStatementTimeout :: Maybe NominalDiffTime -> RunOptions -> RunOptions
+withUnknownMigrationsPolicy :: UnknownMigrationsPolicy -> RunOptions -> RunOptions
+withEventHandler :: (MigrationEvent -> IO ()) -> RunOptions -> RunOptions
+
+data LockWait = WaitIndefinitely | WaitFor NominalDiffTime | NoWait
+data UnknownMigrationsPolicy = RejectUnknownMigrations | AllowUnknownMigrations
+
+connectionProvider
+  :: (forall a. (Connection.Connection -> IO a)
+      -> IO (Either Errors.ConnectionError a))
+  -> ConnectionProvider
+connectionProviderFromSettings :: Settings.Settings -> ConnectionProvider
+```
+
+Defaults use the validated `pgmigrate` ledger, project lock key, indefinite wait, no temporary
+statement timeout, unknown-row rejection, and no-op event callback. A provider must bracket one
+dedicated connection for an entire operation.
+
+## Inspection and execution
+
+```haskell
+migrationStatus
+  :: RunOptions -> Settings.Settings -> MigrationPlan
+  -> IO (Either MigrationError StatusReport)
+verifyMigrationPlan
+  :: RunOptions -> Settings.Settings -> MigrationPlan
+  -> IO (Either MigrationError VerificationReport)
+runMigrationPlan
+  :: RunOptions -> Settings.Settings -> MigrationPlan
+  -> IO (Either MigrationError MigrationReport)
+```
+
+`migrationStatusWith`, `verifyMigrationPlanWith`, and `runMigrationPlanWith` accept a
+`ConnectionProvider`. Status honors unknown-row policy. Strict verification always reports unknown
+rows and pending migrations. Execution honors the option policy, locks the whole plan, verifies, and
+advances all pending work in order.
+
+## Repair and history import
+
+```haskell
+repairRequest
+  :: MigrationId -> RepairOperation -> Text -> Confirmation
+  -> Either RepairDefinitionError RepairRequest
+repairMigration
+  :: RunOptions -> ConnectionProvider -> MigrationPlan -> RepairRequest
+  -> IO (Either RepairError RepairReport)
+
+importMigrationHistory
+  :: ImportOptions -> ConnectionProvider -> MigrationPlan -> HistoryImport
+  -> IO (Either HistoryImportError HistoryImportReport)
+```
+
+Repair targets one nontransactional `Running` or `Failed` row and requires explicit confirmation and
+a non-empty reason. Generic import validates a source evidence graph and writes target ledger plus
+audit rows atomically without running migration actions.
+
+`ledgerSchemaVersion == 1` is the database compatibility contract. See [Errors, events, and
+reports](/docs/pg-migrate/reference/errors-events-and-reports).
