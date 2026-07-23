@@ -1,6 +1,6 @@
 ---
 title: "Why SymTransducer, not Decider"
-description: "Why keiro builds the command cycle on keiki's native symbolic-register transducer instead of a decide/evolve façade."
+description: "Why keiro uses keiki's transducer for decision-producing machines while projections remain independent event folds."
 ---
 
 If you have written event-sourced aggregates before, you know the **decide/evolve** pattern: a
@@ -57,13 +57,123 @@ it in a test or at start-up so an unsafe stream fails before it ever corrupts hy
 The *same* transducer can also be rendered as a diagram for review; see keiki's
 [diagrams from one declaration](/docs/keiki/explanation/diagrams-from-one-declaration).
 
-## The payoff: one formalism for the whole framework
+## Where the analogy stops: projections are not transducers
 
-This is the MasterPlan's thesis made concrete. Because an aggregate, a process manager, and a saga
-are all *the same* `SymTransducer` — differing only in what `ci` and `co` are bound to — keiro has
-**one** decision core, **one** persistence story, and **one** mental model across its entire surface.
-A decide/evolve façade would force aggregates into one shape and workflows into another; the native
-transducer lets the command cycle, the read side, and the workflow engine all run the same object.
+This is the migration trap for developers coming from `tan-event-source`. That library put several
+event-sourcing roles behind records with an `evolve` field:
+
+| Legacy role | keiro / keiki role |
+| --- | --- |
+| `Decider.decide` + `Decider.evolve` | An aggregate's `EventStream` contains a `SymTransducer`; the command runner steps it and replay reconstructs its decision state. |
+| `Process.react` / process-manager state | A keiro process manager produces `ProcessManagerAction`s, then runs its own and its targets' commands through their `EventStream` transducers. |
+| `View.evolve` or the view added by `deciderWithView` | An `InlineProjection.apply` or `AsyncProjection.applyRecorded` callback folds events into an application-owned table; a `ReadModel` queries it. |
+
+### Migrating a legacy `TanES.View`
+
+Legacy `TanES.View` is an event fold:
+
+```haskell
+data View e si so = View
+  { initialState :: so
+  , evolve       :: si -> e -> so
+  , isTerminal   :: si -> Bool
+  }
+
+type View' e s = View e s s
+```
+
+Map those responsibilities as follows:
+
+| `TanES.View` responsibility | Keiro replacement |
+| --- | --- |
+| `initialState` | The empty/application-initialized projection table, or an explicitly event-derived rebuild base. |
+| `evolve state event` | `InlineProjection.apply` or `AsyncProjection.applyRecorded`, with the table as the accumulated fold state. |
+| `isTerminal` | Usually no equivalent; subscriptions keep folding later relevant events. Constrain event selection explicitly when a projection truly has a bounded history. |
+| `deciderWithView` | No replacement. Do not attach projection state to the aggregate `EventStream`, state pair, or `RegFile`. |
+
+For example, the fold must branch on the event:
+
+```haskell
+applyOrderSummary :: OrderEvent -> RecordedEvent -> Tx.Transaction ()
+applyOrderSummary event recorded =
+  case event of
+    OrderPlaced payload     -> upsertStatus payload.orderId "placed" recorded
+    PaymentApproved payload -> upsertStatus payload.orderId "paid" recorded
+    OrderPacked payload     -> upsertStatus payload.orderId "packed" recorded
+    OrderShipped payload    -> upsertStatus payload.orderId "shipped" recorded
+    OrderCancelled payload  -> upsertStatus payload.orderId "cancelled" recorded
+```
+
+Replaying those `OrderEvent` values from an empty table is the projection rebuild. No aggregate
+hydration occurs.
+
+### Keiki's generated `View` is a different type
+
+Keiki also uses the word `View`, but `deriveView` generates a vertex witness, a vertex-indexed View
+GADT, and a function like:
+
+```haskell
+userView :: SUserVertex v -> RegFile UserRegRegs -> UserView v
+```
+
+That function is a typed accessor over **current machine state**. It is not `TanES.View`: it has no
+event input, no initial projection state, and no event fold. It is also not a Keiro projection or
+read model. Because it is derived from the vertex and register declarations, transducer evolution
+can change its API; that coupling is intentional for machine-local presentation and disqualifies it
+as a durable read-model contract.
+
+The shared word *evolve* did not make those jobs the same. A transducer's control state and
+`RegFile` are **write-side decision state**. They must be reconstructible from one event stream and
+remain compatible with the machine's replay and snapshot rules. Projection state is **derived read
+data**. It may combine many entity streams, filter events, denormalize rows, and change or rebuild on
+its own schedule.
+
+Keiro therefore never models a projection as a `SymTransducer` and never stores projection data in
+the transducer's `RegFile`. Coupling them would make an unrelated read-model change part of the
+aggregate machine's register shape and snapshot lifecycle. It would also force a category-wide or
+global projection into the lifecycle of one entity stream.
+
+```mermaid
+flowchart LR
+  Command --> Machine["aggregate SymTransducer"]
+  Machine --> Events["domain events"]
+  Events --> Log[("event log")]
+  Events --> Inline["InlineProjection.apply"]
+  Log --> Async["AsyncProjection.applyRecorded"]
+  Inline --> Table[("application read table")]
+  Async --> Table
+```
+
+`runCommandWithProjections` takes a `ValidatedEventStream`, but only because it first runs the
+**command-producing** half of this diagram. After the append has recorded the outputs, the
+projection half receives event values and recorded-event metadata; it does not step or evolve the
+machine.
+
+<Callout type="info">
+Use a transducer when the component accepts or rejects an input and emits durable outputs that
+reconstitute its decision state. Use a projection when recorded events are being folded into
+discardable, rebuildable query data. If you need a pure projection fold in a unit test, write an
+ordinary fold over the events; do not introduce a `SymTransducer`.
+</Callout>
+
+<Callout type="warn">
+  If a projection needs a value that exists only in `RegFile`, the projection is not replayable.
+  Put the required fact in the durable event schema (with historical upcasting where necessary)
+  instead of reading the current aggregate or its snapshot.
+</Callout>
+
+For the projection lifecycle and its independent evolution boundary, see
+[Projections, read models, and snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots).
+
+## The payoff: one formalism for decision-producing machines
+
+Aggregates and the event-sourced state machines driven by process managers use the same
+`SymTransducer` decision core, differing in what `ci` and `co` mean. They share command handling,
+replay, validation, and snapshot semantics. A decide/evolve façade would split those semantics
+across hand-written functions; the native transducer keeps them in one object.
+
+That unification is intentionally narrower than "everything is a transducer." Projections, read
+models, routers, and runtime delivery mechanics keep APIs suited to their jobs.
 
 For the record that marries a transducer to its codec and store wiring, see the
 [Event stream and Stream handle reference](/docs/keiro/reference/event-stream-and-stream); for the

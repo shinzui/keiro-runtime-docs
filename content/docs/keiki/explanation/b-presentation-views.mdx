@@ -1,6 +1,6 @@
 ---
-title: "B-presentation views"
-description: "Vertex-indexed projections that expose only the slots live at each control vertex — derived from the complete register file with deriveView."
+title: "B-presentation machine-state views"
+description: "Vertex-indexed accessors over an already-hydrated RegFile—not event projections or read models."
 ---
 
 A keiki (継起) aggregate has two layers of memory.
@@ -8,18 +8,29 @@ A keiki (継起) aggregate has two layers of memory.
 - The **register file** is the *C-foundation*: complete memory, every slot, all the time. At any
   given control vertex some of those slots are uninitialised — the order's `cancelledAt` means
   nothing until the order is cancelled — but the slot is still *there* in the type.
-- A **B-presentation view** is a vertex-indexed projection over that foundation. It exposes **only**
+- A **B-presentation view** is a vertex-indexed accessor over that foundation. It exposes **only**
   the slots that are live at one vertex, and nothing else. At `Confirmed`, the view shows the email
   and the confirmation time; it does not show — cannot show — the deletion time.
 
 The view is opt-in and strictly downstream of the transducer: nothing in the transducer itself
-references a view. It is a reader's convenience and a type-level safety net, derived from the same
-slot list the machine runs on.
+references a view. It is a machine-local presentation and a type-level safety net, derived from the
+same slot list the machine runs on.
+
+<Callout type="warn">
+  A B-presentation view is **not an event-sourcing projection** and is **not a read model**. Its
+  input is an already-hydrated Keiki `RegFile`, not an event. It cannot rebuild application data
+  from an event log and must never be used as the source of truth for a Keiro projection.
+
+  It is deliberately coupled to machine state: changing or removing a register slot can change or
+  break the generated view and its consumers. Use `deriveView` only when code intentionally wants a
+  version-coupled view of the current transducer state.
+</Callout>
 
 ## What `deriveView` emits
 
 From the vertex enum, the register-file slot list, and a per-vertex spec of live slot names,
-`deriveView` emits three things. The splice signature:
+`deriveView` emits three things. The final string names the machine-view accessor; older source
+comments call it a projection function:
 
 ```haskell
 deriveView ::
@@ -27,7 +38,7 @@ deriveView ::
     Name ->              -- register-file slot list, e.g. ''UserRegRegs
     String ->            -- name of the singletons GADT, e.g. "SUserVertex"
     String ->            -- name of the View GADT, e.g. "UserView"
-    String ->            -- name of the projection function, e.g. "userView"
+    String ->            -- name of the machine-view accessor, e.g. "userView"
     [(String, [String])] -> -- per-vertex: (vertex ctor name, live slot names)
     Q [Dec]
 ```
@@ -51,7 +62,7 @@ $(deriveView ''Vertex ''UserRegRegs
 
 One constructor per vertex, each carrying the promoted vertex type as its index — `SPotentialCustomer
 :: SUserVertex 'PotentialCustomer`, `SConfirmed :: SUserVertex 'Confirmed`, and so on. This is the
-term-level witness that selects *which* vertex you are projecting at.
+term-level witness that selects *which* machine vertex you are viewing.
 </Step>
 
 <Step>
@@ -68,7 +79,7 @@ A vertex with no live slots gets a nullary constructor — `PotentialCustomerV`.
 </Step>
 
 <Step>
-### The projection function
+### The machine-view accessor
 
 ```haskell
 userView :: SUserVertex v -> RegFile rs -> UserView v
@@ -102,11 +113,11 @@ the View GADT's constructors, which all live in one type.
 
 ### It ignores stale slots — safely
 
-The projection reads only the slots named in that vertex's spec. It never forces a slot outside the
+The accessor reads only the slots named in that vertex's spec. It never forces a slot outside the
 spec. This matters because the empty register file pre-binds every slot to a deferred `error
 "uninit: <slot>"` thunk — reads of an uninitialised slot crash with a targeted message rather than a
-silent bottom. Because the projection never touches the slots it was not asked for, projecting from a
-register file whose *other* slots are bottom is perfectly safe.
+silent bottom. Because the accessor never touches the slots it was not asked for, reading from a
+register file whose *other* slots are bottom is safe.
 
 `UserRegistrationViewSpec` (`jitsurei/test/Jitsurei/UserRegistrationViewSpec.hs`) pins this directly.
 It builds a register file where three slots are explicit `error` thunks and only `email` and
@@ -124,7 +135,7 @@ userView SConfirmed partial
   `shouldBe` ConfirmedV "alice@x" (t 100)
 ```
 
-The projection succeeds. It never forced `confirmCode`, `registeredAt`, or `deletedAt`, so their
+The view read succeeds. It never forced `confirmCode`, `registeredAt`, or `deletedAt`, so their
 bottoms never fire.
 
 ### Reading a wrong-vertex field is a compile-time error
@@ -137,9 +148,9 @@ you cannot ship.
 
 <Callout type="info">
 This is the payoff of separating the C-foundation from the B-presentation. The transducer runs on
-the complete register file, so a single edge can write any slot it needs. Readers see the
-vertex-narrowed view, so they can only ask for what is meaningfully there. One memory model, two
-presentations.
+the complete register file, so a single edge can write any slot it needs. Machine-local code can
+request the vertex-narrowed view, so it can only ask for what is meaningfully there. Durable queries
+still use event-fed Keiro projections and read models.
 </Callout>
 
 <Cards>

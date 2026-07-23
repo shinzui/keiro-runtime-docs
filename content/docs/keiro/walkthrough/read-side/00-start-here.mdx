@@ -1,17 +1,23 @@
 ---
 title: "00 — Start here"
-description: "An ordered, source-faithful tour of keiro's read side: the snapshot codec and the (state, registers) pair, snapshots in the command and hydration path, the read-model query path, and the two projection flavors."
+description: "A source tour of event-folded read models and the separate write-side snapshot cache."
 ---
 
-This is an **ordered source tour** of keiro's read side. It reads the real Haskell in
+This is an **ordered source tour** of two deliberately separate subsystems: event-folded read
+models, and the write-side snapshot cache used by command hydration. It reads the real Haskell in
 `keiro/src/Keiro/Snapshot/Codec.hs`, `keiro/src/Keiro/Snapshot.hs`,
 `keiro/src/Keiro/Snapshot/Schema.hs`, `keiro-core/src/Keiro/Snapshot/Policy.hs`,
 `keiro/src/Keiro/Command.hs`, `keiro/src/Keiro/ReadModel.hs`,
 `keiro/src/Keiro/ReadModel/Schema.hs`, `keiro/src/Keiro/ReadModel/Rebuild.hs`, and
-`keiro/src/Keiro/Projection.hs`, and explains *why* the code is shaped the way it is. Read the
-chapters in order: the snapshot vocabulary from chapters 01–02 is used by the later chapters.
+`keiro/src/Keiro/Projection.hs`, and explains *why* the code is shaped the way it is.
 
-## The thing this tour is built around: the `(state, registers)` pair
+<Callout type="warn">
+  Do not connect the two subsystems. A projection/read model folds stored events. It never reads the
+  Keiki `RegFile`, calls `deriveView`, or starts from `keiro_snapshots`. Chapters 01–02 explain an
+  aggregate command-hydration optimization; chapters 03–04 explain the read side.
+</Callout>
+
+## Write-side cache: the `(state, registers)` pair
 
 keiro's decision core is a **keiki `SymTransducer`** — a pure symbolic-register finite-state
 transducer. As events apply, it threads **two** pieces of runtime, not one:
@@ -27,14 +33,14 @@ runtime threaded alongside it. `Keiki.stepEither` takes the **pair** `(s, RegFil
 returns the next pair plus emitted events; keiro's command path calls it as
 `Keiki.stepEither (eventStream ^. #transducer) (state current, registers current) command`.
 
-<Callout type="warn">
-**The thesis of this tour.** A snapshot is the cache that serializes that whole pair at a known
+<Callout type="info">
+A snapshot is the cache that serializes that whole pair at a known
 stream version so hydration can resume there instead of replaying every event. Because the register
 file is *independent* runtime, a snapshot that persisted only the folded control state `s` and
 dropped the registers `rs` would silently **corrupt** hydration — the restored machine would resume
 with empty or garbage registers and make wrong decisions. keiro's snapshot codec therefore encodes
 **both** halves as JSON `{ "state": …, "registers": … }`, and the read-back path decodes both before
-seeding the replay. The snapshot chapters make this their spine.
+seeding aggregate replay. This state is never passed to a projection.
 </Callout>
 
 For the full model of what these registers are — the `SymTransducer` and how `Keiki.step` threads
@@ -57,10 +63,10 @@ flowchart LR
   Async -. "Applied / Duplicate / Fenced" .-> RM
 ```
 
-A **snapshot** is a cache on the *write* side that speeds hydration; a **read model** is an explicitly
-registered query over a schema-qualified application table; a **projection** is the verb that writes
-that table — inline in the append transaction, or async through the dedup-and-fence transaction an
-application-owned worker drives.
+A **snapshot** is a cache on the *write* side that speeds command hydration. A **read model** is an
+explicitly registered query over a schema-qualified application table. A **projection** is the
+event fold that writes that table—inline in the append transaction, or asynchronously through the
+dedup-and-fence transaction an application-owned worker drives.
 
 ## The chapters
 

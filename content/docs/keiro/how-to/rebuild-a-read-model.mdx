@@ -7,6 +7,13 @@ Use this procedure after changing a read model's table shape or projection logic
 destructive, in-place rebuild: queries become unavailable, live writers are fenced, and the
 designated rebuilder repopulates the same qualified application table.
 
+<Callout type="info">
+  Rebuild is an event fold. The designated rebuilder reads ordered events from the Kiroku log and
+  applies the same projection logic used during live delivery. It must not hydrate aggregates,
+  inspect Keiki `RegFile`, use a `deriveView` machine-state view, or seed itself from a Keiro
+  aggregate snapshot.
+</Callout>
+
 <Callout type="warn">
   There is no shadow table or online cutover. Plan an availability window. `runQuery` returns
   `ReadModelNotLive` from `startRebuild` until a successful `finishRebuild`.
@@ -17,8 +24,9 @@ designated rebuilder repopulates the same qualified application table.
 1. Deploy the application-table migration in the model's declared `schema`.
 2. Update the `ReadModel` definition's `version` and/or `shapeHash` and keep all SQL schema-qualified.
 3. Identify every `AsyncProjection.name` that feeds the model.
-4. Choose `replayFrom`. Use `GlobalPosition 0` for a full rebuild unless you have a separately
-   verified base state covering an earlier prefix.
+4. Choose `replayFrom`. Use `GlobalPosition 0` for a full rebuild unless the projection owns a
+   separately verified, event-derived base state covering an earlier prefix. An aggregate
+   `(state, RegFile)` snapshot is never such a base.
 5. Ensure startup normally calls `registerReadModel`; queries never register automatically.
 
 For the examples below:
@@ -63,7 +71,8 @@ Do not checkpoint the fenced event. It must remain available after promotion.
 
 ## 3. Replay through the rebuild-only entry point
 
-The designated rebuilder reads the relevant events from `replayFrom` and runs each through:
+The designated rebuilder reads the relevant recorded events from the Kiroku log at `replayFrom` and
+runs each through:
 
 ```haskell
 outcome <- runTransaction $
@@ -78,6 +87,11 @@ case outcome of
 `applyAsyncProjectionUnfenced` bypasses registry status but retains dedup insertion and atomic table
 application. It is exclusively for rebuild replay. The application still owns event selection,
 batching, and checkpoint advancement; Keiro does not run a replay worker for you.
+
+The projection callback must derive its update from the event, recorded metadata, and rows produced
+by earlier events. If replay requires a value found only in the current Keiki register file, stop:
+the event history is missing part of the projection contract. Add/version the required event data
+and historical upcasting before treating the model as rebuildable.
 
 After reaching the intended head, verify the application table and the subscription cursor. The
 promotion guard detects the especially dangerous “non-empty log, zero applications” case, but it

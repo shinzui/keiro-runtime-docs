@@ -3,25 +3,67 @@ title: "Projections, read models, and snapshots"
 description: "Separate the read-side verb, the queryable noun, and the hydration cache—and understand their different correctness boundaries."
 ---
 
-Keiro's read side has three related primitives. A **projection** is the verb that folds events into
-derived application data. A **read model** is the named, registered noun that queries that data. A
-**snapshot** is an advisory cache used only to accelerate aggregate hydration.
+Keiro has two read-side primitives and one nearby write-side cache. A **projection** is a fold over
+ordered events. A **read model** is the queryable result materialized by that fold. A **snapshot**
+is not read-side data at all: it is an advisory cache used only to accelerate aggregate command
+hydration.
+
+<Callout type="warn">
+**The event log is the source of truth for every projection and read model.** A projection may use
+the decoded event, its `RecordedEvent` metadata, and the read-model rows accumulated by earlier
+events. It must never use Keiki's `RegFile`, a Keiro `SnapshotSeed`, or a `deriveView` machine-state
+view. Projection replay does not hydrate the aggregate.
+</Callout>
+
+## The rebuildability invariant
+
+For an initial projection state `p0` and ordered events `[e1, e2, …, en]`, a projection has the
+ordinary fold shape:
+
+```haskell
+projectAll = foldl' applyEvent p0
+```
+
+Keiro's SQL callbacks implement the same fold incrementally: the application table is the
+accumulator, and each event performs one transactional update. Inline and asynchronous delivery
+change *when* `applyEvent` runs, not what its inputs are.
+
+A projection is rebuildable when truncating its derived table and folding the selected event
+history again produces the intended model. If an old event does not contain a fact the projection
+needs, the register snapshot is not a fallback: evolve the event schema and its historical
+upcasters, or define another durable event-backed source. Keiki's replay validation proves that the
+aggregate machine can reconstruct its own `(state, RegFile)`; it does not prove that every
+application read model has enough event data.
+
+| Component | Source of truth | May feed a projection rebuild? |
+| --- | --- | --- |
+| Kiroku event log | Stored domain events in order | **Yes — this is the input.** |
+| Projection table | Accumulator derived from earlier events | Recreated or reset by the rebuild. |
+| Keiki `RegFile` / `deriveView` | Current aggregate decision state | **No.** |
+| Keiro `(state, RegFile)` snapshot | Disposable aggregate-hydration cache | **No.** |
 
 ```mermaid
 flowchart LR
-  Cmd["command"] --> Append[("event log")]
-  Cmd -- "same transaction" --> Inline["inline projection"]
+  Cmd["command"] --> Machine["Keiki transducer"]
+  Machine --> Events["emitted events"]
+  Events --> Append[("event log — durable truth")]
+  Events -- "same transaction" --> Inline["inline event fold"]
   Inline --> Table[("qualified application table")]
-  Append -- "subscription" --> Live["live async projection"]
+  Append -- "subscription / replay" --> Live["async event fold"]
   Live -- "Applied / Duplicate / Fenced" --> Table
   Table --> RM["registered read model query"]
-  Append -. "hydration fast path" .-> Snapshot[("snapshot cache")]
+  Append --> Hydrate["aggregate replay"]
+  Hydrate -. "write-side cache only" .-> Snapshot[("(state, RegFile) snapshot")]
+  Snapshot -. "command hydration only" .-> Machine
 ```
 
 ## Projection: the writer
 
 An `InlineProjection` runs inside the event append transaction. If its table update fails, the
 events roll back too. This is ideal when the write cost is small and immediate visibility matters.
+`runCommandWithProjections` receives a `ValidatedEventStream` to run the aggregate command, then
+calls `apply :: co -> RecordedEvent -> Transaction ()` for each emitted event. The projection
+callback receives neither the aggregate state nor its register file.
 
 An `AsyncProjection` is driven later by an application-owned Kiroku subscription worker. Keiro
 supplies transactional deduplication and a registry fence, then reports:
@@ -49,11 +91,16 @@ runs the query. Drift and lifecycle state are hard failures because the data is 
 `StrongScope` makes the wait match the worker: `EntireLog` targets `$all`, while
 `CategoryHead category` targets only the latest event originating in that category.
 
+The read model is derived state, not a second authority. Its registry identity prevents the runtime
+from serving a table whose declared shape is unknown, while rebuild restores its contents from
+events.
+
 ## Snapshot: the disposable hydration cache
 
 A snapshot stores one aggregate's folded `(state, registers)` at a stream version. Application
-queries never read it. A missing, incompatible, or undecodable snapshot falls back to replaying the
-event log; correctness is unchanged and only hydration latency suffers.
+queries and projection callbacks never read it. Projection rebuild never reads it. A missing,
+incompatible, or undecodable snapshot falls back to replaying the event log; correctness is
+unchanged and only command-hydration latency suffers.
 
 That contrasts deliberately with a read model:
 
@@ -67,9 +114,10 @@ That contrasts deliberately with a read model:
 
 `startRebuild` changes the registry to `Rebuilding`, truncates the qualified table, clears only the
 named projection dedup keys, and resets the subscription cursor in one transaction. Live writers
-then return `AsyncFenced`. The rebuilder alone uses `applyAsyncProjectionUnfenced`, verifies the
-result, and calls guarded `finishRebuild`. This is an offline in-place workflow, not a shadow-table
-swap.
+then return `AsyncFenced`. The rebuilder reads ordered events from the chosen log position and uses
+`applyAsyncProjectionUnfenced` for each one, verifies the result, and calls guarded
+`finishRebuild`. It never hydrates an aggregate or consults `keiro_snapshots`. This is an offline
+in-place workflow, not a shadow-table swap.
 
 Continue with [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots), build
 the runtime path in [Your first read model](/docs/keiro/tutorials/your-first-read-model), or declare

@@ -1,20 +1,20 @@
 ---
-title: "Project a per-vertex read view"
-description: "Use deriveView to generate a read model that exposes only the slots each control vertex actually uses."
+title: "Inspect a per-vertex machine-state view"
+description: "Use deriveView for a typed, version-coupled view of an already-hydrated RegFile."
 ---
 
-A cookbook recipe is a short, copy-paste solution to one problem. Here: expose a read model
-whose fields vary by control vertex.
+A cookbook recipe is a short, copy-paste solution to one problem. Here: inspect current machine
+state while exposing only the registers live at one control vertex.
 
 ## Problem
 
-A reader of a `Confirmed` user should not be able to ask for `cConfirmedAt` on a
-`PotentialCustomer`, where that slot is meaningless. You want a per-vertex read model where the
-type system blocks asking a vertex for a slot it does not have.
+Machine-local code handling a `Confirmed` user should not be able to ask for `cConfirmedAt` on a
+`PotentialCustomer`, where that slot is meaningless. You want a typed presentation of the current
+`RegFile` where the type system blocks asking a vertex for a slot it does not have.
 
 ## Solution
 
-`deriveView` generates a singleton, a view sum, and a projection function from the shared
+`deriveView` generates a singleton, a view sum, and an accessor function from the shared
 register file. List, per vertex, the "live" slots that vertex exposes.
 
 ```haskell
@@ -27,15 +27,15 @@ $(deriveView ''Vertex ''UserRegRegs
     , ("Deleted",              ["email", "deletedAt"])
     ])
 
--- Pattern-matching on the projected view yields only the live slots:
+-- Pattern-matching on the machine-state view yields only the live slots:
 --   userView SConfirmed regs  ==>  ConfirmedV { cEmail = …, cConfirmedAt = … }
 -- Asking SPotentialCustomer for cConfirmedAt does not type-check.
 ```
 
-<Callout type="info">
-  "jitsurei" (実例) is the family's word for a runnable worked example. Both
-  `Jitsurei.UserRegistration` and `Jitsurei.LoanApplication` derive their views exactly this
-  way.
+<Callout type="warn">
+  This recipe does **not** build a projection or read model. `userView` requires the current Keiki
+  `RegFile`; it cannot fold or replay an event log. Do not use it from `InlineProjection`,
+  `AsyncProjection`, a read-model query, or a projection rebuild.
 </Callout>
 
 ## How it works
@@ -43,8 +43,12 @@ $(deriveView ''Vertex ''UserRegRegs
 The splice emits one `UserView` constructor per vertex carrying record selectors for that
 vertex's live slots only, plus a singleton (`SUserVertex`) that ties the term-level vertex to
 the type-level view, and `userView :: SUserVertex v -> RegFile UserRegRegs -> UserView`. The
-projection is opt-in and strictly downstream — nothing in the transducer references the view, so
-adding or changing a view never touches `delta`/`omega`.
+accessor is opt-in and downstream: adding a view does not change `delta` or `omega`.
+
+The reverse dependency remains intentional and strong. `deriveView` reifies the transducer's slot
+list, so removing a named slot fails the splice, changing a slot type changes the generated field
+type, and changing the vertex schema can change the generated GADTs. That coupling is acceptable for
+machine-local presentation and unacceptable for a durable projection contract.
 
 The variance is the point: `LoanApplication` exposes `appApplicantId` at `Intake`, then switches
 focus to decision inputs (`appCreditScore`, `appEmploymentVerified`) at `UnderReview`, then to a

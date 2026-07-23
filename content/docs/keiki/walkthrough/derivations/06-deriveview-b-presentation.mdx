@@ -1,14 +1,20 @@
 ---
 title: "06 — deriveView and B-presentation"
-description: "The multi-phase deriveView splice: reifying the vertex enum and slot list, the five validations, and the codegen of a singletons GADT, a per-vertex View GADT, and the projection function."
+description: "How deriveView generates a version-coupled machine-state view from a vertex and RegFile declaration."
 ---
 
-The constructor and wire splices from the last two chapters plumb the *command* and *event* alphabets.
-`deriveView` plumbs a third thing: a **per-vertex projection** of the shared register file. For each
-control vertex it generates a `View` constructor that exposes only the slots that vertex actually uses
-— the "live" slots — so the type system can stop a reader from asking the `PotentialCustomer` view for
-a `confirmedAt` field that does not exist there. This is the *B-presentation*. We read the whole splice
-in `keiki/src/Keiki/Generics/TH.hs`.
+The constructor and wire splices from the last two chapters plumb the *command* and *event*
+alphabets. `deriveView` generates a **per-vertex machine-state view** over the shared register file.
+For each control vertex it emits a `View` constructor exposing only the slots that vertex uses—the
+"live" slots. This is the *B-presentation*. We read the whole splice in
+`keiki/src/Keiki/Generics/TH.hs`.
+
+<Callout type="warn">
+  This generated `View` is not an event-sourcing projection, legacy `TanES.View`, or Keiro read
+  model. Its function has type `SVertex v -> RegFile rs -> View v`: it requires current hydrated
+  machine state and performs no event fold. A register or vertex change can change the generated
+  API, which is why it must not be used as a durable projection contract.
+</Callout>
 
 ## The splice signature
 
@@ -140,7 +146,7 @@ That is why the `Confirmed` vertex's `email` slot surfaces as `cEmail` and its `
 
 The final phase emits eight declarations, in three groups.
 
-<Tabs items={["(a) singletons GADT", "(b) View GADT", "(c) projection"]}>
+<Tabs items={["(a) singletons GADT", "(b) View GADT", "(c) RegFile accessor"]}>
 
 <Tab value="(a) singletons GADT">
 A singletons GADT carries one nullary constructor per vertex, each indexed by the *promoted* vertex
@@ -192,8 +198,8 @@ is indexed by the same promoted vertex, so the index ties a `UserView 'Confirmed
 `ConfirmedV` constructor's fields.
 </Tab>
 
-<Tab value="(c) projection">
-The projection function reads the named slots out of the register file. Its type is
+<Tab value="(c) RegFile accessor">
+The generated accessor reads the named slots out of the register file. Its type is
 `SVertex v -> RegFile rs -> View v`, and each clause matches on the singleton, then for a vertex with
 live slots reads each slot via `(!)` on an `OverloadedLabels` name and folds them onto the View
 constructor:
@@ -219,9 +225,9 @@ it never touches the register file.
 </Tabs>
 
 The eight declarations returned, in order, are: the singletons `DataD`, its `Show` and `Eq`; the View
-`DataD`, its `Show` and `Eq`; and the projection's `SigD` and `FunD`.
+`DataD`, its `Show` and `Eq`; and the accessor's `SigD` and `FunD`.
 
-## Anchor: the projection in action
+## Anchor: the machine-state view in action
 
 The splice invocation in `Jitsurei.UserRegistration` names its three declarations and maps each vertex
 to its live slots:
@@ -237,7 +243,7 @@ $(deriveView ''Vertex ''UserRegRegs
     ])
 ```
 
-`UserRegistrationViewSpec` then confirms the generated projection behaves exactly as the naming and
+`UserRegistrationViewSpec` then confirms the generated accessor behaves exactly as the naming and
 liveness rules predict. The empty vertex projects to a nullary constructor:
 
 ```haskell
@@ -246,7 +252,7 @@ it "projects PotentialCustomer to the empty PotentialCustomerV" $
   userView SPotentialCustomer regs `shouldBe` PotentialCustomerV
 ```
 
-A vertex with live slots projects to a record whose selectors follow the `<prefix><CapitalisedSlot>`
+A vertex with live slots returns a record whose selectors follow the `<prefix><CapitalisedSlot>`
 rule (`cEmail`, `cConfirmedAt`):
 
 ```haskell

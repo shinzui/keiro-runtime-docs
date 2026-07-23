@@ -7,6 +7,12 @@ By the end of this tutorial you will have a small order-summary read model. Its 
 application schema, an inline projection updates it in the event append transaction, and startup
 registers its schema identity before the first query.
 
+<Callout type="warn">
+  The projection in this tutorial folds `OrderEvent` values. It never reads the order transducer's
+  state, Keiki `RegFile`, `deriveView` result, or Keiro aggregate snapshot. That independence is what
+  makes the table rebuildable after the transducer changes.
+</Callout>
+
 <Callout type="info">
   This tutorial starts after [Get started with Keiro](/docs/keiro/tutorials/getting-started): you
   already have a migrated Kiroku/Keiro database and a `ValidatedEventStream` for orders.
@@ -59,6 +65,15 @@ orderSummaryInlineProjection = InlineProjection
       Tx.statement (summaryParams event recorded) upsertOrderSummaryStmt
   }
 
+summaryParams :: OrderEvent -> RecordedEvent -> (OrderId, Text)
+summaryParams event _recorded =
+  case event of
+    OrderPlaced payload     -> (payload.orderId, "placed")
+    PaymentApproved payload -> (payload.orderId, "paid")
+    OrderPacked payload     -> (payload.orderId, "packed")
+    OrderShipped payload    -> (payload.orderId, "shipped")
+    OrderCancelled payload  -> (payload.orderId, "cancelled")
+
 orderSummaryReadModel :: ReadModel OrderId (Maybe Text)
 orderSummaryReadModel = ReadModel
   { name               = "order-summary"
@@ -70,8 +85,14 @@ orderSummaryReadModel = ReadModel
   , defaultConsistency = Eventual
   , strongScope        = EntireLog
   , query              = \orderId -> Tx.statement orderId selectOrderSummaryStmt
-  }
+}
 ```
+
+`summaryParams` is the projection logic: each event maps the previous table accumulator to the next
+one. The example does not ask “what is the aggregate's current register value?” because that answer
+would couple the model to the current transducer and make historical replay version-dependent.
+`RecordedEvent` remains available when the table also needs stable metadata such as event id or
+global position.
 
 The model is inline-only, so `Eventual` is the correct default: its row commits with the event and
 there is no async subscription cursor for `Strong` to wait on. `strongScope` is still an explicit
@@ -120,5 +141,8 @@ After a successful inline command, `summary` sees the committed row without wait
 status fails before the table query runs.
 
 You now have an application-schema read model with explicit startup registration and an atomic
-inline update. Next, use [Choose a consistency mode](/docs/keiro/how-to/choose-a-consistency-mode)
-when moving the projection to an asynchronous worker.
+inline event fold. As a rebuild check, truncate the table in a test, replay the same ordered
+`OrderEvent` history through the projection logic, and assert the same rows—without constructing an
+`EventStream` or loading a snapshot. Next, use [Choose a consistency
+mode](/docs/keiro/how-to/choose-a-consistency-mode) when moving the projection to an asynchronous
+worker.

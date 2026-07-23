@@ -8,6 +8,29 @@ This final chapter reads `keiro/src/Keiro/Projection.hs` and
 [03 — The read-model query path](/docs/keiro/walkthrough/read-side/03-the-read-model-query-path)
 first.
 
+## One input: recorded events
+
+Both projection flavors are folds over events. The read-model table holds the accumulated fold
+state; neither callback can receive aggregate state:
+
+```haskell
+InlineProjection.apply
+  :: co -> RecordedEvent -> Tx.Transaction ()
+
+AsyncProjection.applyRecorded
+  :: RecordedEvent -> Tx.Transaction ()
+```
+
+The `RegFile` constraint visible on `runCommandWithProjections` belongs to the command runner that
+produces `co`. It is not an input to `InlineProjection.apply`. The async API has no transducer or
+register parameter at all.
+
+<Callout type="warn">
+  A projection rebuild resets derived state and folds ordered events again. It never hydrates the
+  aggregate, reads `SnapshotSeed`, or calls a Keiki `deriveView` accessor. If the fold needs a fact
+  that historical events do not carry, the projection is not replayable from its source of truth.
+</Callout>
+
 ## Inline writes ride the append transaction
 
 ```haskell
@@ -107,7 +130,8 @@ and therefore returns `AsyncApplied` or `AsyncDuplicate`; it bypasses only the l
 Live workers must never use it.
 
 Keiro does not select or stream replay events for the application. The rebuilder owns fetching,
-batching, cursor advancement, and domain verification of the reconstructed table.
+batching, cursor advancement, and domain verification of the reconstructed table. Those inputs come
+from the Kiroku event log at `replayFrom`, never from `keiro_snapshots`.
 
 ## `finishRebuild`: guard promotion in the transition transaction
 
