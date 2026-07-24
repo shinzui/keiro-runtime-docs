@@ -39,10 +39,10 @@ hydrateWithSnapshot ::
 ```
 
 `SnapshotNoStream` means Kiroku has no stream id for the name. `SnapshotNotFound` means the stream
-exists but no row matches both the running codec version and shape hash; a missing row and an
-incompatible row intentionally share this outcome. `SnapshotDecodeFailed message` means a compatible
-row existed but its JSON did not decode. `SnapshotHit seed` returns the joint state/register pair and
-the version after which hydration reads.
+exists but no row matches all three components of the running codec's discriminator; a missing row
+and an incompatible row intentionally share this outcome. `SnapshotDecodeFailed message` means a
+compatible row existed but its JSON did not decode. `SnapshotHit seed` returns the joint
+state/register pair and the version after which hydration reads.
 
 `hydrateWithSnapshot` is the compatibility helper that collapses every unavailable result to
 `Nothing`. The command runner uses `lookupSnapshotSeed` so it can record a read hit or miss and count
@@ -73,24 +73,83 @@ Stream validation also forces the codec over `(initialState, initialRegisters)`.
 stream whose initial register file still contains an `uninit: <slot>` thunk is rejected by
 `mkEventStream` before it can accept commands.
 
-## Default codec and compatibility gates
+## Compatibility is a three-component discriminator
+
+```haskell
+data StateCodec state = StateCodec
+  { stateCodecVersion :: !Int
+  , shapeHash         :: !Text
+  , stateShapeHash    :: !Text
+  , encode            :: !(state -> Value)
+  , decode            :: !(Value -> Either Text state)
+  }
+```
+
+A stored snapshot is loaded only when **all three** discriminator components match the running codec.
+They have distinct jobs:
+
+| Component | Identifies | Who maintains it |
+|---|---|---|
+| `stateCodecVersion` | the snapshot *encoding*, and any fold change nothing else can see | you, by hand |
+| `shapeHash` | the **register-file layout** | derived by `defaultStateCodec` |
+| `stateShapeHash` | the **control-state datatype**, optionally composed with a fold fingerprint | derived by `defaultStateCodec`; extended by `withFoldFingerprint` |
+
+A mismatch on any component is an ordinary cache **miss**: the stream full-replays from version 0 and
+may then replace the row with a seed produced by the current codec. Misses are a performance event,
+not a correctness event.
 
 ```haskell
 defaultStateCodec ::
   forall rs s.
-  (FromJSON s, KnownRegFileShape rs, RegFileToJSON rs, ToJSON s) =>
+  (CanonicalStateShape s, FromJSON s, KnownRegFileShape rs, RegFileToJSON rs, ToJSON s) =>
   Int -> StateCodec (s, RegFile rs)
+
+withFoldFingerprint :: Text -> StateCodec state -> StateCodec state
 ```
 
 The default codec writes JSON shaped as `{ "state": ..., "registers": ... }`. Its caller-supplied
-`Int` becomes `stateCodecVersion`; its `shapeHash` comes from keiki's stable register-file shape.
-A stored snapshot is eligible only when **both** values match the running codec. Bump the explicit
-version when state encoding changes in a way the register shape cannot capture.
+`Int` becomes `stateCodecVersion`; `shapeHash` comes from keiki's stable register-file shape and
+`stateShapeHash` from keiki's `CanonicalStateShape` over the control-state datatype and constructor
+structure.
+
+`withFoldFingerprint` composes a caller-owned fold identity into the control-state component, in the
+operator-readable form:
+
+```text
+<state-shape-hash>;fold=<fingerprint>
+```
+
+`keiro-dsl`-generated snapshot codecs use it automatically, lowering a deterministic fingerprint of
+the spec-visible replay surface — state order and terminality, register types and initials,
+transition **modes**, guards, writes, emits, targets, and transitively referenced rule bodies. Edit
+any of those and the fingerprint changes, so every old seed misses and full-replays under the new
+fold.
+
+<Callout type="warn">
+**The manual clause is load-bearing.** Hand-written guard and `update` function bodies — and logic
+changed only inside a generated service's hand-owned Holes module — are not structurally inspectable
+and do not move any derived hash. Change one without bumping `stateCodecVersion` (or updating a
+maintained `withFoldFingerprint` token) and the old seed still matches: tail-only replay derives state
+a full replay would never reach, and post-append verification may persist that stale-derived state at
+the new head version. The pre-deploy check is the
+[replay audit](/docs/keiro/reference/replay-audit); the runtime backstop is
+[`seedVerifySampleRate`](/docs/keiro/reference/command#seedverifysamplerate--the-sampled-stale-seed-witness).
+</Callout>
+
+Migration `0019-keiro-snapshots-state-shape-hash.sql` added the third column with an empty-string
+default. No derived hash is ever empty, so every pre-migration row misses exactly once after the
+upgrade, full-replays, and is re-persisted with a real hash. Budget one replay per snapshot-bearing
+stream at cutover.
 
 Keiki 0.2 intentionally changed every non-empty 0.1 register shape hash once by replacing
 module-qualified built-in names with pinned stable names. On upgrade, let the old row miss, replay
 events from the beginning, and write a fresh snapshot. The empty `regfile:0` hash is unchanged. Never
 relabel old snapshot bytes with a new hash.
+
+Two register-side caveats survive: a user-defined slot type using the default `CanonicalTypeName`
+changes its hash when its *defining module moves* (a spurious full replay — pin `canonicalTypeName`
+if that matters), while changing that type's *internal fields* does **not** change the hash, leaving
+you with decode-failure protection only.
 
 ## Policy
 
@@ -127,15 +186,15 @@ writeSnapshotRow ::
 ```
 
 `keiro.keiro_snapshots` holds one row per stream, with `state`, `stream_version`,
-`state_codec_version`, `regfile_shape_hash`, and timestamps. Lookup filters on stream id, codec
-version, and shape hash before decoding.
+`state_codec_version`, `regfile_shape_hash`, `state_shape_hash`, and timestamps. Lookup filters on
+stream id and all three discriminator components before decoding.
 
 The upsert's version rule is conditional:
 
-- With the **same** codec version and shape hash, a lower stream version is ignored. Late work cannot
-  regress a compatible snapshot.
-- With a **different** codec version or shape hash, the row may be replaced even at a lower stream
-  version. That permits a rolled-back deployment to reclaim the single snapshot slot.
+- With the **same** discriminator, a lower stream version is ignored. Late work cannot regress a
+  compatible snapshot.
+- With a **different** discriminator, the row may be replaced even at a lower stream version. That
+  permits a rolled-back deployment to reclaim the single snapshot slot.
 
 During a mixed-version rollout, incompatible writers can therefore replace each other's rows and
 cause repeated misses/full replays. That is performance thrash, not state corruption. Avoid a long
@@ -148,18 +207,21 @@ initial state at stream construction.
 
 | Condition | Event append committed? | Caller-visible result | Fallback / next step | Metric with `KeiroMetrics` |
 |---|---:|---|---|---|
-| No stream, no compatible row, version mismatch, or shape mismatch | Not applicable during lookup | Hydration continues | Full event replay | `keiro.snapshot.read.misses` |
+| No stream, no compatible row, or any discriminator component mismatch | Not applicable during lookup | Hydration continues | Full event replay | `keiro.snapshot.read.misses` |
 | Compatible row does not decode | Not applicable during lookup | Hydration continues | Full event replay; inspect or discard the row | `keiro.snapshot.read.misses` + `keiro.snapshot.decode.failures` |
 | Snapshot-seeded tail replay fails | No new append yet | Seed is abandoned | Full replay determines the authoritative result | Lookup was already counted as a hit; no separate seed-tail counter |
 | Just-appended batch cannot replay | **Yes** | Successful `CommandResult` | Stop further writes and investigate the poisoned stream | `keiro.snapshot.apply.divergence`; span attribute `keiro.replay.divergence` |
 | Post-commit snapshot encode raises `ErrorCall` | **Yes** | Successful `CommandResult` | No snapshot written; a later command may try again | `keiro.snapshot.encode.failures` |
 | Post-commit snapshot store write fails | **Yes** | Successful `CommandResult` | Existing row remains; a later command may try again | `keiro.snapshot.write.failures` |
+| Sampled seed disagrees with full replay through the seed version | Not applicable during lookup | Command unaffected | Investigate a missed `stateCodecVersion` bump; delete the affected rows | `keiro.snapshot.seed.divergence` + a structured stderr log |
 | Initial snapshot encode fails during `mkEventStream` | No | `Left [EventStreamWarning]` | Initialize all persisted registers or fix the codec before startup | None |
 
 `verifyReplayOnAppend` defaults to `True`. Setting it to `False` skips the post-append replay only for
 a stream without a state codec; snapshot-enabled streams always need the fold to compute snapshot
 state.
 
-See [Add a snapshot](/docs/keiro/how-to/add-a-snapshot) for setup and recovery, and
+See [Add a snapshot](/docs/keiro/how-to/add-a-snapshot) for setup and recovery,
 [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots) for why these failures
-are advisory rather than alternate sources of truth.
+are advisory rather than alternate sources of truth, and
+[Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability#changing-the-fold)
+for the procedure when a fold change makes old seeds unsafe.

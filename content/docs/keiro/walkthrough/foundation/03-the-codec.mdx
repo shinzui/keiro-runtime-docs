@@ -24,8 +24,8 @@ value and store it in the `EventStream`; there is no instance resolution.
 ```haskell
 -- keiro-core/src/Keiro/Codec.hs
 data Codec e = Codec
-  { eventTypes :: !(NonEmpty Text)
-  , eventType :: !(e -> Text)
+  { eventTypes :: !(NonEmpty EventType)
+  , eventType :: !(e -> EventType)
   , schemaVersion :: !Int
   , encode :: !(e -> Value)
   , decode :: !(Value -> Either Text e)
@@ -36,8 +36,8 @@ data Codec e = Codec
 
 <TypeTable
   type={{
-    eventTypes: { description: "The complete set of event-type tags this codec owns. Encoding and decoding reject any tag outside this set, so it doubles as the stream's event-type allow-list.", type: "!(NonEmpty Text)" },
-    eventType: { description: "Projects a domain value to its wire tag (must land in eventTypes).", type: "!(e -> Text)" },
+    eventTypes: { description: "The complete set of event-type tags this codec owns. Encoding and decoding reject any tag outside this set, so it doubles as the stream's event-type allow-list.", type: "!(NonEmpty EventType)" },
+    eventType: { description: "Projects a domain value to its wire tag (must land in eventTypes).", type: "!(e -> EventType)" },
     schemaVersion: { description: "The current payload version; must be >= 1. Stamped into metadata on append and used as the migration target on read.", type: "!Int" },
     encode: { description: "Current-version JSON serialization.", type: "!(e -> Value)" },
     decode: { description: "Current-version JSON deserialization. Only ever sees payloads already migrated to schemaVersion.", type: "!(Value -> Either Text e)" },
@@ -139,18 +139,22 @@ rung that rejects its input yields `UpcasterError`; a source version below `1` y
 -- jitsurei/src/Jitsurei/OrderStream.hs
 orderCodec :: Codec OrderEvent
 orderCodec = Codec
-  { eventTypes = "OrderPlaced" :| ["PaymentApproved", "OrderPacked", "OrderShipped", "OrderCancelled"]
+  { eventTypes = EventType "OrderPlaced"
+                   :| [ EventType "PaymentApproved", EventType "OrderPacked"
+                      , EventType "OrderShipped",    EventType "OrderCancelled" ]
   , eventType = …
   , schemaVersion = 2
   , encode = …
   , decode = parseOrderEvent
-  , upcasters = [(1, upcastOrderPlacedV1)]
+  , upcasters = [(1, const upcastOrderPlacedV1)]
   }
 ```
 
-`schemaVersion = 2` means new events are written at version 2; the single rung `(1, upcastOrderPlacedV1)`
-brings a stored version-1 payload up to version 2 before `parseOrderEvent` runs. The `eventTypes`
-`NonEmpty` is the allow-list: a recorded event tagged with anything else is rejected on read.
+`schemaVersion = 2` means new events are written at version 2; the single rung
+`(1, const upcastOrderPlacedV1)` brings a stored version-1 payload up to version 2 before
+`parseOrderEvent` runs. (`const` discards the rung's `EventType` argument, because this rung migrates
+one kind; a generated multi-event rung dispatches on it instead.) The `eventTypes` `NonEmpty` is the
+allow-list: a recorded event tagged with anything else is rejected on read.
 
 <Callout type="info">
   EP-8 already ships the deep codec material. For the full upcaster walk and the schema-evolution

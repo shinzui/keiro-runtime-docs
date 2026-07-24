@@ -1,0 +1,106 @@
+---
+title: "Retire an event type"
+description: "Take an event off the write path without orphaning the history that contains it: the two-stage retiring → deprecated + replay-only protocol, and when the retained edge can finally go."
+---
+
+<Callout type="warn">
+**Decodable is not replayable.** Marking an event `deprecated` keeps its tag decoding, which protects
+only the codec layer. Hydration then replays the decoded event through the transducer, and replay
+needs an edge whose *output inverts* it. Delete the emitting transition and the next command on any
+stream whose history contains that event fails with
+`HydrationReplayFailed HydrationNoInvertingEdge`.
+</Callout>
+
+Upcasters cannot rescue you here: they migrate a payload *within* its stored tag and cannot re-tag an
+old event as a new one. Retirement is therefore a two-stage protocol.
+
+## Stage 1 — mark it `retiring`, keep emitting
+
+```keiro-dsl
+retiring event TransferReservationConfirmed { reservationId hospitalId commandId }
+
+Held -- ConfirmReservation --> write reservationState := Confirmed
+                             ; emit TransferReservationConfirmed
+                             ; goto Confirmed
+```
+
+`retiring` is a declaration of intent, not a behaviour change. The event still has a **live** emitting
+transition, and `check` requires it: `EventRetirementInProgress` is an error if you mark an event
+`retiring` while it has no live emitter. `retiring` and `deprecated` are mutually exclusive.
+
+Ship this, stop routing traffic that produces the event, and let operators terminalize or truncate
+affected streams.
+
+## Stage 2 — cut over to `deprecated` + `replay-only`
+
+At cutover, flip the marker and change the same transition to `replay-only`:
+
+```keiro-dsl
+deprecated event TransferReservationConfirmed { reservationId hospitalId commandId }
+
+replay-only Held -- ConfirmReservation --> write reservationState := Confirmed
+                                         ; emit TransferReservationConfirmed
+                                         ; goto Confirmed
+```
+
+A `replay-only` transition lowers to a keiki `ReplayOnly` edge: never taken by a new command,
+available to inversion when no live edge attributes a stored event. The event leaves the write path
+without losing its fold.
+
+A deprecated event may keep being emitted by a replay-only transition — replay-only transitions are
+*not* the write path, so `DeprecatedEventStillEmitted` does not fire on them.
+
+## What the gates say at each stage
+
+| Spec shape | Diagnostic | Severity | Reading |
+|---|---|---|---|
+| `retiring` with a live emitter | `EventRetirementInProgress` | warning | correct stage 1 |
+| `retiring` with **no** live emitter | `EventRetirementInProgress` | **error** | you skipped stage 1 |
+| `deprecated`, no replay-only emitter | `DeprecatedEventReplayHazard` | warning | stored history may already be unhydratable |
+| `deprecated` + `replay-only` emitter | `EventRetirementInProgress` | warning | correct stage 2; cleanup still owed |
+| `deprecated`, emitted by a **live** transition | `DeprecatedEventStillEmitted` | **error** | it is still on the write path |
+
+`DeprecatedEventReplayHazard` is suppressed when every state of the aggregate is terminal — there are
+then no live streams left to hydrate.
+
+`diff` reports vanished upcaster rungs as BREAKING and distinguishes a hazardous deprecation from the
+replay-safe deprecated-plus-replay-only cutover.
+
+## The variant you cannot ship by accident
+
+Removing the `emit` but keeping the transition leaves an output-free edge that still changes durable
+state. `mkEventStream` force-enables keiki's `StateChangingEpsilon` check, so that shape is **rejected
+at service startup**, not discovered in production. It is the one wrong turn here the runtime catches
+for you.
+
+## Stage 3 — remove the retained edge
+
+Keep the decode arm and the replay-only edge until every affected stream is one of:
+
+- **terminal** — the aggregate reached a final state and takes no further commands;
+- **truncated** behind a covering snapshot, so the event is no longer on the read path; or
+- **proven clear** by a [targeted replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy)
+  reporting zero streams containing the event type.
+
+Only the third is evidence; the first two are conditions the audit confirms. Whether real streams
+still exercise the old edge is a database-backed question, and no static check can answer it.
+
+<Callout type="warn">
+Removing the replay-only edge before that point re-creates exactly the break the protocol prevented.
+So does rolling a deployment back past the cutover.
+</Callout>
+
+Even after the edge goes, keep the **decode arm and its upcaster rungs** for as long as any payload at
+that version can still be read. Upcasters are permanent compatibility code.
+
+## Hand-written services
+
+The same protocol applies without the DSL diagnostics. Build the retained edge with
+`Keiki.Builder.replayOnly` (or `mode = ReplayOnly` on a raw `Edge`), keep the event in the codec's
+`eventTypes` and its `decode` arm, and rely on the replay audit plus an explicit regression test in
+place of `check`/`diff`.
+
+See [Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability#retiring-an-event-type-deprecation-is-not-enough)
+for why the architecture forces this shape, and
+[Tighten a guard with a replay-only twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin)
+for the sibling procedure when a rule narrows rather than an event retiring.

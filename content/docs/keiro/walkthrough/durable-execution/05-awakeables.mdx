@@ -37,8 +37,12 @@ that row; new workflows should use the `AwakeableId` returned by `awakeableNamed
 awakeableNamed (StepName label) = do
   (name, wid) <- currentWorkflow
   gen <- currentRunGeneration
-  aid <- step (StepName (awakeableAllocStepPrefix <> label)) $
-           allocateAwakeableId name wid gen label
+  aid <- step (StepName (awakeableAllocStepPrefix <> label)) $ do
+           allocated <- allocateAwakeableId name wid gen label
+           runTransaction $
+             registerAwakeableTx (awakeableIdToUuid allocated)
+                                 (unWorkflowName name) (unWorkflowId wid)
+           pure allocated
   let stepNm = StepName (awakeableStepPrefix <> awakeableIdText aid)   -- "awk:<uuid>"
       await = awaitCancellable name wid aid stepNm
   pure (aid, await)
@@ -47,6 +51,15 @@ awakeableNamed (StepName label) = do
 It returns the id (hand it to the external system) and an `await` action. The journaled step name is
 `awk:<uuid>` — the awakeable id, not the label, so two awakeables never collide. `awakeable` is the
 ordinal convenience (`ord:N` labels) the module steers you away from.
+
+The registration lives **inside the allocation step's action**, so the `pending` row commits before
+the id can be appended, returned, or handed to anyone. Registering it later — at the await arm — left
+a window where an eager external system could signal an id whose row did not exist yet, and get back
+"unknown id". The arm keeps its own idempotent registration as a **repair path** for historical
+allocations whose journal entry exists without a row.
+
+A crash between row registration and allocation journaling can leave an unreachable pending row.
+That is acceptable: workflow GC removes awakeables by owner coordinates, and the id was never exposed.
 
 ## `awaitCancellable`: the arm that registers a pending row
 
@@ -110,13 +123,17 @@ This is the subtlest function in the module. It must both record the payload **a
 journal entry — two writes that a crash could split. It heals that split:
 
 ```haskell
-signalAwakeable aid result = do
-  mrow <- lookupAwakeable (awakeableIdToUuid aid)
-  case mrow of
-    Nothing -> pure False
-    Just row -> do
+signalAwakeable aid result =
+  lookupAwakeable (awakeableIdToUuid aid) >>= \case
+    Nothing  -> pure False
+    Just row -> signalAwakeableFrom row result
+
+signalAwakeableFrom row result
+  | row ^. #status == Cancelled = pure False
+  | otherwise = do
       now <- liftIO getCurrentTime
-      let ownerName = WorkflowName (row ^. #ownerWorkflowName)
+      let aid       = AwakeableId (row ^. #awakeableId)
+          ownerName = WorkflowName (row ^. #ownerWorkflowName)
           ownerId   = WorkflowId   (row ^. #ownerWorkflowId)
           payload   = if row ^. #status == Completed then row ^. #payload else Just (toJSON result)
       gen <- currentGeneration ownerName ownerId
@@ -124,27 +141,42 @@ signalAwakeable aid result = do
         Nothing -> pure False
         Just payloadValue -> do
           appendTx <- prepareJournalAppend ownerName ownerId gen StepRecorded { ... payloadValue ... }
-          (transitioned, appendOutcome) <- runTransaction $ do
+          (shouldAppend, ...) <- runTransaction $ do
             transitioned <-
               if row ^. #status == Pending
                 then completeAwakeableTx (awakeableIdToUuid aid) (toJSON result) now
                 else pure False
-            appendOutcome <- appendTx
-            condemnOnAppendConflict appendOutcome
-            pure (transitioned, appendOutcome)
-          throwOnAppendConflict appendOutcome
-          pure transitioned
+            -- The read row may be stale. If the guarded UPDATE lost, re-read status
+            -- *inside* this transaction: append only if another signal completed it.
+            ...
 ```
 
 The key insight is the middle guard. The journal entry is **(re-)appended whenever the row is
 `completed`** — using the value just written, or, for an *already*-completed row whose journal append
 never happened before the atomic path existed, the **stored payload**. For a pending row, the row
-transition and journal append now commit in one transaction; for an already-completed row, the
-re-append repairs old wedges. The append path is itself idempotent (deterministic id, duplicate treated
-as success), so the re-append collapses to a no-op once the entry is present. The consequence the
-Haddock flags:
+transition and journal append commit in one transaction; for an already-completed row, the re-append
+repairs old wedges. The append path is itself idempotent (deterministic id, duplicate treated as
+success), so the re-append collapses to a no-op once the entry is present. The consequence the Haddock
+flags:
 
 > A `False` return therefore does not mean "nothing happened": the journal may still have been repaired.
+
+### Why the status is re-read inside the transaction
+
+The row read at the top of `signalAwakeable` happens *before* the transaction opens, so it may be
+stale by the time the guarded `pending → completed` UPDATE runs. Deciding whether to append from that
+pre-transaction snapshot let a concurrent cancel and signal both appear to win: cancellation flipped
+the row while the signal still believed it was `pending`, appended a result, and the workflow then
+both fired compensation **and** received a value.
+
+So the transaction re-reads status when its UPDATE loses, and appends in exactly three cases: it
+performed the transition itself, it is repairing an already-completed row from the stored payload, or
+the in-transaction read shows another *signal* completed the row. If **cancellation** won, it appends
+nothing and returns `False`. Cancellation and completion stay mutually exclusive terminal outcomes
+from the workflow's point of view.
+
+`signalAwakeableFrom` is public purely as a narrow, deterministic race-test seam — it lets a test
+interpose between the initial read and the guarded completion. Ordinary callers use `signalAwakeable`.
 
 `cancelAwakeable` is the simple counterpart — flip a still-`pending` row to `cancelled`, write **no**
 journal entry (there is no result to record), and let the next resume's arm throw. The pending-row

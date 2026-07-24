@@ -232,11 +232,48 @@ idempotent: they pre-check `stepExists` and, on a hit, return the would-be id wi
 deterministic-id-plus-step-lock pattern is why two resume workers can race after a lease expiry and
 converge ([chapter 07](/docs/keiro/walkthrough/durable-execution/07-the-resume-worker)).
 
+## The `Await` miss path consults the step index
+
+The `Await` handler's miss path is not simply "arm and suspend". It first asks the authoritative
+generation-scoped index:
+
+```haskell
+Nothing ->
+  lookupStepResult name wid gen key >>= \case
+    Just stored -> do
+      liftIO (atomicModifyIORef' journalRef (\m -> (Map.insert key stored m, ())))
+      recordWorkflowStepReplayed mMetrics 1
+      decodeStored key stored
+    Nothing -> do
+      renewLease
+      checkCancellationPending name wid gen
+      localSeqUnlift env (\unlift -> unlift arm)
+      throwIO WorkflowSuspend
+```
+
+The in-memory map can omit a wake completion journaled while a snapshotting run was mid-flight, and
+`keiro_workflow_steps` is written transactionally with every append — so the index is the tiebreaker.
+An index hit is treated exactly like a replay hit: inserted into the map, metered, decoded, returned.
+Note that it is checked **before** `checkCancellationPending`, giving a recorded wake result
+settled-history semantics.
+
+`renewLease` appears on both fresh-boundary paths (here, and in the `Step` handler's miss path):
+
+```haskell
+renewLease =
+  for_ (options ^. #leaseHeartbeat) $ \heartbeat -> do
+    renewed <- renewInstanceLease (heartbeat ^. #owner) (heartbeat ^. #ttl) name wid
+    unless renewed (throwIO WorkflowLeaseLost)
+```
+
+Replay hits skip it entirely, so a long replay does no lease traffic.
+
 ## Run options and the active-count gauge
 
-`WorkflowRunOptions` carries the snapshot policy, page size, opt-in metrics/tracer handles, and the
-active patch set; `defaultWorkflowRunOptions` is `Never` / page 100 / no telemetry / no active patches.
-The whole run is bracketed to maintain a process-global live-run gauge:
+`WorkflowRunOptions` carries the snapshot policy, page size, opt-in metrics/tracer handles, the active
+patch set, and the optional `leaseHeartbeat`; `defaultWorkflowRunOptions` is `Never` / page 100 / no
+telemetry / no active patches / no heartbeat. The whole run is bracketed to maintain a process-global
+live-run gauge:
 
 ```haskell
 bracket_

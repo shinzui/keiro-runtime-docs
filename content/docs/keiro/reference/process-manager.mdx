@@ -184,5 +184,40 @@ or ID-less duplicate report only when a point lookup finds the attempted ID in t
 A mismatched ID, cross-stream collision, or non-duplicate error remains the original failure and
 cannot be acknowledged as `PMCommandDuplicate`.
 
+## Evolving a process manager
+
+Two properties of the design above turn an ordinary logic change into a deployment hazard.
+
+**The manager's own state stream is an event stream.** It hydrates through the same
+inversion-and-guard-recheck path as an aggregate, so editing a manager's guards, outputs, writes, or
+transition modes reinterprets its stored history exactly as it would for an aggregate. Everything in
+[Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability) applies —
+including the [replay-only twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin) remedy
+for a tightened guard, and the [audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy) before
+switching traffic.
+
+<Callout type="warn">
+**Deterministic ids make a decide change silently mix old and new fan-out.** If you change *which*
+commands a reaction emits and deploy while source events from the old code are still in the
+redelivery window, a redelivered event dispatches the **new** command under the **same**
+deterministic id — and `confirmBenignDuplicate` correctly reports it as a benign duplicate of the old
+dispatch. The result is a half-old, half-new fan-out with no error anywhere.
+
+Drain the subscription, resolve or explicitly discard its dead letters, deploy, then resume:
+[deploy-ordering rule 4](/docs/keiro/reference/deploy-ordering#4-drain-process-manager-and-router-decide-changes).
+Dead-letter replay has the same property by design — it re-runs the *current* handler against the
+stored source event.
+</Callout>
+
+`keiro-dsl diff` raises the non-breaking `ProcessDecideSurfaceChanged` advisory for spec-visible
+edits, and `ProcessTimerPayloadChanged` when an unversioned timer payload moves. **Hole-only decide
+changes stay invisible to the differ**, so the drain rule is a standing manual obligation whenever
+hand-owned logic changes.
+
+Timer payloads deserve their own note: a `keiro_timers` row stores opaque, unversioned JSON that the
+fire action decodes possibly weeks later under newer code. There is no upcast hook. Keep fire
+decoders backward-compatible with every shape that may still be pending, or drain and re-schedule as
+part of the deploy; otherwise attempts climb until the row is dead-lettered as `Dead`.
+
 See [Run a process manager as a subscription](/docs/keiro/how-to/run-a-process-manager-as-a-subscription)
 and [Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch).

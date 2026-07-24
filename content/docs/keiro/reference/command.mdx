@@ -91,6 +91,7 @@ Knobs for a single command invocation.
     retryBackoffMicros: { type: "Int", description: "Base OCC retry backoff; capped at 100ms and jittered; 0 disables", default: "5000" },
     metrics: { type: "Maybe KeiroMetrics", description: "Optional command/snapshot metrics handle", default: "Nothing" },
     verifyReplayOnAppend: { type: "Bool", description: "Replay each successful append from its pre-command state and report divergence; snapshot-enabled streams fold regardless", default: "True" },
+    seedVerifySampleRate: { type: "Int", description: "Verify one in N accepted snapshot seeds against a full replay through the seed version; 0 disables the witness", default: "1000" },
     tracer: { type: "Maybe Tracer", description: "Optional OpenTelemetry tracer", default: "Nothing" },
     metadata: { type: "Maybe Value", description: "JSON merged into every event's metadata", default: "Nothing" },
   }}
@@ -99,6 +100,7 @@ Knobs for a single command invocation.
 ```haskell
 -- Defaults: 3 retries, 256-event read pages, no caller ids, no-op hook,
 -- 5ms base retry backoff, no metrics, replay verification enabled,
+-- one sampled snapshot-seed verification per 1000 snapshot hits,
 -- no tracer, no metadata.
 defaultRunCommandOptions :: RunCommandOptions
 ```
@@ -119,6 +121,56 @@ Retry behavior:
   `keiro.snapshot.apply.divergence` and the `keiro.replay.divergence` span attribute but still returns
   the successful append result. Setting the option to `False` skips this fold only for a stream
   without a `StateCodec`; snapshot-enabled streams still need the fold to produce snapshot state.
+
+## `seedVerifySampleRate` — the sampled stale-seed witness
+
+A snapshot seed is only served when the three-component
+[snapshot discriminator](/docs/keiro/reference/snapshot#compatibility-is-a-three-component-discriminator)
+matches. That discriminator cannot see a hand-written or Holes-only change to a guard or register
+`update`: if you edit such a body and forget to bump `stateCodecVersion`, the old seed still matches
+and tail-only replay derives state a full replay would never reach.
+
+`seedVerifySampleRate` is the amortized backstop. On an accepted snapshot hit, one hydration in `N`
+(default 1000) spawns a background full replay bounded **through the seed's own stream version** and
+compares RFC 8785 canonical encoded `(state, registers)` against the seed. On disagreement it:
+
+- increments `keiro.snapshot.seed.divergence`; and
+- writes a structured JSON line to stderr carrying `stream`, `seedVersion`, and the seeded and full
+  SHA-256 digests.
+
+It never blocks the command, never fails it, and never writes a snapshot. Set the rate to `1` to
+verify every hit (useful in staging) or `0` to disable the witness. This is a *runtime* backstop; the
+pre-deploy gate is the [replay audit](/docs/keiro/reference/replay-audit).
+
+## Hydration primitives
+
+`Keiro.Command` exports its hydration primitives so audit tooling can compare seeded and full replay
+without going through the command-serving fallback:
+
+```haskell
+data Hydrated rs s = Hydrated
+  { state         :: !s
+  , registers     :: !(RegFile rs)
+  , streamVersion :: !StreamVersion
+  }
+
+hydrate       :: RunCommandOptions -> EventStream phi rs s ci co -> Stream (…) ->
+                 Eff es (Either CommandError (Hydrated rs s))
+hydrateFull   :: RunCommandOptions -> EventStream phi rs s ci co -> Stream (…) ->
+                 Eff es (Either CommandError (Hydrated rs s))
+hydrateSeeded :: RunCommandOptions -> EventStream phi rs s ci co -> Stream (…) ->
+                 s -> RegFile rs -> StreamVersion ->
+                 Eff es (Either CommandError (Hydrated rs s))
+```
+
+`hydrate` and the seed witness need `IOE`; `hydrateFull` and `hydrateSeeded` need only `Store`.
+
+`hydrate` is what the runners call: it tries the snapshot seed and silently falls back to
+`hydrateFull` when seeded replay fails. That fallback is exactly what makes it unsuitable as an audit
+primitive — it hides a stale or unreplayable seed. [`Keiro.ReplayAudit`](/docs/keiro/reference/replay-audit)
+therefore calls `hydrateFull` and `hydrateSeeded` separately and compares the two results.
+
+These take a raw `EventStream`, not a `ValidatedEventStream`; unwrap one with `unvalidated`.
 
 ## `runCommand` — append only
 

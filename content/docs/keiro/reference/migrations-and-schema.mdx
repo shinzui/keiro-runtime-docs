@@ -23,13 +23,22 @@ frameworkMigrationPlan
 connection is acquired. Applications with PGMQ or application-owned components build the larger
 plan with `migrationPlan` or `resolveMigrationPlan`.
 
-The authoritative order is `keiro-migrations/migrations/manifest`. Keiro 0.3 contains eighteen
+The authoritative order is `keiro-migrations/migrations/manifest`. Keiro now contains **twenty**
 component-local migrations. The first sixteen preserve the historical schema changes, `0017` is a
-non-destructive native-runner canary, and `0018` creates the rejected-dispatch dead-letter table.
+non-destructive native-runner canary, `0018` creates the rejected-dispatch dead-letter table, and the
+two newest are:
+
+| Migration | Change | Effect on existing rows |
+|---|---|---|
+| `0019-keiro-snapshots-state-shape-hash.sql` | adds `keiro.keiro_snapshots.state_shape_hash TEXT NOT NULL DEFAULT ''` — the third [snapshot discriminator](/docs/keiro/reference/snapshot#compatibility-is-a-three-component-discriminator) component | no derived hash is ever empty, so every pre-migration row misses **once**, full-replays, and is re-persisted with a real hash |
+| `0020-keiro-workflow-children-failure-reason.sql` | adds `keiro.keiro_workflow_children.failure_reason TEXT NULL` | nothing is backfilled or rewritten; pre-migration failed links fall back to the child instance's `last_error` |
+
+Both are additive `ADD COLUMN IF NOT EXISTS`. Budget one full replay per snapshot-bearing stream at
+the `0019` cutover; snapshots are advisory, so this is a performance event, not a correctness one.
 
 ## Standard CLI
 
-`keiro-migrate` mounts all eight `pg-migrate-cli` commands:
+`keiro-migrate` mounts the `pg-migrate-cli` commands plus two Keiro-owned ones:
 
 ```console
 export DATABASE_URL='host=/tmp port=5432 dbname=service user=service_owner'
@@ -39,20 +48,109 @@ cabal run keiro-migrate -- list
 cabal run keiro-migrate -- check --manifest keiro-migrations/migrations/manifest
 cabal run keiro-migrate -- status
 cabal run keiro-migrate -- verify
+cabal run keiro-migrate -- verify-schema
 cabal run keiro-migrate -- up
+cabal run keiro-migrate -- verify
+cabal run keiro-migrate -- verify-schema
 ```
 
 `new` creates one numeric SQL file and atomically appends it to the manifest. `repair` targets one
 confirmed nontransactional migration. Database commands accept `--database-url`; otherwise the
-executable uses `DATABASE_URL`. Every command supports `--json`.
+executable uses `DATABASE_URL`. The pg-migrate commands support `--json`; `verify-schema` currently
+emits text only.
 
 Execution flags `--no-wait`, `--lock-timeout`, `--wait`, `--statement-timeout`, and
 `--no-statement-timeout` override the application defaults only when present. The combined plan uses
 one dedicated connection and one target advisory lock for the full operation.
 
-`verify` compares the embedded plan with ledger v1. It is not a live-schema snapshot comparison.
+### `verify` versus `verify-schema`
+
+They answer different questions, and a deployment gate should run **both**.
+
+- **`verify`** is the strict plan-versus-ledger gate: it compares the embedded plan with ledger v1 and
+  rejects pending, changed, reordered, repaired, or unknown migration history. It never looks at live
+  objects.
+- **`verify-schema`** compares the **live** tables, columns, constraints, and indexes in the `keiro`
+  schema against an embedded PostgreSQL 18 expected snapshot. Run it after restores and cutovers, and
+  alongside `verify` in deployment, so a clean ledger cannot conceal live object drift.
+
 Use the [pg-migrate deployment runbook](/docs/pg-migrate/how-to/deploy-a-migration-plan) for the
 preflight/apply/post-verify gate.
+
+### `import-codd-history`
+
+`keiro-migrate import-codd-history` mounts the one-time codd cutover described
+[below](#legacy-codd-history) as a first-class command: `--database-url`, `--source-database-url`
+(defaults to the target), `--source-lock-key`, a required `--reason`, `--confirm`, and `--json`.
+
+`up` also runs a **codd-ledger preflight**: if a `codd.sql_migrations` table exists while
+`pgmigrate.migrations` is absent or empty, `up` refuses rather than initializing fresh native history
+over a retired codd ledger. Override it deliberately with `--allow-fresh-ledger-over-codd`, which
+applies to `up` only.
+
+## Startup handshake
+
+Running migrations as a deployment job is necessary but not sufficient: a replica can still start
+before the job reaches its database. Every replica should perform a read-only boot check and refuse to
+serve until the database carries the complete plan its binary expects.
+
+```haskell
+import Keiro.Migrations
+
+guardMigrations :: ConnectionProvider -> MigrationPlan -> IO ()
+guardMigrations provider plan = do
+  result <- missingMigrations defaultRunOptions provider plan
+  case result of
+    Right handshake | handshakePassed handshake -> pure ()
+    Right handshake -> fail ("refusing startup: " <> show handshake)
+    Left err        -> fail ("migration handshake failed: " <> show err)
+```
+
+```haskell
+data StartupHandshake = StartupHandshake
+  { pendingMigrations :: [MigrationId]      -- declared but unapplied, in plan order
+  , ledgerIssues      :: [VerificationIssue] -- checksum, position, kind, gap, status, unknown-row
+  }
+
+handshakePassed   :: StartupHandshake -> Bool     -- both lists empty
+missingMigrations :: RunOptions -> ConnectionProvider -> MigrationPlan ->
+                     IO (Either MigrationError StartupHandshake)
+```
+
+It is read-only and safe to call from every replica. After it passes, open Kiroku with schema
+initialization disabled — the job keeps ownership deterministic; the handshake proves the job's result
+is present.
+
+## Payload integrity
+
+Three independent layers assert that the shipped SQL bytes are what the manifest says.
+
+1. **Compile time.** The manifest embedder checks order, directory membership, and exact SQL payloads.
+   On GHC 9.12 the embedding module loads `RecompilePlugin` so the check reruns whenever Cabal invokes
+   GHC — it cannot help a build Cabal declares up to date without invoking the compiler.
+2. **Review time.** The default `keiro-migrations-test` suite reads `migrations.native.lock` and the
+   migrations directory at test runtime and requires the lockfile, manifest, directory membership, and
+   every SHA-256 payload to agree. It also diffs the checked-in expected-schema snapshot.
+3. **Deploy time.** The `pgmigrate` ledger keys applied history by checksum and fails closed on
+   divergence.
+
+Every new Keiro migration is therefore a **three-file review diff**: the immutable SQL file, its
+appended `migrations/manifest` line, and its appended `migrations.native.lock` SHA-256 line, in the
+same order.
+
+<Callout type="warn">
+`migrations.lock` *without* `.native` is frozen codd-cutover evidence. Never add native entries to it
+— strict history import relies on its exact legacy filename set.
+</Callout>
+
+After an intentional schema change, regenerate the expected snapshot explicitly and review its diff:
+
+```bash
+KEIRO_REGENERATE_EXPECTED_SCHEMA=1 \
+  cabal test keiro-migrations-test --test-options='--match "checked-in snapshot"'
+```
+
+The default suite never regenerates the file; it fails on drift.
 
 ## Authoring
 
@@ -101,7 +199,7 @@ read models, reporting tables, and integration state in explicitly owned applica
 
 | Table | Purpose | Owning reference |
 | --- | --- | --- |
-| `keiro.keiro_snapshots` | aggregate snapshot payload and compatibility metadata | [Snapshot](/docs/keiro/reference/snapshot) |
+| `keiro.keiro_snapshots` | aggregate snapshot payload and its three-component compatibility discriminator | [Snapshot](/docs/keiro/reference/snapshot) |
 | `keiro.keiro_read_models` | read-model registration and build lifecycle | [Read model](/docs/keiro/reference/read-model) |
 | `keiro.keiro_timers` | durable timers and recovery state | [Timers](/docs/keiro/reference/timers) |
 | `keiro.keiro_outbox` | claimed/published integration-event delivery | [Outbox](/docs/keiro/reference/outbox) |
@@ -110,7 +208,7 @@ read models, reporting tables, and integration state in explicitly owned applica
 | `keiro.keiro_workflow_steps` | durable workflow replay index | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro.keiro_workflows` | workflow instance, lease, wake, and GC state | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro.keiro_awakeables` | external workflow completions | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
-| `keiro.keiro_workflow_children` | parent/child workflow links | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
+| `keiro.keiro_workflow_children` | parent/child workflow links, incl. the terminal `failure_reason` | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro.keiro_subscription_shards` | sharded worker lease ownership | [Subscription sharding](/docs/keiro/reference/subscription-sharding) |
 | `keiro.keiro_dead_letters` | rejected process-manager/router target dispatches | [Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch) |
 

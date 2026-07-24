@@ -1,0 +1,95 @@
+---
+title: "Resurrect a failed workflow"
+description: "Return a terminally failed durable workflow to the runnable pool after fixing the cause — transactionally, without deleting its append-only failure history or rerunning completed steps."
+---
+
+A workflow that throws synchronously `maxAttempts` times (default five) is **terminally failed**: the
+runtime appends `WorkflowFailed`, sets the instance status to `failed`, and drops it from resume
+discovery. It stays there until an operator brings it back.
+
+`resurrectFailedWorkflow` is the supported way to do that.
+
+<Callout type="warn">
+Do not repair a failed instance with manual SQL. The runnable state lives in three related places —
+the append-only `WorkflowFailed` journal event, the `__workflow_failed__` row in the generation-scoped
+step index, and `failed` status on the instance row — plus, for a child, its parent link. Getting the
+combination wrong leaves the instance either invisible or looping.
+</Callout>
+
+## 1. Fix the cause first, and deploy the fix
+
+Resurrection resets state; it does not change behaviour. Deploy the corrected binary **before**
+resurrecting, or the instance will simply burn its fresh attempt budget on the same exception.
+
+Read `last_error` on the `keiro_workflows` row (also emitted through the `logEvent` hook) to identify
+the cause. The common ones:
+
+| `last_error` shape | Cause | Fix |
+|---|---|---|
+| `WorkflowStepDecodeError <step> …` | a journaled step's result type changed incompatibly | restore the old type, or **rename** the step so it runs fresh |
+| an application exception from a step body | a downstream dependency or a genuine bug | fix forward |
+| `WorkflowChildFailed …` | a child failed and the parent surfaced it | resurrect the child first (see below) |
+
+Never change a journaled result type in place —
+[deploy-ordering rule 8](/docs/keiro/reference/deploy-ordering#8-treat-workflow-step-results-as-permanent).
+
+## 2. Resurrect
+
+```haskell
+import Keiro.Workflow.Instance (ResurrectOutcome (..), resurrectFailedWorkflow)
+
+recover :: (Store :> es) => Eff es ()
+recover =
+  resurrectFailedWorkflow (WorkflowName "order-fulfillment") (WorkflowId "order-123") >>= \case
+    WorkflowResurrected -> pure ()
+    WorkflowNotFailed   -> logInfo "instance is not terminally failed; nothing to do"
+    WorkflowNotFound    -> logWarn "no such instance"
+```
+
+The call only acts when the instance status is `failed`. In one transaction it:
+
+- resets status, attempts, error, retry time, lease, and completion metadata;
+- deletes the **current generation's** `__workflow_failed__` step-index row; and
+- revives a failed child link when the instance is a child.
+
+The child-link revival is part of the same transaction because a `failed` link is excluded from
+discovery and short-circuits the child's own runs — resetting only the instance would leave it stuck.
+
+## 3. Let the resume worker pick it up
+
+Nothing else is required: the instance is back in `findUnfinishedWorkflowIds` and the next pass
+claims it.
+
+The next run **replays** every completed step from the journal, so their side effects do **not** run
+again. Only the work after the failure point executes.
+
+## What is deliberately preserved
+
+- **The `WorkflowFailed` event stays in the journal.** Deleting it would violate the append-only
+  contract and erase the evidence of why the instance failed repeatedly. `resurrectFailedWorkflow`
+  appends no audit event of its own either — the runtime journal records workflow failures, not
+  administrative commands.
+- **A repeat failure appends a distinct event.** `WorkflowFailed` events use store-generated UUIDv7
+  ids rather than the deterministic id every other journal entry uses, so a fail → resurrect → fail
+  cycle on one generation preserves each failure separately instead of colliding.
+- **A failure sentinel already delivered to a parent journal is immutable.** Resurrecting a child does
+  not retract the `{"failed": reason}` the parent already observed.
+
+## Parent and child are independent
+
+Their journals are independently append-only, so their recovery is too. If a child failure cascaded
+into a parent failure:
+
+1. resurrect the **child** and let it complete; then
+2. resurrect the **parent** separately if its own terminal state should be retried.
+
+## Idempotence
+
+A second call after a successful revival is a guarded no-op reported as `WorkflowNotFailed`, and an
+unknown instance reports `WorkflowNotFound`. Both are safe to call from a retried operator script.
+
+## Related
+
+- [Durable workflows reference](/docs/keiro/reference/durable-workflows#failure-retries-and-resurrection) — the API and the retry budget.
+- [Run the workflow resume worker](/docs/keiro/how-to/run-the-workflow-resume-worker) — attempts, backoff, and lease sizing.
+- [Deploy ordering](/docs/keiro/reference/deploy-ordering#8-treat-workflow-step-results-as-permanent) — how to avoid needing this.

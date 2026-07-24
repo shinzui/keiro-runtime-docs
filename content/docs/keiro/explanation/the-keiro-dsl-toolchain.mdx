@@ -122,6 +122,40 @@ change into an additive one. Renaming a stable workflow, router, process categor
 table/subscription, or identifier prefix remains breaking because code cannot migrate the old
 identity implicitly.
 
+## What `diff` computes beyond a tier
+
+Three of `diff`'s outputs are not classifications at all — they are *work products* for the deploy.
+
+**A replay-impact verdict.** `--replay-impact-out FILE` answers the narrower question "can the
+candidate binary interpret an already-stored log differently?" as machine-readable JSON: either
+`replay-neutral` (no data access needed) or `affected` with a conservative per-aggregate event-type
+set. New aggregates, events, transitions, and syntactically proven guard loosenings are neutral,
+because no old log depends on them.
+
+**A paste-ready replay-only twin.** When a live transition's guard changes with no twin present, the
+`AggGuardTightened` advisory computes the removed region — `old ∧ ¬new`, with negation eliminated
+inside the guard grammar — and prints a `replay-only` transition carrying it, complete with the old
+writes/emits/goto. It re-parses as-is. It is *printed, never auto-applied*: whether history should
+stay replayable or be truncated is a business decision.
+
+**Old-payload goldens.** `--emit-goldens DIR` captures the previous wire shape of every bumped event
+at the one moment both shapes are knowable. `scaffold --goldens DIR` then embeds them so the harness
+exercises `decodeRaw` against a genuine shape. Emission never overwrites a file, so a payload copied
+out of production always wins.
+
+## The gate `diff` deliberately is not
+
+`diff` reads two specs. It never reads your database, so it cannot tell you whether real streams
+still exercise a retired rule, still carry a deprecated event, or still hold a snapshot seed produced
+by the old fold. Nor can it see inside a hole.
+
+That is why the toolchain's last gate lives outside it: the
+[real-log replay audit](/docs/keiro/reference/replay-audit), assembled from the scaffolded
+`Generated.<Context>.ReplayAudit.auditTargets`. Gates are placed at the earliest boundary with enough
+evidence, and only the database has this evidence. See
+[Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability) for how all six
+layers divide the work.
+
 ## Continue by task
 
 - [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl)
@@ -129,3 +163,4 @@ identity implicitly.
 - [Check a service spec](/docs/keiro/how-to/check-a-service-spec)
 - [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes)
 - [Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff)
+- [Audit real logs before a deploy](/docs/keiro/how-to/audit-real-logs-before-a-deploy)

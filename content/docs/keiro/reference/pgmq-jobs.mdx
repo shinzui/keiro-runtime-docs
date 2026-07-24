@@ -285,6 +285,31 @@ visibility timeout; the retry policy delay applies only to explicit `Retry` and 
 outcomes. Messages whose read count exceeds `maxRetries` are dead-lettered before the handler sees
 them.
 
+### One-shot processing continues the producer's trace
+
+`runJobOnce` and `runJobOnceWithContext` no longer leave a hole between the enqueue span and the
+settlement span. Each claimed message extracts the W3C `traceparent` that `enqueueTraced` stored in
+the PGMQ `headers` column, installs it as a **remote parent**, and runs the handler inside one
+`Consumer`-kind `<jobName> process` span.
+
+The span carries the same common surface as the continuous `runJobWorkers` path:
+
+| Attribute | Notes |
+|---|---|
+| `messaging.system`, `messaging.destination.name`, `messaging.operation.type` | as on the continuous path |
+| `messaging.message.id` | the claimed message |
+| `shibuya.partition` | FIFO deliveries only |
+| `shibuya.ack.decision` | recorded **only after** the finalizing PGMQ statement returns — `OK` for `Done`/retry, `ERROR` for dead-lettering |
+
+A handler that throws is recorded as an exception with `ERROR` status and **no** acknowledgement
+attribute. A delivery carrying no usable trace header still gets exactly one span.
+
+Deliberately absent: the `shibuya.inflight.*` gauges the continuous path reports. A bounded drain has
+no shibuya inbox and no concurrency meter to describe.
+
+No public API, function signature, delivery semantic, queue behavior, PGMQ header shape, or wire
+payload changed — downstream applications gain trace continuity by rebuilding.
+
 ### What the wrapped handler does for you
 
 The boilerplate `keiro-pgmq` absorbs once, per delivery: decode the raw JSON payload with the job's

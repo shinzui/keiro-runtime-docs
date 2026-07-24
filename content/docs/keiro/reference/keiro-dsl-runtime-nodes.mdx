@@ -203,9 +203,26 @@ dispatch reservation_work_dispatch {
 ```
 
 Source/dedupe read models, the declared read-model column, queue, queue wire field, and enqueue target
-must resolve. Fan-out and raw-SQL queue dedupe are hand-owned. Generated queue output is `Queue` and
-`QueuePolicy`; headers, batch/visibility/poll/concurrency tuning, metrics, and handler behavior stay
-in runtime configuration.
+must resolve. Fan-out and raw-SQL queue dedupe are hand-owned. Generated queue output is `Queue`,
+`QueuePolicy`, and a `QueueCodec` module; headers, batch/visibility/poll/concurrency tuning, metrics,
+and handler behavior stay in runtime configuration.
+
+### The generated `QueueCodec`
+
+Scaffolded workqueues ship a `QueueCodec` module holding a **versioned** `keiroJobCodec` envelope
+(`{v,t,data}`) starting at schema version 1, rather than a bare `aesonJobCodec` payload. New queues
+therefore begin inside an envelope that makes rolling-deploy skew self-describing: an old worker
+reading a future envelope returns `JobPayloadFromFuture` and the job is retried.
+
+Payload-evolution *syntax* in the DSL remains future work — `diff` still classifies workqueue payload
+changes with its normal rules — but the runtime envelope is in place from day one.
+
+<Callout type="warn">
+A **fresh** queue needs no migration. An **existing** queue carrying bare-payload messages must be
+drained before you swap its codec, or use a transitional decoder that accepts both shapes; otherwise
+in-flight bodies fail as `JobPayloadMalformed` and dead-letter. See
+[deploy-ordering rule 3](/docs/keiro/reference/deploy-ordering#3-upgrade-versioned-job-workers-before-producers).
+</Callout>
 
 ## Workflow and operation
 

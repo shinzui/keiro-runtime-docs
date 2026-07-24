@@ -129,6 +129,36 @@ dependency**, and a discovered workflow whose name is missing from the registry 
 `unknownName`), never silently lost. A worker crash records attempts and backs off the instance; at the
 configured ceiling the worker appends `WorkflowFailed`.
 
+### The lease is a heartbeat, not a stopwatch
+
+Ownership is an expiry-based row lease, which raises an obvious question: how long should it be? Long
+enough for the whole advance, and a dead worker's instances sit idle; short enough for fast takeover,
+and a healthy multi-step run loses ownership to the clock.
+
+The runtime dissolves the tension by **renewing at every fresh boundary** — immediately before a step
+action that is about to run for the first time, and before an await arm that is about to be armed.
+Replay hits neither write nor renew. So the TTL only has to cover the longest *individual* action or
+arm, while still bounding dead-worker takeover delay. If another worker has taken the row at such a
+boundary, the run throws before performing further side effects, and the pass classifies that as a
+lease skip rather than a crash: losing a lease is not a workflow bug and must not spend the retry
+budget.
+
+### Terminal failure is recoverable, but its history is not erasable
+
+Reaching the attempt ceiling used to be a dead end that operators fixed with hand-written SQL across
+three tables. It is now an explicit lifecycle operation — but a carefully asymmetric one.
+
+A terminal failure exists in three related forms: the append-only `WorkflowFailed` journal event, a
+marker row in the generation-scoped step index, and `failed` status on the instance. The first is
+**history**; the other two are **derived runnable state**. Resurrection resets the derived projections
+transactionally and leaves the event alone, because deleting journal history would both violate the
+append-only contract and erase the evidence of why the instance kept failing. A repeat failure on the
+same generation therefore appends a *distinct* event rather than colliding with the first.
+
+The same asymmetry governs parents and children: a failure sentinel already delivered to a parent's
+journal is immutable, so parent and child are resurrected independently. See
+[Resurrect a failed workflow](/docs/keiro/how-to/resurrect-a-failed-workflow).
+
 ## When to use a workflow vs a process manager
 
 They are complementary, not competitors.
@@ -160,6 +190,18 @@ transition into a failed run. The next resume simply reconstructs the same map f
 operational terms, inspect the journal for truth and the snapshot-failure counter for degraded replay
 performance.
 
+There is one non-obvious interaction worth understanding, because it is what lets snapshots stay
+*purely* advisory. A wake source — a signalled awakeable, a completing child, a firing sleep — can
+journal its result while the owning run is still executing. If that run then snapshots at a later
+stream version, its in-memory map lacks the concurrent result even though the result's event sits at
+or below the snapshot version. Seed plus tail read would then under-approximate the journal forever.
+
+Rather than making snapshots coordinate with concurrent writers (or invalidating them), the runtime
+gives `awaitStep` a second place to look: the generation-scoped step index, which every journal append
+maintains in the same transaction and is therefore complete whenever the append is visible. A map miss
+consults it before arming or suspending. One indexed point read, only on the miss path — and a wake
+result can never be hidden permanently by a snapshot.
+
 ## Evolving a running workflow: rotation and versioning
 
 Two questions come up once workflows are live: *how does an unbounded-length history stay bounded?* and
@@ -175,6 +217,14 @@ Read the seed back at the top of the body with `restoreSeed`. The *logical* iden
 rotates underneath it (`wf:<name>-<id>` for generation 0, `wf:<name>-<id>#<g>` after) — so the resume
 worker keeps driving it transparently. Snapshots compact *within* a generation; rotation bounds the
 history *across* generations.
+
+Rotation is also the moment two lifecycle facts must be pinned. The generation that opens records the
+deployment's **active patch set atomically with the carried seed**, so an asynchronous append racing
+the rotation cannot land on a generation whose patch set does not exist yet (which would silently
+force every later `patch` in that instance to `False`). And a **sleep timer belongs to the generation
+that armed it**: its payload carries that generation, and firing appends there — so a stale re-fire
+after a rotation becomes an idempotent no-op on the old generation instead of resolving a same-named
+sleep on the new one.
 
 **Versioning: rename, or patch.** Because step identity is the **name**, the *common* way to change a
 running workflow needs no special API: **rename the step**. A new `StepName` has no journaled history,

@@ -103,5 +103,25 @@ failures retry; systemic deterministic failures halt; and an all-rejection group
 `DispatcherRouter`, the target stream, source identity, error class/detail, emit index, and attempt
 count before acknowledging the source. It is separate from Kiroku's retry-exhaustion table.
 
+## Changing what a router dispatches
+
+A router holds no state of its own, so it has no replay surface — but its **target-derived ids** make
+a dispatch change deploy-sensitive in exactly the way a process manager's do.
+
+<Callout type="warn">
+Change `resolve` or `targetProjections` while old source events are still in the redelivery window and
+a redelivered event dispatches the *new* command under the *same* deterministic id. The store confirms
+it as a benign duplicate of the old dispatch, so overlapping targets deduplicate while only the newly
+selected targets actually run — a silently mixed half-old, half-new fan-out.
+
+Drain the subscription, resolve or explicitly discard its dead letters, deploy, then resume:
+[deploy-ordering rule 4](/docs/keiro/reference/deploy-ordering#4-drain-process-manager-and-router-decide-changes).
+</Callout>
+
+`keiro-dsl diff` raises the non-breaking `RouterDecideSurfaceChanged` advisory for spec-visible
+resolve/dispatch edits. Hole-only changes remain invisible, so the drain rule stands whenever
+hand-owned dispatch logic changes. A changed router *stable name*, key, or target is BREAKING instead
+— it re-keys durable identity.
+
 See [Route events to commands](/docs/keiro/how-to/route-events-to-commands) and
 [Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch).

@@ -77,6 +77,32 @@ else through bare `runWorkflowWith`. **(4)** Re-invocation threads `runOptions` 
 telemetry options), so a resumed run honours the same options as its first run, and the
 per-re-invocation `keiro.workflow.resumed` counter ticks.
 
+`driveInstance` also hands the claim down to the run as a heartbeat:
+
+```haskell
+driveInstance owner name wid runDef = do
+  mChild <- lookupChild (unWorkflowId wid) (unWorkflowName name)
+  let runOpts = runOptions opts & #leaseHeartbeat .~ Just LeaseHeartbeat{owner, ttl = leaseTtl opts}
+  case mChild of
+    Just _  -> runChildWorkflow runOpts name wid (runDef wid)
+    Nothing -> runWorkflowWith  runOpts name wid (runDef wid)
+```
+
+The interpreter then renews the lease before each fresh step action and unresolved await arm, so
+`leaseTtl` only has to cover the longest *individual* action rather than the whole advance — while
+still bounding dead-worker takeover. Losing the lease mid-run gets its own classification:
+
+```haskell
+attempt <-
+  Error.catchError @StoreError (AdvOk <$> driveInstance owner name wid runDef)
+    (\_ e -> pure (AdvTransient e))
+    `catch`     (\WorkflowLeaseLost -> pure AdvLeaseLost)
+    `catchSync` (pure . AdvCrashed)
+```
+
+`AdvLeaseLost` increments `leaseSkipped` and **consumes no crash attempt** — another worker legitimately
+owns the instance now, which is not a workflow bug and must not spend the retry budget.
+
 ```haskell
 bumpForOutcome outcome acc = case outcome of
   Completed _ -> acc { resumed = resumed acc + 1, completed = completed acc + 1 }
@@ -87,10 +113,27 @@ bumpForOutcome outcome acc = case outcome of
 ```
 
 Synchronous exceptions are isolated per instance. `recordCrashTx` increments `attempts`, stores
-`last_error`, and sets `next_attempt_at` with exponential backoff; below `maxAttempts` the worker
-releases the lease and leaves the instance for a later pass. At the ceiling it appends
-`WorkflowFailed` and counts `failed`. Store errors while advancing are counted as `transientErrors`
-without marking the workflow failed.
+`last_error`, and sets `next_attempt_at` with exponential backoff — 2, 4, 8, 16, 32, then 64 seconds,
+capped; below `maxAttempts` the worker releases the lease and leaves the instance for a later pass. At
+the ceiling it appends `WorkflowFailed` and counts `failed`. Store errors while advancing are counted
+as `transientErrors` without marking the workflow failed.
+
+A failing **child** additionally records its terminal reason on the link row and wakes the parent:
+
+```haskell
+_transitioned <- markChildFailedTx (unWorkflowId childWid) (unWorkflowName childNm) reason
+```
+
+That third argument is why a parent can still observe the failure after rotating past the generation
+carrying the original sentinel — see
+[chapter 06](/docs/keiro/walkthrough/durable-execution/06-child-workflows).
+
+Once `failed`, the instance leaves discovery entirely. The supported way back is
+`Keiro.Workflow.Instance.resurrectFailedWorkflow`, which transactionally resets the runnable-state
+projections (status, attempts, error, retry time, lease, the current generation's
+`__workflow_failed__` index row, and a failed child link) while leaving the append-only
+`WorkflowFailed` event in place. See
+[Resurrect a failed workflow](/docs/keiro/how-to/resurrect-a-failed-workflow).
 
 ## The summary
 

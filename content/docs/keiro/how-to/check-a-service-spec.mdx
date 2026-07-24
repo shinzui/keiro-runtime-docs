@@ -31,7 +31,8 @@ writes nothing for an invalid spec.
 | Family | Representative diagnostics | Corrective move |
 |---|---|---|
 | names and syntax | `IdentHaskellKeyword`, `IdentNotConstructorSafe`, `VertexCtorCollision`, duplicate-name codes | Rename to an ASCII, Haskell-safe, collision-free identifier; remove shadowed singleton/row declarations |
-| aggregate/evolution | `RegisterInitialOutOfScope`, `WriteTargetNotRegister`, `StatusMapNotTotal`, `EvtVersionMissingUpcaster`, `ClockSampled` | Align declared types/references, complete or explicitly partialize the map, add contiguous upcasters, inject time |
+| aggregate/evolution | `RegisterInitialOutOfScope`, `WriteTargetNotRegister`, `StatusMapNotTotal`, `EvtVersionMissingUpcaster`, `DuplicateUpcasterSource`, `UpcasterChainGap`, `ClockSampled` | Align declared types/references, complete or explicitly partialize the map, add contiguous upcasters with one owner per source version, inject time |
+| event retirement / replay-only | `EventRetirementInProgress`, `DeprecatedEventStillEmitted`, `ReplayOnlyEmitsNothing` | Keep a live emitter while `retiring`; take the event off the *live* write path before marking it `deprecated`; give every `replay-only` transition an `emit` |
 | read model | `RmShapeHashDrift`, `RmStrongInlineOnly`, `RmScopeWithoutStrong`, `RmInlineFeedUnreferenced` | Capture the printed shape, bump version for a real shape change, align consistency/feed/scope/projection ownership |
 | process/router | `SagaCategoryIllegal`, `ProcessFieldBindingUnresolved`, `RouterBindingUnscoped`, `PolicyContradiction`, `AmbiguousMarkedBenign` | Use a valid category, resolve typed bindings, align node/dispatch policy, route ambiguity to retry/dead-letter evidence |
 | inbox/outbox | `DispositionIncomplete`, disposition inversion codes, `TopicAffinityMismatch`, `EmitSkipMissing` | Complete unique outcomes, preserve retry/poison semantics, align contract topic, add `_ => skip` |
@@ -50,10 +51,26 @@ Warnings do not block the CLI, but they describe an acknowledged risk or forward
   target-scoped runtime check;
 - `PolicyDeadLetterUnused` / `AmbiguousFollowsRejectedPolicy`: node-level rejection behavior needs
   explicit operator understanding;
-- `WqUnloggedDurability`: a database crash can empty the queue; and
-- `RmProjectionWithoutNode`: legacy projection wiring lacks registered read-model identity/helpers.
+- `WqUnloggedDurability`: a database crash can empty the queue;
+- `RmProjectionWithoutNode`: legacy projection wiring lacks registered read-model identity/helpers;
+- `DeprecatedEventReplayHazard`: a deprecated event has **no** replay-only emitter, so stored history
+  containing it is no longer replayable — restore an equivalent `replay-only` transition, or
+  terminalize/truncate every affected stream before deployment
+  ([retire an event type](/docs/keiro/how-to/retire-an-event-type));
+- `EventRetirementInProgress`: the safe retained shape is in place; keep the eventual cleanup visible;
+  and
+- `ReplayOnlyCommandStillLive`: a `replay-only` transition has no live sibling for its
+  `(source, command)` pair — the command is fully retired at that state, and the fuller procedure is
+  event retirement.
 
 Do not suppress these by changing generated code. Decide whether the spec policy is intentional.
+
+<Callout type="warn">
+`check` sees one spec. It cannot know whether live streams still contain a deprecated event or still
+exercise a retired guard region — that is operational history, answered by the
+[replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy). That is why those two are warnings
+rather than errors.
+</Callout>
 
 ## Gate CI
 

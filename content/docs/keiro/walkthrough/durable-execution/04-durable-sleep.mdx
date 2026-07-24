@@ -16,16 +16,27 @@ distinguished entirely by a JSON payload discriminator:
 ```haskell
 workflowSleepKind = "keiro.workflow.sleep"
 
-sleepTimerPayload fullStep = object ["kind" .= workflowSleepKind, "step" .= fullStep]
+sleepTimerPayload gen fullStep =
+  object ["kind" .= workflowSleepKind, "step" .= fullStep, "gen" .= gen]
 
+parseSleepPayload :: Value -> Maybe (Text, Maybe Int)
 parseSleepPayload = \case
   Object o | KeyMap.lookup "kind" o == Just (String workflowSleepKind) ->
-    case KeyMap.lookup "step" o of Just (String s) -> Just s; _ -> Nothing
+    case KeyMap.lookup "step" o of
+      Just (String s) -> case KeyMap.lookup "gen" o of
+        Nothing    -> Just (s, Nothing)          -- legacy payload
+        Just value -> case Aeson.fromJSON value of
+          Aeson.Success gen -> Just (s, Just gen)
+          Aeson.Error{}     -> Nothing
+      _ -> Nothing
   _ -> Nothing
 ```
 
-`parseSleepPayload` returns `Just fullStep` for a payload this module wrote and `Nothing` for anything
-else. The module header makes the consequence explicit:
+`parseSleepPayload` returns the step name plus the **arming generation** for a payload this module
+wrote, and `Nothing` for anything else. `Nothing` in the generation slot marks a legacy payload
+written before generation pinning; those recover their generation from the deterministic timer id
+instead (`matchSleepTimerGeneration`, below). The module header makes the routing consequence
+explicit:
 
 > Routing is entirely a function of the caller-supplied fire action and the JSON payload; this module
 > owns no migration.
@@ -45,6 +56,17 @@ distinct timers. Determinism is what makes the arm idempotent: every resume that
 not-yet-resolved sleep computes the *same* id, and `scheduleTimerOnceTx` preserves the first `fire_at`,
 so the repeat collapses to a no-op — exactly the idempotent arming `awaitStep` requires.
 
+Determinism has a second use: it makes the id *invertible* back to a generation, which is how a legacy
+payload with no `gen` key gets pinned.
+
+```haskell
+matchSleepTimerGeneration name wid currentGen fullStep timerId =
+  find (\gen -> sleepTimerId name wid gen fullStep == timerId) (reverse [0 .. max 0 currentGen])
+```
+
+Candidate generations are tested from the current one downward. `Nothing` comes back only for an
+operator-crafted or otherwise non-matching id.
+
 ## `sleepNamed`: an `awaitStep` whose arm schedules a timer
 
 ```haskell
@@ -60,9 +82,11 @@ sleepNamed userStep delta = do
           , processManagerName = unWorkflowName name   -- (= workflow name)
           , correlationId = unWorkflowId wid            -- (= workflow id)
           , fireAt = addUTCTime delta now
-          , payload = sleepTimerPayload full
+          , payload = sleepTimerPayload gen full
           }
-    runTransaction (scheduleTimerOnceTx request >> setWorkflowWakeAfterTx name wid (request ^. #fireAt))
+    runTransaction $ do
+      inserted <- scheduleTimerOnceTx request
+      when inserted (setWorkflowWakeAfterTx name wid (request ^. #fireAt))
 ```
 
 This is the whole primitive: name the step `sleep:<suffix>`, then `awaitStep` on it with an arm that
@@ -72,9 +96,12 @@ not journaled, so the arm runs again — but the deterministic id makes it a no-
 and journals `sleep:<suffix>`, the step *is* journaled, so `awaitStep` takes the hit path and returns
 immediately.
 
-The same transaction stores the timer's first `fire_at` in `keiro_workflows.wake_after`. Resume
-discovery filters out rows whose `wake_after` is still in the future, so a sleeping workflow does not
-get re-invoked on every worker pass before the timer is due.
+The same transaction stores the timer's first `fire_at` in `keiro_workflows.wake_after` — but **only
+when the insert won**. `scheduleTimerOnceTx` returns `Bool` for exactly this: the arm that created the
+row owns both `fire_at` and the wake hint, and every replay arm leaves both alone. Otherwise a replay
+that re-entered a *due* or already-fired sleep would push `wake_after` forward and postpone its own
+discovery. Resume discovery filters out rows whose `wake_after` is still in the future, so a sleeping
+workflow is not re-invoked on every pass before the timer is due.
 
 Notice the reuse of the `TimerRequest` fields: `processManagerName` carries the workflow **name** and
 `correlationId` carries the workflow **id**, so the fire action can reconstruct the workflow identity
@@ -92,20 +119,49 @@ determinism is conditional (reordering sleeps shifts the ordinals), so the modul
 workflowSleepFireAction row =
   case parseSleepPayload (row ^. #payload) of
     Nothing -> pure Nothing
-    Just full -> do
-      now <- liftIO getCurrentTime
+    Just (full, payloadGen) -> do
       let name = WorkflowName (row ^. #processManagerName)
-          wid  = WorkflowId (row ^. #correlationId)
-      eid <- appendJournalEntryReturningId name wid (StepRecorded { stepName = full, result = Null, recordedAt = now })
-      pure (Just eid)
+          wid  = WorkflowId  (row ^. #correlationId)
+      Instance.lookupInstance name wid >>= \case
+        Just instanceRow
+          | instanceRow ^. #status `elem` [WfCompleted, WfCancelled, WfFailed] -> do
+              void (cancelTimer (row ^. #timerId))     -- refuse: the workflow is terminal
+              pure Nothing
+        _ -> do
+          targetGen <- case payloadGen of
+            Just gen -> pure gen
+            Nothing  -> do                              -- legacy payload: invert the id
+              currentGen <- currentGeneration name wid
+              pure (fromMaybe currentGen
+                      (matchSleepTimerGeneration name wid currentGen full (row ^. #timerId)))
+          now      <- liftIO getCurrentTime
+          appendTx <- prepareJournalAppend name wid targetGen
+                        (StepRecorded { stepName = full, result = Null, recordedAt = now })
+          runTransaction (appendTx <* clearWorkflowWakeAfterTx name wid) >>= \case
+            JournalAppended{}      -> pure (Just (deterministicJournalId name wid targetGen full))
+            JournalAlreadyPresent{} -> pure (Just (deterministicJournalId name wid targetGen full))
+            JournalAppendConflict e -> throwIO (WorkflowJournalAppendError (Text.pack (show e)))
 ```
 
-For a row whose payload is a workflow sleep, it reconstructs the identity, appends the
-`sleep:<suffix>` completion to the workflow journal, and returns the appended `EventId` so the timer
-worker marks the row `Fired`. For any non-sleep row it returns `Nothing`, so a mixed worker can
-delegate to its process-manager fire action. Because `appendJournalEntryReturningId` pre-checks the
-step and returns the same deterministic id on a re-fire, **at-least-once timer firing yields
+For a row whose payload is a workflow sleep it reconstructs the identity, appends the `sleep:<suffix>`
+completion, and returns the appended `EventId` so the timer worker marks the row `Fired`. For any
+non-sleep row it returns `Nothing`, so a mixed worker delegates to its process-manager fire action.
+The deterministic id plus the append's step pre-check means **at-least-once timer firing yields
 exactly-once journaling**.
+
+Three details carry the generation-ownership contract:
+
+- **`prepareJournalAppend name wid targetGen`**, not the current-generation `appendJournalEntry*`
+  helpers. The generation that *armed* the timer owns its completion, so a timer left in `firing` and
+  requeued after a `continueAsNew` becomes an idempotent append check on its **original** generation.
+  It can never resolve a same-named sleep on the next one.
+- **`clearWorkflowWakeAfterTx` inside the same transaction** as the append, so a fired sleeper is
+  rediscovered promptly instead of waiting out a stale hint.
+- **The terminal-instance refusal.** A claimed timer whose instance row exists in `completed`,
+  `cancelled`, or `failed` status cancels itself and appends nothing — defense in depth for a
+  partial-GC recovery window. Note that a *missing* instance row is deliberately **not** terminal: a
+  workflow can crash after arming a first-operation sleep but before recording its suspended instance,
+  and that fire is allowed to append, recreating the discoverable running instance.
 
 ## One worker for both kinds of timer
 

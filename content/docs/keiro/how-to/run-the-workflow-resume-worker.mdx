@@ -71,7 +71,12 @@ A steady non-zero `unknownName` means a deployed-then-removed workflow still has
 re-add it to the registry. A `discovered` count that never drains to zero means some wake source is
 not resolving (a sleep timer no worker drains, an awakeable no one signals). A non-zero `leaseSkipped`
 is normal when multiple workers share the same backlog; it means another live owner currently holds
-that instance.
+that instance, or a running instance lost its lease mid-advance. Neither consumes a crash attempt.
+
+Watch `failed` specifically: it counts instances that exhausted `maxAttempts` this pass and have now
+**left discovery**. Nothing will retry them until someone
+[resurrects them](/docs/keiro/how-to/resurrect-a-failed-workflow), so alert on any non-zero value
+rather than treating it as background noise.
 
 ## Drain the sleep timers too
 
@@ -95,10 +100,27 @@ _ <- runWorkflowTimerWorker mMetrics now myProcessManagerFireAction
 - **Poll interval and run options.** Use `runWorkflowResumeWorkerWith` with a `WorkflowResumeOptions`
   to set the `pollInterval` (microseconds) and thread `runOptions` (snapshot policy + telemetry) into
   every re-invocation.
-- **Lease and crash backoff.** `leaseTtl` defaults to 60 seconds. If a worker dies mid-advance, another
-  worker can claim the instance after that lease expires. Synchronous workflow exceptions increment the
-  instance's attempt count, set `next_attempt_at` with exponential backoff, and eventually append
-  `WorkflowFailed` at `maxAttempts` (default 5).
+- **Lease sizing.** `leaseTtl` defaults to 60 seconds. The worker passes its claim to the run as a
+  `LeaseHeartbeat`, and the runtime **renews the lease for a full TTL before every fresh step action
+  and unresolved await arm** (replay hits neither write nor renew). So size `leaseTtl` above the
+  longest *individual* action or arm, including its normal timeout — **not** above the whole
+  multi-step advance. A healthy long run no longer loses ownership merely because its original claim
+  aged out. The TTL still bounds dead-worker takeover delay, so do not inflate it further than the
+  slowest single action needs.
+
+  If another worker owns the row at a boundary, the runtime throws `WorkflowLeaseLost` *before*
+  running further side effects; the pass counts a `leaseSkipped` and consumes no attempt.
+
+- **Crash backoff and the terminal ceiling.** A synchronous exception escaping the body consumes one
+  attempt: the worker stores `last_error`, sets `next_attempt_at` with exponential backoff (2, 4, 8,
+  16, 32, then 64 seconds, capped), and releases the lease without resetting attempts. Store errors
+  are classified separately as transient and consume no attempt.
+
+  With the default `maxAttempts = 5` there is roughly 30 seconds of scheduled backoff before the
+  terminal failure, plus polling time and each attempt's own runtime. Pick `maxAttempts` for the
+  longest dependency outage you want the worker to ride through. At the ceiling the runtime appends
+  `WorkflowFailed`, sets status `failed`, and the instance leaves discovery until an operator
+  [resurrects it](/docs/keiro/how-to/resurrect-a-failed-workflow).
 - **Metrics.** Thread a `Just KeiroMetrics` through `runOptions` (`opts & #runOptions . #metrics .~ Just m`).
   The worker then records `keiro.workflow.resumed` per re-invocation and samples
   `keiro.workflow.awakeables.pending` once per pass. See the [workflow
@@ -129,6 +151,7 @@ See [Enable push delivery](/docs/keiro/how-to/enable-push-delivery) and the
 
 <Cards>
   <Card title="Write a durable workflow" href="/docs/keiro/how-to/write-a-durable-workflow" />
+  <Card title="Resurrect a failed workflow" href="/docs/keiro/how-to/resurrect-a-failed-workflow" />
   <Card title="Enable push delivery" href="/docs/keiro/how-to/enable-push-delivery" />
   <Card title="Drive the timer worker" href="/docs/keiro/how-to/drive-the-timer-worker" />
   <Card title="Durable workflows reference" href="/docs/keiro/reference/durable-workflows" />

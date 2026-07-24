@@ -78,21 +78,26 @@ outcome <-
 whole argument:
 
 ```haskell
-rotateGeneration name wid gen seedJson = do
+rotateGeneration mMetrics patches name wid gen seedJson = do
   let nextGen = gen + 1
-  now <- liftIO getCurrentTime
-  -- 1. Seed step on the NEXT generation first (advances the current generation).
-  seedExists <- stepExists name wid nextGen continueSeedStepName
-  unless seedExists $ do
-    (_, appendResult) <-
-      appendJournalTx name wid nextGen (StepRecorded continueSeedStepName seedJson now)
-    writeWorkflowSnapshot
-      (appendResult ^. #streamId) (appendResult ^. #streamVersion)
-      (Map.singleton continueSeedStepName seedJson)
+      encodedPatches = Aeson.toJSON (map unPatchId (Set.toList patches))
+  now     <- liftIO getCurrentTime
+  seedTx  <- prepareJournalAppend name wid nextGen (StepRecorded continueSeedStepName seedJson now)
+  patchTx <- if Set.null patches
+               then pure Nothing
+               else Just <$> prepareJournalAppend name wid nextGen
+                              (StepRecorded patchSetStepName encodedPatches now)
+  -- 1. Seed AND patch set on the NEXT generation, in ONE transaction. A conflict
+  --    condemns the whole transaction, so no seed-without-patch state can commit.
+  (seedOutcome, patchOutcome) <- runTransaction $ do
+    seedResult  <- seedTx
+    condemnOnConflict seedResult
+    patchResult <- traverse id patchTx
+    traverse_ condemnOnConflict patchResult
+    pure (seedResult, patchResult)
+  ...
   -- 2. Terminal rotation marker on the CURRENT generation (audit + closes it).
-  markerExists <- stepExists name wid gen continuedAsNewStepName
-  unless markerExists $
-    void (appendJournalTx name wid gen (WorkflowContinuedAsNew nextGen now))
+  ...
   pure ContinuedAsNew
 ```
 
@@ -101,8 +106,27 @@ The seed step is appended to generation `gen + 1` **first**. That single append 
 resolves the current generation to `gen + 1`, hydrates from the seed, and never re-enters generation
 `gen`. So even a crash *between* the two appends converges to "continue from the seed", never re-running
 the closed generation's work. Both appends are existence-guarded with deterministic, generation-namespaced
-ids, so the whole rotation is idempotent. The one-entry seed map is snapshotted unconditionally (rotation
-is exactly when a fresh snapshot earns its keep), so the next generation hydrates in O(1).
+ids, so the whole rotation is idempotent. The seed map is snapshotted unconditionally (rotation is
+exactly when a fresh snapshot earns its keep), so the next generation hydrates in O(1).
+
+### Why the patch set rides along in the same transaction
+
+The seed is not the only thing a new generation needs before anyone else can touch it. It also needs
+its **active patch set**.
+
+Recording the set on the new generation's *first run* was too late. A wake source — a duplicate
+awakeable signal, a child completion — can append to generation `gen + 1` as soon as
+`currentGeneration` advances, i.e. the instant the seed commits. If such an append landed first, the
+new generation was no longer a "fresh start" by the time it ran, so `recordPatchSetIfFresh` declined
+to record anything, and every later `patch` call in that instance decided `False` forever — silently
+pinning the instance to the old branch.
+
+Appending both in one transaction closes the window: a conflict condemns the whole transaction, so no
+seed-without-patch-set intermediate state can commit. The snapshot written afterwards carries both
+entries.
+
+Generation 0 has no rotation moment, so it keeps the fresh-journal path below — which also keeps
+generations produced by a pre-change worker compatible.
 
 `restoreSeed` reads it back with no new machinery at all — it is an ordinary journaled `step`:
 
@@ -153,6 +177,11 @@ An in-flight generation that already has ordinary history will not get that new 
 generation records the set before user logic runs, so a workflow that executes a step before its first
 `patch` call is still classified from the start-of-generation set rather than from the live mutating
 journal.
+
+This path now covers **generation 0 only** — the one generation with no rotation moment at which to
+record the set (plus, as a compatibility fallback, generations produced by a pre-change worker).
+Rotated generations get their set atomically with the seed, as above, so an asynchronous append can no
+longer beat the recording and force every later `patch` to `False`.
 
 ```haskell
 Patch pid -> do

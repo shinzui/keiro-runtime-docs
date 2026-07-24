@@ -236,4 +236,81 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     camelCase (e.g. `hospitalSurge`), never with `-`. See [Safe, category-based
     construction](/docs/keiro/reference/event-stream-and-stream#safe-category-based-construction-streamcategory).
   </Accordion>
+
+  <Accordion title="Can I just change a guard? It doesn't touch any event schema.">
+    **No — decide logic *is* the replay surface.** keiki has no separate decide/evolve pair: hydration
+    re-inverts each stored event back to the command that produced it and *re-checks that edge's
+    guard*. Tighten a guard and stored events that satisfied the old rule lose their inverting edge,
+    so the next command on any affected stream fails with `HydrationReplayFailed
+    HydrationNoInvertingEdge`. Loosen or overlap guards and one event can invert to two
+    (`HydrationAmbiguousInversion`).
+
+    Guard **tightening** has a first-class remedy: `keiro-dsl diff` raises `AggGuardTightened` and
+    prints a paste-ready `replay-only` twin whose guard is the removed region `old ∧ ¬new`. Paste it
+    and history stays replayable while new removed-region commands are rejected. See [Tighten a guard
+    with a replay-only twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin) and
+    [Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability).
+  </Accordion>
+
+  <Accordion title="I marked an event `deprecated`. Is it safe to delete the transition that emitted it?">
+    **No.** Decodable is not replayable. `deprecated` keeps the tag decoding, which protects only the
+    codec layer; hydration then replays the decoded event through the transducer and needs an *edge
+    whose output inverts it*. Remove the emitting transition and every live stream containing that
+    event becomes unhydratable. Upcasters cannot help — they migrate a payload *within* its stored
+    tag.
+
+    Retirement is a two-stage protocol: mark the event `retiring` while its live emitter stays, then
+    at cutover mark it `deprecated` **and** change that transition to `replay-only`. Keep the
+    replay-only edge until every affected stream is terminal, truncated, or proven clear by the replay
+    audit. See [Retire an event type](/docs/keiro/how-to/retire-an-event-type).
+  </Accordion>
+
+  <Accordion title="How do I know a deploy is safe against the data I already stored?">
+    Static checks validate *artifacts*; only one gate reads your **data**. Run
+    `keiro-dsl diff --replay-impact-out FILE`. A `replay-neutral` verdict means no old edge or decode
+    surface changed — no audit needed, and that is the common case. An `affected` verdict names a
+    conservative event-type set; run the candidate binary's
+    [`Keiro.ReplayAudit`](/docs/keiro/reference/replay-audit) in `AuditTargeted` mode against a
+    production-copy or staging database. It replays only matching streams, compares any accepted
+    snapshot seed against full replay, and emits stable digests; `auditExitCode` returning non-zero
+    means do not deploy. Reserve `AuditFull` for one-time cutovers and forensics. See [Audit real logs
+    before a deploy](/docs/keiro/how-to/audit-real-logs-before-a-deploy).
+  </Accordion>
+
+  <Accordion title="I changed how a register is updated but no event schema moved. Do I need to bump anything?">
+    **Yes, if snapshots are enabled and the change is invisible to the discriminator.** Snapshot
+    compatibility is the triple `(stateCodecVersion, shapeHash, stateShapeHash)`. `defaultStateCodec`
+    derives the register-layout and control-state components, and DSL-generated streams also compose a
+    fingerprint of the spec-visible replay surface — so a *spec-visible* fold change invalidates old
+    seeds automatically.
+
+    Hand-written guard/`update` bodies and logic living only in a generated service's `Holes` module
+    move nothing. Without a `stateCodecVersion` bump (or an updated `withFoldFingerprint` token) the
+    old seed still matches, tail-only replay derives state a full replay would never reach, and
+    post-append verification may persist it. The pre-deploy check is the replay audit; the runtime
+    backstop is `keiro.snapshot.seed.divergence`, sampled one hit in 1000 by default. See the
+    [snapshot discriminator](/docs/keiro/reference/snapshot#compatibility-is-a-three-component-discriminator).
+  </Accordion>
+
+  <Accordion title="A workflow hit maxAttempts and disappeared. How do I get it back?">
+    Fix the cause, deploy the corrected binary, then call
+    `Keiro.Workflow.Instance.resurrectFailedWorkflow name wid` — never manual SQL. In one transaction
+    it resets status, attempts, error, retry time, lease, and completion metadata; deletes the current
+    generation's `__workflow_failed__` step-index row; and revives a failed child link. It **does
+    not** delete the `WorkflowFailed` journal event: failure history is immutable, only its derived
+    runnable state is revivable. The next resume replays every completed step, so their side effects
+    do not rerun. Parent and child are resurrected independently. See [Resurrect a failed
+    workflow](/docs/keiro/how-to/resurrect-a-failed-workflow).
+  </Accordion>
+
+  <Accordion title="How long should leaseTtl be for the resume worker?">
+    Longer than the **slowest single step action or await arm**, including its normal timeout — not
+    longer than the whole multi-step advance. The worker hands its claim to the run as a
+    `LeaseHeartbeat`, and the runtime renews the lease for a full TTL before each fresh boundary
+    (replay hits neither write nor renew), so a healthy long run no longer loses ownership to the
+    clock. The TTL still bounds dead-worker takeover delay, so do not inflate it beyond what the
+    slowest action needs. Losing the lease throws `WorkflowLeaseLost` before further side effects and
+    is counted as `leaseSkipped` — it consumes no crash attempt. See [Run the workflow resume
+    worker](/docs/keiro/how-to/run-the-workflow-resume-worker).
+  </Accordion>
 </Accordions>

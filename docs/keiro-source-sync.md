@@ -22,12 +22,93 @@ the affected pages, then bump the pointer below.
 ## Last reviewed commit
 
 ```text
-c68dcc7b9cea8d9c180d1c04254a72aa43804cac  (c68dcc7)
-2026-07-14T08:24:53-07:00
-chore(release): 0.3.0.0
+778c75ce60398bf44d12b81d563a7870deb4d3f5  (778c75c)
+2026-07-23T19:02:39-07:00
+docs(plans): supersede pgmq hardening plans
 ```
 
-> **Current range.** The `601f9f3..c68dcc7` review covers the final validated command boundary,
+> **Current range.** The `c68dcc7..778c75c` range (63 commits) is the **evolution-safety and
+> durable-execution hardening** review. Two themes dominate; a third is infrastructural.
+>
+> **1. The transducer evolution story (MasterPlan 24, plans 138–143; ADRs 0002–0004).** Because keiki
+> has one edge set for execution *and* replay, changing a guard/output/update/mode reinterprets stored
+> history. The range makes that a first-class, gated concern:
+> - **`replay-only` edges** (keiki 0.3 `EdgeMode = Live | ReplayOnly`, plan 143). Inversion is
+>   two-phase (live first), forward-determinism checks scope to `Live`/`Live` pairs, and the static
+>   inversion-ambiguity check scopes to *same-mode* pairs — which is what lets a live edge and its twin
+>   through keiro's forced `mkEventStream` boundary. DSL: a `replay-only` transition prefix lowering to
+>   `B.replayOnly`; validator rules `ReplayOnlyEmitsNothing` (error) and `ReplayOnlyCommandStillLive`
+>   (warning). `Grammar.complementExpr` computes `old ∧ ¬new` inside the guard grammar so
+>   `diff`'s `AggGuardTightened` advisory prints a **paste-ready** twin (printed, never auto-applied).
+> - **Two-stage event retirement.** New `retiring event` marker (mutually exclusive with `deprecated`);
+>   `DeprecatedEventReplayHazard` warns on a deprecated event with no replay-only emitter;
+>   `EventRetirementInProgress` marks the safe retained shape.
+> - **`Keiro.ReplayAudit` + `Keiro.ReplayDigest`** (plan 142) — the only gate that reads real stored
+>   data. `AuditFull`/`AuditTargeted AffectedSet`, `AuditBudget` (parallelism, maxStreams, resumable
+>   `resumeFrom`/`checkpoint`), typed `AuditTarget`/`SomeAuditTarget`/`streamInCategory`, per-stream
+>   `ReplayOk`/`ReplayFailed`/`SeedDivergence`, RFC 8785 canonical bytes + SHA-256 digests,
+>   `renderAuditReport`, `auditExitCode`. `Keiro.Command` now exports `Hydrated`/`hydrate`/
+>   `hydrateFull`/`hydrateSeeded` so the audit compares seeded vs full without the command-serving
+>   fallback. Scaffolding emits one context-wide `Generated.<Context>.ReplayAudit.auditTargets`.
+> - **`Keiro.Dsl.ReplayImpact`** + `diff --replay-impact-out FILE` — machine-readable
+>   `replay-neutral` / `affected {aggregates: {eventTypes, includeSnapshotStreams}}` verdict.
+> - **Snapshot compatibility is now a three-component discriminator** (plan 138, ADR 0003):
+>   `StateCodec` gains `stateShapeHash`; `defaultStateCodec` derives it via keiki `CanonicalStateShape`
+>   (and now requires that constraint); `withFoldFingerprint` composes `<state-hash>;fold=<fp>`;
+>   `Keiro.Dsl.FoldFingerprint` lowers a spec-visible fold digest into generated codecs and raises
+>   `AggFoldSurfaceChanged`. Migration **`0019-keiro-snapshots-state-shape-hash.sql`** (empty default →
+>   one miss per pre-existing row). Requires `keiki >= 0.3.1`.
+> - **`RunCommandOptions.seedVerifySampleRate`** (default 1000) — async sampled seed-vs-full-replay
+>   witness emitting the new `keiro.snapshot.seed.divergence` counter plus a structured stderr log.
+> - **Codec validation at the stream boundary** (plan 139): `validateEventStreamWith` now runs
+>   `mkCodec`, so bad versions/duplicate tags/duplicate or out-of-range rungs/incomplete chains fail
+>   validated construction. Generated codecs lower same-version bumps into one `EventType`-dispatching
+>   rung. `Keiro.Dsl.Goldens` + `diff --emit-goldens DIR` / `scaffold --goldens DIR` capture and embed
+>   genuine old payloads (never overwriting a hand-captured file).
+> - **New advisories:** `RouterDecideSurfaceChanged`, `ProcessDecideSurfaceChanged`,
+>   `ProcessTimerPayloadChanged`. Generated workqueues emit a `QueueCodec` (versioned `keiroJobCodec`
+>   envelope at schema version 1).
+>
+> **2. Durable-execution hardening (ADRs 0005–0008; plans 115, 130–133).**
+> - `awaitStep` map-miss now consults the generation-scoped `keiro_workflow_steps` index before
+>   arming/suspending, so a snapshot can no longer permanently hide a concurrently-journaled wake
+>   completion.
+> - Sleep timers are **generation-owned**: payload carries `gen` (legacy payloads recover it via
+>   `matchSleepTimerGeneration`), firing appends through `prepareJournalAppend` to the arming
+>   generation and clears `wake_after` atomically; only the winning insert writes the hint
+>   (**`scheduleTimerOnceTx` now returns `Bool`** — breaking); a claimed timer whose instance is
+>   terminal cancels itself; GC deletes sleep timers in **every** status.
+> - Awakeables register their row **inside** the journaled allocation step; `signalAwakeable`
+>   re-reads status in-transaction so a losing race against cancellation appends nothing;
+>   `signalAwakeableFrom` exposed as a race-test seam.
+> - Child links persist `failureReason` (**`markChildFailedTx` takes a third argument** — breaking;
+>   migration **`0020-keiro-workflow-children-failure-reason.sql`**), so `awaitChild` raises
+>   `WorkflowChildFailed` after the parent rotates past the original sentinel. `reviveFailedChildTx`
+>   added.
+> - **`resurrectFailedWorkflow`** + `ResurrectOutcome` — transactional recovery of a terminally failed
+>   instance; `WorkflowFailed` events switch to store-generated UUIDv7 ids so a repeat failure on one
+>   generation appends distinctly; journal history is never deleted.
+> - **`LeaseHeartbeat`** + `WorkflowRunOptions.leaseHeartbeat` + `WorkflowLeaseLost`; the resume worker
+>   populates it and classifies mid-run lease loss as `leaseSkipped` (no crash attempt). Leases renew
+>   at fresh step/arm boundaries, so `leaseTtl` sizes to the longest *individual* action.
+> - `continueAsNew` records the active patch set **atomically with the seed**.
+> - New exports: `deterministicJournalId`, `clearWorkflowWakeAfterTx`.
+>
+> **3. Migrations, pgmq, and release hygiene.** `keiro-migrate` gains `verify-schema` (live objects vs
+> embedded PG18 snapshot) and `import-codd-history`, plus an `up` codd-ledger preflight
+> (`--allow-fresh-ledger-over-codd` to override). `Keiro.Migrations` adds `missingMigrations` /
+> `StartupHandshake` / `handshakePassed` (per-replica boot gate), `preflightFreshLedgerOverCodd`,
+> `renderCoddPreflight`. Payload integrity is now three-layered: compile-time embedder (+
+> `RecompilePlugin` on GHC 9.12), a review-time `migrations.native.lock` SHA-256 suite, and the
+> checksum-keyed ledger. `keiro-pgmq` one-shot `runJobOnce`/`runJobOnceWithContext` continue the
+> producer's trace (one Consumer-kind `<jobName> process` span; no `shibuya.inflight.*`). `Keiro.version`
+> corrected to `0.3.0.0`.
+>
+> Migration count: **twenty** files / twelve tables. Not documented as shipped: nothing in this range
+> was left un-landed, but `keiro-dsl` still has **no payload-evolution syntax for workqueues** and no
+> cross-repo contract conformance — both are recorded as explicit gaps.
+
+> **Note (prior range).** The `601f9f3..c68dcc7` review covers the final validated command boundary,
 > typed hydration/replay/snapshot/read-model failures, target-scoped orchestration idempotency,
 > sharded at-least-once delivery, durable worker outcomes, workflow versioning and rotation, the
 > complete keiro-dsl 0.2 authoring surface, native Kiroku-before-Keiro migration components in the
@@ -238,6 +319,14 @@ chore(release): 0.3.0.0
 
 ### Previous pointers (for traceability)
 
+- `c68dcc7b9cea8d9c180d1c04254a72aa43804cac` (`c68dcc7`, 2026-07-14, Keiro 0.3.0.0) — the baseline
+  before the evolution-safety and durable-execution hardening review. The `c68dcc7..778c75c` range
+  (63 commits) landed replay-only edges and the computed guard-tightening twin, two-stage event
+  retirement, the real-log `Keiro.ReplayAudit`, the DSL replay-impact verdict and old-payload goldens,
+  the three-component snapshot discriminator plus fold fingerprint and sampled seed witness, codec
+  validation at the stream boundary, workflow wake-source/sleep-generation/lease/resurrection
+  hardening, migrations `0019`/`0020` with `verify-schema` + startup handshake + lockfile integrity,
+  and pgmq one-shot trace continuity.
 - `601f9f36f016d6c9f3f762cda093f65f7dea5225` (`601f9f3`, 2026-07-05, Keiro
   0.1 development line) — baseline before the 127-commit reliability, keiro-dsl, native migration,
   dependency-upgrade, and 0.3 release review recorded above.
@@ -309,9 +398,12 @@ chore(release): 0.3.0.0
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline c68dcc7..HEAD
-   git -C "$KEIRO" diff --stat c68dcc7..HEAD
+   git -C "$KEIRO" log --oneline 778c75c..HEAD
+   git -C "$KEIRO" diff --stat 778c75c..HEAD
    ```
+   keiro's own `docs/adr/*` is now the fastest way to read a decision's *rationale and consequences*
+   (ADRs 0001–0008 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only
+   edges, the snapshot discriminator, gate placement, and the four workflow lifecycle rules).
    keiro also keeps its own `docs/`, `CHANGELOG.md`, and `docs/plans|masterplans` entries — the
    prose diff there is the fastest way to understand intent before touching the source. Note that
    keiro's in-repo `docs/research/*` and `docs/plans/*` notes **predate the implementation and
@@ -326,7 +418,14 @@ chore(release): 0.3.0.0
      `reference/process-manager.mdx`, `reference/timers.mdx`, `reference/durable-workflows.mdx`,
      `reference/push-delivery.mdx`, `reference/subscription-sharding.mdx`,
      `reference/integration-event.mdx`, `reference/inbox.mdx`, `reference/outbox.mdx`,
-     `reference/pgmq-jobs.mdx`, `reference/telemetry.mdx`, `reference/migrations-and-schema.mdx`.
+     `reference/pgmq-jobs.mdx`, `reference/replay-audit.mdx`, `reference/deploy-ordering.mdx`,
+     `reference/telemetry.mdx`, `reference/migrations-and-schema.mdx`.
+   - **The evolution area** (upstream sources: `docs/guides/evolution-and-replayability.md`,
+     `docs/user/deploy-ordering.md`, `docs/user/replay-safety.md`, `docs/user/snapshots.md`,
+     `docs/adr/0002`–`0004`): `explanation/evolution-and-replayability.mdx`,
+     `reference/replay-audit.mdx`, `reference/deploy-ordering.mdx`,
+     `how-to/retire-an-event-type.mdx`, `how-to/tighten-a-guard-with-a-replay-only-twin.mdx`,
+     `how-to/audit-real-logs-before-a-deploy.mdx`.
    - **Walkthroughs** (line-by-line tours of the real source): every chapter under
      `walkthrough/command-cycle/`, `walkthrough/read-side/`, `walkthrough/workflow/`,
      `walkthrough/durable-execution/`, `walkthrough/scaling/`, `walkthrough/operations/`, and

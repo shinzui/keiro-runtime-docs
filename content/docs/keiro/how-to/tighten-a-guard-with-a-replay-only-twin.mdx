@@ -1,0 +1,106 @@
+---
+title: "Tighten a guard with a replay-only twin"
+description: "Narrow an aggregate rule without orphaning the events the old rule already produced: take the twin diff computes, decide from the audit, and retire it later."
+---
+
+Tightening a guard is the classic "surely this is just logic" change that is not. Because keiki uses
+one edge set for both execution and replay, hydration re-inverts each stored event and **re-checks
+the edge's guard**. An event legally appended under the old, looser rule may no longer satisfy the
+new one — and the next command on any stream containing it fails with
+`HydrationReplayFailed HydrationNoInvertingEdge`.
+
+The remedy is a **replay-only twin**: a transition that carries the removed region of the old rule,
+is never taken by a new command, and exists purely so old events keep an inverting edge.
+
+## 1. Tighten the live rule
+
+Say a reservation rule stops accepting red-tag patients:
+
+```keiro-dsl
+Unrequested -- RequestTransferReservation -->
+  guard (divertStatus != TotalDivert || lifeCriticalOverride) && patientAcuity != RedTag
+  write reservationState := Held
+  emit  TransferReservationCreated
+  goto  Held
+```
+
+Ship only this and every stored red-tag reservation becomes unhydratable.
+
+## 2. Let `diff` compute the twin
+
+```bash
+keiro-dsl diff --since origin/main --replay-impact-out replay-impact.json service.keiro
+```
+
+The `AggGuardTightened` advisory computes the removed region — `old-guard ∧ ¬new-guard`, with
+negation eliminated *inside the guard grammar* (De Morgan over `&&`/`||`, comparison-operator
+flipping, `x == false` for a bare boolean atom) — and prints a paste-ready twin:
+
+```keiro-dsl
+replay-only Unrequested -- RequestTransferReservation -->
+  guard (divertStatus != TotalDivert || lifeCriticalOverride) && patientAcuity == RedTag
+  write reservationState := Held
+  emit  TransferReservationCreated
+  goto  Held
+```
+
+The twin carries the **old** transition's writes, emits, and goto, and re-parses as-is. It is
+printed, never auto-applied: whether history should stay replayable or be truncated is a business
+decision, not a mechanical one.
+
+The advisory is deliberately conservative — it fires on *any* live-transition guard change without a
+twin, including a loosening. That is intentional: the audit-or-paste choice is the right question for
+both directions.
+
+## 3. Decide with the audit, not with a guess
+
+Run the [targeted replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy) against a
+production copy under the candidate binary.
+
+- **Streams exercise the removed region** → paste the twin. History stays replayable, and the retired
+  rule stays visible in the spec where a reader can see why it exists.
+- **No stored data is affected** (or you are truncating those streams anyway) → skip the twin and
+  keep the spec smaller.
+
+## 4. Ship it
+
+`scaffold` lowers the `replay-only` prefix to `B.replayOnly` in the transducer skeleton. Hand-written
+services call `Keiki.Builder.replayOnly` in the edge body, or set `mode = ReplayOnly` on a raw `Edge`.
+
+A live edge and its twin emit the same event, which would normally trip keiki's deliberately
+guard-blind inversion-ambiguity check. It does not, because that check is scoped to **same-mode**
+pairs, and inversion itself is two-phase: live edges are tried first, so a live edge always wins
+attribution and an imperfectly complemented twin cannot create ambiguity. New commands in the removed
+region are simply rejected with `CommandRejected`, which is the behaviour you asked for.
+
+## Keep the twin disciplined
+
+The validator enforces two rules:
+
+| Diagnostic | Severity | Meaning |
+|---|---|---|
+| `ReplayOnlyEmitsNothing` | error | a replay-only transition with no `emit` — it can invert nothing, so it is dead weight |
+| `ReplayOnlyCommandStillLive` | warning | its `(source, command)` pair has no live sibling; that command is fully retired there, and the fuller procedure is [event retirement](/docs/keiro/how-to/retire-an-event-type) |
+
+A deprecated event **may** keep being emitted by a replay-only transition. Replay-only transitions are
+not the write path, so this supersedes the old guarded-but-inert contortion (conjoining a flag
+operations never send onto a retained edge) as the sanctioned retained-edge shape.
+
+## Retire the twin eventually
+
+Twins are not forever. They end exactly like upcaster rungs: once every stream containing the removed
+region's events is terminal or truncated behind a covering snapshot — which is precisely what the
+targeted audit proves — delete the twin.
+
+<Callout type="warn">
+Deleting a twin early, or rolling back a deployment that introduced one, re-creates exactly the
+hydration break it fixed: stored events in the removed region lose their inverting edge again. Remove
+a twin only when the audit says no stream still exercises it.
+</Callout>
+
+## What about loosening, or a changed output?
+
+Neither has a computed remedy. Loosening or overlapping guards can make one stored event invert to
+two edges (`HydrationAmbiguousInversion`), and changing an output template changes what inversion
+solves against. Treat both like schema edits: introduce a new event, or a new event version, for the
+new behaviour — and audit before switching traffic.

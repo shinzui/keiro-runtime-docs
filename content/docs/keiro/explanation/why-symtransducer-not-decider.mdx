@@ -57,6 +57,32 @@ it in a test or at start-up so an unsafe stream fails before it ever corrupts hy
 The *same* transducer can also be rendered as a diagram for review; see keiki's
 [diagrams from one declaration](/docs/keiki/explanation/diagrams-from-one-declaration).
 
+## The bill for one edge set: your decide logic *is* your replay surface
+
+The single-edge-set design has a cost, and it is worth naming rather than discovering.
+
+Hydration does not merely fold events. It **re-inverts** each stored event back to the command that
+produced it, and **re-checks that edge's guard** against the recovered command. So an edit to a
+guard, an output template, or a register `update` is not "just logic" — it changes how every event
+already in your log replays. Tighten a guard and stored events that satisfied the old rule can lose
+their inverting edge (`HydrationReplayFailed HydrationNoInvertingEdge`); loosen or overlap guards and
+one event can invert to two (`HydrationAmbiguousInversion`).
+
+keiki's answer is a **scoped, explicit** reintroduction of the split: `EdgeMode` gives an `Edge` a
+`Live`/`ReplayOnly` mode. A `ReplayOnly` edge is never taken by forward stepping and exists so events
+emitted under a retired rule keep an inverting edge; its `update` defines how that history folds
+today. Inversion is two-phase — live edges are tried first, replay-only edges only when no live edge
+attributes an event — so the pattern is robust and the static ambiguity check can scope itself to
+same-mode pairs.
+
+That is deliberately narrow. A replay-only twin **cannot drift** the way a decide/evolve pair can: it
+still couples its event to its writes. It merely stops accepting new commands. The
+single-edge-set virtue — emit/update drift unrepresentable — is fully preserved for live behaviour.
+
+The full treatment, including the two-stage retirement protocol and the real-log audit that says
+whether stored data still exercises a retired rule, is
+[Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability).
+
 ## Where the analogy stops: projections are not transducers
 
 This is the migration trap for developers coming from `tan-event-source`. That library put several

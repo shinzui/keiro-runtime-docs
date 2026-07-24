@@ -23,6 +23,49 @@ BREAKING: <node> <facet> <subject>: <detail> [Code]
 Only `BREAKING` makes the command exit nonzero. Warnings remain visible and exit 0; review them in
 CI instead of discarding output.
 
+After the change lines, `diff` prints the **replay-impact verdict** — whether the candidate binary
+can interpret already-stored logs differently. Capture it for the deploy gate:
+
+```bash
+keiro-dsl diff --since origin/main --replay-impact-out replay-impact.json service.keiro
+```
+
+A `replay-neutral` verdict needs no data access. An `affected` verdict names the conservative
+event-type set to feed the [replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy).
+
+## Read the non-breaking advisories
+
+Several changes are legal but carry an operational obligation the differ cannot discharge for you.
+They exit 0 — you still have to act on them.
+
+| Advisory | What it means | What you must do |
+|---|---|---|
+| `AggGuardTightened` | a live transition's guard changed with no replay-only twin | paste the printed twin, or prove by audit that no stored data is affected |
+| `AggFoldSurfaceChanged` | the spec-visible replay surface moved, so the fold fingerprint changed | expect one full replay per snapshot-bearing stream |
+| `DeprecatedEventReplayHazard` | a deprecated event has no replay-only emitter | keep an inverting edge, or audit and truncate |
+| `EventRetirementInProgress` | the safe retained shape is in place | keep the eventual cleanup on the backlog |
+| `RouterDecideSurfaceChanged` / `ProcessDecideSurfaceChanged` | fan-out changed | drain the subscription's redelivery window before deploying |
+| `ProcessTimerPayloadChanged` | a timer payload shape changed | deploy backward-compatible firers first |
+| `ContractSchemaVersionBumped` | a contract shape moved with its version | coordinate the producer/consumer rollout by hand |
+
+`AggGuardTightened` is the one that prints working code: a paste-ready `replay-only` twin whose guard
+is the removed region `old ∧ ¬new`. See
+[Tighten a guard with a replay-only twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin).
+
+## Capture old payload shapes while both specs exist
+
+An event version bump is the one moment when both the old and the new wire shape are knowable. Emit
+the goldens then — not later, when the old shape only survives in the database:
+
+```bash
+keiro-dsl diff --since origin/main --emit-goldens golden-payloads service.keiro
+keiro-dsl scaffold --goldens golden-payloads service.keiro
+```
+
+The generated conformance harness exercises each golden through `decodeRaw`. Emission never
+overwrites an existing file, so a hand-captured genuine production payload always wins over a
+synthesized one — and a genuine payload is the stronger evidence.
+
 ## Classify the change
 
 | Tier | Examples |
@@ -42,8 +85,13 @@ event TransferReservationConfirmed v2 { reservationId hospitalId triageNote:Text
   upcast from v1 = HOLE
 ```
 
-Fill the pure v1-to-v2 body, re-scaffold, and run `keiro-dsl-conformance-v2`. For a retired event, use
-`deprecated event` so old bytes remain decodable while new transitions stop emitting it.
+Fill the pure v1-to-v2 body, re-scaffold, and run `keiro-dsl-conformance-v2`.
+
+<Callout type="warn">
+`deprecated event` alone is **not** a safe retirement. It keeps old bytes decodable, but hydration
+still needs an edge that *inverts* the event. Use the two-stage `retiring` → `deprecated` +
+`replay-only` protocol in [Retire an event type](/docs/keiro/how-to/retire-an-event-type).
+</Callout>
 
 ## Plan identity changes explicitly
 
@@ -55,8 +103,11 @@ table. Preserve the old identity or supply an application/operator migration and
 
 ```bash
 keiro-dsl check service.keiro
-keiro-dsl diff --since origin/main service.keiro
+keiro-dsl diff --since origin/main --replay-impact-out replay-impact.json service.keiro
 ```
 
 Both commands must run: a compatible diff can still leave the new spec internally invalid, and a
 valid new spec can still break history.
+
+Neither command reads your database. A clean `diff` with an `affected` verdict is not a green light —
+it is a *request* for the [real-log audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy).

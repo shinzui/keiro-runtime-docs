@@ -123,13 +123,36 @@ WHERE status NOT IN ('completed', 'cancelled', 'failed')
 ORDER BY workflow_name, workflow_id
 ```
 
-The explicit timestamp makes `wake_after` a self-expiring skip. `sleepNamed` stores the first timer
-`fire_at` in `keiro_workflows.wake_after`, so a workflow parked only on a not-yet-due sleep disappears
-from discovery until the timer is due. Wake sources that append a completion keep using the same
-journal append path, so the next due resume pass replays past them.
+The explicit timestamp makes `wake_after` a self-expiring skip, and the hint has exactly one writer
+and one clearer:
+
+```haskell
+runTransaction $ do
+  inserted <- scheduleTimerOnceTx request
+  when inserted (setWorkflowWakeAfterTx name wid (request ^. #fireAt))
+```
+
+Only the arm whose first-arm-wins insert actually **created** the timer writes the hint —
+`scheduleTimerOnceTx` returns `Bool` for exactly this. A replay arm touches neither `fire_at` nor
+`wake_after`, so re-entering a due or already-fired sleep cannot postpone its own discovery. A
+successful fire calls `clearWorkflowWakeAfterTx` in the *same transaction* as its journal append, so a
+fired sleeper is rediscovered on the next pass rather than after the stale hint expires.
 
 `loadStepIndex` rounds out the read surface; it is exposed for completeness, though the replay loop
 pre-loads from the journal stream instead.
+
+## The index is also the await tiebreaker
+
+This table has a second job beyond discovery. Because every journal append maintains it inside the
+same transaction, it is the **authoritative point lookup** for "has this step been journaled?" — which
+is what [chapter 02](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop)'s
+`Await` miss path consults before arming and suspending, and what makes workflow snapshots safe to
+combine with concurrent wake sources (see
+[chapter 08](/docs/keiro/walkthrough/durable-execution/08-snapshots-and-telemetry)).
+
+The invariant that keeps this sound is stated once and must hold forever: **every journal append path
+records its index row in the same transaction as the append.** A new append path that forgets it
+reintroduces the permanently-hidden-wake-result bug.
 
 <Cards>
   <Card title="← 02 — The effect and the replay loop" href="/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop" />

@@ -1,0 +1,431 @@
+---
+title: "Evolution and replayability"
+description: "Why changing a deployed keiro service is a change to the interpretation of data you already stored — the ground truth, the six gates, the safe procedure for each change class, and what is still not gated."
+---
+
+This page is for a developer changing a keiro service that is **already deployed** — one whose event
+log, snapshots, timers, workflow journals, and queues hold data written by the previous version of
+the code.
+
+It applies whether you author services by hand or through the
+[keiro-dsl toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain). DSL-specific gates are called
+out as such, because a hand-authored service does not get them.
+
+## The ground truth: why evolution discipline is not optional
+
+Three architectural facts make every change below a change to the *interpretation of data you have
+already stored*.
+
+**One edge set is both execution and replay.** A keiki transducer has no separate decide/evolve
+pair. The same edges that turn a command into events going forward are used to rebuild state:
+hydration *re-inverts* each stored event back to the command that produced it and *re-checks the
+edge's guard against the recovered command*. Editing a guard, an output template, or a register
+`update` is therefore not "just logic" — it edits how every event already in the log replays. There
+is no version of "the events are fine, I only changed the code" in this architecture. (This is the
+cost side of the trade explained in
+[Why SymTransducer, not Decider](/docs/keiro/explanation/why-symtransducer-not-decider); the benefit
+is that emit/update drift is unrepresentable.)
+
+**Upcasters run at decode time, forever.** A stored payload is never rewritten. `decodeRecorded`
+reads the `schemaVersion` stamp from event metadata (defaulting to 1 when absent), replays the
+upcaster chain up to the codec's current version, and only then decodes — on every hydration, for the
+life of the stream. The same applies to workflow journal pre-load and to `keiroJobCodec` job
+payloads. A rung can never be deleted while any payload at its source version persists: the chain
+walk fails with `GapInUpcasterChain` the moment it goes missing.
+
+**There is no data-migration story.** Kiroku is append-only. Keiro ships no tool that rewrites stored
+payloads to a new shape. The only mechanism that removes events from a stream's read path is
+operator-driven stream truncation behind a covering snapshot — a recovery tool, not a migration tool.
+
+The consequence: **a schema or logic change ships alongside all the data the old code wrote, and the
+new code must be able to replay all of it.**
+
+## The gates, at a glance
+
+Six gates stand between an evolution mistake and production. Know what each one actually checks,
+because none of them checks everything.
+
+| # | Gate | What it sees | What it cannot see |
+|---:|---|---|---|
+| 1 | The compiler | exhaustiveness over your event/command types | anything about stored data |
+| 2 | `keiro-dsl check` / `diff --since` (DSL only) | one spec; two specs' declarations | hole bodies |
+| 3 | The generated harness (DSL only) | current-shape round-trips, `validateTransducer`, supplied old-payload goldens | whether an old event still *inverts* |
+| 4 | `mkEventStream` at startup | the actual runtime transducer and codec | the new machine against real old logs |
+| 5 | `Keiro.ReplayAudit` | **real stored histories** under the candidate binary | anything not yet written |
+| 6 | Runtime witnesses | live hydration failures, sampled seed divergence | nothing, if you do not alert on the counters |
+
+Expanded:
+
+1. **The compiler.** Exhaustiveness of pattern matches. Nothing about stored data.
+2. **`keiro-dsl check` and `keiro-dsl diff --since <git-ref>`.** `check` validates a single spec
+   (contiguous upcaster holes, no live transition emitting a deprecated event, disposition tables,
+   replay-only discipline). `diff` compares the spec against a git ref and classifies changes over
+   the *persisted decode surface* and the *identity surface*, exiting non-zero on BREAKING. It also
+   emits a [replay-impact verdict](#the-replay-impact-verdict), advises on aggregate fold,
+   process/router decide, and timer-payload changes, and prints a replay-only twin for guard
+   tightening. **Hole bodies remain invisible to the differ.**
+3. **The generated harness.** Round-trips current-shape events, asserts `validateTransducer` is
+   clean, and exercises each supplied versioned old-payload golden through `decodeRaw`. Capture old
+   shapes while both specs exist with `keiro-dsl diff --emit-goldens DIR`, then pass them to
+   `scaffold --goldens DIR`. Generated files never overwrite a hand-captured production payload.
+4. **[`mkEventStream`](/docs/keiro/reference/event-stream-and-stream) at startup.** keiki's
+   structural replay-safety checks with head-recoverability and state-changing-ε force-enabled, plus
+   snapshot-configuration coherence, plus `mkCodec` — so invalid versions, duplicate tags/rungs, and
+   incomplete chains fail validated construction. It still validates the **new machine in
+   isolation**, never against real old logs.
+5. **[The real-log replay audit](/docs/keiro/reference/replay-audit).** Consumes the affected event
+   types from `diff --replay-impact-out`, discovers only matching streams, and full-replays them
+   through the candidate binary. It reports exact replay failures, accepted-seed divergence, and
+   stable digests; a non-zero `auditExitCode` blocks deployment.
+6. **Runtime witnesses.** Hydration failures are loud, typed errors (`HydrationDecodeFailed`,
+   `HydrationReplayFailed` with a reason). After every append, default-on replay verification
+   re-plays the just-committed batch; divergence increments `keiro.snapshot.apply.divergence` and
+   stamps `keiro.replay.divergence` on the command span — **advisory telemetry only**, the command
+   still succeeds. Snapshot hydration also asynchronously verifies one in 1000 accepted seeds by
+   default; disagreement increments `keiro.snapshot.seed.divergence`. If you do not alert on those
+   counters, this gate does not exist for you.
+
+<Callout type="info">
+The gates are placed at the **earliest boundary with enough evidence**. A single spec can prove a
+codec shape impossible but cannot know which rungs existed last release; a cross-spec diff sees
+declarations disappear but cannot vouch for hand-written runtime assembly; startup validation
+inspects the real codec but cannot prove a genuine historical payload still decodes; only the
+database-backed audit can say whether real stored histories still invert and fold.
+</Callout>
+
+## Adding a new event type
+
+The one genuinely easy change. Old streams do not contain the new event, so nothing old breaks.
+
+1. Add the constructor, an emitting transition, the wire tag in the codec's `eventTypes`, an `encode`
+   arm, and a `decode` arm — all in one change. (DSL: add the `event` block and the `emit`, then
+   `scaffold`; the codec is regenerated atomically.)
+2. Add a round-trip test.
+3. Deploy everywhere **before** relying on the event, and treat the deploy as roll-forward-only once
+   the first new event is appended: an old binary hydrating a stream containing the new tag fails
+   with `UnknownEventType` → `HydrationDecodeFailed`.
+
+**Gates:** `diff` classifies the addition ADDITIVE. A missing tag in `eventTypes` fails the *first
+append* with `EncodeFailed` (loud, immediate). A missing decode arm fails the *next hydration* of an
+affected stream (loud, delayed). `mkCodec` validates tag and chain configuration but cannot prove a
+hand-written arm has the intended semantics.
+
+## Changing an existing event's payload fields
+
+This is the change class the codec machinery was built for. The mechanics are in
+[Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution) and
+[Evolve an event schema](/docs/keiro/how-to/evolve-an-event-schema).
+
+**Adding an optional field** (hand-written codec with a `Maybe` passthrough or `fcOnMissing`
+default): no version bump needed; old payloads decode with the default. The DSL cannot express this
+for aggregate events — every generated field decode is strict — so under the DSL *every* field
+addition is a version bump with an upcaster, and `diff` enforces it
+(`EvtFieldAddedWithoutBump` is BREAKING).
+
+**Adding a required field, removing, renaming, or retyping**: bump the version and write the
+upcaster.
+
+1. Declare the new shape at `vN` with `upcast from v(N-1)` (DSL), or bump `schemaVersion` and add the
+   `(N-1, upcaster)` rung (hand-written).
+2. The upcaster receives the *old* JSON and must return the *new* shape.
+3. Capture the old wire shape with `keiro-dsl diff --emit-goldens` while both specs exist, or check
+   in a **genuine old payload** copied from the store. Exercise it through `decodeRaw` at the old
+   version — a genuine payload is stronger evidence than a synthesized example.
+4. Use a stop-the-world or blue/green cutover; do not run mixed aggregate codec versions
+   ([rule 2](/docs/keiro/reference/deploy-ordering#2-cut-aggregate-codec-bumps-over-without-mixed-versions)).
+
+**Gates:** for DSL services, `diff` catches all four unguarded variants as BREAKING. For hand-written
+services, **no gate exists before runtime**: an unguarded required add / rename / retype surfaces as
+`HydrationDecodeFailed` the first time an old stream is touched — in production, possibly days later.
+An unguarded *removal* is worse: old payloads still decode (unknown keys are ignored), the fold just
+silently loses the data. Wrong state, no error.
+
+The codec's `schemaVersion` is aggregate-global. When a second event kind changes, assign it
+`aggregate-max + 1`, not its private previous version plus one.
+
+## Retiring an event type: deprecation is not enough
+
+The intuitive lifecycle — "this event is historical, stop writing it, keep decoding it" — has a trap:
+**decodable is not the same as replayable.**
+
+Keeping the tag decodable protects only the *codec layer*. Hydration then replays the decoded event
+through the transducer, and replay needs an *edge whose output inverts it*. Remove the transition
+that used to emit the event and there is no such edge: the next command on **any live stream whose
+history contains the event** fails with `HydrationReplayFailed HydrationNoInvertingEdge`. Upcasters
+cannot rescue you — they migrate a payload *within* its stored tag and cannot re-tag an old event.
+
+The failure modes of getting this half-right are, fortunately, asymmetric:
+
+- **Remove the emit but keep the transition** (an output-free edge that still changes state): rejected
+  **loudly at service startup** by the force-enabled `StateChangingEpsilon` check in
+  `mkEventStream`. You cannot ship this variant by accident.
+- **Remove the transition entirely, or replace the event and drop the old edge**: the DSL emits
+  `DeprecatedEventReplayHazard`; a hand-written service needs the old-log audit or an explicit
+  regression test.
+
+The safe procedure is a **two-stage protocol**:
+
+1. Mark the event `retiring` while its original transition is still live and emitting. (The DSL
+   *requires* that live emitter — `EventRetirementInProgress` is an error otherwise.)
+2. At cutover, mark the event `deprecated` and change the equivalent historical transition to
+   `replay-only`. A replay-only edge can invert stored events but can never accept a new command, so
+   the event leaves the write path without losing its fold.
+3. Keep the decode arm and the replay-only edge until every affected stream is terminal, truncated
+   behind a covering snapshot, or proven clear by the real-log audit.
+
+Whether real streams still exercise the old edge is a database-backed question. The targeted replay
+audit answers it. See [Retire an event type](/docs/keiro/how-to/retire-an-event-type).
+
+## Changing decisions: guards, outputs, and dispatch
+
+"Same events, different decisions" sounds replay-neutral. In keiro it is not, for two separate
+reasons.
+
+### Reason one: decide logic *is* the replay surface
+
+Because replay re-inverts events and re-checks guards:
+
+- **Tightening a guard** can make a historical event fail inversion —
+  `HydrationReplayFailed HydrationNoInvertingEdge` on streams whose history satisfied the old guard
+  but not the new one.
+- **Loosening or overlapping guards** can make one historical event invert to two edges —
+  `HydrationAmbiguousInversion`.
+- **Changing an output template** changes what the inversion solves against.
+
+These failures are loud but delayed to the next hydration of an affected stream.
+
+**Guard tightening now has a first-class remedy: the replay-only twin.** Marked with a `replay-only`
+prefix on the transition line, it lowers to a keiki `ReplayOnly` edge — never taken by a new command,
+but available to inversion when no live edge attributes a stored event. Inversion is **two-phase**:
+live edges are tried first, so a live edge always wins attribution and an imperfectly complemented
+twin cannot create ambiguity.
+
+The procedure when you tighten a guard:
+
+1. Tighten the live transition's guard to the new rule.
+2. Run `keiro-dsl diff --since <ref>`. The `AggGuardTightened` advisory computes the removed region —
+   `old-guard ∧ ¬new-guard`, expressed inside the guard grammar — and prints a **paste-ready**
+   `replay-only` twin carrying that region with the old transition's writes/emits/goto.
+3. Decide. If stored streams may exercise the removed region (the targeted audit answers this against
+   real data), paste the twin: history stays replayable and the retired rule stays visible in the
+   spec. If no stored data is affected, or you choose truncation, skip it.
+4. The scaffolder lowers the marker to `B.replayOnly`; hand-written services call
+   `Keiki.Builder.replayOnly` in the edge body (or set `mode = ReplayOnly` on a raw `Edge`).
+
+The validator keeps the pattern disciplined: a `replay-only` transition with no `emit` is an **error**
+(`ReplayOnlyEmitsNothing` — it can invert nothing), and one whose `(source, command)` pair has no live
+sibling is a **warning** (`ReplayOnlyCommandStillLive` — the command is fully retired there; the
+fuller procedure is event retirement).
+
+<Callout type="warn">
+**Twins are not forever — they end in retirement, and deleting one early re-breaks history.** The
+endgame mirrors upcasters: rungs live *while payloads at their version persist*. Once every stream
+containing the removed region's events is terminal or truncated — exactly what the targeted audit
+proves — delete the twin. Rolling back a deployed twin re-creates precisely the hydration break it
+fixed, because stored events in the removed region lose their inverting edge.
+</Callout>
+
+Output-template changes and guard *loosening* have no computed remedy: treat them like schema edits
+(a new event or a new event version for the new behaviour). `diff`'s tightening detection is
+deliberately conservative — it fires on any live-transition guard change without a twin, and the
+advisory's audit-or-paste choice covers loosening too.
+
+### Reason two: redelivery windows
+
+Process-manager and router dispatch is made idempotent by deterministic event ids derived from
+`(dispatcher, key, source event id, target, occurrence)`. If you change *which commands* a reaction
+emits and deploy while source events from the old code are still in redelivery, a redelivered event
+dispatches the *new* command under the *same* deterministic id — and the store confirms it as a
+benign duplicate of the old dispatch. The result is a silently mixed half-old/half-new fan-out.
+Dead-letter replay has the same property by design: it re-runs the *current* handler against the
+stored source event.
+
+`diff` emits `RouterDecideSurfaceChanged` / `ProcessDecideSurfaceChanged` advisories for spec-visible
+edits, but **hole-only decide changes stay invisible**, and nothing proves a redelivery window is
+empty. So the manual rule stands: drain PM/router redelivery and replay any dead letters **before**
+deploying a decide change
+([rule 4](/docs/keiro/reference/deploy-ordering#4-drain-process-manager-and-router-decide-changes)).
+
+## Changing the fold
+
+Changing an edge's register `update` with unchanged event schemas is the **worst gap in the stack**.
+
+Without snapshots, a fold change simply reinterprets history: the next full replay computes the new
+state from the same events. That is the intended semantics — state is derived. The danger arrives
+with snapshots:
+
+- Snapshot compatibility is the triple `(stateCodecVersion, shapeHash, stateShapeHash)`.
+  `defaultStateCodec` derives the register-layout and control-state components automatically;
+  DSL-generated streams additionally compose a fingerprint of the spec-visible replay surface into
+  `stateShapeHash`.
+- A changed component makes the old row a normal cache **miss**. The stream full-replays under the
+  new fold and may replace the row with a current seed.
+- **Hand-written guard/update bodies and generated Holes-only changes are not structurally visible.**
+  If such a change keeps all three components equal, the old seed still matches, tail-only replay
+  derives silently wrong state, and post-append verification may persist that stale-derived state at
+  the new head version.
+
+The safe procedure:
+
+1. Run `keiro-dsl diff` for generated services and review `AggFoldSurfaceChanged`. Spec-visible
+   changes move the fold fingerprint automatically.
+2. For every hand-written or Holes-only fold edit, bump `stateCodecVersion` or update an explicit
+   `withFoldFingerprint` token. The changed discriminator forces one full replay per affected stream
+   — schedule that performance event.
+3. Run the candidate binary's targeted replay audit against a production-copy database. A seeded/full
+   divergence is a failed deploy gate.
+4. Rebuild any read models whose projections depend on the changed fold.
+5. If you cannot bump (emergency), delete the affected `keiro_snapshots` rows; the miss path is
+   benign.
+
+For invisible changes with a missed manual bump, the audit's seeded-vs-full comparison is the
+pre-deploy backstop and `keiro.snapshot.seed.divergence` is the sampled runtime backstop.
+
+## Changing the state shape
+
+Two halves, with different protection:
+
+**Register file** (add/remove/rename/retype/reorder a slot): the shape hash changes, every old
+snapshot stops matching, and hydration transparently full-replays from version 0. Graceful — a
+performance event, not a correctness event. Two caveats: a *mixed-version deployment* thrashes the
+single snapshot row per stream (either side's writer may replace the other's — deliberate, to permit
+rollback); and a user-defined slot type using the default `CanonicalTypeName` changes its hash when
+its *defining module moves* (spurious full replay — pin `canonicalTypeName` if that matters), while
+changing that type's *internal fields* does **not** change the hash.
+
+**Control state `s`:** `defaultStateCodec` derives `stateShapeHash` from the datatype and constructor
+structure, so those shape changes miss and full-replay automatically. A semantic change that
+preserves the derived shape still needs a `stateCodecVersion` bump, exactly like a hand-written
+fold-body change.
+
+## Persisted payloads outside the event log
+
+The event log is not the only place your old shapes live.
+
+**Timer payloads (`keiro_timers`).** A process-manager timer carries opaque JSON built at schedule
+time; the fire action decodes it — possibly weeks later, under newer code. There is no versioning and
+no upcast hook. A fire decoder that rejects the old shape throws, the attempt counter climbs, and
+after `maxAttempts` the row is dead-lettered (`Dead`, with `last_error`). Fire decoders must stay
+backward-compatible with every payload shape that may still be scheduled, or you must drain and
+re-schedule timers as part of the deploy. The DSL flags process-input field changes as BREAKING and
+emits `ProcessTimerPayloadChanged`; hand-written timer payloads have no gate.
+
+**Workflow journals.** Step *results* are persisted as raw JSON under the step name. Changing a
+journaled step's result type makes replay throw `WorkflowStepDecodeError`; the resume worker counts
+each throw as a crash, and after the default five attempts the instance is terminally failed and
+leaves resume discovery. Recovery is supported and transactional: deploy the corrected binary, then
+call [`resurrectFailedWorkflow`](/docs/keiro/how-to/resurrect-a-failed-workflow) — never manual SQL.
+The workflow snapshot's fixed sentinel shape hash (`keiro.workflow.stepmap.v1`) deliberately does not
+protect per-step types; the step decode is the intended failure point. The safe procedure is never to
+change a journaled result type in place: **rename the step**. Awakeable payloads are journaled step
+results too (`awk:<uuid>`) and follow the same rule.
+
+**pgmq job payloads.** `keiro-pgmq` ships `aesonJobCodec` (raw, unversioned) and `keiroJobCodec` (a
+versioned `{v,t,data}` envelope with the full upcaster-chain story and a `JobPayloadFromFuture`
+rolling-deploy retry). Generated workqueues now expose a schema-version-1 `QueueCodec` backed by
+`keiroJobCodec`; payload-evolution *syntax* remains future work, but new queues start inside a
+versioned envelope. Do not switch a non-empty queue between the two shapes — drain first, or use a
+temporary decoder that accepts both.
+
+**Dead-letter rows.** Rejected PM/router dispatches store identity and error text, never the command
+payload, so they are immune to command schema evolution. Operator replay re-runs your *current*
+handler against the stored source event, inheriting the decide-change caveat above.
+
+## Integration events across bounded contexts
+
+The [integration envelope](/docs/keiro/reference/integration-event) carries `schemaVersion` end to
+end — stamped into the `keiro-schema-version` Kafka header on publish, parsed back on consume,
+persisted in inbox rows. What it does **not** carry is any automatic migration: there is no upcaster
+machinery on the inbox path. `decodeJsonIntegrationEvent` is a plain `FromJSON` decode; version
+dispatch on the consumer side is entirely your code, and a decode failure routes wherever the
+intake's disposition table sends it. The `schemaReference` registry fields are plumbed through
+verbatim and enforced by nothing.
+
+The safe procedure is contract-first, additive-first — model the topic in a DSL `contract` block on
+both sides where possible, deploy producer-first for additive optional fields and
+consumer-decode-capability-first for structural changes, and never change `messageId`/
+`idempotencyKey` derivation on a live contract.
+
+<Callout type="warn">
+**Nothing catches cross-repo skew today.** `diff` sees one repository's spec. No gate compares a
+consumer's contract block against the producer's, and no gate enforces deploy ordering. Skew is
+caught by consumer dead letters in production.
+</Callout>
+
+## Evolving workflows
+
+The full treatment is in [Durable workflows](/docs/keiro/reference/durable-workflows); the
+evolution-relevant rules in brief:
+
+- **One step changed:** rename its `StepName`. A renamed step has no journaled history, so it runs
+  fresh. Never change a journaled result type in place.
+- **Cross-cutting change:** wrap it in `patch (PatchId "...")` and add the id to `activePatches` in
+  the same deploy. In-flight instances keep the old branch forever; fresh instances take the new one.
+  Remove the id from `activePatches` only after deleting the `patch` call, and never reuse a retired
+  `PatchId`. `diff` sanctions exactly these shapes: a body change fully wrapped in a new patch is
+  ADDITIVE; an unguarded body change and a removed patch id are BREAKING.
+- **Ordinal names (`sleep:0`, `sleep:1`, …) are positional.** Reordering the calls re-pairs in-flight
+  instances with the wrong journaled completions — silently, if the types happen to match. Prefer the
+  named forms for anything that must survive a code edit.
+- **Unbounded workflows:** `continueAsNew` is the evolution escape hatch — the next generation starts
+  with a fresh journal and only the carried seed, so accumulated journal shape debt is dropped at
+  each rotation. Changing the *seed type* is BREAKING (the next generation must decode the previous
+  generation's seed).
+- **`patch` × `continueAsNew`:** a rotated generation records its active patch set *atomically inside
+  the rotation*, in the same transaction as the carried seed. An asynchronous append racing the
+  rotation — a duplicate awakeable signal, a child completion — can no longer make every later
+  `patch` call in that instance decide `False`. Generation 0 still records its set on the first run,
+  which has no rotation moment.
+
+## The replay-impact verdict
+
+`keiro-dsl diff --replay-impact-out FILE` answers the narrower deployment question: *can the
+candidate binary interpret an already-stored aggregate log differently?* The contract is deliberately
+conservative and machine-readable:
+
+```json
+{"verdict":"replay-neutral"}
+```
+
+```json
+{"verdict":"affected",
+ "aggregates":{"Reservation":{"eventTypes":["TransferReservationCreated"],
+                              "includeSnapshotStreams":true}}}
+```
+
+New aggregates, events, transitions, and syntactically proven guard loosenings are replay-neutral,
+because no old log depends on them. A removed or changed old transition affects the event types
+emitted by either side; a changed decode surface affects that event type directly; and
+snapshot-bearing streams are included whenever the fold itself can change. Affected event arrays are
+sorted, so the file is stable across runs.
+
+A `replay-neutral` verdict means **no data audit is required** — that is the point of computing it.
+
+## Gate coverage summary
+
+"Loud/delayed" means a typed runtime error on the next touch of affected data — visible, but in
+production. **Silent** means wrong behaviour with no error. DSL-only gates do not exist for
+hand-authored services.
+
+| Change | check/diff (DSL) | Startup / CI | Runtime | Silent risk today |
+|---|---|---|---|---|
+| Add event type | ADDITIVE | `mkCodec` validates tag/chain configuration | `EncodeFailed` / `HydrationDecodeFailed` if a hand-written arm is wrong | rollback only |
+| Add optional field (tolerant codec) | n/a (DSL must version) | — | decodes with default | meaning drift only |
+| Required add / rename / retype, unguarded | BREAKING; golden emitted on bump | `mkCodec` checks chain shape | `HydrationDecodeFailed` (loud/delayed) | hand-written without a golden |
+| Field removal, unguarded | BREAKING | versioned golden CI | decodes fine | **silent wrong state** in tolerant codecs without a golden |
+| Version bump + upcaster | ADDITIVE only with contiguous declarations | `mkCodec`; harness decodes old-shape golden | `GapInUpcasterChain` / `UpcasterError` if bypassed | hand-written semantic upcaster bugs |
+| Deprecate event, live streams affected | `DeprecatedEventReplayHazard` | ε-variant rejected; replay-only edge validated | `HydrationNoInvertingEdge` if ignored | affected streams unknown until audit |
+| Guard tightening | `AggGuardTightened` prints the twin | new machine only | `HydrationReplayFailed` (loud/delayed) | inversion-compatible edits can shift state silently |
+| Decide change over a redelivery window | `RouterDecideSurfaceChanged` / `ProcessDecideSurfaceChanged` | — | deduped as benign duplicates | **hole-only edits remain invisible** |
+| Fold change, snapshots enabled | `AggFoldSurfaceChanged` + new fingerprint | three-component discriminator | full replay on mismatch | **manual-bump residual** for hand-written/Holes-only edits |
+| Register slot change | n/a | register shape hash changes | full replay (benign) | mixed-deploy snapshot thrash |
+| Control-state structural change | n/a | state shape hash changes | full replay (benign) | same-shape semantic change needs a manual bump |
+| Timer payload shape | `ProcessTimerPayloadChanged` | — | timer dead-letter (loud/delayed) | hand-written: none |
+| Workflow step result type | BREAKING (body) | — | `WorkflowStepDecodeError` → terminal fail; `resurrectFailedWorkflow` after a fix | operator must notice the failed instance |
+| Job payload | normal workqueue classifications | generated queues use versioned `QueueCodec` | future version retries; malformed shape dead-letters | hand-written `aesonJobCodec` stays unversioned |
+| Contract field change | BREAKING / advisory | — | consumer dead letters | **cross-repo skew unchecked** |
+| Workflow body reorder without patch | BREAKING | — | wrong journaled pairing | hand-written ordinals: **silent** |
+
+The residual manual obligations are explicit and few: bump invisible fold fingerprints, drain
+hand-owned decide changes, and keep cross-service compatibility coordinated by hand according to
+[Deploy ordering](/docs/keiro/reference/deploy-ordering).

@@ -54,6 +54,14 @@ freshOrdinal  :: (Workflow :> es) => Text -> Eff es Int
   `Suspended`). `arm` **must be idempotent** — a resumed run re-enters `awaitStep` from the top on
   every resume until the result is journaled, so it re-runs `arm` each time. The sleep, awakeable, and
   child primitives are all thin wrappers over `awaitStep`.
+
+  On a miss in the in-memory replay map, `awaitStep` first consults the generation-scoped
+  `keiro_workflow_steps` index — *before* checking cancellation, running `arm`, or suspending. An
+  index hit is inserted into the map and returned exactly like an ordinary replay hit. This is what
+  makes snapshots safe to combine with wake sources: see
+  [the step-index fallback](#the-step-index-fallback-under-snapshots). The fallback applies **only**
+  to `awaitStep`; a `step` or `patch` miss attempts an append whose transaction rechecks the same
+  index under the step lock, so those already converge.
 - **`currentWorkflow`** returns the running instance's `(WorkflowName, WorkflowId)` — used to key wake
   sources deterministically.
 - **`freshOrdinal namespace`** is a per-run, per-namespace counter (from 0) backing the ordinal
@@ -169,6 +177,12 @@ data WorkflowRunOptions = WorkflowRunOptions
   , metrics        :: Maybe KeiroMetrics
   , tracer         :: Maybe Tracer
   , activePatches  :: Set PatchId
+  , leaseHeartbeat :: Maybe LeaseHeartbeat
+  }
+
+data LeaseHeartbeat = LeaseHeartbeat
+  { owner :: Text
+  , ttl   :: NominalDiffTime
   }
 
 defaultWorkflowRunOptions :: WorkflowRunOptions
@@ -181,8 +195,33 @@ defaultWorkflowRunOptions :: WorkflowRunOptions
     metrics: { type: "Maybe KeiroMetrics", default: "Nothing", description: "When Just, records the keiro.workflow.* instruments. Nothing is the no-op default." },
     tracer: { type: "Maybe Tracer", default: "Nothing", description: "When Just, opens a workflow <name> Internal span around the run. Nothing runs the body unwrapped." },
     activePatches: { type: "Set PatchId", default: "empty", description: "Patch ids active in this deployment. A fresh workflow generation records the set once, and each patch call replays the recorded membership decision." },
+    leaseHeartbeat: { type: "Maybe LeaseHeartbeat", default: "Nothing", description: "Resume-worker lease coordinates. When present, fresh workflow boundaries renew the lease and throw WorkflowLeaseLost if another owner has taken it. Nothing keeps direct runs free of lease traffic." },
   }}
 />
+
+### Lease renewal and `WorkflowLeaseLost`
+
+The resume worker populates `leaseHeartbeat` automatically from the claim it just made; direct
+`runWorkflow` calls leave it `Nothing`.
+
+When it is present, the runtime **renews the lease for another full TTL immediately before each fresh
+boundary** — a step action that is about to run for the first time, and an await arm that is about to
+be armed. Replay hits neither write nor renew. If another worker owns the row at such a boundary, the
+runtime throws:
+
+```haskell
+data WorkflowLeaseLost = WorkflowLeaseLost   -- an Exception
+```
+
+before performing any further side effects. The resume worker catches it, counts a `leaseSkipped`,
+and **consumes no crash attempt** — losing a lease is not a workflow bug.
+
+<Callout type="info">
+Size `WorkflowResumeOptions.leaseTtl` above the longest **individual** step action or await arm,
+including its normal timeout — not above the whole multi-step advance. A healthy multi-step run no
+longer loses ownership merely because its original claim aged out. `leaseTtl` still bounds
+dead-worker takeover delay, so do not inflate it beyond what the slowest single action needs.
+</Callout>
 
 <Callout type="warn">
 Set option fields with the **generic-lens label**, not a bare record update:
@@ -207,7 +246,13 @@ data WorkflowError
 ```
 
 All four surface through `throwIO`, so they propagate through the surrounding store/IO error channel.
-A `WorkflowStepDecodeError` is a programmer error: a step's result type changed incompatibly.
+A `WorkflowStepDecodeError` is a programmer error: a step's result type changed incompatibly — see
+[Failure, retries, and resurrection](#failure-retries-and-resurrection) for the recovery path, and
+[deploy-ordering rule 8](/docs/keiro/reference/deploy-ordering#8-treat-workflow-step-results-as-permanent)
+for how to avoid it.
+
+`WorkflowLeaseLost` is a separate exception (not a `WorkflowError` constructor) because it is not a
+failure of the workflow: the resume worker classifies it as a lease skip.
 
 ## Versioning and rotation
 
@@ -251,6 +296,12 @@ to the snapshot store unconditionally on rotation (regardless of `snapshotPolicy
 write makes the next generation hydrate in O(1); a failed write is counted and the next generation
 still converges by replaying its already-committed seed entry.
 
+The rotation also records the deployment's **active patch set atomically with the seed**, in the same
+transaction. Without that, an asynchronous append racing the rotation — a duplicate awakeable signal,
+a child completion — could land on the new generation before its patch set existed, silently forcing
+every later `patch` call in that instance to decide `False`. Generation 0 has no rotation moment, so
+it still records its set on the first run.
+
 ### `patch` — versioning in-flight workflows
 
 `patch pid` returns a **stable, journaled** branch decision: `True` for an instance that is fresh at
@@ -290,9 +341,10 @@ in-memory timer thread** — its only durable state is one `keiro_timers` row. `
 ordinal convenience form (`sleep:0`, `sleep:1`, …); prefer `sleepNamed` for anything that must survive
 a code edit mid-flight.
 
-A workflow-sleep timer row carries `{"kind":"keiro.workflow.sleep","step":"sleep:<suffix>"}` in its
-`payload`, which is how one timer worker distinguishes a workflow sleep from an ordinary
-process-manager timer. **A worker must drain the timers** for a sleep ever to fire:
+A workflow-sleep timer row carries
+`{"kind":"keiro.workflow.sleep","step":"sleep:<suffix>","gen":<n>}` in its `payload`, which is how one
+timer worker distinguishes a workflow sleep from an ordinary process-manager timer **and** pins the
+fire to the generation that armed it. **A worker must drain the timers** for a sleep ever to fire:
 
 ```haskell
 workflowSleepFireAction :: (Store :> es, IOE :> es) => TimerRow -> Eff es (Maybe EventId)
@@ -306,7 +358,39 @@ supplied process-manager fire action when the row is not a sleep. A workflow-onl
 and pre-checks the step), so at-least-once timer firing yields exactly-once journaling. Workflow sleeps
 inherit the timer subsystem's [stuck-row recovery API](/docs/keiro/reference/timers#recovery-operations)
 for free. Helpers: `sleepTimerId`, `sleepStepName`, `sleepTimerPayload`, `parseSleepPayload`,
-`workflowSleepKind`.
+`matchSleepTimerGeneration`, `workflowSleepKind`.
+
+#### Sleep timers are generation-owned lifecycle state
+
+Three rules make a sleep behave correctly across rotation, re-arms, and collection.
+
+**The arming generation owns the completion.** `workflowSleepFireAction` appends directly to the
+generation recorded in the payload, through `prepareJournalAppend`. A legacy payload with no `gen` key
+recovers its generation by matching its deterministic timer id against candidate generations
+(`matchSleepTimerGeneration`). So a timer left in `firing` and requeued after `continueAsNew` becomes
+an idempotent append check on its *original* generation, and can never resolve a same-named sleep on
+the next one.
+
+**Only the arming insert owns the wake hint.** `scheduleTimerOnceTx` now returns `Bool` — `True` when
+its first-arm-wins insert created the row. Only that successful insert writes the instance's
+`wake_after`. A replay arm therefore leaves both `fire_at` and `wake_after` untouched, so re-entering
+a due or already-fired sleep cannot postpone discovery. A successful fire clears `wake_after` in the
+**same transaction** as its journal append, so a fired sleeper is rediscovered promptly.
+
+<Callout type="warn">
+`scheduleTimerOnceTx` changed from `Tx.Transaction ()` to `Tx.Transaction Bool`. Callers that do not
+need insertion ownership can discard it with `void`.
+</Callout>
+
+**A terminal instance refuses its own timers.** Before appending, a claimed sleep checks the instance
+row: if it exists with `completed`, `cancelled`, or `failed` status, the fire cancels the timer and
+appends nothing. A *missing* instance row is deliberately **not** treated as terminal — a workflow can
+crash after arming a first-operation sleep but before recording its suspended instance, and that fire
+is allowed to append, recreating the discoverable running instance.
+
+Together with [garbage collection](#garbage-collection) deleting sleep timers in *every* lifecycle
+state, this closes the hole where a surviving scheduled timer could resurrect and re-execute a
+workflow whose journal and instance data had already been collected.
 
 ### Awakeables
 
@@ -319,8 +403,9 @@ newtype AwakeableId = AwakeableId UUID   -- deriving ToJSON/FromJSON over the in
 awakeableNamed :: (Workflow :> es, Store :> es, IOE :> es, FromJSON a) => StepName -> Eff es (AwakeableId, Eff es a)
 awakeable      :: (Workflow :> es, Store :> es, IOE :> es, FromJSON a) => Eff es (AwakeableId, Eff es a)
 
-signalAwakeable :: (IOE :> es, Store :> es, ToJSON r) => AwakeableId -> r -> Eff es Bool
-cancelAwakeable :: (Store :> es) => AwakeableId -> Eff es Bool
+signalAwakeable     :: (IOE :> es, Store :> es, ToJSON r) => AwakeableId -> r -> Eff es Bool
+signalAwakeableFrom :: (IOE :> es, Store :> es, ToJSON r) => AwakeableRow -> r -> Eff es Bool
+cancelAwakeable     :: (Store :> es) => AwakeableId -> Eff es Bool
 
 deterministicAwakeableId :: WorkflowName -> WorkflowId -> Text -> AwakeableId
 ```
@@ -333,6 +418,13 @@ coordinates. `deterministicAwakeableId` is retained only as a legacy generation-
 a pre-change workflow already registered a deterministic row, the first post-change allocation adopts
 that row. `awakeable` is the ordinal convenience form (label `ord:N`); prefer `awakeableNamed`.
 
+The `pending` row is **registered inside the journaled allocation step's action**, before the id can
+be appended, returned, or handed off. An immediate external signal can therefore never be mistaken for
+an unknown id. The await arm keeps its own idempotent registration as a repair path for historical
+allocations whose journal entry exists without a row. A crash between row registration and allocation
+journaling can leave an unreachable pending row; garbage collection removes awakeables by owner
+coordinates, and the id was never exposed.
+
 - **`signalAwakeable`** is idempotent and crash-safe. It returns `True` only on the
   `pending → completed` transition; a second signal returns `False` and leaves the stored payload
   unchanged. It **re-appends** the journal entry whenever the row is `completed` (the value just
@@ -341,6 +433,17 @@ that row. `awakeable` is the ordinal convenience form (label `ord:N`); prefer `a
   entry's deterministic id and re-checks after a racing insert, so a concurrent or repeated signal
   coalesces on the existing entry instead of duplicating it. A `False` return therefore does not mean
   "nothing happened". Returns `False` for an unknown id.
+
+  It also **re-reads status inside its own transaction** when the guarded `pending → completed`
+  update loses a race. It appends when it performed the transition, when it repaired an
+  already-completed row from the stored payload, or when the in-transaction read shows another signal
+  completed the row. If **cancellation** won, it appends nothing and returns `False` — so
+  cancellation and completion stay mutually exclusive, and a cancellation winner cannot both trigger
+  compensation and leak a value into the journal.
+
+- **`signalAwakeableFrom`** exposes that transaction-decision core so a race test can interpose
+  deterministically between the initial row read and the guarded completion. Ordinary callers should
+  use `signalAwakeable`.
 - **`cancelAwakeable`** abandons a still-`pending` promise (returns `True` on the transition). A
   workflow that later re-enters the awakeable's `await` then throws `WorkflowAwakeableCancelled`, which
   the author can `catch` for compensation and the resume worker records as a failure.
@@ -373,6 +476,13 @@ cancelChild :: (IOE :> es, Store :> es) => ChildHandle a -> Eff es Bool
   completes, then decodes and returns its result. Parent-journal values are tagged envelopes:
   `{"ok": result}` returns, `{"cancelled": true}` throws `WorkflowChildCancelled`, and
   `{"failed": reason}` throws `WorkflowChildFailed`; legacy raw success values still decode.
+
+  On a journal **miss**, `awaitChild` consults the durable child link row: a `ChildFailed` row raises
+  `WorkflowChildFailed` directly, on **any** parent generation. That is why the row persists its
+  terminal `failureReason` (migration `0020-keiro-workflow-children-failure-reason.sql`) — a parent
+  that has rotated past the generation carrying the original failure sentinel can still observe the
+  failure without importing a prior generation's journal. Rows written before the column fall back to
+  the child instance's `last_error`, then to a stable generic message.
 - **`cancelChild handle`** flips the child row to `cancelled`, writes a `WorkflowCancelled` marker to
   the **child** journal (so the child's next resume short-circuits), and writes a `{"cancelled": true}`
   sentinel as the parent's await-step result (so a suspended parent's `awaitChild` throws). Retrying a
@@ -442,17 +552,75 @@ emptyResumeSummary          :: ResumeSummary
     runOptions: { type: "WorkflowRunOptions", default: "defaultWorkflowRunOptions", description: "Threaded into runWorkflowWith / runChildWorkflow, so a resumed run honours the same snapshot and telemetry options as its first run. The metrics handle here also backs the per-pass keiro.workflow.awakeables.pending and keiro.workflow.resumed instruments." },
     pollInterval: { type: "Int", default: "1_000_000", description: "Microseconds the loop driver sleeps between passes. Under the push-aware worker its meaning shifts to the fallback timeout: the maximum gap when no NOTIFY arrives." },
     maxAttempts: { type: "Int", default: "5", description: "Synchronous workflow exceptions before the resume worker appends a terminal WorkflowFailed marker." },
-    leaseTtl: { type: "NominalDiffTime", default: "60", description: "How long a claimed workflow instance stays leased if the worker dies mid-advance." },
+    leaseTtl: { type: "NominalDiffTime", default: "60", description: "How long a claimed workflow instance stays leased without reaching another fresh workflow boundary. It bounds dead-worker recovery time and must exceed the longest single step action or await arm." },
     logEvent: { type: "ResumeLogEvent -> IO ()", default: "stderr renderer", description: "Hook for unknown-name, transient-store-error, crash, marked-failed, and pass-failed events." },
   }}
 />
 
 A rotated run (`ContinuedAsNew`) counts toward `resumed`: its new generation has no terminal marker, so
 `findUnfinishedWorkflowIds` still reports it and the next pass drives the rotated generation forward.
-If a workflow body throws synchronously, the worker records an attempt, stores `last_error`, sets
-`next_attempt_at` with exponential backoff, and releases the lease without resetting attempts. At
-`maxAttempts`, it appends `WorkflowFailed`; for a child, it also records the child failure and wakes
-the parent with `{"failed": reason}`.
+
+Each claimed instance is driven with `leaseHeartbeat` set from the claim, so the runtime renews the
+lease at every fresh boundary. A `WorkflowLeaseLost` throw is counted as `leaseSkipped` and **does
+not** consume a crash attempt.
+
+### Failure, retries, and resurrection
+
+A synchronous exception escaping a workflow body consumes one workflow attempt. The worker records
+it, stores `last_error`, sets `next_attempt_at` with exponential backoff — 2, 4, 8, 16, 32, then 64
+seconds (capped) — and releases the lease without resetting attempts. Store errors are classified
+separately as **transient**: they count toward `transientErrors` and consume no attempt.
+
+With the default `maxAttempts = 5`, the fifth failure is terminal: the runtime appends
+`WorkflowFailed`, sets instance status to `failed`, and drops the instance from ordinary resume
+discovery. A direct `runWorkflow` then returns `Failed`. There is roughly 30 seconds of scheduled
+backoff before that point, plus polling time and each attempt's own runtime — choose `maxAttempts` for
+the longest application outage you want the worker to ride through.
+
+For a child, the worker also records the child failure (preserving the reason on the link row) and
+wakes the parent with `{"failed": reason}`.
+
+Once the problem is repaired, an operator returns the instance to the runnable pool through the
+supported API in `Keiro.Workflow.Instance`:
+
+```haskell
+data ResurrectOutcome = WorkflowResurrected | WorkflowNotFailed | WorkflowNotFound
+
+resurrectFailedWorkflow :: (Store :> es) => WorkflowName -> WorkflowId -> Eff es ResurrectOutcome
+```
+
+```haskell
+resurrectFailedWorkflow (WorkflowName "order-fulfillment") (WorkflowId "order-123") >>= \case
+  WorkflowResurrected -> pure ()
+  WorkflowNotFailed   -> putStrLn "instance is not terminally failed"
+  WorkflowNotFound    -> putStrLn "instance does not exist"
+```
+
+In **one transaction** it resets status, attempts, error, retry time, lease, and completion metadata;
+deletes the current generation's derived `__workflow_failed__` step-index row; and revives a failed
+child link when the instance is a child (an otherwise-excluded failed child row would short-circuit
+its own runs).
+
+<Callout type="warn">
+**Failure history is immutable; only its derived runnable-state projections are revivable.**
+`resurrectFailedWorkflow` appends no audit event and never deletes the historical `WorkflowFailed`
+event — deleting journal history would violate the append-only contract and erase the evidence of
+repeated failure. Because `WorkflowFailed` events use store-generated UUIDv7 ids (rather than the
+deterministic id every other journal entry uses), a later failure on the same generation appends a
+distinct event rather than colliding with the first. Concurrent failure writers stay deduplicated by
+the workflow-step advisory lock and the in-transaction index check.
+
+A failure sentinel already delivered to a **parent** journal is likewise immutable. Resurrect the
+parent separately if its own terminal failure should be retried. Never repair a failed instance with
+manual SQL.
+</Callout>
+
+A second call after a successful revival is a guarded no-op reported as `WorkflowNotFailed`; an
+unknown instance reports `WorkflowNotFound`. After resurrection the next resume **replays** every
+completed step rather than repeating its side effects.
+
+Failure audit identity — who resurrected what, and why — remains the caller's responsibility; the
+runtime journal records failures, not administrative commands.
 
 ### Push-aware variant
 
@@ -492,6 +660,39 @@ mismatched, or undecodable snapshot collapses to a full version-0 replay, so a s
 performance at worst, never correctness. Per-step result-type evolution stays each step's own
 `ToJSON`/`FromJSON` concern, surfaced at the `step` decode.
 
+### The step-index fallback under snapshots
+
+A snapshot seeds the replay map at a recorded stream version, after which hydration reads only later
+journal events. That is sound for steps the snapshotting run performed itself — but **not** for a
+wake source that appended concurrently.
+
+A signalled awakeable, a completing child, or a firing sleep can journal a result while the owning run
+is still executing. If that run then writes a snapshot at a *later* stream version, its in-memory map
+does not contain the concurrent result even though the result's journal event is at or below the
+snapshot version. Seed plus exclusive tail read then under-approximates the journal — permanently.
+The old `awaitStep` map-miss path armed the wake source and suspended without appending anything, so
+it had no way to converge.
+
+The fix: the generation-scoped `keiro_workflow_steps` index is the **authoritative point lookup** for
+whether a step has been journaled — every journal append maintains it in the same transaction, so it
+is complete whenever the append is visible. On a map miss, `awaitStep` queries that index *before*
+checking cancellation, arming, or suspending. An index hit is inserted into the map, recorded as a
+replay, decoded, and returned exactly like an ordinary replay hit.
+
+<Callout type="info">
+The fallback is **generation-scoped**: a prior generation's result never resolves an await in a later
+generation. It costs one indexed point read, confined to the miss path — normal step execution and
+replay hits are untouched. A recorded wake result has settled-history semantics: it is delivered
+*before* a pending cancellation check, matching the ordinary in-memory replay path.
+
+Correctness now explicitly depends on every journal append path maintaining `keiro_workflow_steps` in
+the same transaction. New append paths must preserve that invariant.
+</Callout>
+
+The upshot: snapshots stay advisory, compact replay seeds — no coordination with concurrent wake
+writers, no invalidation — and awakeables, child completions, and sleeps cannot be hidden permanently
+by a snapshot or a stale same-run map.
+
 `lookupWorkflowSnapshot` retains `SnapshotNoStream`, `SnapshotNotFound`, or
 `SnapshotDecodeFailed`; `loadWorkflowSnapshot` is the convenience form that collapses every miss to
 `Nothing`. `writeWorkflowSnapshot` is the direct store primitive and can fail. The runtime calls it
@@ -514,16 +715,25 @@ loadStepIndex           :: (Store :> es) => WorkflowName -> WorkflowId -> Int ->
 stepExists              :: (Store :> es) => WorkflowName -> WorkflowId -> Int -> Text -> Eff es Bool
 currentGeneration       :: (Store :> es) => WorkflowName -> WorkflowId -> Eff es Int   -- MAX(generation), or 0
 setWorkflowWakeAfterTx      :: WorkflowName -> WorkflowId -> UTCTime -> Tx.Transaction ()
+clearWorkflowWakeAfterTx    :: WorkflowName -> WorkflowId -> Tx.Transaction ()
 findUnfinishedWorkflowIds   :: (Store :> es) => UTCTime -> Eff es [(Text, Text)]    -- non-terminal workflow rows due for resume
 ```
 
 EP-48 threads the **generation** through every lookup. `currentGeneration` returns `MAX(generation)`
 for the logical id (0 when the workflow has no rows). The instance table is now the resume discovery
 surface: `findUnfinishedWorkflowIds now` returns rows in non-terminal status whose `wake_after` is
-`NULL` or due. A sleep arm sets `wake_after` to its timer's first `fire_at`, so not-yet-due sleepers
-drop out of resume discovery until the timestamp self-expires. `continuedAsNewStepName` is not a
-terminal workflow status, so a rotated, still-running workflow remains discoverable on its current
-generation.
+`NULL` or due. `continuedAsNewStepName` is not a terminal workflow status, so a rotated, still-running
+workflow remains discoverable on its current generation.
+
+The `wake_after` hint has one writer and one clearer. Only the sleep arm whose
+`scheduleTimerOnceTx` insert **won** sets it, to that timer's `fire_at`; a successful fire clears it
+atomically with the journal append. Not-yet-due sleepers therefore drop out of resume discovery until
+the timestamp expires, while a re-arm cannot push the hint forward and a fired sleeper is
+rediscovered immediately.
+
+This index is also the authority behind the
+[`awaitStep` step-index fallback](#the-step-index-fallback-under-snapshots), so every journal append
+path must keep maintaining it inside the same transaction as the append.
 
 ## Journal append helpers
 
@@ -535,9 +745,22 @@ current generation internally (a wake source always targets the generation the s
 on, the current one), so callers do not pass it.
 
 ```haskell
-appendJournalEntry           :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> WorkflowJournalEvent -> Eff es ()
+appendJournalEntry            :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> WorkflowJournalEvent -> Eff es ()
 appendJournalEntryReturningId :: (IOE :> es, Store :> es) => WorkflowName -> WorkflowId -> WorkflowJournalEvent -> Eff es EventId
+deterministicJournalId        :: WorkflowName -> WorkflowId -> Int -> Text -> EventId
 ```
+
+`prepareJournalAppend` is the generation-explicit primitive underneath them, used where the caller
+must pin a *specific* generation rather than the current one — notably a sleep fire, which appends to
+the generation that armed the timer. `deterministicJournalId` exposes the id derivation so such a
+caller can report the appended id without re-reading it.
+
+<Callout type="info">
+`WorkflowFailed` is the **one exception** to deterministic ids: it requests none, so the store assigns
+a UUIDv7. That is what lets a resurrected instance fail again on the same generation and append a
+distinct historical event instead of colliding with the first. Deduplication of concurrent failure
+writers falls to the workflow-step advisory lock and the in-transaction index check.
+</Callout>
 
 ## Tables
 
@@ -550,11 +773,15 @@ operator-visible state.
 | `keiro_workflow_steps` | `keiro-workflow-steps` (+ `keiro-workflow-generation`) | Step-lookup index backing replay and unfinished-workflow discovery; PK `(workflow_id, workflow_name, generation, step_name)`. |
 | `keiro_workflows` | `keiro-workflows-instances` (+ `wake-after`, `gc-index`) | One lifecycle row per logical workflow instance: current generation, status, attempts, last error, next attempt, lease owner/expiry, timestamps, and wake hint. |
 | `keiro_awakeables` | `keiro-awakeables` | Pending external completions (`pending`/`completed`/`cancelled`), keyed by `awakeable_id`. |
-| `keiro_workflow_children` | `keiro-workflow-children` | Durable parent→child links (`running`/`completed`/`cancelled`/`failed`), PK `(child_id, child_name)`. |
+| `keiro_workflow_children` | `keiro-workflow-children` (+ `children-failure-reason`) | Durable parent→child links (`running`/`completed`/`cancelled`/`failed`) with the terminal `failure_reason`, PK `(child_id, child_name)`. |
 
 The `keiro-workflow-generation` migration (EP-48) adds the `generation` column (default 0) to
 `keiro_workflow_steps` and widens its primary key to include `workflow_name` and `generation`, so two
-generations of the same logical workflow never collide on a reserved step name. See
+generations of the same logical workflow never collide on a reserved step name.
+
+`0020-keiro-workflow-children-failure-reason.sql` adds the nullable `failure_reason` column. It
+backfills nothing and rewrites no rows: pre-migration failed links fall back to the child instance's
+`last_error`, then to a stable generic message. See
 [Migrations and schema](/docs/keiro/reference/migrations-and-schema) for the full table map.
 
 ## Garbage collection
@@ -573,7 +800,17 @@ Eligibility comes from `keiro_workflows`: terminal `completed`/`cancelled`/`fail
 the retention cutoff are scanned oldest-first. Completed children are not deleted while their parent
 is still non-terminal, because the parent may still attach to the stored child result. Deletion removes
 every generation's journal stream, workflow snapshots, step-index rows, owned awakeables, child links,
-terminal workflow-sleep timers, and finally the instance row.
+**every owned workflow-sleep timer regardless of status** (scheduled, firing, fired, cancelled, and
+dead), and finally the instance row.
+
+<Callout type="warn">
+Collecting only *terminal* timer rows left a hole: a still-`scheduled` timer could survive the
+deletion of its workflow's journal and instance, fire later, and recreate the workflow from incomplete
+history. GC now removes them all, and — as defense in depth for the partial-GC recovery window — a
+claimed sleep whose instance row still exists in `completed`, `cancelled`, or `failed` status cancels
+itself and appends nothing. A *missing* instance row is not treated as terminal, because that is the
+legitimate crash-before-suspend case.
+</Callout>
 
 ## Observability
 
@@ -586,5 +823,6 @@ instruments under `keiro.workflow.*`, records advisory store failures through th
   <Card title="Understanding durable execution" href="/docs/keiro/explanation/durable-execution" />
   <Card title="Write a durable workflow" href="/docs/keiro/how-to/write-a-durable-workflow" />
   <Card title="Run the workflow resume worker" href="/docs/keiro/how-to/run-the-workflow-resume-worker" />
+  <Card title="Resurrect a failed workflow" href="/docs/keiro/how-to/resurrect-a-failed-workflow" />
   <Card title="The durable-execution walkthrough" href="/docs/keiro/walkthrough/durable-execution/00-start-here" />
 </Cards>

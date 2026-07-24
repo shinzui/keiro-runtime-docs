@@ -21,11 +21,45 @@ cabal run keiro-migrate -- status --json > status-before.json
 cabal run keiro-migrate -- verify --json > verify-before.json
 cabal run keiro-migrate -- up --lock-timeout 30000 --json > up.json
 cabal run keiro-migrate -- verify --json > verify-after.json
+cabal run keiro-migrate -- verify-schema > schema-after.txt
 ```
 
 On a fresh database, the preflight `verify` reports the reviewed pending plan. Stop if it reports
 changed applied bytes, unresolved state, gaps, or unknown rows. Post-apply verification must have no
 issues. Preserve the JSON with the release record.
+
+Run **`verify-schema` as well**. `verify` compares the embedded plan against the `pgmigrate` ledger; it
+never looks at live objects. `verify-schema` compares the actual tables, columns, constraints, and
+indexes in the `keiro` schema against the embedded expected snapshot, so a clean ledger cannot conceal
+drift. Run it after restores and cutovers too. It currently emits text, not JSON.
+
+<Callout type="info">
+`up` refuses to initialize fresh native history over a retired codd ledger: if `codd.sql_migrations`
+exists while `pgmigrate.migrations` is absent or empty, the preflight fails closed. Override it only
+deliberately, with `--allow-fresh-ledger-over-codd` (which applies to `up` alone).
+</Callout>
+
+## Guard every replica at startup
+
+The deployment job makes schema ownership deterministic, but nothing stops a replica from starting
+before the job reaches its database. Add a read-only boot handshake so a replica refuses to serve
+until the database carries the plan its binary expects:
+
+```haskell
+import Keiro.Migrations
+
+guardMigrations :: ConnectionProvider -> MigrationPlan -> IO ()
+guardMigrations provider plan = do
+  result <- missingMigrations defaultRunOptions provider plan
+  case result of
+    Right handshake | handshakePassed handshake -> pure ()
+    Right handshake -> fail ("refusing startup: " <> show handshake)
+    Left err        -> fail ("migration handshake failed: " <> show err)
+```
+
+`missingMigrations` is read-only and safe to call from every replica. `StartupHandshake` reports the
+declared-but-unapplied migrations and any ledger verification issues; `handshakePassed` is `True` only
+when both are empty.
 
 ## Compose the application plan
 
@@ -61,8 +95,28 @@ cabal run keiro-migrate -- check \
   --manifest keiro-migrations/migrations/manifest
 ```
 
-Review the new SQL and manifest append together. Use qualified `keiro.<object>` names, never edit a
-released payload, and keep application-owned objects outside `kiroku` and `keiro`.
+Every new Keiro migration is a **three-file review diff**: the immutable SQL file, its appended
+`migrations/manifest` line, and its appended `migrations.native.lock` SHA-256 line — in the same
+order. Review that all three agree, then run `cabal test keiro-migrations-test`; a named mismatch
+tells you whether the lockfile, directory membership, or payload needs attention.
+
+Use qualified `keiro.<object>` names, never edit a released payload, and keep application-owned
+objects outside `kiroku` and `keiro`.
+
+<Callout type="warn">
+`migrations.lock` *without* `.native` is frozen codd-cutover evidence. Never add native entries to it:
+strict history import relies on its exact legacy filename set.
+</Callout>
+
+After an intentional PostgreSQL 18 schema change, regenerate the expected snapshot explicitly and
+review its diff:
+
+```bash
+KEIRO_REGENERATE_EXPECTED_SCHEMA=1 \
+  cabal test keiro-migrations-test --test-options='--match "checked-in snapshot"'
+```
+
+The default suite never regenerates the file; it fails on drift.
 
 ## Existing 0.1 databases
 
@@ -72,7 +126,8 @@ DDL. Follow [Upgrade a 0.1 database](/docs/keiro/how-to/upgrade-a-0-1-database).
 
 ## Verify runtime readiness
 
-Confirm the schemas and then start the application with runtime schema initialization disabled:
+Confirm the schemas and then start the application with runtime schema initialization disabled — after
+the startup handshake above has passed:
 
 ```console
 psql "$DATABASE_URL" -c '\dt kiroku.*'
@@ -80,6 +135,7 @@ psql "$DATABASE_URL" -c '\dt keiro.*'
 ```
 
 ```haskell
+guardMigrations provider servicePlan
 withStore
   (defaultConnectionSettings connString
     & #schemaInitialization .~ SkipSchemaInitialization)

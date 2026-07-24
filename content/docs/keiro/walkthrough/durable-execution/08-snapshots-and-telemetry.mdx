@@ -53,9 +53,31 @@ A snapshot is **advisory, never a source of truth**. `loadWorkflowSnapshot` retu
 "replay from version 0" — when the stream has no id yet, no matching snapshot, or an *undecodable*
 snapshot. That `Nothing` is what `loadJournal` ([chapter 02](/docs/keiro/walkthrough/durable-execution/02-the-effect-and-replay-loop))
 falls back on. When a snapshot *is* found, `loadJournal` seeds the step map from it and reads only the
-events after the snapshot version — "tail replay" — and the result is byte-for-byte what a full
-version-0 replay would produce, because every `StepRecorded` at or before the snapshot version is
-already in the seed. So a stale or corrupt snapshot degrades performance at worst, never correctness.
+events after the snapshot version — "tail replay". So a stale or corrupt snapshot degrades performance
+at worst, never correctness.
+
+### The wake-completion hole, and why the map can under-approximate
+
+The reconstructed map is not quite "what a full version-0 replay would produce". It is **the journal
+state as the snapshotting run saw it** — and those differ when a wake source writes concurrently.
+
+A signalled awakeable, a completing child, or a firing sleep can journal its result while the owning
+run is still mid-flight. If that run then snapshots at a *later* stream version, its in-memory map
+lacks the concurrent result even though the result's event sits at or below the snapshot version. Seed
+plus exclusive tail read then under-approximates the journal — and the old `Await` miss path armed the
+wake source and suspended without appending anything, so it had no way to converge. The workflow hung
+forever on a result that was already recorded.
+
+The fix keeps snapshots advisory rather than making them coordinate. `loadJournal`'s Haddock now says
+so directly, and points at the compensation:
+
+> The @Await@ handler compensates by consulting the authoritative @keiro_workflow_steps@ index on a
+> map miss; that index is written transactionally with every journal append.
+
+One indexed point read, only on the miss path. Snapshots stay compact, uncoordinated seeds; wake
+completions cannot be hidden permanently. The invariant this buys with is that **every journal append
+path must maintain the step index in the same transaction as the append** — see
+[chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery).
 
 `writeWorkflowSnapshot` is the direct write primitive. The runtime calls it from
 `writeWorkflowSnapshotAdvisory` only **after** the `step`, completion, or continue-as-new seed append

@@ -86,13 +86,35 @@ cabal test keiro-dsl-conformance-snapshot
    `uninit: <slot>` thunk in a persisted register, startup fails before the first command. Initialize
    every persisted slot or use a codec whose initial state is total.
 
-3. **Invalidate by changing compatibility, not by relabelling bytes.** A register-layout change
-   automatically changes `regfile_shape_hash`. Bump `stateCodecVersion` when state JSON or custom
-   encoding changes without a register-shape change. The old row becomes `SnapshotNotFound` for the
-   new codec, hydration replays events, and a later policy firing writes a compatible row.
+3. **Invalidate by changing compatibility, not by relabelling bytes.** Compatibility is the triple
+   `(stateCodecVersion, shapeHash, stateShapeHash)`; a mismatch on any component makes the old row
+   `SnapshotNotFound` for the new codec, hydration replays events, and a later policy firing writes a
+   compatible row. Two of the three move for you:
 
-   Keiki 0.2 causes this once for every old non-empty 0.1 shape hash; the empty `regfile:0` hash is
-   unchanged. Do not update an old row's hash in place.
+   - a **register-layout** change moves `regfile_shape_hash`;
+   - a **control-state datatype** change moves `state_shape_hash` (keiki's `CanonicalStateShape`);
+   - DSL-generated streams additionally fold a spec-visible **fold fingerprint** into
+     `state_shape_hash` through `withFoldFingerprint`.
+
+   Bump `stateCodecVersion` yourself when the state JSON or custom encoding changes without a
+   structural change — **and whenever fold logic changes in a way none of the above can see.**
+
+   Keiki 0.2 causes a one-time miss for every old non-empty 0.1 register shape hash; migration
+   `0019-keiro-snapshots-state-shape-hash.sql` causes another for every pre-migration row. The empty
+   `regfile:0` hash is unchanged. Do not update an old row's hash in place.
+
+<Callout type="warn">
+**The bump you will forget.** Editing a hand-written guard or `update` body — or logic that lives only
+in a generated service's `Holes` module — moves *no* derived hash. The old seed still matches, so
+tail-only replay derives state a full replay would never reach, and post-append verification may
+persist it at the new head version.
+
+Bump `stateCodecVersion`, or maintain your own token with
+`withFoldFingerprint "orders-fold-2026-07"`. Then confirm with the
+[replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy) before deploying, and alert on
+`keiro.snapshot.seed.divergence` afterwards — it is the sampled runtime backstop for exactly this
+mistake.
+</Callout>
 
 4. **Discard a bad cache row only when necessary.** To evict one known stream snapshot:
 
@@ -110,10 +132,10 @@ post-commit encode/write failure leaves the command successful and is counted; d
 command as though its events rolled back.
 </Callout>
 
-With a fixed codec version and shape hash, a lower-version snapshot write is ignored. An incompatible
-codec or shape may replace a higher-version row so a rolled-back deployment can recover. Keep mixed
-codec deployments brief: incompatible writers can repeatedly replace one another's cache rows,
-causing misses without corrupting event state.
+With a fixed discriminator, a lower-version snapshot write is ignored. A row with a *different*
+discriminator may be replaced even at a lower stream version, so a rolled-back deployment can recover
+the single slot. Keep mixed codec deployments brief: incompatible writers can repeatedly replace one
+another's cache rows, causing misses without corrupting event state.
 
 ## Verify it worked
 
@@ -133,9 +155,12 @@ tail-hydration, corrupt-cache, strict-encode, and store-failure paths. Test thes
 - make the snapshot table reject a write and confirm the events remain committed, the command stays
   successful, and `keiro.snapshot.write.failures` increases;
 - use a partial encoder at a firing boundary and confirm `keiro.snapshot.encode.failures` increases
-  without a snapshot row being written.
+  without a snapshot row being written;
+- set `RunCommandOptions.seedVerifySampleRate = 1` in a staging run so every accepted seed is checked
+  against a full replay, and confirm `keiro.snapshot.seed.divergence` stays at zero.
 
 ## Related
 
-- [Snapshot reference](/docs/keiro/reference/snapshot) — APIs, exact lookup outcomes, replacement rules, and the operator outcome matrix.
+- [Snapshot reference](/docs/keiro/reference/snapshot) — APIs, the three-component discriminator, exact lookup outcomes, replacement rules, and the operator outcome matrix.
 - [Event stream and Stream handle reference](/docs/keiro/reference/event-stream-and-stream) — `SnapshotPolicy`, `StateCodec`.
+- [Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability#changing-the-fold) — what a fold change does to stored seeds.

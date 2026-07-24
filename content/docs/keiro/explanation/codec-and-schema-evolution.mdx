@@ -14,8 +14,8 @@ A `Codec e` is an ordinary record value you build and pass around:
 
 ```haskell
 data Codec e = Codec
-  { eventTypes    :: !(NonEmpty Text)         -- the complete event-type allow-list this codec owns
-  , eventType     :: !(e -> Text)             -- project a domain value to its wire tag
+  { eventTypes    :: !(NonEmpty EventType)    -- the complete event-type allow-list this codec owns
+  , eventType     :: !(e -> EventType)        -- project a domain value to its wire tag
   , schemaVersion :: !Int                     -- current payload version; must be >= 1
   , encode        :: !(e -> Value)            -- current-version JSON serialization
   , decode        :: !(EventType -> Value -> Either Text e)
@@ -30,6 +30,17 @@ test, not instance resolution you have to trust. An `Upcaster` is just a numbere
 ```haskell
 type Upcaster = (Int, EventType -> Value -> Either Text Value)
 ```
+
+The stored `EventType` is authoritative and is passed to both `decode` and every upcaster, so one
+codec can own several event kinds without inferring the kind from payload fields. That is what lets
+`keiro-dsl` lower several same-version event bumps into **one** rung: the generated dispatcher
+selects the event-specific upcaster by tag and passes unrelated kinds through byte-for-byte.
+
+<Callout type="warn">
+`schemaVersion` is **aggregate-global**, not per event kind. When a second event kind changes, give it
+`aggregate-max + 1` — not that event's own previous version plus one — so every payload stamp stays
+aligned with the single aggregate-wide chain.
+</Callout>
 
 ## Write: the schema version is stamped into metadata
 
@@ -79,14 +90,19 @@ The `jitsurei` order codec (`jitsurei/src/Jitsurei/OrderStream.hs`) is a real tw
 ```haskell
 orderCodec :: Codec OrderEvent
 orderCodec = Codec
-  { eventTypes    = "OrderPlaced" :| ["PaymentApproved", "OrderPacked", "OrderShipped", "OrderCancelled"]
-  , eventType     = \case OrderPlaced{} -> "OrderPlaced"; ...
+  { eventTypes    = EventType "OrderPlaced"
+                      :| [ EventType "PaymentApproved", EventType "OrderPacked"
+                         , EventType "OrderShipped",    EventType "OrderCancelled" ]
+  , eventType     = \case OrderPlaced{} -> EventType "OrderPlaced"; ...
   , schemaVersion = 2
   , encode        = ...
   , decode        = parseOrderEvent
-  , upcasters     = [(1, upcastOrderPlacedV1)]   -- migrates a v1 OrderPlaced into the v2 shape
+  , upcasters     = [(1, const upcastOrderPlacedV1)]  -- migrates a v1 OrderPlaced into the v2 shape
   }
 ```
+
+The `const` discards the `EventType` because this rung migrates a single kind. A generated
+multi-event rung dispatches on that argument instead.
 
 The single upcaster rewrites a v1 `OrderPlaced` (which used a `"qty"` key and an *optional* `"sku"`)
 into the v2 shape (a required `"quantity"` and an `"sku"` defaulted to `"UNKNOWN"`):
@@ -97,6 +113,25 @@ upcastOrderPlacedV1 value = ...   -- read "qty" -> write "quantity"; default a m
 ```
 
 A reader storing a v1 `OrderPlaced` and decoding it with this v2 codec gets the migrated value with
-no change to the stored event. For the step-by-step recipe see
+no change to the stored event.
+
+## Upcasters are permanent, and the codec is only half the story
+
+Two limits are worth stating plainly, because both surprise people:
+
+**A rung can never be deleted while any payload at its source version persists.** Keiro has no
+mechanism for declaring an old stored version unsupported, and no tool that rewrites stored payloads.
+Kiroku is append-only; the only thing that removes events from a stream's read path is operator-driven
+truncation behind a covering snapshot. Treat every rung you write as permanent compatibility code.
+
+**A codec protects decoding, and nothing else.** Once an event decodes, hydration still has to replay
+it through the transducer — which needs an *edge whose output inverts it*. Marking an event
+`deprecated` keeps the tag decoding while doing nothing about that edge, which is why
+[retiring an event](/docs/keiro/how-to/retire-an-event-type) is a two-stage protocol rather than a
+one-line change. A decode golden proves an old payload still decodes; it never proves it still
+inverts or folds identically.
+
+For the step-by-step recipe see
 [Evolve an event schema](/docs/keiro/how-to/evolve-an-event-schema); for the exact signatures see the
-[Codec reference](/docs/keiro/reference/codec).
+[Codec reference](/docs/keiro/reference/codec); for the whole change-class-by-change-class procedure
+see [Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability).

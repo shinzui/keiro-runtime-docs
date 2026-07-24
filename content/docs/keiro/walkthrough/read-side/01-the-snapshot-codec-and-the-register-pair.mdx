@@ -100,35 +100,61 @@ command runner counts every one as `keiro.snapshot.read.misses` and counts decod
 that version and carries the keiki replay wrapper across pages. If the tail fails, it abandons the
 seed and retries from the aggregate's initial pair.
 
-## Two compatibility discriminants
+## Three compatibility discriminants
 
 `StateCodec` carries:
 
 ```haskell
 data StateCodec state = StateCodec
   { stateCodecVersion :: !Int
-  , shapeHash :: !Text
-  , encode :: !(state -> Value)
-  , decode :: !(Value -> Either Text state)
+  , shapeHash         :: !Text
+  , stateShapeHash    :: !Text
+  , encode            :: !(state -> Value)
+  , decode            :: !(Value -> Either Text state)
   }
 ```
 
-The row is eligible only when both `stateCodecVersion` and `shapeHash` match. The explicit version
-catches state-encoding changes the register shape cannot see. The shape hash changes when the
-type-level register layout changes, so incompatible register snapshots are rejected before decode.
+The row is eligible only when **all three** match.
+
+- `stateCodecVersion` is the explicit, manually owned version. It catches encoding changes the
+  structural hashes cannot see — and fold changes they cannot see either.
+- `shapeHash` changes when the type-level **register layout** changes, so incompatible register
+  snapshots are rejected before decode.
+- `stateShapeHash` is derived from the **control-state** datatype and constructor structure through
+  keiki's `CanonicalStateShape`. `withFoldFingerprint` composes a caller-owned fold token onto it as
+  `<state-hash>;fold=<fingerprint>`; DSL-generated codecs use it to lower a digest of the
+  spec-visible replay surface.
+
+```haskell
+defaultStateCodec ::
+  (CanonicalStateShape s, FromJSON s, KnownRegFileShape rs, RegFileToJSON rs, ToJSON s) =>
+  Int -> StateCodec (s, RegFile rs)
+
+withFoldFingerprint :: Text -> StateCodec state -> StateCodec state
+```
+
+<Callout type="warn">
+The third component closes a real correctness gap — a control-state or spec-visible fold change used
+to leave both old discriminants equal, so a stale seed was still served. It does **not** close the
+gap for hand-written guard/`update` bodies or Holes-only edits; those still require a manual
+`stateCodecVersion` bump. See the
+[snapshot reference](/docs/keiro/reference/snapshot#compatibility-is-a-three-component-discriminator).
+</Callout>
 
 Keiki 0.2 replaces module-qualified built-in type names with pinned stable shape names. As a result,
 every non-empty 0.1 register shape hash changes once; the empty `regfile:0` hash does not. Keiro
 treats the old row as `SnapshotNotFound`, replays the unchanged event log from zero, and may write a
-fresh 0.2 row. Never relabel the old bytes with the new hash.
+fresh 0.2 row. Never relabel the old bytes with the new hash. Migration
+`0019-keiro-snapshots-state-shape-hash.sql` causes the same one-time miss for every pre-migration row:
+it defaults `state_shape_hash` to the empty string, and no derived hash is ever empty.
 
 ## One row, rollback-aware replacement
 
-`keiro.keiro_snapshots` has one row per stream. For the same codec version and shape hash, a write
-only replaces a row whose `streamVersion` is no newer. This prevents a late compatible write from
-regressing the cache.
+`keiro.keiro_snapshots` has one row per stream. For the same discriminator, a write only replaces a
+row whose `streamVersion` is no newer. This prevents a late compatible write from regressing the
+cache.
 
-If either discriminant differs, a lower stream version may replace the row. That exception is what
+If **any** discriminant differs, a lower stream version may replace the row. That exception is what
 lets a rolled-back binary reclaim the single cache slot after a newer codec wrote it. During a
 mixed-version rollout, incompatible writers may thrash the row and force repeated full replays; the
 event log still determines state.

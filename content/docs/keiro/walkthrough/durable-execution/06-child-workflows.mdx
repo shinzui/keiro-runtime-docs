@@ -52,7 +52,15 @@ awaitChild (ChildHandle childNm childWid) = do
       arm = do
         mrow <- lookupChild (unWorkflowId childWid) (unWorkflowName childNm)
         case mrow of
-          Just row | (row ^. #status) == ChildCancelled -> throwIO (WorkflowChildCancelled childNm childWid)
+          Just row
+            | (row ^. #status) == ChildCancelled -> throwIO (WorkflowChildCancelled childNm childWid)
+            | (row ^. #status) == ChildFailed -> do
+                mInstance <- lookupInstance childNm childWid
+                let reason = case row ^. #failureReason of
+                      Just recorded -> recorded
+                      Nothing -> fromMaybe "child workflow failed (reason not recorded)"
+                                   (mInstance >>= (^. #lastError))
+                throwIO (WorkflowChildFailed childNm childWid reason)
           _ -> pure ()                                   -- the spawn already registered the link
   raw <- awaitStep resultStep arm
   if isCancelledSentinel raw
@@ -70,6 +78,22 @@ data WorkflowChildCancelled = WorkflowChildCancelled WorkflowName WorkflowId
   deriving stock (Eq, Show)
 instance Exception WorkflowChildCancelled
 ```
+
+### Why the link row carries the failure reason
+
+Failure needs the same two-edge treatment, and that is why `keiro_workflow_children` gained a
+`failure_reason` column (`0020-keiro-workflow-children-failure-reason.sql`).
+
+The hit path finds `{"failed": reason}` in the parent's journal — but journal entries are
+**generation-scoped**, while the child *link row* lives for the logical execution. Once a parent
+rotates past the generation carrying the original failure sentinel, that entry is no longer in the
+parent's replay map, so the miss path has to reproduce the failure from durable state. Without a
+persisted reason it could not, and `awaitChild` would fall through to suspending on a child that will
+never run again.
+
+So the row is the authority for **exposure and terminal lifecycle**, and journal entries deliver
+results to a *particular run*. Rows written before the column fall back to the child instance's
+`last_error`, then to a stable generic message.
 
 ## `cancelChild`: the two-marker dance
 

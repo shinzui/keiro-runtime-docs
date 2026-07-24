@@ -31,21 +31,42 @@ current type.
    -- jitsurei/src/Jitsurei/OrderStream.hs
    orderCodec :: Codec OrderEvent
    orderCodec = Codec
-     { eventTypes    = "OrderPlaced" :| ["PaymentApproved", "OrderPacked", "OrderShipped", "OrderCancelled"]
+     { eventTypes    = EventType "OrderPlaced"
+                         :| [ EventType "PaymentApproved", EventType "OrderPacked"
+                            , EventType "OrderShipped",    EventType "OrderCancelled" ]
      , eventType     = ...
      , schemaVersion = 2
      , encode        = ...
      , decode        = parseOrderEvent
-     , upcasters     = [(1, upcastOrderPlacedV1)]   -- migrates a v1 OrderPlaced into the v2 shape
+     , upcasters     = [(1, const upcastOrderPlacedV1)]  -- v1 OrderPlaced -> v2 shape
      }
    ```
 
    `upcastOrderPlacedV1` reads the v1 `"qty"` key and an *optional* `"sku"`, and writes the v2 shape:
-   a required `"quantity"` and an `"sku"` defaulted to `"UNKNOWN"`.
+   a required `"quantity"` and an `"sku"` defaulted to `"UNKNOWN"`. The rung's first argument is the
+   stored `EventType`; `const` discards it here because this rung migrates one kind. Dispatch on it
+   when a rung owns several kinds — which is exactly what generated codecs do.
+
+4. **Check in a golden containing a genuine old payload** and exercise it through
+   `decodeRaw codec eventType 1 payload`. Under the DSL, capture it while both specs still exist:
+
+   ```bash
+   keiro-dsl diff --since origin/main --emit-goldens golden-payloads service.keiro
+   keiro-dsl scaffold --goldens golden-payloads service.keiro
+   ```
+
+   A payload copied out of the store is stronger evidence than a synthesized example, and emission
+   never overwrites one you captured by hand.
 
 <Callout type="warn">
 The upcaster chain must be **ascending and contiguous** — a missing rung yields `GapInUpcasterChain`,
-and an upcaster that returns `Left` becomes `UpcasterError`.
+a chain that ends early yields `IncompleteUpcasterChain`, and an upcaster that returns `Left` becomes
+`UpcasterError`. `mkCodec` catches all three at construction, and validated stream construction runs
+`mkCodec` for you.
+
+Rungs are **permanent**: one lives as long as any payload at its source version does. And
+`schemaVersion` is aggregate-global — when a *second* event kind changes, give it
+`aggregate-max + 1`, not its own previous version plus one.
 </Callout>
 
 ## Verify it worked
@@ -54,7 +75,24 @@ Decode a stored **v1** payload with the **v2** codec and assert the migrated val
 orderCodec v1Recorded` yields the v2-shaped `OrderPlaced`. Add that assertion to your current
 application's codec tests; the older jitsurei command is not a release-validation target.
 
+## Deploy it
+
+A codec version bump is **not** rolling-deploy-safe. One `schemaVersion` serves as both the version
+written now and the decode target, so a version-N-1 replica returns `VersionAhead` on any stream that
+already contains a version-N event. Use a stop-the-world or blue/green cutover with no mixed writers,
+and treat the deploy as roll-forward-only after the first new-version append — see
+[Deploy ordering](/docs/keiro/reference/deploy-ordering#2-cut-aggregate-codec-bumps-over-without-mixed-versions).
+
+## What this does *not* cover
+
+A golden proves the old payload still **decodes**. It says nothing about whether the decoded event
+still has an inverting edge or folds to the same state. If the same change also touches a guard,
+output, write, target, transition mode, or fold, run the
+[real-log replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy) before switching traffic.
+
 ## Related
 
 - [Codec reference](/docs/keiro/reference/codec) — `Upcaster`, `CodecError`, `migrateToCurrent`.
 - [Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution) — the read/write paths.
+- [Retire an event type](/docs/keiro/how-to/retire-an-event-type) — when the change is removal, not reshaping.
+- [Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability) — every other change class.

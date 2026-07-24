@@ -276,6 +276,7 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 | `keiro.snapshot.encode.failures` | Counter | `{failure}` | `recordSnapshotEncodeFailures` | Command runners — post-commit strict snapshot encodes that failed and were swallowed. |
 | `keiro.snapshot.write.failures` | Counter | `{failure}` | `recordSnapshotWriteFailures` | Command and workflow runners — post-commit snapshot store writes that failed and were swallowed. |
 | `keiro.snapshot.apply.divergence` | Counter | `{failure}` | `recordSnapshotApplyDivergence` | Command runners — just-appended batches that failed replay from pre-command state. The append is committed and the next hydration will fail. |
+| `keiro.snapshot.seed.divergence` | Counter | `{failure}` | `recordSnapshotSeedDivergence` | Hydration — sampled snapshot seeds whose encoded state disagreed with a full replay through the seed version. Usually a fold change deployed without a `stateCodecVersion` bump. |
 | `keiro.dispatch.failed` | Counter | `{command}` | `recordDispatchFailed` | Process-manager/router workers — dispatched commands or source reactions that failed. |
 | `keiro.dispatch.deadlettered` | Counter | `{command}` | `recordDispatchDeadlettered` | Process-manager/router workers — rejected dispatches handled by explicit dead-letter or skip policy. |
 | `keiro.subscription.deadlettered` | Counter | `{event}` | `recordSubscriptionDeadlettered` | Subscription workers — source events dead-lettered by disposition or retry exhaustion. |
@@ -290,10 +291,25 @@ records the backlog, stuck, fire-lag, and attempts instruments inside each pass;
 `sampleInboxBacklog` records the backlog gauge; and the projection path exposes
 [`recordProjectionLag`](/docs/keiro/reference/projection#recordprojectionlag) for the application to
 call on its drain loop. Command runners use `RunCommandOptions.metrics` for conflicts, retries,
-duplicates, snapshot lookup, strict encode/write failures, and replay divergence. Workflow runners
-use `WorkflowRunOptions.metrics` for their nine workflow instruments and for advisory post-journal
-snapshot write failures. See
+duplicates, snapshot lookup, strict encode/write failures, and both divergence counters. Workflow
+runners use `WorkflowRunOptions.metrics` for their nine workflow instruments and for advisory
+post-journal snapshot write failures. See
 [Enable OpenTelemetry](/docs/keiro/how-to/enable-opentelemetry) for the end-to-end wiring.
+
+<Callout type="warn">
+**Alert on both divergence counters.** They are the only runtime evidence that a deployed change
+reinterpreted stored data, and neither one fails a command:
+
+- `keiro.snapshot.apply.divergence` — the just-committed batch does not replay from the pre-command
+  state. The stream is poisoned; its next hydration will fail.
+- `keiro.snapshot.seed.divergence` — a sampled accepted snapshot seed disagrees with a full replay
+  through its own version. Alongside the counter, a structured JSON line goes to stderr with the
+  `stream`, `seedVersion`, and both SHA-256 digests. Sampling is one hit in
+  `RunCommandOptions.seedVerifySampleRate` (default 1000); `1` verifies every hit and `0` disables it.
+
+If nothing alerts on these, the [runtime gate](/docs/keiro/explanation/evolution-and-replayability)
+does not exist for you.
+</Callout>
 
 ### Kiroku subscription dead-letter bridge
 

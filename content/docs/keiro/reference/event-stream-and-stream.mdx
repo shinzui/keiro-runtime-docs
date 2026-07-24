@@ -137,6 +137,10 @@ enabled checks:
 - **Snapshot coherence and initial encodability.** A non-`Never` policy requires a `StateCodec`.
   When a codec is present, validation forces it over `(initialState, initialRegisters)` so an
   `uninit: <slot>` thunk installed by `emptyRegFile` fails startup instead of the first snapshot.
+- **Event-codec construction invariants.** Validation runs `mkCodec` over `eventCodec`, so an invalid
+  schema version, duplicate event tags, duplicate or out-of-range upcaster sources, and an incomplete
+  chain to the current version all fail *validated construction* — before the service can touch a
+  stored stream. The warning renders as `event codec misconfigured: <reason>`.
 
 `mkEventStreamWith` still accepts custom `ValidationOptions`, but keiro force-enables
 `checkHeadRecoverability` and `checkStateChangingEpsilon` after applying the caller's options.
@@ -146,10 +150,36 @@ remaining enabled warning is also a `Left`; only narrow another check for a docu
 ### What validation does not prove
 
 Validation is intentionally cheap and local. It does **not** prove that the codec round-trips every
-domain value, that an upcaster chain is well configured (`mkCodec` covers that), that a stream name is
-the one you meant (`StreamCategory` helps there), or that external effects in handlers are
-idempotent. It also does not make stale snapshots authoritative: snapshots remain advisory and
-miss safely back to full replay.
+domain value, that a stream name is the one you meant (`StreamCategory` helps there), or that
+external effects in handlers are idempotent. It also does not make stale snapshots authoritative:
+snapshots remain advisory and miss safely back to full replay.
+
+<Callout type="warn">
+Most importantly, validation checks the **new machine in isolation** — never the new machine against
+your real old log. It cannot tell you that tightening a guard just orphaned ten thousand stored
+events, because it never reads the store. That question belongs to the
+[replay audit](/docs/keiro/reference/replay-audit); the whole layering is laid out in
+[Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability).
+</Callout>
+
+### Replay-only edges pass the boundary
+
+A keiki `Edge` carries an `EdgeMode` (`Live` or `ReplayOnly`). A `ReplayOnly` edge is never taken by
+forward stepping; it exists so events emitted under a retired rule keep an inverting edge. Two
+validator scopings make the pattern usable at this boundary:
+
+- forward-determinism checks consider only `Live`/`Live` pairs; and
+- inversion-ambiguity flags only **same-mode** pairs.
+
+So a live edge and its replay-only twin — which emit the same event by construction — are not
+refused by `mkEventStream`, even though the ambiguity check is deliberately guard-blind. Every other
+check (hidden input, head recoverability, guarded input reads, state-changing epsilon, both dead-edge
+analyses) applies to replay-only edges unchanged, and structural reachability still traverses them,
+so a vertex reachable only through a replay-only edge stays live for replay continuation.
+
+Build one with `Keiki.Builder.replayOnly` (or `mode = ReplayOnly` on a raw `Edge`); `keiro-dsl`
+lowers the `replay-only` transition prefix to it. See
+[Tighten a guard with a replay-only twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin).
 
 ## How keiro makes streams replayable and safe
 
@@ -163,11 +193,13 @@ Replayability is not one check; keiro layers several independent guards:
 - **Build-time stream validation.** `validateEventStream` runs keiki's full default replay contract,
   plus snapshot coherence and initial-encode checks. Every warning rejects construction.
 - **Snapshot coherence.** `mkEventStream` rejects snapshotting policies without a `stateCodec`, and
-  snapshot reuse is gated by `stateCodecVersion` plus `shapeHash`. A stale or undecodable snapshot is
-  a cache miss, so hydration falls back to full event replay.
+  snapshot reuse is gated by the three-component discriminator (`stateCodecVersion`, `shapeHash`,
+  `stateShapeHash`). A stale or undecodable snapshot is a cache miss, so hydration falls back to full
+  event replay.
 - **Codec invariants.** `mkCodec` validates schema versions, duplicate event types, duplicate
-  upcaster sources, out-of-range upcasters, and missing migration rungs before runtime. On read,
-  unknown event types and malformed schema-version stamps are fatal instead of being skipped.
+  upcaster sources, out-of-range upcasters, and missing migration rungs — and validated stream
+  construction runs it for you, so a misconfigured codec cannot reach hydration. On read, unknown
+  event types and malformed schema-version stamps are fatal instead of being skipped.
 - **Typed stream names.** `Stream a` and `StreamCategory a` keep target streams and category reads
   aligned. `category` rejects ambiguous category prefixes before they can fan events into the wrong
   subscription or read model.
@@ -234,12 +266,17 @@ reference](/docs/keiro/reference/snapshot).
 
 <TypeTable
   type={{
-    stateCodecVersion: { type: "Int", description: "Bumped when the snapshot encoding changes incompatibly" },
-    shapeHash: { type: "Text", description: "Digest of the folded-state shape; guards reuse" },
+    stateCodecVersion: { type: "Int", description: "Manually owned. Bump when the snapshot encoding changes incompatibly, or when fold logic changes in a way neither derived hash nor a composed fold fingerprint can see" },
+    shapeHash: { type: "Text", description: "Digest of the register-file layout" },
+    stateShapeHash: { type: "Text", description: "Digest of the control-state datatype, optionally composed with a fold fingerprint via withFoldFingerprint" },
     encode: { type: "state -> Value", description: "Serialize the folded state to JSON" },
     decode: { type: "Value -> Either Text state", description: "Deserialize a snapshot back to folded state" },
   }}
 />
+
+All three discriminator components must match for a stored snapshot to be loaded. Hand-written guard
+and `update` bodies are invisible to the two derived hashes — see the
+[warning on the snapshot reference](/docs/keiro/reference/snapshot#compatibility-is-a-three-component-discriminator).
 
 ## `Stream` — the phantom-typed handle
 

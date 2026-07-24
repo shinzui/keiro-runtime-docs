@@ -1,0 +1,175 @@
+---
+title: "Deploy ordering"
+description: "The operator-facing rollout rules: which binaries may read what every other binary writes during a deployment window — codec cutovers, job workers, decide drains, timers, contracts, workflow steps, and the real-log replay gate."
+---
+
+Events, queued jobs, timer payloads, integration messages, and workflow step results outlive the
+binary that wrote them. A safe rollout therefore asks one question: **which binaries can read what
+every other binary may write during the deployment window?**
+
+This page is the operator-facing reference. The narrative treatment of *why* each rule exists is
+[Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability).
+
+Three terms recur:
+
+- **Roll-forward-only** — after the new version writes its first durable value, an old binary cannot
+  read that value. Rollback means *restore from backup*, not *redeploy old code*.
+- **Drain** — pause the subscription or queue and let in-flight work finish before binaries switch.
+- **Redelivery window** — the period in which already-processed input can arrive again, because of a
+  crash before checkpoint, a visibility timeout, or a consumer rebalance.
+
+## 1. Start from the durable boundary
+
+Inventory every durable value whose decoder or decision logic changes: aggregate events,
+process-manager saga events, queued jobs, pending timers, integration-event backlogs, workflow
+journals. A rollout is safe only when every binary that may see each value can decode it *and*
+interpret it compatibly. Source-compatible Haskell changes are not enough.
+
+Skipping this shows up after deployment, on the first old value or cross-version write: hydration
+fails, a worker retries or dead-letters, or replay silently derives different state.
+
+## 2. Cut aggregate codec bumps over without mixed versions
+
+An aggregate `Codec` has **one** `schemaVersion`, used both as the version written now and as the
+decode target. It cannot decode version N while continuing to write N-1. Once a new replica appends
+the first version-N event, an N-1 replica returns `VersionAhead` while hydrating any stream
+containing it. A new event *type* has the analogous `UnknownEventType` failure on old replicas.
+
+Use a **stop-the-world** or **blue/green** cutover. In blue/green, keep one version exclusively
+responsible for a stream category and switch traffic atomically; never let old and new writers share
+a category. After the first new-version append, the deployment is roll-forward-only. A two-phase
+capability that decodes N while still writing N-1 does not exist.
+
+**If violated:** old replicas fail hydration with `HydrationDecodeFailed (VersionAhead …)`, and
+redeploying the old release does not recover streams that already contain new-version events.
+
+## 3. Upgrade versioned job workers before producers
+
+`keiroJobCodec` wraps each PGMQ body as `{v,t,data}` and returns `JobPayloadFromFuture` when an old
+worker reads an envelope written by a newer producer. The runner retries that result after
+`RetryPolicy.defaultRetryDelay`, and those retries **consume delivery attempts** — size
+`maxRetries * defaultRetryDelay` to cover the rollout window. The default policy is five deliveries
+with a 60-second delay.
+
+Deploy workers that understand the new job version first, wait until all old workers are gone, then
+deploy producers. Generated workqueues start at schema version 1 with a `QueueCodec` backed by
+`keiroJobCodec`.
+
+**Never** change a non-empty queue directly between bare `aesonJobCodec` payloads and the `{v,t,data}`
+envelope. Drain it first, or ship a temporary decoder that accepts both shapes.
+
+**If violated:** future-version bodies burn through retries into the dead-letter queue; an
+undrained envelope change makes old in-flight bodies fail as `JobPayloadMalformed`.
+
+## 4. Drain process-manager and router decide changes
+
+Process managers and routers derive deterministic target-command event ids from the source event and
+target identity. On redelivery, a target command already written under that id is confirmed as a
+**benign duplicate** and skipped. If you change fan-out while old source events are still in the
+redelivery window, old and new fan-outs merge silently: overlapping targets deduplicate while only
+the newly selected targets run.
+
+The procedure: pause the subscription, let in-flight reactions finish, resolve or explicitly discard
+its dead letters, deploy the decide change, resume. Apply it to router `resolve`/dispatch changes,
+process-manager `handle` logic, and any hand-owned hole that changes the target set.
+
+`keiro-dsl diff` emits `RouterDecideSurfaceChanged` and `ProcessDecideSurfaceChanged` advisories for
+spec-visible edits. **Hole-only decide changes stay invisible to the differ**, so the drain rule
+applies whenever hand-owned logic changes.
+
+**If violated:** no error is raised. Benign-duplicate confirmation silently preserves a half-old,
+half-new fan-out.
+
+## 5. Stamp every direct event-store write
+
+`decodeRecorded` treats absent schema-version metadata as version 1. An event written directly to
+Kiroku without `encodeForAppend`/`encodeForAppendWithMetadata` therefore becomes a version-1 payload
+forever, even when current application code produced its JSON.
+
+Route every aggregate append through the codec boundary. A service that must keep a direct writer has
+to reproduce the exact event-type and schema-version metadata contract and evolve in lockstep;
+otherwise that stream category can never safely bump its codec.
+
+**If violated:** the first codec bump sends a current-shape but unstamped payload through the
+version-1 upcaster chain, causing `UpcasterError`, `DecodeFailed`, or silent reinterpretation.
+
+## 6. Upgrade timer firers before scheduling new payloads
+
+A `keiro_timers` row stores its `payload` as opaque, unversioned JSON. The timer runtime cannot
+upcast it. The firing function must accept every payload shape that can still be scheduled or remain
+pending.
+
+Deploy all firers with a backward-compatible decoder first; only after the old firers are gone may
+producers schedule the new shape; keep decoding the old shape until every old timer has fired or been
+cancelled. This is workers-before-producers again, but *without* a version envelope to make skew
+self-describing.
+
+DSL changes to a timer `payload` block emit the `ProcessTimerPayloadChanged` advisory; hand-written
+payloads keep the same manual obligation with no gate.
+
+**If violated:** the fire callback fails repeatedly; once attempts exceed
+`TimerWorkerOptions.maxAttempts`, the timer moves to terminal `Dead` with `last_error` set.
+
+## 7. Coordinate integration contracts manually
+
+`decodeJsonIntegrationEvent` is ordinary Aeson `FromJSON`. There is **no upcaster machinery on the
+inbox path** and no cross-repository compatibility check. The DSL can classify one repository's
+contract diff; it does not compare producer and consumer specs.
+
+- **Additive optional field:** deploy the producer first; keep consumers tolerant of both shapes.
+- **New required field or any structural change:** deploy consumers that decode *both* shapes first,
+  then producers of the new shape, and retire the old decoder only after the backlog drains.
+- Bump the contract `schemaVersion` whenever the DSL requires it. A new topic or explicit
+  version-dispatch path is safer for changes that cannot be dual-decoded.
+- **Never** change `messageId`/`idempotencyKey` derivation on a live contract — it re-keys dedupe
+  identity, so redelivered messages stop matching their dedupe records.
+
+**If violated:** the inbox consumer returns `DecodeFailed` and the message follows its
+retry/dead-letter policy; a changed dedupe identity instead admits duplicate effects.
+
+## 8. Treat workflow step results as permanent
+
+A workflow journal stores each named step's result as JSON and decodes it into the type the current
+body expects. Never change that type in place: **rename** the changed step so it runs fresh, or
+protect a cross-cutting change with a stable `patch` decision.
+
+The resume worker defaults to five attempts. A step-result decode crash consumes that budget and then
+appends `WorkflowFailed`, after which the instance is terminally failed and leaves discovery. Deploy
+the corrected binary first, then return the instance to the runnable pool with
+[`resurrectFailedWorkflow`](/docs/keiro/how-to/resurrect-a-failed-workflow) — never with manual SQL.
+
+**If violated:** resume repeatedly crashes on the journaled result and the workflow becomes
+`WorkflowFailed`; recovery then needs a code fix followed by an explicit operator-driven
+resurrection.
+
+## 9. Gate transducer changes with real-log replay
+
+Changes to guards, outputs, writes, targets, **transition modes**, or fold logic can reinterpret
+events already in the store. Before switching traffic, exercise the candidate binary against a
+production-copy or staging database holding representative history.
+
+1. Run `keiro-dsl diff --replay-impact-out FILE`.
+2. A `replay-neutral` verdict requires no data access — the common case, and the point of computing
+   the verdict at all.
+3. An `affected` verdict names a conservative event-type set. Run the candidate binary's
+   [`Keiro.ReplayAudit`](/docs/keiro/reference/replay-audit) in `AuditTargeted` mode over it.
+4. `auditExitCode` returning non-zero means **do not deploy**.
+
+Reserve `AuditFull` for one-time keiki-runtime cutovers and forensics. Between deploys, the sampled
+`keiro.snapshot.seed.divergence` metric is the alert to watch.
+
+**If violated:** the next live command may fail with `HydrationReplayFailed`; worse, an
+inversion-compatible change or a stale snapshot can silently derive different state.
+
+## Quick table
+
+| Change | Order | Rollback |
+|---|---|---|
+| Aggregate codec version bump | stop-the-world / blue-green, no mixed writers | roll-forward-only after the first append |
+| New event type | deploy everywhere before emitting | roll-forward-only for affected streams |
+| `keiroJobCodec` bump | workers, then producers | safe until a new-version body is enqueued |
+| PM/router decide change | drain redelivery, then deploy | mixing is silent — drain again |
+| Timer payload shape | firers, then schedulers | keep the old decoder until pending timers clear |
+| Integration contract | additive: producer first; structural: consumer first | keep decoding the old shape until the backlog drains |
+| Workflow step result type | rename the step, or `patch` | resurrect after fixing forward |
+| Guard / fold / mode change | replay audit before traffic switch | deleting a replay-only twin re-breaks history |

@@ -1,0 +1,202 @@
+---
+title: "Replay audit"
+description: "Keiro.ReplayAudit: the read-only, real-log deploy gate — audit modes, the affected set, budgets and resumption, typed targets, per-stream outcomes, digests, and the exit code."
+---
+
+The types and functions on this page live in `Keiro.ReplayAudit` (package `keiro`), with the
+canonicalization helpers in `Keiro.ReplayDigest`. This is the only gate in the stack that reads your
+**actual stored history**: everything else — the compiler, `keiro-dsl check`/`diff`,
+`mkEventStream`, conformance goldens — validates artifacts. For where the audit sits among the other
+gates, see [Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability).
+
+<Callout type="info">
+The audit is strictly **read-only**. It never appends events, never calls `verifyAndSnapshot`, and
+never writes a snapshot row. Point it at a production-copy or staging database and run it under the
+*candidate* binary — the one you are about to deploy.
+</Callout>
+
+## `AuditMode` and `AffectedSet`
+
+```haskell
+data AuditMode
+  = AuditFull
+  | AuditTargeted !AffectedSet
+
+data AffectedSet = AffectedSet
+  { affectedEventTypes     :: !(Set EventType)
+  , includeSnapshotStreams :: !Bool
+  }
+```
+
+`AuditTargeted` is the routine deploy gate. Its `AffectedSet` comes from
+`keiro-dsl diff --replay-impact-out FILE`; discovery then uses Kiroku's indexed category, event-type,
+and global-position schema to select **only** streams containing one of those event types. When the
+fold itself can change, `includeSnapshotStreams` widens selection to snapshot-bearing streams so a
+stale seed cannot hide behind a targeted sweep.
+
+`AuditFull` sweeps every stream in the category. Reserve it for a one-time keiki-runtime cutover or
+forensics — it is not a routine deploy gate.
+
+<Callout type="warn">
+Hand-written services have no spec to derive an affected set from. Supply a conservative set
+explicitly, or choose `AuditFull` and pay for it.
+</Callout>
+
+## `AuditBudget`
+
+```haskell
+data AuditBudget = AuditBudget
+  { maxStreams  :: !(Maybe Int)
+  , parallelism :: !Int
+  , resumeFrom  :: !(Maybe GlobalPosition)
+  }
+
+defaultAuditBudget :: AuditBudget   -- Nothing, 4, Nothing
+```
+
+`resumeFrom` makes a long sweep restartable. The checkpoint reported by a run is the maximum global
+position of the last audited stream at the selection snapshot; feeding it back selects only streams
+whose latest event lies after it.
+
+A category that receives new events during or after a run can deliberately re-select a
+previously-checked stream: its durable history changed, so it warrants another verdict. Treat that as
+correct, not as duplicated work.
+
+## Targets
+
+```haskell
+data AuditTarget phi rs s ci co = AuditTarget
+  { eventStream :: !(ValidatedEventStream phi rs s ci co)
+  , category    :: !Text
+  , mkStream    :: !(StreamName -> Maybe (Stream (EventStream phi rs s ci co)))
+  }
+
+data SomeAuditTarget where
+  SomeAuditTarget ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    AuditTarget phi rs s ci co ->
+    SomeAuditTarget
+
+streamInCategory :: Text -> StreamName -> Maybe (Stream eventStream)
+```
+
+`SomeAuditTarget` is the existential packaging that lets a service with several aggregate types put
+them in one list. `mkStream` is the accept/reject seam for a discovered raw store name;
+`streamInCategory expected` is the standard implementation — it accepts a name only when its parsed
+`CategoryName` equals the target's category. A rejected name is reported, not silently skipped, and
+counts as a failure.
+
+`keiro-dsl` scaffolds this assembly for you as one context-wide module:
+
+```haskell
+module Generated.HospitalCapacity.ReplayAudit (auditTargets) where
+
+auditTargets :: [SomeAuditTarget]
+auditTargets =
+  [ SomeAuditTarget
+      AuditTarget
+        { eventStream = Reservation.reservationEventStream
+        , category    = Stream.categoryText Reservation.reservationCategory
+        , mkStream    = streamInCategory (Stream.categoryText Reservation.reservationCategory)
+        }
+  ]
+```
+
+Targets appear in spec declaration order, and the generated `mkStream` validates discovered names
+against the generated category, so a stream that leaked into the wrong category surfaces as a
+rejection rather than a bad replay.
+
+## Outcomes and the report
+
+```haskell
+data AuditOutcome
+  = ReplayOk       { streamVersion :: !StreamVersion, digest :: !(Maybe Text) }
+  | ReplayFailed   { commandError :: !CommandError }
+  | SeedDivergence { seedVersion :: !StreamVersion, seededDigest :: !Text, fullDigest :: !Text }
+
+data StreamAuditResult = StreamAuditResult
+  { streamName :: !StreamName
+  , outcome    :: !AuditOutcome
+  }
+
+data AuditReport = AuditReport
+  { targetCategory  :: !Text
+  , mode            :: !Text
+  , results         :: ![StreamAuditResult]
+  , rejectedStreams :: ![StreamName]
+  , streamsSelected :: !Int
+  , streamsSkipped  :: !Int
+  , failures        :: !Int
+  , divergences     :: !Int
+  , checkpoint      :: !(Maybe GlobalPosition)
+  }
+```
+
+For each accepted stream the audit runs `hydrateFull`. Then, if the stream has a `StateCodec`, it
+looks up the snapshot seed and — on a hit — runs `hydrateSeeded` from it, comparing the two encoded
+`(state, registers)` values:
+
+| Situation | Outcome |
+|---|---|
+| Full replay failed | `ReplayFailed` carrying the `CommandError` (typically `HydrationDecodeFailed` or `HydrationReplayFailed`) |
+| No state codec, or no snapshot row | `ReplayOk` (no digest when there is no codec) |
+| Seeded replay agrees with full replay | `ReplayOk` with the full-replay digest |
+| Seeded replay failed, or its canonical bytes differ | `SeedDivergence` with both digests |
+
+`streamsSkipped` is the count a targeted mode did **not** look at (category total minus selected), so
+the report states its own coverage rather than implying it swept everything.
+
+## Digests
+
+```haskell
+canonicalJsonBytes :: Value -> ByteString   -- RFC 8785 canonical JSON
+replayDigest       :: Value -> Text         -- lower-case hex SHA-256 of those bytes
+```
+
+Correctness comparisons use the **canonical bytes** directly; the SHA-256 digest is the compact
+operator-facing identifier you paste into a ticket. Because the digest is stable, an inversion change
+that silently shifts a stream to a different edge — replaying successfully, but to different state —
+is reviewable by diffing digests across two runs.
+
+## Running it
+
+```haskell
+auditStream  :: (Store :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+                AuditTarget phi rs s ci co ->
+                Stream (EventStream phi rs s ci co) ->
+                Eff es AuditOutcome
+
+auditStreams :: (IOE :> es, Store :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+                AuditMode -> AuditBudget -> AuditTarget phi rs s ci co ->
+                Eff es AuditReport
+
+auditTargets :: (IOE :> es, Store :> es) =>
+                AuditMode -> AuditBudget -> [SomeAuditTarget] ->
+                Eff es [AuditReport]
+
+renderAuditReport :: AuditReport -> Text
+auditExitCode     :: [AuditReport] -> Int
+```
+
+`auditExitCode` returns `1` when **any** report has a non-zero `failures` (a stream that failed
+replay, or a discovered name a target rejected) or `divergences`, and `0` otherwise. Wire it straight
+into your deploy gate:
+
+```haskell
+reports <- auditTargets (AuditTargeted affected) defaultAuditBudget Generated.auditTargets
+traverse_ (putTextLn . renderAuditReport) reports
+exitWith (if auditExitCode reports == 0 then ExitSuccess else ExitFailure 1)
+```
+
+`renderAuditReport` emits one stable line per report:
+
+```text
+replay-audit category=reservation mode=targeted selected=812 skipped=19044 failures=0 divergences=0 checkpoint=41207
+```
+
+`checkpoint=none` appears when nothing was selected. Feed a real checkpoint back through
+`AuditBudget.resumeFrom` to continue a partial sweep.
+
+See [Audit real logs before a deploy](/docs/keiro/how-to/audit-real-logs-before-a-deploy) for the
+end-to-end procedure and [Deploy ordering](/docs/keiro/reference/deploy-ordering) for where this gate
+sits in a rollout.

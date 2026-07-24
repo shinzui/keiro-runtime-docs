@@ -92,6 +92,17 @@ You can adopt `keiroJobCodec` *before* you need to evolve — start versioned an
 change is then a one-upcaster diff instead of a wire-format migration. Switching an existing queue
 from `aesonJobCodec` to `keiroJobCodec` is itself a wire-format change (the envelope), so drain the
 queue first or treat the cutover as a versioned migration.
+
+`keiro-dsl`-scaffolded workqueues now do this for you: they emit a `QueueCodec` module holding a
+`keiroJobCodec` envelope at schema version 1. A fresh queue needs no migration; an existing
+bare-payload queue still has to drain before adopting it.
+</Callout>
+
+<Callout type="warn">
+Size the retry budget to cover the rollout window. A future-version body is retried after
+`RetryPolicy.defaultRetryDelay`, and **those retries consume delivery attempts** — the default policy
+is five deliveries with a 60-second delay, so a rollout longer than roughly five minutes will
+dead-letter jobs that were only waiting for the new workers.
 </Callout>
 
 ## Related
@@ -99,3 +110,4 @@ queue first or treat the cutover as a versioned migration.
 - [Codec reference](/docs/keiro/reference/codec) — the `Codec`, `Upcaster`, and `migrateToCurrent`.
 - [Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution) — the narrative.
 - [Background jobs reference](/docs/keiro/reference/pgmq-jobs#jobcodec)
+- [Deploy ordering](/docs/keiro/reference/deploy-ordering#3-upgrade-versioned-job-workers-before-producers) — the workers-before-producers rule.

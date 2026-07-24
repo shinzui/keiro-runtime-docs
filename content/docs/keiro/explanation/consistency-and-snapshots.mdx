@@ -59,16 +59,29 @@ flowchart TD
   V --> W["strict encode + snapshot write if policy fires"]
 ```
 
-A snapshot stores the joint `(state, registers)` as JSON. It is gated on two identities: the
-`state_codec_version` and a `regfile_shape_hash` over the register-file *shape*, so any slot change
-invalidates older snapshots. `SnapshotNoStream`, `SnapshotNotFound`, and `SnapshotDecodeFailed`
-retain the reason a lookup could not produce a seed; the command runner turns all three into full
-replay while recording hit/miss/decode telemetry.
+A snapshot stores the joint `(state, registers)` as JSON. It is gated on **three** identities: the
+manually owned `state_codec_version`, a `regfile_shape_hash` over the register-file *layout*, and a
+`state_shape_hash` over the control-state datatype (optionally composed with a fold fingerprint). Any
+slot change, any control-state shape change, and — for DSL-generated streams — any change to the
+spec-visible replay surface invalidates older snapshots. `SnapshotNoStream`, `SnapshotNotFound`, and
+`SnapshotDecodeFailed` retain the reason a lookup could not produce a seed; the command runner turns
+all three into full replay while recording hit/miss/decode telemetry.
 
-Snapshot version non-regression is scoped to a fixed codec version and shape hash. A stale compatible
-write cannot clobber a fresher row, but an incompatible codec or shape may replace a higher-version
-row so a rolled-back deployment can make progress. Mixed versions can thrash the single row and
-cause repeated full replay, but cannot replace the event log as truth.
+Snapshot version non-regression is scoped to a fixed discriminator. A stale compatible write cannot
+clobber a fresher row, but a row with a *different* discriminator may replace a higher-version one so
+a rolled-back deployment can make progress. Mixed versions can thrash the single row and cause
+repeated full replay, but cannot replace the event log as truth.
+
+<Callout type="warn">
+**The discriminator cannot see everything.** A hand-written guard or `update` body — and logic living
+only in a generated service's `Holes` module — is not structurally inspectable. Change one without
+bumping `stateCodecVersion` (or updating a maintained `withFoldFingerprint` token) and the old seed
+still matches: tail-only replay then derives state a full replay would never reach. That residual
+manual contract is why a fold change is a *deployment* concern, gated before release by the
+[replay audit](/docs/keiro/reference/replay-audit) and watched at runtime by
+`keiro.snapshot.seed.divergence`. See
+[Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability#changing-the-fold).
+</Callout>
 
 <Callout type="info">
 The snapshot fold, strict encode, and write run after a successful append and are advisory. An encode

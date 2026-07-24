@@ -14,8 +14,8 @@ not a typeclass.
 
 <TypeTable
   type={{
-    eventTypes: { type: "NonEmpty Text", description: "The complete event-type allow-list this codec owns" },
-    eventType: { type: "e -> Text", description: "Project a domain value to its wire tag (must be in eventTypes)" },
+    eventTypes: { type: "NonEmpty EventType", description: "The complete event-type allow-list this codec owns" },
+    eventType: { type: "e -> EventType", description: "Project a domain value to its wire tag (must be in eventTypes)" },
     schemaVersion: { type: "Int", description: "Current payload version; must be >= 1" },
     encode: { type: "e -> Value", description: "Current-version JSON serialization" },
     decode: { type: "EventType -> Value -> Either Text e", description: "Only ever sees payloads already migrated to schemaVersion" },
@@ -31,10 +31,25 @@ One rung of an upcaster chain: the source version it upgrades **from**, and a pu
 type Upcaster = (Int, EventType -> Value -> Either Text Value)
 ```
 
+A rung receives the **stored** `EventType` alongside the payload, so one codec can own several event
+kinds without guessing the kind from payload fields. That is how `keiro-dsl` lowers several
+same-version event bumps into one rung: the generated dispatcher selects the event-specific upcaster
+by tag and passes every other kind through byte-for-byte.
+
+<Callout type="warn">
+Upcasters are **permanent compatibility code**. A rung lives while any stored payload at its source
+version persists — which, for an append-only log without truncation, means forever. Keiro has no
+mechanism for declaring an old stored version unsupported.
+</Callout>
+
 <Callout type="warn">
 Use `mkCodec` for production codecs. It validates `schemaVersion >= 1`, duplicate event tags,
 duplicate upcaster sources, out-of-range upcaster sources, and missing rungs before runtime. The raw
 record constructor remains exported for low-level tests and escape hatches.
+
+You get this check whether or not you call `mkCodec` yourself: `validateEventStreamWith` runs it at
+the stream boundary, so `mkEventStream`, `mkEventStreamWith`, and `mkEventStreamOrThrow` all fail
+construction on a misconfigured codec. Only `mkEventStreamUnchecked` bypasses it.
 </Callout>
 
 ```haskell
@@ -101,5 +116,20 @@ Behavior to know:
   `VersionAhead`; a chain that simply ends before the target fails with `IncompleteUpcasterChain`.
 
 The worked example is the `jitsurei` order codec (`orderCodec`, `schemaVersion = 2`,
-`upcasters = [(1, upcastOrderPlacedV1)]`); see
+`upcasters = [(1, const upcastOrderPlacedV1)]` — the `const` discards the `EventType` because that
+codec migrates a single kind at this rung); see
 [Evolve an event schema](/docs/keiro/how-to/evolve-an-event-schema).
+
+<Callout type="warn">
+`schemaVersion` is **aggregate-global**, not per event kind. When a second event kind changes, assign
+it `aggregate-max + 1`, not that event's private previous version plus one. That keeps every payload
+stamp aligned with the one aggregate-wide chain.
+</Callout>
+
+A decode golden proves an old payload still *decodes*. It never proves that the decoded event still
+has an inverting edge or folds to the same state — that is a separate question answered by
+[the replay audit](/docs/keiro/reference/replay-audit). See
+[Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability) for how the two
+gates divide the work, and
+[Deploy ordering](/docs/keiro/reference/deploy-ordering) for why a codec bump cannot ride an ordinary
+rolling deploy.

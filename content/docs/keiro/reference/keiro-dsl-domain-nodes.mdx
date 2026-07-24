@@ -22,12 +22,18 @@ aggregate Reservation
   event TransferReservationCreated = fields(RequestTransferReservation)
   event TransferReservationConfirmed v2 { reservationId hospitalId triageNote:Text }
     upcast from v1 = HOLE
+  retiring event SoonToGo { reservationId }
   deprecated event LegacyOpened { reservationId }
 
   Unrequested -- RequestTransferReservation -->
     guard divertStatus != TotalDivert || lifeCriticalOverride
     write reservationState := Held
     emit TransferReservationCreated
+    goto Held
+
+  replay-only Unrequested -- OpenLegacy -->
+    write reservationState := Held
+    emit LegacyOpened
     goto Held
 
   wire kind=ctorName fields=camelCase schemaVersion=1
@@ -52,11 +58,51 @@ A transition has one source/command, optional guard, zero or more writes/emits, 
 `goto`. Durable state changes must emit history; the generated harness applies Keiki replay-safety
 validation to the hand-filled transducer.
 
+### Transition modes: `live` and `replay-only`
+
+A transition is **live** by default. A `replay-only` prefix on the transition line marks it as
+serving inversion only:
+
+```keiro-dsl
+replay-only Held -- ConfirmReservation --> write reservationState := Confirmed
+                                         ; emit TransferReservationConfirmed
+                                         ; goto Confirmed
+```
+
+It lowers to `B.replayOnly` in the scaffolded transducer skeleton — keiki's `ReplayOnly` `EdgeMode`.
+The edge is never taken by a new command; it exists so events emitted under a retired rule keep an
+inverting edge, and its `update` defines how that history folds today. The pretty-printer round-trips
+the prefix, so a `diff`-computed twin can be pasted back into the spec verbatim.
+
+Two discipline rules:
+
+| Code | Severity | Rule |
+|---|---|---|
+| `ReplayOnlyEmitsNothing` | error | a replay-only transition with no `emit` can invert nothing |
+| `ReplayOnlyCommandStillLive` | warning | no live sibling for the `(source, command)` pair — the command is fully retired there, and the fuller procedure is event retirement |
+
+The transition **mode** is part of the fold fingerprint, because flipping it changes replay
+attribution. Use it via
+[Tighten a guard with a replay-only twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin)
+and [Retire an event type](/docs/keiro/how-to/retire-an-event-type).
+
 ### Commands, events, wire format, and evolution
 
 An event body is `{ field[:Type] … }` or `= fields(Command)`. Version defaults to 1. `vN` with
-`N > 1` requires a contiguous `upcast from v(N-1) = HOLE`. `deprecated event` keeps an old payload
-decodable but forbids new transitions from emitting it.
+`N > 1` requires a contiguous `upcast from v(N-1) = HOLE`.
+
+Retirement is a **two-stage protocol** with two mutually exclusive markers:
+
+- `retiring event` — retirement has started; the event must keep at least one **live** emitting
+  transition while operators terminalize or truncate affected streams.
+- `deprecated event` — off the live write path (no *live* transition may emit it) but still
+  decodable. A **replay-only** emitting transition may, and generally must, remain: without one,
+  `DeprecatedEventReplayHazard` warns that stored history is no longer replayable.
+
+<Callout type="warn">
+`deprecated` alone protects only the codec. Hydration still needs an edge that inverts the event —
+see [Retire an event type](/docs/keiro/how-to/retire-an-event-type).
+</Callout>
 
 An aggregate permits at most one `wire`, `projection`, and `snapshot`. The wire clause captures event
 kind, field naming, and schema version; changes are diffed as persisted decode changes.
@@ -67,13 +113,27 @@ Generated: `Domain`, `Codec`, `EventStream`, `Projection`, and `Harness`. Hand-o
 contains the symbolic transition, projection SQL, and upcaster bodies. The public generated stream is
 validated with `mkEventStreamOrThrow`; never replace it with the unchecked constructor.
 
+Scaffolding also emits **one context-wide** `Generated.<Context>.ReplayAudit` module carrying
+`auditTargets :: [SomeAuditTarget]` — every aggregate, in declaration order, each validating
+discovered stream names against its generated category. Feed it to
+[`Keiro.ReplayAudit`](/docs/keiro/reference/replay-audit).
+
+Generated snapshot codecs compose a **fold fingerprint** into `stateShapeHash` via
+`withFoldFingerprint`. It is a deterministic digest of the spec-visible replay surface — state order
+and terminality, register types and initials, transition modes, guards, writes, emits, targets, and
+transitively referenced rule bodies — so a spec-visible fold change invalidates old snapshots
+automatically and raises the non-breaking `AggFoldSurfaceChanged` advisory at diff time. Logic changed
+only inside `Holes` is *not* covered: bump `stateCodecVersion` yourself.
+
 ### Principal validation rules
 
 References, states, commands, events, register writes, initial values, guard atoms, reachability,
-terminal states, event versions/upcasters, deprecated writes, identifiers, duplicate names, and
-wire/schema coherence are all checked. Common codes include `UndeclaredCommand`, `WriteTargetNotRegister`,
-`RegisterInitialOutOfScope`, `GuardAtomOutOfScope`, `UnreachableState`, `TerminalHasOutgoing`,
-`ClockSampled`, `EvtVersionMissingUpcaster`, and `DeprecatedEventStillEmitted`.
+terminal states, event versions/upcasters, deprecated writes, replay-only discipline, identifiers,
+duplicate names, and wire/schema coherence are all checked. Common codes include `UndeclaredCommand`,
+`WriteTargetNotRegister`, `RegisterInitialOutOfScope`, `GuardAtomOutOfScope`, `UnreachableState`,
+`TerminalHasOutgoing`, `ClockSampled`, `EvtVersionMissingUpcaster`, `DuplicateUpcasterSource`,
+`UpcasterChainGap`, `DeprecatedEventStillEmitted`, `DeprecatedEventReplayHazard`,
+`EventRetirementInProgress`, `ReplayOnlyEmitsNothing`, and `ReplayOnlyCommandStillLive`.
 
 ## Projection
 

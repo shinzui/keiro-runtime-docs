@@ -17,8 +17,8 @@ A codec is a plain **value-level record**, not a typeclass:
 type Upcaster = (Int, EventType -> Value -> Either Text Value)
 
 data Codec e = Codec
-  { eventTypes :: !(NonEmpty Text)          -- the complete event-type allow-list this codec owns
-  , eventType :: !(e -> Text)               -- project a domain value to its wire tag
+  { eventTypes :: !(NonEmpty EventType)          -- the complete event-type allow-list this codec owns
+  , eventType :: !(e -> EventType)          -- project a domain value to its wire tag
   , schemaVersion :: !Int                   -- current payload version; must be >= 1
   , encode :: !(e -> Value)                 -- current-version JSON serialization
   , decode :: !(EventType -> Value -> Either Text e)
@@ -29,8 +29,8 @@ data Codec e = Codec
 
 <TypeTable
   type={{
-    eventTypes: { type: "NonEmpty Text", description: "The complete event-type tag allow-list this codec owns." },
-    eventType: { type: "e -> Text", description: "Projects a domain value to its wire tag; must land in eventTypes." },
+    eventTypes: { type: "NonEmpty EventType", description: "The complete event-type tag allow-list this codec owns." },
+    eventType: { type: "e -> EventType", description: "Projects a domain value to its wire tag; must land in eventTypes." },
     schemaVersion: { type: "Int", description: "The current payload version; must be >= 1. Stamped on append, the migration target on read." },
     encode: { type: "e -> Value", description: "The current-version JSON serialization." },
     decode: { type: "EventType -> Value -> Either Text e", description: "Only ever sees payloads already migrated to schemaVersion." },
@@ -161,10 +161,12 @@ ever been written to its stream.
 ## The jitsurei v1→v2 upcaster
 
 The jitsurei order codec is the worked example. `orderCodec :: Codec OrderEvent` carries
-`schemaVersion = 2`, `upcasters = [(1, upcastOrderPlacedV1)]`, and
-`eventTypes = "OrderPlaced" :| ["PaymentApproved", "OrderPacked", "OrderShipped", "OrderCancelled"]`.
-The single upcaster rewrites a v1 `OrderPlaced` (which used `"qty"` and an optional `"sku"`) into the v2
-shape (required `"quantity"`, `"sku"` defaulted to `"UNKNOWN"`):
+`schemaVersion = 2`, `upcasters = [(1, const upcastOrderPlacedV1)]`, and an `eventTypes` allow-list of
+`EventType "OrderPlaced" :| [EventType "PaymentApproved", …]`. The `const` discards the rung's
+`EventType` argument because this rung owns a single kind; a generated multi-event rung dispatches on
+it and passes foreign kinds through byte-for-byte. The upcaster rewrites a v1 `OrderPlaced` (which
+used `"qty"` and an optional `"sku"`) into the v2 shape (required `"quantity"`, `"sku"` defaulted to
+`"UNKNOWN"`):
 
 ```haskell
 upcastOrderPlacedV1 value =
@@ -182,8 +184,15 @@ upcastOrderPlacedV1 value =
 
 Contrast the paging codec: `pageCodec` has `schemaVersion = 1` and `upcasters = []` — a codec with no
 migration history, the common starting point. The cost of evolution is paid lazily on read: an old
-event is migrated forward only when hydrated, never by rewriting the log. See
+event is migrated forward only when hydrated, never by rewriting the log.
+
+Two consequences follow from "lazily, forever". A rung is **permanent compatibility code** — it lives
+while any payload at its source version does, and there is no mechanism to declare an old version
+unsupported. And this whole layer protects **decoding only**: once the event decodes, hydration still
+has to find an edge that *inverts* it, which is a different question with a different gate. See
 [Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution) for the conceptual
-view and [Evolve an event schema](/docs/keiro/how-to/evolve-an-event-schema) for the recipe.
+view, [Evolve an event schema](/docs/keiro/how-to/evolve-an-event-schema) for the recipe, and
+[Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability) for the rest of the
+gate stack.
 
 Next: [06 — The typed handles](/docs/keiro/walkthrough/command-cycle/06-the-typed-handles).

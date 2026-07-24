@@ -13,8 +13,9 @@ keiro-dsl new <kind>
 keiro-dsl parse <file.keiro>
 keiro-dsl check <file.keiro> [--emit]
 keiro-dsl scaffold <file.keiro> --out DIR \
-  [--module-root PREFIX] [--collocate] [--force-generated-overwrite]
-keiro-dsl diff --since <git-ref> <file.keiro>
+  [--module-root PREFIX] [--collocate] [--force-generated-overwrite] [--goldens DIR]
+keiro-dsl diff --since <git-ref> <file.keiro> \
+  [--emit-goldens DIR] [--replay-impact-out FILE]
 ```
 
 `FILE` can be `/dev/stdin`.
@@ -96,6 +97,22 @@ keiro-dsl scaffold service.keiro --out src --module-root Acme --collocate
 On success, stderr lists every module and disposition (`overwritten`, `created`, or
 `skipped: already present`), the firewall verdict, harness modules, and manifest path.
 
+### `--goldens DIR`
+
+Embeds versioned old-payload fixtures into the generated aggregate harnesses, which then exercise
+each one through `decodeRaw`. The default root is `<spec-dir>/golden-payloads`, so a project that
+adopts the convention needs no flag. Capture the fixtures with `diff --emit-goldens` at the moment of
+a version bump — see below.
+
+### Replay-audit module
+
+Every scaffold emits one context-wide `Generated.<Context>.ReplayAudit` exporting
+`auditTargets :: [SomeAuditTarget]`: every aggregate in declaration order, each validating discovered
+stream names against its generated category. Its header states the deployment contract — a
+replay-neutral diff needs no audit, an affected diff needs `AuditTargeted`, a runtime cutover needs
+`AuditFull`, and any non-zero exit blocks deployment. See
+[Replay audit](/docs/keiro/reference/replay-audit).
+
 ### Manifest
 
 `keiro-dsl-manifest.<context>.txt` contains paste-ready `other-modules:` and `build-depends:` blocks.
@@ -137,18 +154,70 @@ BREAKING: <node> <facet> <subject>: <detail> [Code]
 
 Examples of breaking identity include an ID prefix, process category, workflow stable name, router
 stable name/key/target, read-model table/subscription, or queue identity. Event payload changes need
-a version bump and contiguous `upcast from v(N-1) = HOLE`; a removed event remains decodable with
-`deprecated event`.
+a version bump and contiguous `upcast from v(N-1) = HOLE`; a **vanished upcaster rung** is breaking
+(`UpcasterChainGap`). A removed event remains decodable with `deprecated event` — but decodable is not
+replayable, so `diff` distinguishes a hazardous deprecation from the replay-safe
+deprecated-plus-`replay-only` cutover.
+
+### Non-breaking advisories
+
+These exit 0 but carry an operational obligation:
+
+| Code | Trigger | Obligation |
+|---|---|---|
+| `AggGuardTightened` | a live guard changed with no replay-only twin | paste the printed twin, or audit and truncate |
+| `AggFoldSurfaceChanged` | the spec-visible replay surface moved | expect one full replay per snapshot-bearing stream |
+| `DeprecatedEventReplayHazard` | a deprecated event has no replay-only emitter | restore the inverting edge, or terminalize/truncate |
+| `EventRetirementInProgress` | the safe retained shape is in place | keep the cleanup on the backlog |
+| `RouterDecideSurfaceChanged` | router resolve/dispatch changed | drain the subscription redelivery window |
+| `ProcessDecideSurfaceChanged` | process handle surface changed | drain the subscription redelivery window |
+| `ProcessTimerPayloadChanged` | an unversioned process-timer payload changed | deploy backward-compatible firers first |
+
+`AggGuardTightened` prints a **paste-ready** `replay-only` twin whose guard is the removed region
+`old ∧ ¬new`, with negation eliminated inside the guard grammar (De Morgan, comparison flipping,
+`x == false` for a bare boolean atom). It is printed, never auto-applied.
+
+### `--emit-goldens DIR`
+
+Writes old-shape payload fixtures for every event version bump in the diff — the one moment when both
+the old and new wire shapes are knowable. It **never overwrites an existing file**, so a hand-captured
+genuine production payload always beats a synthesized one.
+
+### `--replay-impact-out FILE`
+
+`diff` always prints the replay-impact verdict; this flag also writes it as stable JSON:
+
+```json
+{"verdict":"replay-neutral"}
+```
+
+```json
+{"verdict":"affected",
+ "aggregates":{"Reservation":{"eventTypes":["TransferReservationCreated"],
+                              "includeSnapshotStreams":true}}}
+```
+
+New aggregates, events, transitions, and syntactically proven guard loosenings are replay-neutral. A
+removed or changed old transition affects the event types either side emits; a changed decode surface
+affects that event type directly; `includeSnapshotStreams` is set whenever the fold itself can change.
+Affected event arrays are sorted. Feed the file to
+[`Keiro.ReplayAudit`](/docs/keiro/reference/replay-audit).
 
 ## CI gates
 
 ```bash
 keiro-dsl check service.keiro
-keiro-dsl scaffold service.keiro --out generated
+keiro-dsl scaffold service.keiro --out generated --goldens golden-payloads
 cabal test your-generated-harness-component
-keiro-dsl diff --since origin/main service.keiro
+keiro-dsl diff --since origin/main \
+  --emit-goldens golden-payloads \
+  --replay-impact-out replay-impact.json \
+  service.keiro
 ```
 
 `check` proves current validity. Scaffold proves the generated plan is safe. The harness proves
-hand-owned behavior agrees with generated facts. `diff` proves the upgrade does not contain an
-unapproved breaking persistence or identity change.
+hand-owned behavior agrees with generated facts *and* that supplied old payloads still decode. `diff`
+proves the upgrade does not contain an unapproved breaking persistence or identity change.
+
+None of them reads your database. When the verdict is `affected`, the deploy gate is the
+[real-log replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy).

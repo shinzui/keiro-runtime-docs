@@ -1,0 +1,118 @@
+---
+title: "Audit real logs before a deploy"
+description: "Turn a diff's replay-impact verdict into a targeted Keiro.ReplayAudit run against a production-copy database, and use its exit code as the deploy gate."
+---
+
+Every other gate validates an *artifact*. This one validates your **data**: it replays real stored
+streams through the binary you are about to deploy and tells you whether they still hydrate to the
+same state.
+
+Run it whenever a change touches a guard, output, write, target, transition mode, or fold — that is,
+whenever [`diff`](/docs/keiro/how-to/gate-spec-evolution-with-diff) does not say `replay-neutral`.
+
+## 1. Get the affected set
+
+```bash
+keiro-dsl diff --since origin/main \
+  --replay-impact-out replay-impact.json \
+  service.keiro
+```
+
+```json
+{"verdict":"affected",
+ "aggregates":{"Reservation":{"eventTypes":["TransferReservationCreated"],
+                              "includeSnapshotStreams":true}}}
+```
+
+A `{"verdict":"replay-neutral"}` file means you are done: no old edge or decode surface changed, so
+no stored log can be reinterpreted. Skip to the deploy.
+
+Hand-written services have no spec to diff. Supply a conservative event-type set by hand, or use
+`AuditFull` and pay for the sweep.
+
+## 2. Point the candidate binary at a production copy
+
+Restore a copy of production (or use a staging database with representative history) and run the
+audit **from the branch you are about to ship**. Auditing with the *old* binary proves nothing.
+
+```haskell
+import Keiro.ReplayAudit
+import Generated.HospitalCapacity.ReplayAudit (auditTargets)
+
+main :: IO ()
+main = runApp $ do
+  affected <- liftIO (readAffectedSet "replay-impact.json")
+  reports  <- Keiro.ReplayAudit.auditTargets
+                (AuditTargeted affected)
+                defaultAuditBudget
+                Generated.HospitalCapacity.ReplayAudit.auditTargets
+  traverse_ (liftIO . putTextLn . renderAuditReport) reports
+  liftIO (exitWith (case auditExitCode reports of 0 -> ExitSuccess; n -> ExitFailure n))
+```
+
+`Generated.<Context>.ReplayAudit.auditTargets` is scaffolded for you: one typed entry per aggregate,
+in spec declaration order, each validating discovered stream names against its generated category.
+Hand-written services assemble the same `[SomeAuditTarget]` list themselves.
+
+The audit is read-only. It never appends, never calls `verifyAndSnapshot`, and never writes a
+snapshot row — so a production *copy* is a convenience for isolation and load, not a safety
+requirement.
+
+## 3. Read the report
+
+```text
+replay-audit category=reservation mode=targeted selected=812 skipped=19044 failures=0 divergences=0 checkpoint=41207
+```
+
+- `failures` counts streams that failed full replay **plus** discovered names a target rejected.
+- `divergences` counts streams whose accepted snapshot seed disagreed with full replay.
+- `skipped` is what a targeted run deliberately did not look at, so the report states its own
+  coverage.
+
+Per stream you get one of:
+
+| Outcome | Meaning | Usual cause |
+|---|---|---|
+| `ReplayOk` | full replay succeeded; seeded replay agreed if there was a seed | — |
+| `ReplayFailed` | full replay failed, carrying the `CommandError` | a removed inverting edge, a tightened guard, a missing upcaster rung |
+| `SeedDivergence` | the seed and a full replay through the seed version encode differently | a fold change with no `stateCodecVersion` bump |
+
+`auditExitCode` returns `1` if any report has failures or divergences. Wire that straight into CI:
+non-zero means **do not deploy**.
+
+## 4. Act on what it found
+
+- **`ReplayFailed HydrationNoInvertingEdge`** — you retired an event or tightened a guard without
+  keeping an inverting edge. Paste the `replay-only` twin
+  ([guard tightening](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin)) or complete the
+  [event-retirement protocol](/docs/keiro/how-to/retire-an-event-type).
+- **`ReplayFailed HydrationDecodeFailed`** — a codec or upcaster gap. Restore the missing rung.
+- **`SeedDivergence`** — bump `stateCodecVersion` (or the `withFoldFingerprint` token) so the stale
+  seeds miss, then re-run. Deleting the affected `keiro_snapshots` rows is the emergency equivalent.
+
+Then re-run the audit until it exits `0`.
+
+## Budget a large sweep
+
+```haskell
+defaultAuditBudget          -- maxStreams = Nothing, parallelism = 4, resumeFrom = Nothing
+  & #parallelism .~ 16
+  & #maxStreams  .~ Just 5000
+```
+
+The report's `checkpoint` is the maximum global position of the last audited stream at the selection
+snapshot. Feed it back through `resumeFrom` to continue where you stopped. A stream that received new
+events since the last pass can be re-selected deliberately: its durable history changed, so it
+warrants another verdict.
+
+## When to use `AuditFull`
+
+`AuditFull` sweeps every stream in the category. Reserve it for a one-time keiki-runtime cutover or
+for forensics after a production incident. It is not a routine deploy gate — a targeted run over the
+event types `diff` actually named is both cheaper and equally sound.
+
+## Between deploys
+
+The audit is a pre-deploy gate, not a monitor. The continuous equivalent is the sampled
+[snapshot-seed witness](/docs/keiro/reference/command#seedverifysamplerate--the-sampled-stale-seed-witness):
+alert on any non-zero `keiro.snapshot.seed.divergence`.

@@ -129,16 +129,17 @@ This avoids missing a policy boundary simply because one accepted command emitte
 
 ```sql
 SELECT stream_id, stream_version, state, state_codec_version,
-       regfile_shape_hash, created_at, updated_at
+       regfile_shape_hash, state_shape_hash, created_at, updated_at
 FROM keiro.keiro_snapshots
 WHERE stream_id = $1
   AND state_codec_version = $2
   AND regfile_shape_hash = $3
+  AND state_shape_hash = $4
 ORDER BY stream_version DESC
 LIMIT 1;
 ```
 
-The one-row-per-stream upsert has three ways to permit replacement:
+The one-row-per-stream upsert has four ways to permit replacement:
 
 ```sql
 ON CONFLICT (stream_id) DO UPDATE
@@ -146,16 +147,41 @@ ON CONFLICT (stream_id) DO UPDATE
       state = EXCLUDED.state,
       state_codec_version = EXCLUDED.state_codec_version,
       regfile_shape_hash = EXCLUDED.regfile_shape_hash,
+      state_shape_hash = EXCLUDED.state_shape_hash,
       updated_at = now()
   WHERE keiro_snapshots.stream_version <= EXCLUDED.stream_version
      OR keiro_snapshots.state_codec_version <> EXCLUDED.state_codec_version
-     OR keiro_snapshots.regfile_shape_hash <> EXCLUDED.regfile_shape_hash;
+     OR keiro_snapshots.regfile_shape_hash <> EXCLUDED.regfile_shape_hash
+     OR keiro_snapshots.state_shape_hash <> EXCLUDED.state_shape_hash;
 ```
 
-The first clause prevents version regression only for a compatible codec/shape. Either discriminant
+The first clause prevents version regression only for a fully compatible row. **Any** discriminant
 changing permits a lower version to replace a higher one, which makes codec rollback possible.
 Incompatible binaries can therefore thrash the cache row during a mixed deployment; they cannot
 change event history.
+
+`state_shape_hash` is the third column, added by
+`0019-keiro-snapshots-state-shape-hash.sql` with an empty-string default — so every pre-migration row
+misses exactly once and is re-persisted with a real hash.
+
+## The sampled seed witness
+
+An accepted seed is only as trustworthy as the discriminator that accepted it, and the discriminator
+cannot see a hand-written or Holes-only fold edit. So `hydrate` samples: on a snapshot hit, one
+hydration in `RunCommandOptions.seedVerifySampleRate` (default 1000) spawns a background replay
+bounded **through the seed's own stream version** and compares RFC 8785 canonical encoded state
+against the seed.
+
+```haskell
+Right hydrated -> do
+  for_ (eventStream ^. #stateCodec) $ \codec ->
+    scheduleSeedVerification options eventStream targetStream codec seed
+  pure (Right hydrated)
+```
+
+It never blocks or fails the command and never writes a snapshot. A mismatch increments
+`keiro.snapshot.seed.divergence` and writes a structured stderr line with the stream, seed version,
+and both SHA-256 digests. Set the rate to `1` to verify every hit, `0` to disable it.
 
 ## Read the signals together
 

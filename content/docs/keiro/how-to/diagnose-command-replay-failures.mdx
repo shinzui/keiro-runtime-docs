@@ -39,6 +39,27 @@ An accepted no-op is also a success, but it appends nothing and always reports
   Look for an incompatible transducer change or an event written outside the aggregate runner.
 - `HydrationAmbiguousInversion`: more than one edge could have produced the event. Make first-event
   shapes distinct enough to identify the original transition.
+
+<Callout type="warn">
+`HydrationNoInvertingEdge` on previously healthy streams is almost always a **deploy**, not data
+corruption. Two changes produce it:
+
+- a **tightened guard** — stored events that satisfied the old, looser rule no longer satisfy the new
+  one. Remedy: paste the `replay-only` twin
+  [`diff` computes for you](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin).
+- a **retired event whose emitting transition was deleted** — the event still decodes, but nothing
+  inverts it. Remedy: complete the
+  [two-stage retirement protocol](/docs/keiro/how-to/retire-an-event-type).
+
+In both cases the affected blast radius is a database question. Answer it with a
+[targeted replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy) rather than by sampling
+streams by hand — and run that audit *before* the next such deploy.
+</Callout>
+
+<Callout type="info">
+Rolling back does not always undo the damage. If the previous deploy introduced a replay-only twin,
+removing it re-creates exactly the break it fixed. Roll *forward* with the twin restored.
+</Callout>
 - `HydrationQueueMismatch`: a later event did not match the next event expected from a multi-event
   transition. Inspect order, payload, and any partial/manual append.
 - `HydrationTruncatedChain`: the stream ended while replay was still waiting for more events from a
@@ -75,6 +96,23 @@ Alert on that evidence as a stream-integrity incident. Capture the stream name, 
 version, and divergence attribute; block or drain further commands for that stream; reproduce replay
 against the reviewed transducer and codec; then repair the definition or history under your normal
 data-repair procedure. Do not automatically retry the original command: it already committed.
+
+## Respond to a diverging snapshot seed
+
+`keiro.snapshot.seed.divergence` is a different signal from `keiro.snapshot.apply.divergence`. One
+hydration in `seedVerifySampleRate` (default 1000) full-replays through the seed's own stream version
+and compares canonical encoded state against the seed. A mismatch means an **accepted** seed no longer
+agrees with the events it claims to summarize.
+
+The structured stderr line carries `stream`, `seedVersion`, and both SHA-256 digests. The usual cause
+is a hand-written or Holes-only fold change deployed without a `stateCodecVersion` bump. Respond by:
+
+1. bumping `stateCodecVersion` (or the `withFoldFingerprint` token) so every stale seed misses;
+2. deleting the affected `keiro_snapshots` rows if you need immediate relief; and
+3. running the [replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy) to find every other
+   stream carrying a stale seed.
+
+Commands are unaffected either way — the witness never blocks or fails one.
 
 For the full constructor and option definitions, see the [Command reference](/docs/keiro/reference/command).
 For the underlying inversion model, see keiki's [Structured step and replay failures](/docs/keiki/reference/step-failure).
