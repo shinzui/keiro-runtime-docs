@@ -14,19 +14,53 @@ the pinned commit to `HEAD`, update the affected pages, then bump the pointer be
 - Relevant packages: `kiroku-store` (core store + subscription FSM), `shibuya-kiroku-adapter`
   (worker adapter); the source tree also carries the metrics, CLI, and OpenTelemetry packages
   documented below.
-- **Reviewed releases:** `kiroku-store 0.3.0.1`, migrations `0.3.0.0`,
+- **Reviewed releases:** `kiroku-store 0.3.1.0`, migrations `0.3.0.0`,
   `kiroku-otel 0.2.0.1`, `kiroku-cli 0.2.0.0`, `kiroku-metrics 0.1.0.1`, and
   `shibuya-kiroku-adapter 0.4.0.0`.
 
 ## Last reviewed commit
 
 ```
-58aff77b3a6d6093e3613753a0543aab62db9fac  (58aff77)
-2026-07-14T07:09:19-07:00
-chore(release): kiroku-store 0.3.0.1, kiroku-store-migrations 0.3.0.0
+3009dda7238f7d05b1d0c97b04ec5d4c55031304  (3009dda)
+2026-07-22T11:03:50-07:00
+chore(release): kiroku-store 0.3.1.0
 ```
 
-> **Current range.** The `dac1a0b..58aff77` review covers Kiroku 0.3: corrected backward reads,
+> **Current range.** The `58aff77..3009dda` range (3 commits, 5 files) is the
+> **kiroku-store 0.3.1.0 point release**. One new API, one corrected metric
+> description, one upstream-README fix that this tree had already got right.
+>
+> - **`Kiroku.Store.Effect.Resource.runKirokuStoreWith`** installs an
+>   already-acquired `KirokuStore` into the effect stack without acquiring or
+>   releasing it — the caller owns the handle's lifetime, unlike the bracketing
+>   `withKirokuStore`. Motivation: a caller that held one open store but ran many
+>   actions through it paid for a pool, a dedicated `LISTEN` connection, and a
+>   publisher thread per action (one CLI went 5 connections → 3). It still
+>   requires `IOE` because `KirokuStoreResource` is `Static WithSideEffects` and
+>   `evalStaticRep` demands `IOE` for those. Documented as a new **"The store
+>   resource"** section in `content/docs/kiroku/reference/store-effect.mdx` —
+>   `KirokuStoreResource`, `getKirokuStore`, and both runners were previously
+>   undocumented in this tree (only keiro pages referenced `withKirokuStore`),
+>   so the section covers the whole module. Cross-linked from
+>   `content/docs/keiro/reference/command.mdx`.
+> - **`kiroku_events_appended_total` help text corrected** from "Total events
+>   appended store-wide (gap-free global position)." to "Current store global
+>   position (opaque; not guaranteed dense)." The name still reads like an append
+>   counter, so `content/docs/kiroku/reference/metrics.mdx` gained a warning
+>   callout against `rate()`-ing it or differencing samples for an event count.
+>   `explanation/all-stream-and-global-order.mdx` already said positions are not
+>   dense and needed no change.
+> - **NO-OP:** the upstream `README.md` change (spelling out
+>   `kiroku-store-migrate up --database-url`, the `DATABASE_URL` fallback, and
+>   the full eight-command set) brings the upstream README in line with what
+>   `content/docs/kiroku/reference/schema-migrations.mdx` already documents. No
+>   doc change.
+>
+> `shibuya-kiroku-adapter` and `docs/user/` were untouched in this range, so the
+> adapter pointer advanced independently as doc-neutral. The source tree was
+> clean at the reviewed SHA.
+>
+> **Note (prior range).** The `dac1a0b..58aff77` review covers Kiroku 0.3: corrected backward reads,
 > eager stream and batch validation, typed link and transaction failures, close-the-book markers,
 > explicit subscription live sources, loud checkpoint failures, crash-aware adapter termination,
 > updated CLI/metrics/OTel packages, and the native pg-migrate component plus predecessor-history
@@ -68,6 +102,11 @@ chore(release): kiroku-store 0.3.0.1, kiroku-store-migrations 0.3.0.0
 
 ### Previous pointers (for traceability)
 
+- `58aff77b3a6d6093e3613753a0543aab62db9fac` (`58aff77`, 2026-07-14,
+  `kiroku-store 0.3.0.1`) — the baseline before the 0.3.1.0 point release. The
+  `58aff77..3009dda` range (3 commits) added `runKirokuStoreWith`, corrected the
+  `kiroku_events_appended_total` help text to describe an opaque global position,
+  and fixed the upstream README's migration command guidance.
 - `dac1a0b5ff39f400ad512e826265a0d24553b4a9` (`dac1a0b`, 2026-07-05) — baseline
   before the 0.3 behavior, operations, native migration, and release review.
 - `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a` (`4312aa8`, 2026-06-14, event existence lookup) —
@@ -96,8 +135,8 @@ chore(release): kiroku-store 0.3.0.1, kiroku-store-migrations 0.3.0.0
 1. List what changed since the pointer:
    ```sh
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 58aff77..HEAD
-   git -C "$KIROKU" diff --stat 58aff77..HEAD
+   git -C "$KIROKU" log --oneline 3009dda..HEAD
+   git -C "$KIROKU" diff --stat 3009dda..HEAD
    ```
    Kiroku also keeps its own `docs/`, `CHANGELOG.md` files, and `docs/plans|masterplans`
    entries — the prose diff there is the fastest way to understand intent before touching

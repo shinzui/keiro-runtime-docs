@@ -25,10 +25,19 @@ mapping, consumer groups, and handler exception behavior.
 ## Last reviewed commit
 
 ```text
-58aff77b3a6d6093e3613753a0543aab62db9fac  (58aff77)
-2026-07-14T07:09:19-07:00
-chore(release): kiroku-store 0.3.0.1, kiroku-store-migrations 0.3.0.0
+3009dda7238f7d05b1d0c97b04ec5d4c55031304  (3009dda)
+2026-07-22T11:03:50-07:00
+chore(release): kiroku-store 0.3.1.0
 ```
+
+The `58aff77..3009dda` range (3 commits) is **doc-neutral for this page**:
+`git diff --stat 58aff77..3009dda -- shibuya-kiroku-adapter docs/user` is empty.
+The range touched only `kiroku-store` (the new `runKirokuStoreWith` runner),
+`kiroku-metrics` (a corrected Prometheus help string), and the repo `README.md`
+— all folded in through
+[`kiroku-source-sync.md`](kiroku-source-sync.md). The adapter is still at
+`0.4.0.0` and every claim below still holds. The source tree was clean at the
+reviewed SHA.
 
 The `9a52aa6..58aff77` review covers `shibuya-kiroku-adapter 0.4.0.0`, including
 the 0.3 Kiroku dependency, explicit live-source selection, guarded synchronous
@@ -51,6 +60,10 @@ The source tree was clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `58aff77b3a6d6093e3613753a0543aab62db9fac` (`58aff77`), 2026-07-14 — the
+  baseline before the kiroku-store 0.3.1.0 point release. The `58aff77..3009dda`
+  range (3 commits) left the adapter package and `docs/user/` untouched; bumped
+  as doc-neutral.
 - `9a52aa62380c28b0ec36eeb9b517f49e40900fd8` (`9a52aa6`), 2026-06-24 —
   adapter baseline before the Kiroku 0.3 and Shibuya adapter 0.4 review.
 
@@ -59,8 +72,8 @@ The source tree was clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 58aff77..HEAD -- shibuya-kiroku-adapter docs/user
-   git -C "$KIROKU" diff --stat 58aff77..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" log --oneline 3009dda..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" diff --stat 3009dda..HEAD -- shibuya-kiroku-adapter docs/user
    ```
 2. Update `content/docs/integrations/shibuya-kiroku-adapter.mdx` and any Kiroku
    pages that repeat adapter-specific behavior.

@@ -1,6 +1,6 @@
 ---
 title: "03 — Translation and the memo cache"
-description: "Reading translateTermSym and translatePred: the SymEnv translation context, deterministic slot naming (reg/… and inp/…), the shared input-constructor tag, and the seVarCache memo that makes proj #x .== proj #x valid rather than merely satisfiable."
+description: "Reading translateTermSym and translatePred: the SymEnv translation context, the structural SymVarKey (registers, input fields, and typed field projections), the shared input-constructor tag, and the seVarCache memo that makes proj #x .== proj #x valid rather than merely satisfiable."
 ---
 
 <Callout type="info">
@@ -19,16 +19,45 @@ register share one variable). Both live in `SymEnv`. This chapter reads `keiki/s
 -- keiki/src/Keiki/Symbolic.hs
 data SymEnv = SymEnv
     { seInputCtor :: SBV.SBV String
-    , seVarCache :: IORef (Map String SomeSBV)
+    , seInputArm :: SBV.SBool
+    , seVarCache :: IORef (Map SymVarKey SomeSBV)
+    , seProjectionOrdinal :: IORef Int
     }
 ```
 
 <TypeTable
   type={{
     seInputCtor: { type: "SBV.SBV String", description: "The shared symbolic input-constructor tag. A PInCtor atom asserts seInputCtor .== literal (icName ic), so two such constraints with distinct names are recognized as mutually unsatisfiable." },
-    seVarCache: { type: "IORef (Map String SomeSBV)", description: "A per-translation memo: a deterministic variable name maps to the single SBV variable allocated for it during this walk. Scoped to one mkSymEnv, so variables are shared within a query but never leak across queries." },
+    seInputArm: { type: "SBV.SBool", description: "Which arm of a coproduct input is taken: True denotes the outer Left, False denotes Right." },
+    seVarCache: { type: "IORef (Map SymVarKey SomeSBV)", description: "A per-translation memo: a structural variable key maps to the single SBV variable allocated for it during this walk. Scoped to one mkSymEnv, so variables are shared within a query but never leak across queries." },
+    seProjectionOrdinal: { type: "IORef Int", description: "Counter for generated projection labels. Keiki generates them itself so arbitrary schema names never reach SBV's restricted label namespace." },
   }}
 />
+
+The cache key is a **structural** sum, not a rendered string — which is what keeps solver identity out
+of the reach of caller-controlled diagnostic text:
+
+```haskell
+-- keiki/src/Keiki/Symbolic.hs
+data SymVarKey
+    = RegVar String
+    | InpVar String String
+    | ProjectionVar
+        ProjectionBaseKey
+        SomeTypeRep    -- the projection tag
+        SomeTypeRep    -- FieldOwner
+        SomeTypeRep    -- FieldResult
+    deriving stock (Eq, Ord, Show)
+
+data ProjectionBaseKey
+    = ProjectionReg String Int
+    | ProjectionInp String String Int
+    deriving stock (Eq, Ord, Show)
+```
+
+Note the `Int` in each `ProjectionBaseKey`: that is `indexPosition`, the field's zero-based position in
+its slot list. Carrying position *as well as* name means a hand-built schema with duplicate labels
+cannot collapse two distinct fields onto one variable.
 
 `SomeSBV` is the existential that lets one map hold variables of different representation types; its
 `SBV.SymVal` constraint carries a `Typeable` superclass, which is what lets the cache check a recovered
@@ -39,15 +68,17 @@ data SomeSBV where
     SomeSBV :: (SBV.SymVal a) => SBV.SBV a -> SomeSBV
 ```
 
-A fresh env is allocated inside `SBV.Symbolic` because both fields are effectful — `seInputCtor` is a
-free variable and the cache is a freshly created `IORef`:
+A fresh env is allocated inside `SBV.Symbolic` because every field is effectful — the two tags are free
+variables and both counters are freshly created `IORef`s:
 
 ```haskell
 mkSymEnv :: SBV.Symbolic SymEnv
 mkSymEnv = do
     ctor <- SBV.free "inputCtor"
+    arm <- SBV.free "inputArm"
     cache <- liftIO (newIORef Map.empty)
-    pure (SymEnv ctor cache)
+    projectionOrdinal <- liftIO (newIORef 0)
+    pure (SymEnv ctor arm cache projectionOrdinal)
 ```
 
 The cache is created **per `mkSymEnv` call**, so each independent query gets its own memo and variables
@@ -63,9 +94,9 @@ values back out by those exact names:
 ```haskell
 translateTermSym _env (TLit r) = pure (symLit r)
 translateTermSym env (TReg ix) =
-    memoFree env ("reg/" <> indexName ix)
+    memoFree env (RegVar (indexName ix))
 translateTermSym env (TInpCtorField ic ix) =
-    memoFree env ("inp/" <> icName ic <> "/" <> indexName ix)
+    memoFree env (InpVar (icName ic) (indexName ix))
 translateTermSym _env (TApp1 _f _t) = SBV.free "app1"
 translateTermSym _env (TApp2 _f _a _b) = SBV.free "app2"
 translateTermSym env (TArith op a b) = case discoverSymNum @r of
@@ -78,17 +109,39 @@ translateTermSym env (TArith op a b) = case discoverSymNum @r of
                 OpSub -> (-)
                 OpMul -> (*)
         pure (apply sa sb)
+translateTermSym env (TFieldProj (witness :: FieldWitness projection) base) =
+    memoFree env (projectionVarKey witness base)
 ```
 
-The naming scheme is the contract between this module's two halves:
+The keying scheme is the contract between this module's two halves:
 
-- `TReg` allocates `reg/<slotName>`, where `slotName` comes from the `Index`'s `KnownSymbol` evidence.
-- `TInpCtorField` allocates `inp/<icName>/<slotName>` — the constructor's name plus the field's label.
+- `TReg` keys on `RegVar <slotName>`, where `slotName` comes from the `Index`'s `KnownSymbol` evidence.
+- `TInpCtorField` keys on `InpVar <icName> <slotName>` — the constructor's name plus the field's label.
 - `TApp1` / `TApp2` keep anonymous names (`app1` / `app2`); their values are **not** part of any
   extracted witness, because an opaque Haskell function has no `Eq` and so two applications can never be
   recognized as the same.
 - `TArith` is structural *only if* `discoverSymNum` hits — then a computed operand becomes a real `+` /
   `-` / `*` the solver reads. A registry miss falls back to a fresh `arith` variable (sound, imprecise).
+- `TFieldProj` *(keiki 0.4.0.0)* is the whole line: a memoized free variable for the typed path,
+  nothing more. `projectionVarKey` assembles it:
+
+  ```haskell
+  -- keiki/src/Keiki/Symbolic.hs
+  projectionVarKey _ base =
+    ProjectionVar
+      ( case base of
+          PBReg ix -> ProjectionReg (indexName ix) (indexPosition ix)
+          PBInp ic ix ->
+            ProjectionInp (icName ic) (indexName ix) (indexPosition ix)
+      )
+      (SomeTypeRep (typeRep @projection))
+      (SomeTypeRep (typeRep @(FieldOwner projection)))
+      (SomeTypeRep (typeRep @(FieldResult projection)))
+  ```
+
+  The three `TypeRep`s are why the *tag* decides sharing: reuse one canonical tag per logical field and
+  every read of that path is one variable; use two tags for the same field and the solver treats them
+  as independent values.
 
 The slot name is recovered by walking the `Index` to its leaf and reading the `KnownSymbol`:
 
@@ -105,23 +158,40 @@ the EP-42 change that turns the symbolic surface from "satisfiable" to "valid" r
 reads:
 
 ```haskell
-memoFree env name = do
+memoFree env key = do
     m <- liftIO (readIORef (seVarCache env))
-    case Map.lookup name m of
+    case Map.lookup key m of
         Just (SomeSBV (v :: SBV.SBV b)) ->
             case eqTypeRep (typeRep @a) (typeRep @b) of
                 Just HRefl -> pure v
                 Nothing ->
-                    error ("memoFree: type mismatch for cached variable " <> name)
+                    -- Unreachable: a name maps to exactly one representation type.
+                    error ("memoFree: type mismatch for cached variable " <> show key)
         Nothing -> do
-            v <- SBV.free name
-            liftIO (modifyIORef' (seVarCache env) (Map.insert name (SomeSBV v)))
+            label <- case key of
+                RegVar name -> pure ("reg/" <> name)
+                InpVar ctorName fieldName ->
+                    pure ("inp/" <> ctorName <> "/" <> fieldName)
+                ProjectionVar {} -> liftIO $ do
+                    ordinal <- readIORef (seProjectionOrdinal env)
+                    modifyIORef' (seProjectionOrdinal env) (+ 1)
+                    pure ("proj/" <> show ordinal)
+            v <- SBV.free label
+            liftIO (modifyIORef' (seVarCache env) (Map.insert key (SomeSBV v)))
             pure v
 ```
 
-The first read of a name allocates one `SBV.free` and stores it; every later read of the *same* name
-returns the cached variable. The type check on a hit is unreachable in practice — a deterministic name
-maps to exactly one representation type — but it makes the existential recovery total.
+The first read of a key allocates one `SBV.free` and stores it; every later read of the *same* key
+returns the cached variable. The type check on a hit is unreachable in practice — a key maps to exactly
+one representation type — but it makes the existential recovery total.
+
+Note the split between **key** and **label**. `RegVar` and `InpVar` derive their SBV label from the
+schema (`reg/<slot>`, `inp/<ctor>/<field>`), which is what lets [witness
+extraction](/docs/keiki/walkthrough/symbolic-and-validation/05-symisbot-and-witness-extraction) read
+values back out by name. A `ProjectionVar` instead gets a **generated** `proj/<ordinal>` label from
+`seProjectionOrdinal`: projection paths come from consumer-owned schemas whose names keiki does not
+control, and SBV's label namespace is restricted. Identity still comes entirely from the structural
+key — the label is only what the solver prints.
 
 Why it matters: without memoization, two reads of `#x` would mint two independent fresh variables, and
 the solver would happily satisfy `x /= x` by giving them different values. With it, both reads *are*

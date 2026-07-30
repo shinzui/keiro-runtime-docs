@@ -47,6 +47,64 @@ chore(deps): drop now-unused direct shibuya-pgmq-adapter dep
 > multiple aggregates. The docs note these work-in-progress areas with `<Callout type="info">`
 > rather than implying everything is final.
 
+> ### ⚠ POINTER DELIBERATELY NOT ADVANCED — re-port outstanding
+>
+> **Surveyed 2026-07-30 against `HEAD` = `b9bcf3c` (2026-07-22, *fix(observability): honor OTLP trace
+> endpoint semantics*).** The pin *is* a proper ancestor of `HEAD`, so the range is trustworthy:
+> **19 commits, 272 files, +20250/−2981**. The worktree carried one dirty file (`.gitignore`) —
+> committed tree only, as usual.
+>
+> The pointer is **not** bumped because this is not a fold-in, it is a **re-port of the whole
+> `content/docs/example-app/` tree** (34 pages, ~2950 lines, 20 of them line-by-line source tours).
+> Per `POINTER.md` rule 7, partial doc work must not advance a pointer; per `TRIAGE.md` §3, a page
+> more than half of whose claims are false gets rewritten from the template, and walkthroughs must be
+> re-read from the *actual* functions rather than patched from a diff.
+>
+> **Measured staleness (do not re-derive this next round):** of the **30** distinct
+> `services/**/src/**.hs` files quoted across the tree, **24 changed or vanished** in the range.
+> Reproduce with:
+>
+> ```bash
+> A=$(mori registry show shinzui/haskell-jitsurei --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
+> CHANGED=$(git -C "$A" diff --name-only 04420ed..b9bcf3c)
+> for f in $(grep -rhoE "services/[a-z-]+/src/[A-Za-z/]+\.hs" content/docs/example-app/ | sort -u); do
+>   echo "$CHANGED" | grep -qx "$f" && echo "CHANGED $f"
+> done
+> ```
+>
+> **What changed, by theme** (read the app's own `docs/plans/` and `docs/masterplans/` for intent):
+>
+> 1. **Both services adopted `keiro-dsl`.** This is the dominant change and the reason a surgical edit
+>    cannot work: much of the hand-written code these chapters tour now lives in generated
+>    `…/Generated/{Domain,Codec,EventStream,Projection,Harness}.hs` modules with hand-owned
+>    `Holes.hs` / `*Holes.hs` beside them, and each service now carries
+>    `keiro-dsl-manifest.<context>.txt` and `keiro-dsl-scaffold-record.<context>.txt`. Commits
+>    `d4558cc` (*capture current service behavior*), `f9c8971` (*gate scaffold and evolution drift*),
+>    `a771d87` (*complete the DSL baseline plan*).
+> 2. **Validated runtime boundaries** — `9a26387` (incident-command), `cc1076b` (hospital-capacity),
+>    `a29f858` (*complete documentation-grade validation*), plus `8415cad` proving replay safety.
+> 3. **pgmq jobs and shibuya application lifecycles** — `cc1076b`, `e2ee5e1`.
+> 4. **Service-owned `pg-migrate` plans** — `bbf10ae` (*compose service-owned pg-migrate plans*),
+>    which invalidates the migration recipes under `running-it/`.
+> 5. **OTLP trace endpoint semantics** — `b9bcf3c`, affecting the observability chapters.
+>
+> **Interim reader protection (done this round):** `content/docs/example-app/index.mdx` gained a
+> prominent `type="warn"` callout naming the pin, the five themes, and the 24/30 figure, telling
+> readers to treat every signature, module path, and `just` recipe in the section as historical and
+> pointing them at the current per-subsystem references. Nothing else in the tree was edited —
+> half-porting a source tour is worse than a consistently-old one that says so.
+>
+> **Suggested next round**, in dependency order: `overview/` (00 and 03 map features to exact files;
+> `01-the-domain` embeds generated Keiki diagrams) → `incident-command/` and `hospital-capacity/`
+> service tours, re-transcribing against the new generated/hand-owned split → `cross-service/`
+> (contracts, outbox/inbox, telemetry signatures) → `running-it/` (re-check every recipe against the
+> app `justfile` and the new service-owned migration plans). Expect the generated/`Holes` split to need
+> a *new* framing chapter rather than edits to the existing ones — the app is now a `keiro-dsl`
+> consumer, which is a different story from the hand-written tour these pages tell. Consider whether
+> `content/docs/keiro/reference/keiro-dsl-mapped-types.mdx` and
+> `keiro-dsl-workspaces.mdx` (added in the 2026-07-30 keiro round) now deserve worked examples drawn
+> from this app.
+
 ## Pages most coupled to the app source
 
 The entire `content/docs/example-app/` tree is ported from this app. The pages most coupled to the

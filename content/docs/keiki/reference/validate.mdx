@@ -122,8 +122,34 @@ data TransducerValidationWarning s
         { tvwEdge   :: EdgeRef s
         , tvwDetail :: String
         }
+    | ProjectionResultUnsupported
+        { tvwEdge                 :: EdgeRef s
+        , tvwProjectionPath       :: String
+        , tvwProjectionShape      :: String
+        , tvwProjectionResultType :: String
+        , tvwDetail               :: String
+        }
+    | ProjectionOrderingUnsupported
+        { tvwEdge                 :: EdgeRef s
+        , tvwProjectionPath       :: String
+        , tvwProjectionShape      :: String
+        , tvwProjectionResultType :: String
+        , tvwDetail               :: String
+        }
+    | ProjectionOutsideGuard
+        { tvwEdge                :: EdgeRef s
+        , tvwProjectionPath      :: String
+        , tvwProjectionShape     :: String
+        , tvwProjectionLocation  :: String
+        , tvwDetail              :: String
+        }
     deriving stock (Eq, Show)
 ```
+
+<Callout type="warn">
+  **Breaking in keiki 0.4.0.0.** `TransducerValidationWarning` gained the three `Projection*`
+  constructors. Code that matches it exhaustively must handle them.
+</Callout>
 
 - **`HiddenInput`** — an edge consumes command information its output does not emit, so the command
   cannot be reconstructed on replay (the un-replayable-event mistake; the UserRegistrationV0 foil).
@@ -145,6 +171,39 @@ data TransducerValidationWarning s
 - **`OpaqueGuard`** — an edge whose guard branches on an opaque `TApp` term the symbolic analyses
   translate to an unconstrained free variable, so they silently under-verify it. Advisory, not a
   soundness error; opt in via `warnOpaqueGuards`.
+- **`ProjectionResultUnsupported`** — a [field
+  projection](/docs/keiki/reference/core#field-projections)'s result type is outside the curated
+  symbolic **equality** registry. Translating such a guard would fall back to an opaque Boolean and
+  silently lose the promised proof.
+- **`ProjectionOrderingUnsupported`** — a projection occurs under an **ordering** comparison but its
+  result type has no curated symbolic ordering dictionary.
+- **`ProjectionOutsideGuard`** — a projection occurs in an update or an output. Projections are a
+  guard-only structural feature; raw evaluation stays total, but default validation rejects this
+  placement. `tvwProjectionLocation` says where it was found.
+
+<Callout type="info">
+  The three projection findings are **unconditional** — they are not gated by a `ValidationOptions`
+  flag. Each carries the projection's diagnostic `tvwProjectionPath`
+  (`fieldProjectionPath`) and `tvwProjectionShape` (`fieldShapeId`) so a generator can point at the
+  offending binding.
+</Callout>
+
+## Edge mode and the static checks
+
+*(keiki 0.3.0.0.)* Introducing [`ReplayOnly`](/docs/keiki/reference/core#edge-mode) edges made two
+checks mode-aware and deliberately left the rest alone:
+
+| Check family | Scope |
+|---|---|
+| Determinism (`checkTransitionDeterminism`, `checkTransitionDeterminismPure`, `determinismWarnings`, `isSingleValuedSym`) | **`Live`/`Live` pairs only** — only live edges compete in forward dispatch |
+| `inversionAmbiguityWarnings` | **same-mode pairs only** — cross-mode pairs are resolved deterministically by the live-first inversion phase order |
+| Hidden-input, head-recoverability, guard-implies-input-read, state-changing epsilon, opaque-guard, both dead-edge analyses | applied to replay-only edges **unchanged** |
+
+<Callout type="info">
+  Structural reachability still **traverses replay-only targets**: a vertex reachable only through a
+  replay-only edge stays live for the purposes of replay continuation, so it is not reported as a
+  `PossiblyDeadEdge` source.
+</Callout>
 
 ## The per-component checks
 

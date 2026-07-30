@@ -53,6 +53,16 @@ data Term (rs :: [Slot]) (ci :: Type) (ifs :: [Slot]) (r :: Type) where
         Term rs ci ifs r ->
         Term rs ci ifs r ->
         Term rs ci ifs r
+    TFieldProj ::
+        ( FieldProjection projection,
+          KnownSymbol (FieldName projection),
+          Typeable projection,
+          Typeable (FieldOwner projection),
+          Typeable (FieldResult projection)
+        ) =>
+        FieldWitness projection ->
+        ProjBase rs ci ifs (FieldOwner projection) ->
+        Term rs ci ifs (FieldResult projection)
 ```
 
 The constructors, top to bottom:
@@ -65,8 +75,31 @@ The constructors, top to bottom:
     TApp1: { type: "(a -> r) -> Term rs ci ifs a -> Term rs ci ifs r", description: "Apply a unary Haskell function — an opaque escape hatch the solver cannot see into." },
     TApp2: { type: "(a -> b -> r) -> Term … a -> Term … b -> Term … r", description: "Apply a binary Haskell function — likewise opaque." },
     TArith: { type: "NumOp -> Term rs ci ifs r -> Term rs ci ifs r -> Term rs ci ifs r", description: "Structural arithmetic (Num r, Typeable r). The SBV translator reads it for real." },
+    TFieldProj: { type: "FieldWitness projection -> ProjBase rs ci ifs (FieldOwner projection) -> Term rs ci ifs (FieldResult projection)", description: "A single-hop, solver-visible field read out of a consumer-owned value (keiki 0.4.0.0). Only the result needs symbolic support, not the owner." },
   }}
 />
+
+<Callout type="info">
+`TFieldProj` (keiki 0.4.0.0) is the newest node and the only one whose *owner* type keiki need know
+nothing about. Its doc comment states the four properties that make it safe:
+
+```haskell
+-- src/Keiki/Core.hs
+-- A single-hop, solver-visible field projection. The coherent nominal tag
+-- identifies the logical getter; only the projected result needs symbolic
+-- support, while the consumer-owned base value does not. Concrete
+-- evaluation applies the total getter. Symbolic translation creates a free
+-- variable for the typed path, so agreement is intentionally one-way: a
+-- concrete owner can constrain that variable to its getter result, but a
+-- solver model cannot reconstruct the owner. Default validation permits
+-- this node in guards and rejects it in updates or outputs.
+```
+
+The full surface — the `FieldProjection` class, the nominal `FieldWitness`, the deliberately
+restricted `ProjBase`, and `regProj` / `inpProj` — is in
+[the Core reference](/docs/keiki/reference/core#field-projections). Its symbolic identity is toured in
+[chapter 03 of the symbolic walkthrough](/docs/keiki/walkthrough/symbolic-and-validation/03-translation-and-the-memo-cache).
+</Callout>
 
 ## The `ifs` input-field schema
 

@@ -91,6 +91,38 @@ data TransducerValidationWarning s
         { tvwEdge :: EdgeRef s
         , tvwDetail :: String
         }
+    | {- | A field projection's result type is outside the curated symbolic
+      equality registry. Translating such a guard would otherwise fall
+      back to an opaque Boolean and silently lose the promised proof.
+      -}
+      ProjectionResultUnsupported
+        { tvwEdge :: EdgeRef s
+        , tvwProjectionPath :: String
+        , tvwProjectionShape :: String
+        , tvwProjectionResultType :: String
+        , tvwDetail :: String
+        }
+    | {- | A field projection occurs under an ordering comparison, but its
+      result type has no curated symbolic ordering dictionary.
+      -}
+      ProjectionOrderingUnsupported
+        { tvwEdge :: EdgeRef s
+        , tvwProjectionPath :: String
+        , tvwProjectionShape :: String
+        , tvwProjectionResultType :: String
+        , tvwDetail :: String
+        }
+    | {- | A field projection occurs in an update or output. Projections are a
+      guard-only structural feature; raw evaluation remains total, but
+      default validation rejects this placement.
+      -}
+      ProjectionOutsideGuard
+        { tvwEdge :: EdgeRef s
+        , tvwProjectionPath :: String
+        , tvwProjectionShape :: String
+        , tvwProjectionLocation :: String
+        , tvwDetail :: String
+        }
     deriving stock (Eq, Show)
 ```
 
@@ -104,6 +136,9 @@ data TransducerValidationWarning s
     NondeterministicPair: { type: "s, Int, Int, Maybe String, String", description: "Two outgoing guards of one vertex can both hold — the build-time mirror of the runtime AmbiguousEdges." },
     PossiblyDeadEdge: { type: "EdgeRef s, String", description: "An edge that can never fire: unreachable source vertex, or a statically-unsatisfiable (literal PBot) guard." },
     OpaqueGuard: { type: "EdgeRef s, String", description: "A guard branches on an opaque TApp term the symbolic analyses cannot see through. Advisory, opt-in." },
+    ProjectionResultUnsupported: { type: "EdgeRef s, String, String, String, String", description: "A field projection's result type is outside the curated symbolic equality registry (keiki 0.4.0.0)." },
+    ProjectionOrderingUnsupported: { type: "EdgeRef s, String, String, String, String", description: "A field projection is compared with an ordering relation but its result type has no symbolic ordering dictionary." },
+    ProjectionOutsideGuard: { type: "EdgeRef s, String, String, String, String", description: "A field projection appears in an update or output. Projections are guard-only in validated transducers." },
   }}
 />
 
@@ -111,6 +146,13 @@ Note the comment on `NondeterministicPair`: its *dynamic witness* is `AmbiguousE
 explainer. Build-time and runtime speak one vocabulary — both locate edges via the same `EdgeRef`. We
 trace that mirror in
 [10 — Runtime rejection diagnostics](/docs/keiki/walkthrough/symbolic-and-validation/10-runtime-rejection-diagnostics).
+
+The three `Projection*` constructors *(keiki 0.4.0.0)* are the odd ones out in one respect worth
+noticing: they are **unconditional**, with no `ValidationOptions` flag to turn them off. That is
+deliberate — each one marks a place where the promised proof would silently degrade (an opaque Boolean
+instead of a real equality) or where a projection is placed somewhere the one-way symbolic agreement
+cannot support it. Each carries the diagnostic path (`fieldProjectionPath`) and shape id
+(`fieldShapeId`) so a *generator* can point back at the offending binding rather than at an edge index.
 
 ## Choosing the checks: `ValidationOptions`
 
@@ -260,6 +302,15 @@ the *same* `provablyOverlap` predicate. `validateTransducer`'s determinism compo
 name. Both under-approximate identically; they differ only in the warning record they return.
 </Callout>
 
+<Callout type="info">
+**Mode scoping** *(keiki 0.3.0.0)*. Every pair loop in the determinism family carries
+`mode e1 == Live, mode e2 == Live` in its comprehension, because only live edges compete in forward
+dispatch — a replay-only twin overlapping its live original is the *intended* arrangement, not a
+finding. `inversionAmbiguityWarnings` scopes differently, to **same-mode** pairs, since cross-mode
+pairs are resolved deterministically by `applyEvent`'s live-first phase order. See [edge mode and the
+static checks](/docs/keiki/reference/validate#edge-mode-and-the-static-checks) for the full table.
+</Callout>
+
 ## The reachability component: `reachableVertices` and `checkDeadEdges`
 
 The dead-edge check rests on a finite fixpoint over the `Bounded`/`Enum` vertex set, following `target`
@@ -288,6 +339,11 @@ underlines the limit: this is purely structural — it follows pointers and insp
 `False` on entry is *not* catchable here. That kind of overlap needs the
 [solver-backed dead-edge check](/docs/keiki/walkthrough/symbolic-and-validation/09-solver-backed-diagnostics).
 Hence every result is labelled "possibly dead".
+
+Notice that `reachableVertices` iterates **all** of `edgesOut t s` with no mode filter. That is
+intentional *(keiki 0.3.0.0)*: a vertex reachable only through a replay-only edge stays reachable, because
+replay must be able to continue from it. Structural reachability is a statement about replay
+continuation, not about forward dispatch.
 
 ## The umbrella in a test
 

@@ -1,0 +1,117 @@
+---
+title: "Tighten a guard without breaking replay"
+description: "Retain the removed region of a tightened guard as a replay-only twin edge, so events stored under the old rule keep an inverting edge."
+---
+
+You need to make a guard stricter — lower a threshold, add a conjunct, narrow a state. The obvious
+change breaks replay: events already in the log were emitted under the *old* rule, and after the
+tightening no edge inverts them. This guide shows the sanctioned remedy — a **replay-only twin** —
+and, just as importantly, when you may delete it.
+
+<Callout type="info">
+  Assumes you author transducers with `Keiki.Builder` and validate them in CI. Needs keiki
+  **0.3.0.0** or later for [`EdgeMode`](/docs/keiki/reference/core#edge-mode) and
+  [`replayOnly`](/docs/keiki/reference/builder#edge-mode--replayonly).
+</Callout>
+
+## Why the obvious change breaks
+
+Keiki has **one edge set for both execution and replay**. Forward stepping picks the unique edge whose
+guard the command satisfies; replay ([`applyEvent`](/docs/keiki/walkthrough/core-and-builder/06-edges-and-step-semantics),
+`applyEventStreamingEither`) inverts an observed event back through an edge's `output` and checks the
+guard on the *recovered* command. Tightening a guard therefore does not just change what new commands
+may do — it **reinterprets stored history**.
+
+Concretely: an `ApprovalGranted` event stored when the limit was 50 000 no longer satisfies a guard
+that now caps at 10 000. Replay fails with `ReplayNoInvertingEdge`, and the aggregate cannot hydrate.
+
+## Goal
+
+Deploy the tightened rule for all new commands while every stored event still inverts, and have
+validation stay green.
+
+## Steps
+
+1. **Compute the removed region.** It is the old guard conjoined with the negation of the new one:
+   `old-guard ∧ ¬new-guard`. That is exactly the set of commands that used to be accepted and no
+   longer are — and therefore exactly the history that loses its inverting edge.
+
+2. **Keep the live edge, tightened.** Nothing unusual here; this is the change you set out to make.
+
+3. **Add a twin edge carrying the removed region, marked `replayOnly`.** Same input constructor, same
+   output, same target. Its `update` defines how that historical event folds *today*:
+
+   ```haskell
+   B.from Pending do
+     -- The live edge: the tightened rule governs all new traffic.
+     B.onCmd inCtorApprove $ \d -> B.do
+       B.requireLe d.amount (B.lit 10000)
+       B.slot @"approvedAmount" .= d.amount
+       B.emit wireApprovalGranted ApprovalGrantedTermFields { amount = d.amount }
+       B.goto Approved
+
+     -- The replay-only twin: old-guard ∧ ¬new-guard.
+     B.onCmd inCtorApprove $ \d -> B.do
+       B.replayOnly
+       B.requireLe d.amount (B.lit 50000)                    -- the old guard
+       B.requireGuard (B.pnot (d.amount B..<= B.lit 10000))  -- ¬ the new guard
+       B.slot @"approvedAmount" .= d.amount
+       B.emit wireApprovalGranted ApprovalGrantedTermFields { amount = d.amount }
+       B.goto Approved
+   ```
+
+   `replayOnly` is idempotent and its position in the body does not matter. The twin still needs a
+   `goto` and still needs explicit output intent, exactly like a live edge.
+
+4. **Do not worry about the two edges overlapping.** They cannot both fire forward — the twin is
+   invisible to `delta` / `step` — and inversion is two-phase, so an event attributable under the
+   *current* rules always attributes to the live edge. Only unattributable history falls through to
+   the twin.
+
+<Callout type="info">
+  Authoring specs with keiro's DSL instead of the builder directly? The `replay-only` transition
+  prefix lowers to `B.replayOnly`, and `keiro-dsl diff` prints a **paste-ready** twin for you when it
+  detects a tightened guard — see [tighten a guard with a replay-only
+  twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin).
+</Callout>
+
+## Verify it worked
+
+Three checks, in increasing strength:
+
+1. **Validation is green.** The determinism family considers only `Live`/`Live` pairs, so the twin
+   cannot produce a spurious `NondeterministicPair`; `inversionAmbiguityWarnings` flags only same-mode
+   pairs, so the live/twin pair is not reported either. If you *do* get a determinism warning, your two
+   live edges genuinely overlap — the twin is not the problem.
+
+2. **Replay a stored event from the removed region** and assert it lands in the same vertex and
+   registers as before the change.
+
+3. **Assert the twin is not reachable forward.** `stepEither` on a command in the removed region must
+   fail (it is no longer accepted), not silently succeed through the twin.
+
+## When you may delete the twin
+
+<Callout type="warn">
+  **Deleting a deployed replay-only twin re-creates exactly the break it fixed.** Stored events in the
+  removed region lose their inverting edge again — and this time there is no record of which rule they
+  were written under.
+
+  Delete a twin only once **every stream containing the region's events is terminal or truncated**.
+  "The tightening shipped a year ago" is not the condition; "no live stream can still be asked to
+  replay one of those events" is.
+</Callout>
+
+If you need evidence rather than a judgement call, keiro's replay-audit gate reads real stored data and
+tells you whether a candidate change is replay-neutral for the streams you actually have — see
+[the replay-audit reference](/docs/keiro/reference/replay-audit).
+
+## Related
+
+- [`EdgeMode` in the Core reference](/docs/keiki/reference/core#edge-mode) — `Live` / `ReplayOnly`,
+  the `Monoid` composition rule, and two-phase inversion.
+- [`replayOnly` in the Builder reference](/docs/keiki/reference/builder#edge-mode--replayonly).
+- [Edge mode and the static checks](/docs/keiki/reference/validate#edge-mode-and-the-static-checks) —
+  exactly which checks became mode-aware.
+- [Evolve a schema safely](/docs/keiki/cookbook/evolve-a-schema-safely) — the *wire* half of
+  evolution (upcasters, envelope versions). This guide is the *behavioural* half.

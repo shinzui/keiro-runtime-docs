@@ -301,6 +301,35 @@ It too leaves `w` unchanged. As chapter 07 read, `finalizeEdge` demands `peTarge
 `DefectMultipleGoto`; `buildTransducer` renders that same error list as an exception. Every edge body in `userReg` ends with exactly one `goto`; the
 `inCtorResend` body even loops back to its own source vertex (`B.goto RequiresConfirmation`).
 
+## Edge mode: `replayOnly`
+
+*(keiki 0.3.0.0.)* One more verb sets a flag on the partial edge, and it is the simplest one in the
+module:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+replayOnly :: EdgeBuilder rs ci co v pin w w ()
+replayOnly = EdgeBuilder $ \pe -> ((), pe {peMode = ReplayOnly})
+```
+
+`PartialEdge` gained the field it writes, and both `onCmd` and `onEpsilon` seed it at `Live`:
+
+```haskell
+-- keiki/src/Keiki/Builder.hs
+-- | The edge's 'EdgeMode'. Starts 'Live'; a 'replayOnly' call in
+-- the body switches it to 'ReplayOnly'.
+peMode :: EdgeMode
+```
+
+`finalizeEdge` then carries `mode = peMode pe` into the `Edge` record. Because the verb is a plain
+field overwrite it is **idempotent**, and its position in the body is irrelevant — unlike the slot
+writes, it does not touch `w`, and unlike `goto` it has no arity requirement. A replay-only edge still
+needs exactly one `goto` and still needs explicit output intent.
+
+What it is *for* is the subject of [tighten a guard without breaking
+replay](/docs/keiki/how-to/tighten-a-guard-without-breaking-replay): retaining the removed region of a
+tightened guard so stored events keep an inverting edge.
+
 ## Why it agrees with the hand-written AST
 
 `UserRegistration.hs` carries a second definition, `userRegAST`, hand-authored directly against the

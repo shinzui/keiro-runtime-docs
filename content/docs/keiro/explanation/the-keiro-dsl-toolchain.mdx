@@ -42,6 +42,19 @@ Shared `id`, `enum`, and `rule` declarations supply generated types and total do
 bindings, and typed topology. Arbitrary SQL, effectful fan-out, workflow bodies, symbolic aggregate
 transitions, and deployment tuning remain hand-owned.
 
+**A spec can also own types it did not define.** `mapped structural` and `mapped opaque` declarations
+bring a consumer-owned type — an `EmailAddress`, a `Money` — into commands, events, and registers
+without keiro inventing a duplicate. The interesting boundary is between the two modes: a structural
+declaration tells keiro the type's whole wire shape, which is what lets `diff` report that a field was
+removed or a tag renamed; an opaque one only names a JSON boundary. See [mapped consumer
+types](/docs/keiro/reference/keiro-dsl-mapped-types).
+
+**A service can also span several files.** A `.keiro-workspace` manifest names a service and lists its
+member `.keiro` files, and the toolchain composes them into one merged spec before any gate runs — so
+every rule above applies to the whole service, not file by file, with no risk of a node-specific rule
+diverging between the single-file and multi-file paths. See [service
+workspaces](/docs/keiro/reference/keiro-dsl-workspaces).
+
 ## Why validation is the first semantic boundary
 
 Many plausible-looking defaults are wrong for durable systems, so `check` makes them explicit:
@@ -121,6 +134,23 @@ Versioning an event and supplying a contiguous upcaster can turn an otherwise br
 change into an additive one. Renaming a stable workflow, router, process category, queue, read-model
 table/subscription, or identifier prefix remains breaking because code cannot migrate the old
 identity implicitly.
+
+## Why a tier is not enough: compatibility vectors
+
+A single tier per finding conflates questions that have different answers. One change can be perfectly
+safe for stored history and fatal for a consumer's build; another can leave every byte compatible while
+forbidding a particular deploy *order*. Collapsing that into `BREAKING` forces the tool to guess which
+question you care about.
+
+So each finding carries a verdict on **six independent surfaces** — private history read, old binary
+reading new events, snapshot hydration, public consumer, persisted identity, and consumer build — plus
+any rollout constraint that survives byte compatibility. The printed tier is *derived* from the vector
+and the active gate, and the vector itself is printed whenever it is not uniform.
+
+The default gate covers every surface **except** old-binary-read-new-events, because a rolling deploy
+where old binaries briefly observe new events is normal and gating it by default would block ordinary
+additive work. `--gate` only ever *adds* surfaces: there is deliberately no way to loosen the gate, so
+accepting a breaking verdict is a spec change or an explicit human decision, never a flag.
 
 ## What `diff` computes beyond a tier
 

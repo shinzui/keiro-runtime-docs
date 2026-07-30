@@ -106,7 +106,22 @@ data Term (rs :: [Slot]) (ci :: Type) (ifs :: [Slot]) (r :: Type) where
         Term rs ci ifs r ->
         Term rs ci ifs r ->
         Term rs ci ifs r
+    TFieldProj ::
+        ( FieldProjection projection,
+          KnownSymbol (FieldName projection),
+          Typeable projection,
+          Typeable (FieldOwner projection),
+          Typeable (FieldResult projection)
+        ) =>
+        FieldWitness projection ->
+        ProjBase rs ci ifs (FieldOwner projection) ->
+        Term rs ci ifs (FieldResult projection)
 ```
+
+<Callout type="warn">
+  **Breaking in keiki 0.4.0.0.** `Term` gained `TFieldProj`. Code that matches `Term`
+  exhaustively must handle it. See [field projections](#field-projections) below.
+</Callout>
 
 <Callout type="info">
 **The `ifs` parameter** (`:: [Slot]`) is the *input-field schema* the term may project from. It is
@@ -153,6 +168,152 @@ tadd
         (Num r, Typeable r) =>
         Term rs ci ifs r -> Term rs ci ifs r -> Term rs ci ifs r
 ```
+
+## Field projections
+
+*(keiki 0.4.0.0.)* A field projection reads **one scalar field out of a consumer-owned value** —
+a type keiki knows nothing about and that has no symbolic representation of its own. Only the
+projected *result* needs to be in the symbolic registry; the owner does not. That is what lets a
+guard be solver-visible over a value the application owns.
+
+```haskell
+class FieldProjection projection where
+    type FieldName projection :: Symbol
+    type FieldOwner projection :: Type
+    type FieldResult projection :: Type
+    fieldShapeId :: Proxy projection -> String
+    projectFieldValue ::
+        Proxy projection -> FieldOwner projection -> FieldResult projection
+```
+
+One **fresh tag type and one coherent instance per logical field**, reused at every occurrence of
+that field. The tag's `Typeable` identity — not `FieldName`, not `fieldShapeId` — is what the
+symbolic layer uses to decide variable sharing. Two different tags for the same logical field are
+sound but *imprecise*: the solver treats them as independent values.
+
+The contract on an instance:
+
+- `projectFieldValue` must be **total** for every well-formed `FieldOwner`.
+- `FieldName` and `fieldShapeId` must **truthfully describe that getter**.
+
+Haskell's own instance coherence supplies one getter per tag, so a dishonest instance can misname a
+field but *cannot* make one coherent tag mean two different getters. Keiki checks concrete term
+behaviour and hands you `fieldWitnessAgrees`; a binding *generator* (keiro's structural bindings,
+for instance) is responsible for proving a generated instance agrees with its schema and codec
+provenance.
+
+### The witness
+
+```haskell
+type role FieldWitness nominal
+data FieldWitness projection = FieldWitness
+
+fieldWitness ::
+    ( FieldProjection projection,
+      KnownSymbol (FieldName projection),
+      Typeable projection,
+      Typeable (FieldOwner projection),
+      Typeable (FieldResult projection)
+    ) =>
+    FieldWitness projection
+```
+
+An abstract nominal token for a coherent instance. The nominal role stops you swapping the
+projection tag with `coerce`, and the tag's `TypeRep` supplies symbolic cache identity independently
+of any caller-controlled diagnostic string.
+
+### The base
+
+```haskell
+data ProjBase (rs :: [Slot]) (ci :: Type) (ifs :: [Slot]) owner where
+    PBReg :: Index rs owner -> ProjBase rs ci ifs owner
+    PBInp :: InCtor ci ifs -> Index ifs owner -> ProjBase rs ci ifs owner
+```
+
+Where the projection may read its owner: a register slot, or one input-constructor field.
+**Arbitrary computed bases are deliberately not representable** — restricting the base is what gives
+the symbolic layer a stable, typed path identity.
+
+### Smart constructors
+
+```haskell
+regProj ::
+    (…) =>
+    FieldWitness projection ->
+    Index rs (FieldOwner projection) ->
+    Term rs ci ifs (FieldResult projection)
+
+inpProj ::
+    (…) =>
+    FieldWitness projection ->
+    InCtor ci ifs ->
+    Index ifs (FieldOwner projection) ->
+    Term rs ci ifs (FieldResult projection)
+```
+
+`regProj` projects from a register slot; `inpProj` projects from the matched input constructor —
+pair it with the corresponding `matchInCtor` guard exactly as you would `inpCtor`. Validation treats
+a projected read as a read of the whole underlying input field.
+
+<Callout type="warn">
+  **Symbolic agreement is one-way, by design.** Repeated reads of the same typed path share one
+  symbolic variable, so `regProj w #owner .== regProj w #owner` is *valid*, not merely satisfiable.
+  But the symbolic value is an **over-approximation**: every concrete owner can be bound to a
+  matching symbolic projection value, while an arbitrary symbolic model **need not correspond to a
+  constructible owner**. `symSatExt` does not reconstruct consumer-owned values from free projection
+  scalars. Treat a solver model over projections as evidence about the *scalars*, not about the owner.
+</Callout>
+
+<Callout type="info">
+  **Projections are guards-only** in validated transducers. Raw evaluation stays total everywhere,
+  but default validation rejects a projection in an update or an output —
+  [`ProjectionOutsideGuard`](/docs/keiki/reference/validate). Equality additionally requires the
+  result type to be in the curated symbolic registry, and ordering requires its ordering subset.
+</Callout>
+
+### Diagnostics and testing
+
+```haskell
+fieldProjectionPath ::
+    (FieldProjection projection, KnownSymbol (FieldName projection)) =>
+    FieldWitness projection ->
+    ProjBase rs ci ifs (FieldOwner projection) ->
+    String
+
+fieldWitnessAgrees ::
+    (FieldProjection projection, Eq (FieldResult projection)) =>
+    FieldWitness projection ->
+    (FieldOwner projection -> FieldResult projection) ->
+    FieldOwner projection ->
+    Bool
+```
+
+`fieldProjectionPath` renders the stable base and field name as a dotted path (`owner.field`, or
+`Ctor.field.name` for an input base). It is **diagnostic only** — symbolic variable identity is
+structural, not string-based.
+
+`fieldWitnessAgrees witness reference owner` checks the instance's getter against a reference
+getter on one owner value. QuickCheck it over your own owner generators, and mutation-test an
+intentionally wrong instance to prove the property has teeth.
+
+Two further helpers are exported as documented internals, for generators and for tooling that
+reimplements path identity:
+
+```haskell
+fieldWitnessGet :: (FieldProjection projection) =>
+    FieldWitness projection -> FieldOwner projection -> FieldResult projection
+indexPosition :: Index xs a -> Int
+```
+
+`fieldWitnessGet` eliminates a witness through its coherent instance (this is what concrete
+`evalTerm` applies). `indexPosition` is the zero-based position of an `Index` in its slot list;
+projection identity includes the position as well as the name, so a manually constructed
+duplicate-labelled schema cannot accidentally share a value.
+
+See also [`constrainFieldProjection`](/docs/keiki/reference/symbolic) for binding a projection to a
+concrete getter result in an agreement test, and
+[`NonStructuralProjectionBoundary`](/docs/keiki/reference/composition) for what happens to a
+projection across a composition boundary.
 
 ## Input constructors
 
@@ -442,6 +603,7 @@ data Edge phi rs ci co s where
         , update :: Update rs w ci
         , output :: [OutTerm rs ci co]
         , target :: s
+        , mode :: EdgeMode
         } ->
         Edge phi rs ci co s
 ```
@@ -452,12 +614,68 @@ data Edge phi rs ci co s where
     update: { type: "Update rs w ci", description: "Register update; the write-set index w is existentially quantified at the record" },
     output: { type: "[OutTerm rs ci co]", description: "Emitted letters: [] (ε), [o] (letter), or [o1, o2, ...] (multi-event)" },
     target: { type: "s", description: "The destination vertex" },
+    mode: { type: "EdgeMode", description: "Which execution paths the edge serves: Live or ReplayOnly" },
   }}
 />
 
 The `w` index on `update` is existentially quantified at the `Edge` record so that the homogeneous
 list `[Edge phi rs ci co s]` in `edgesOut` type-checks while the static disjointness check is still
 enforced at every `Update`'s introduction point (via `combine`).
+
+### Edge mode
+
+*(keiki 0.3.0.0.)*
+
+```haskell
+data EdgeMode = Live | ReplayOnly
+    deriving stock (Eq, Ord, Show, Bounded, Enum)
+```
+
+- A **`Live`** edge is an ordinary transition: forward stepping (`delta` / `step` / `stepEither`)
+  may take it, and replay (`applyEvent` / `applyEventStreamingEither`) may invert against it.
+- A **`ReplayOnly`** edge is *never* taken by forward stepping — no new command can fire it. It
+  exists so events emitted under a retired rule keep an inverting edge. When a guard is tightened,
+  the removed region (`old-guard ∧ ¬new-guard`) can be retained as a **replay-only twin** of the live
+  edge, keeping every stored event replayable while the tightened rule governs all new traffic. Its
+  `update` defines how those historical events fold *today*.
+
+**Inversion is two-phase.** Candidates are sought among `Live` edges first; only when no live edge
+matches are `ReplayOnly` edges tried. Ambiguity is judged *within the phase that produced
+candidates*. An event attributable under the current rules therefore always attributes there — only
+unattributable history falls through to the replay-only arms.
+
+The `Semigroup`/`Monoid` instances define the mode of a composed edge — `Live` is the identity,
+`ReplayOnly` absorbs, so a composite edge may fire forward only when every component may:
+
+```haskell
+instance Semigroup EdgeMode where
+    Live <> m = m
+    ReplayOnly <> _ = ReplayOnly
+
+instance Monoid EdgeMode where
+    mempty = Live
+```
+
+<Callout type="warn">
+  **Breaking in keiki 0.3.0.0.** `Edge` gained the `mode` field. Existing hand-written construction
+  sites should set `mode = Live` to keep their exact previous semantics. Composition (`compose`,
+  `alternative`), the profunctor rewrites, and `withSymPred` all propagate the mode.
+
+  Static checks are mode-aware: the determinism family (`checkTransitionDeterminism`,
+  `checkTransitionDeterminismPure`, `determinismWarnings`, `isSingleValuedSym`) considers only
+  `Live`/`Live` pairs, because only live edges compete in forward dispatch, and
+  `inversionAmbiguityWarnings` flags only **same-mode** pairs — cross-mode pairs are resolved
+  deterministically by the live-first phase order. Every other check applies to replay-only edges
+  unchanged.
+</Callout>
+
+<Callout type="warn">
+  **Deleting a deployed replay-only twin re-creates exactly the break it fixed** — stored events in
+  the removed region lose their inverting edge. Delete a twin only once every stream containing the
+  region's events is terminal or truncated. Build one with
+  [`replayOnly`](/docs/keiki/reference/builder); see [evolve a schema
+  safely](/docs/keiki/cookbook/evolve-a-schema-safely).
+</Callout>
 
 `SymTransducer` is the single source of truth: a finite control graph plus a register file evolved by
 edges' update terms.

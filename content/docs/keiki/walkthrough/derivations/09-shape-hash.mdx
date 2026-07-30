@@ -1,6 +1,6 @@
 ---
 title: "09 — The shape hash"
-description: "The canonical pre-hash string for a slot list, pinned built-in type names, the single SHA-256 over it, and why the hash keys snapshot eligibility."
+description: "The canonical pre-hash string for a slot list, pinned built-in type names, the single SHA-256 over it, the generic CanonicalStateShape hash for the control state, and why these hashes key snapshot eligibility."
 ---
 
 A snapshot persister needs a compact discriminator for a register file's type-level slot list: a token
@@ -168,6 +168,79 @@ The shape hash and the JSON codec are the two halves of the snapshot story: the 
 snapshot is eligible; the codec serialises the eligible ones. The codec lives in the sibling package and
 is documented separately — see the RegFile JSON codec reference at the path
 [`/docs/keiki/reference/codec-json`](/docs/keiki/reference/codec-json).
+</Callout>
+
+## The other half of the state: `CanonicalStateShape`
+
+*(keiki 0.3.1.0.)* Everything above hashes the **register file**. But a persisted keiro snapshot is a
+`(s, RegFile rs)` pair, and the control state `s` needs its own discriminator. `Keiki.Shape` grew one,
+built the same way — a canonical string, then one SHA-256 — except the string comes from `GHC.Generics`
+rather than from a type-level slot list:
+
+```haskell
+-- keiki/src/Keiki/Shape.hs
+class CanonicalStateShape a where
+  -- | Canonical pre-hash rendering of the control-state datatype.
+  stateShapeCanonical :: Proxy a -> Text
+  default stateShapeCanonical ::
+    (GStateShape (G.Rep a)) =>
+    Proxy a ->
+    Text
+  stateShapeCanonical _ = gStateShapeCanonical (Proxy @(G.Rep a))
+
+stateShapeHash :: forall a. (CanonicalStateShape a) => Proxy a -> Text
+stateShapeHash p = sha256Hex (stateShapeCanonical p)
+```
+
+The generic walk is six small instances, and reading them tells you exactly what the hash can and
+cannot see. `M1 D` writes `state:<Datatype>{…}`; `M1 C` writes the constructor name, parenthesising its
+fields only when there are any; `:+:` joins constructors with `|`; `:*:` joins fields with `,`; `U1`
+contributes the empty string; and `K1` recurses through `CanonicalTypeName`:
+
+```haskell
+-- keiki/src/Keiki/Shape.hs
+instance (G.Constructor c, GStateShape f) => GStateShape (G.M1 G.C c f) where
+  gStateShapeCanonical _ =
+    let constructor = T.pack (G.conName (undefined :: G.M1 G.C c f ()))
+        fields = gStateShapeCanonical (Proxy @f)
+     in if T.null fields
+          then constructor
+          else T.concat [constructor, T.pack "(", fields, T.pack ")"]
+
+instance GStateShape G.U1 where
+  gStateShapeCanonical _ = T.empty
+
+instance (CanonicalTypeName field) => GStateShape (G.K1 i field) where
+  gStateShapeCanonical _ = canonicalTypeName (Proxy @field)
+```
+
+Notice what is *absent* from that walk: `M1 S` (the selector metadata) passes straight through to its
+inner rep, so **field names are not recorded**. Neither are values, instances, or function bodies. The
+Haddock is explicit about the consequence:
+
+```haskell
+-- keiki/src/Keiki/Shape.hs
+-- It intentionally does not record field names, values, typeclass
+-- instances, function bodies, guards, updates, or any other runtime
+-- semantics. A snapshot consumer must therefore use a separate version
+-- or fold fingerprint for semantic changes that this structural
+-- description cannot see.
+```
+
+Opting a datatype in is an empty instance:
+
+```haskell
+data State = Pending | Complete Text
+  deriving stock (Generic)
+
+instance CanonicalStateShape State
+```
+
+<Callout type="warn">
+A structural description cannot see a **semantic** fold change: rewrite *how* a state folds without
+touching the datatype and `stateShapeHash` is byte-identical. This is precisely why keiro does not use
+this hash alone — it composes it with a caller-owned fold fingerprint into a three-component snapshot
+discriminator. See [keiro's snapshot reference](/docs/keiro/reference/snapshot).
 </Callout>
 
 ## Where this fits

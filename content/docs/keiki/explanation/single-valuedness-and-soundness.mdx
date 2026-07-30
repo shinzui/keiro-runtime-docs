@@ -117,6 +117,33 @@ If a type has a natural symbolic representation, the honest fix is to extend the
 registry to cover it rather than reaching for an opaque `TApp`. See
 [Registers vs state](/docs/keiki/explanation/registers-vs-state) for what belongs in a slot.
 
+### Field projections: precision without symbolizing the owner
+
+*(keiki 0.4.0.0.)* There is a third option between "the whole type is in the registry" and "reach for
+an opaque `TApp`", and it is the interesting one. A [field
+projection](/docs/keiki/reference/core#field-projections) reads **one scalar out of a
+consumer-owned value**: only the *result* type needs to be in the curated registry, while the owner
+type stays entirely unknown to keiki.
+
+`TFieldProj` translates to a memoized free variable keyed on the typed path (see
+[below](#memoization--one-variable-per-slot)), which is a genuine gain over `TApp`: two reads of the
+same path *do* share a variable, so `regProj w #owner .== regProj w #owner` is valid rather than
+merely satisfiable. And unlike an opaque `TApp`, keiki knows when it is under-verifying and says so
+— a result type outside the equality registry is an unconditional `ProjectionResultUnsupported`
+finding rather than a silent fallback to an opaque Boolean.
+
+<Callout type="warn">
+  What you do **not** get is invertibility. The agreement is deliberately **one-way**: every concrete
+  owner can bind a matching symbolic projection value, but an arbitrary symbolic model over projection
+  scalars need not correspond to a *constructible* owner. `symSatExt` does not reconstruct
+  consumer-owned values from free projection scalars.
+
+  So a satisfying model over projections is evidence about the **scalars**, not a witness command you
+  can replay. This is why projections are permitted in guards and rejected in updates and outputs: a
+  guard only needs the solver to reason about the scalar, whereas an update or an output would need
+  the owner back.
+</Callout>
+
 ## Caveat 2 — the Unknown/timeout rule
 
 z3 can return `Unknown`, `ProofError`, or another non-definitive result. Keiki collapses every one
@@ -145,14 +172,15 @@ concrete runtime domain.
 
 A precise overlap answer needs more than per-type translation; it needs two reads of the *same*
 slot to be the *same* value in the solver's eyes. The translation environment (`SymEnv`) carries
-a memo cache keyed by a deterministic variable name (`TReg` allocates `reg/<slot>`,
-`TInpCtorField` allocates `inp/<ctor>/<field>`). The first read of a name allocates one
-`SBV.free` variable and caches it; every later read of the same name returns the *cached*
+a memo cache keyed by a **structural** `SymVarKey`: `TReg` keys on `RegVar <slot>`,
+`TInpCtorField` on `InpVar <ctor> <field>`, and `TFieldProj` on a `ProjectionVar` carrying the base
+path plus the projection tag's, owner's, and result's `TypeRep`s. The first read of a key allocates
+one `SBV.free` variable and caches it; every later read of the same key returns the *cached*
 variable:
 
 ```haskell
 translateTermSym env (TReg ix) =
-    memoFree env ("reg/" <> indexName ix)   -- same name → same SBV variable
+    memoFree env (RegVar (indexName ix))   -- same key → same SBV variable
 ```
 
 This is why a guard like `proj #x .== proj #x` is **valid** in every model, not merely
@@ -162,6 +190,16 @@ never leak across independent queries. The opaque `TApp1`/`TApp2` escape hatches
 *not* cached — their functions have no `Eq`, so two applications cannot be recognized as equal,
 which is precisely the under-verification Caveat 1 signposts.
 
+<Callout type="info">
+  Keying on the `TypeRep` rather than on a rendered string is what makes projection sharing
+  trustworthy: caller-controlled diagnostic strings (`FieldName`, `fieldShapeId`,
+  `fieldProjectionPath`) never determine solver identity. The base key also carries the field's
+  `indexPosition`, so a hand-built schema with duplicate labels cannot accidentally collapse two
+  distinct fields into one variable. The corollary is the rule from the reference: **reuse one
+  canonical tag per logical field** — two tags for the same field are sound but the solver treats them
+  as independent.
+</Callout>
+
 ## What a green gate means, exactly
 
 Put the three caveats together and the guarantee is honest and bounded. When
@@ -169,9 +207,11 @@ Put the three caveats together and the guarantee is honest and bounded. When
 
 <Steps>
   <Step>
-    Every pair of outgoing edges at every enumerated vertex was checked, and z3 proved each
+    Every pair of **`Live`** outgoing edges at every enumerated vertex was checked, and z3 proved each
     `gᵢ AND gⱼ` `unsat` over the entire (infinite) input space — for the slots and fields the
-    guards read through the curated, precisely-translated types.
+    guards read through the curated, precisely-translated types. `ReplayOnly` edges are excluded
+    because they never compete in forward dispatch; see [edge
+    mode](/docs/keiki/reference/core#edge-mode).
   </Step>
   <Step>
     The result is sound: no overlap that the concrete runtime would hit is reported as empty.

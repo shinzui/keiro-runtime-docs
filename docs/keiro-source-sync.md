@@ -17,17 +17,189 @@ the affected pages, then bump the pointer below.
   scaffolds depends only on keiro/keiki),
   `keiro-test-support` (test fixtures). The in-repository `jitsurei` package remains a legacy source
   anchor and is not current release evidence.
-- **Reviewed release:** the Keiro package family at `0.3.0.0`.
+- **Reviewed release:** the Keiro package family at `0.4.0.1`.
 
 ## Last reviewed commit
 
 ```text
-778c75ce60398bf44d12b81d563a7870deb4d3f5  (778c75c)
-2026-07-23T19:02:39-07:00
-docs(plans): supersede pgmq hardening plans
+430c3d2cca0f491697d7e67a85362b78718a50be  (430c3d2)
+2026-07-29T12:28:14-07:00
+test(dsl): complete multi-file workspace acceptance
 ```
 
-> **Current range.** The `c68dcc7..778c75c` range (63 commits) is the **evolution-safety and
+> ### ⚠ Upstream history was rewritten between these two pointers
+>
+> The previous pin `778c75c` is **not an ancestor of this one**. The keiro repo's
+> last 15 commits at that pin were rebased/amended, diverging at
+> `656a2f4` (*fix(workflow): renew leases at fresh boundaries*), and reappear
+> with new SHAs — `778c75c` itself is now `71d6801`, same subject, committed 11
+> hours later.
+>
+> **The reviewed content boundary is intact.** `git diff --stat 778c75c 71d6801`
+> is empty: the two trees are byte-identical, so nothing reviewed at the old pin
+> was lost or silently changed. But `git log 778c75c..HEAD` **over-reports**,
+> listing 80 commits where only **65** (`71d6801..HEAD`) are genuinely new; the
+> other 15 are the rewritten already-reviewed migration work (which is why
+> `keiro-migrations/src` shows no diff across the whole range despite six
+> migration commits appearing in the log).
+>
+> **For the next round:** trust `git diff <pin>..HEAD` (a tree comparison, always
+> correct) over `git log <pin>..HEAD`, and check
+> `git merge-base --is-ancestor <pin> HEAD` first. If it fails again, find the
+> rewritten twin of the pin by subject and date and diff the two trees to confirm
+> the boundary before deciding what is new.
+
+> **Current range.** The `71d6801..430c3d2` range (65 genuinely-new commits; see the rewrite note
+> above) is the **structural consumer types and service workspaces** review, plus the `0.4.0.0` /
+> `0.4.0.1` releases. Source change is heavily concentrated in `keiro-dsl` — **11 new modules**,
+> ~10.3k added lines — with small, high-consequence additions in `keiro-core` and `keiro`.
+>
+> **1. Releases `0.4.0.0` and `0.4.0.1`.** The whole family moved to `0.4.0.1`. `0.4.0.0` was tagged
+> but **never published**; `0.4.0.1` is a pure packaging patch adding PVP upper bounds so
+> `cabal check` is clean. The dependency floor is now **`keiki >=0.4 && <0.5`**.
+>
+> Nearly all of the `keiro`/`keiro-core` **0.4.0.0 changelog body was already reviewed at the previous
+> pin** — `scheduleTimerOnceTx :: … -> Bool`, `ChildRow.failureReason`, the three-component snapshot
+> discriminator + migration `0019`, `mkCodec` validation at the stream boundary,
+> `resurrectFailedWorkflow`, `leaseHeartbeat`, `Keiro.ReplayAudit`, `seedVerifySampleRate`, and the
+> keiki 0.3 `EdgeMode` adoption. This range only *released* them. Folded into
+> `content/docs/getting-started/compatibility-and-upgrades.mdx` as reviewed versions, new keiki 0.3/0.4
+> and Keiro 0.4 breaking-upgrade bullets, and updated reviewed-source SHAs for every library.
+>
+> **2. `keiro-core` structural bindings (new public modules).** `Keiro.Codec.Structural` —
+> `StructuralBinding` (a **total** `bindingToShape`/`bindingFromShape` pair), `FixtureCases`
+> (deterministic labelled cases, never `Arbitrary`/`Default`), both law helpers
+> `bindingDomainRoundTrip`/`bindingShapeRoundTrip`, and the one-way delegation helpers
+> `encodeViaBinding`/`decodeViaBinding`. Re-exported from `keiro` so a generated consumer keeps one
+> direct dependency. Plus `Keiro.Codec.Structural.Generic.genericStructuralBinding`, an opt-in **exact
+> nominal** adapter (identical constructor/selector names, order, arity, field types; no coercion,
+> prefix-stripping, or positional options) that fails at compile time with a message directing you to
+> the scaffolded binding module. The load-bearing rule: **if converting a valid shape into the
+> consumer type can fail, the declaration is not structural** and must be `opaque`; and keiro never
+> delegates structural encoding *to* a consumer instance.
+>
+> **3. `keiro-dsl` mapped consumer types.** Checked `mapped structural record|enum|union` and
+> `mapped opaque` declarations with a resolved, total type-expression graph — new modules `TypeGraph`,
+> `MappedConsumer`, `MappedDiff`, `ExplainBindings`, `Coverage`, `CodecCompare`, `FoldFingerprint`,
+> plus large `Parser`/`Grammar`/`Validate`/`Scaffold`/`Goldens`/`Harness`/`PrettyPrint` growth.
+> Resolution is the phase boundary after which missing facts and unresolved references are
+> unrepresentable. 15 new resolution codes (`MappedUnresolvedName` … `MappedGuardUnsupported`) and 24
+> new mapped-evolution codes (`MappedFieldAdded*` … `MappedModeCrossed`, `MappedDeclAdded/Removed`),
+> plus `CoverageOpaque*` and `CodecCompare*`. Mapped register wire/binding/initial identities now
+> participate in the aggregate **fold fingerprint**.
+>
+> **4. Per-surface compatibility vectors (`diff`).** The single tier is now *derived*. Every finding
+> carries a verdict (`compatible`/`advisory`/`breaking`/`n/a`) on **six** surfaces —
+> `private-history-read`, `old-binary-read-new-events`, `snapshot-hydration`, `public-consumer`,
+> `persisted-identity`, `consumer-build` — plus a rollout constraint set
+> (`stop-the-world`/`workers-first`/`drain-required`/`producer-last`). A non-uniform vector prints as an
+> indented `vector:` line. New flags: repeatable `--gate SURFACE` (**adds** to a default gate that is
+> every surface *except* `old-binary-read-new-events`; there is deliberately no way to loosen it),
+> `--explain` (paths, failing directions, closed-vocabulary remedies), and `--report-out FILE`
+> (schema **`keiro-dsl/diff-report/1`**, append-only vector/`paths` keys, consumers must ignore unknown
+> keys).
+>
+> **5. New CLI surface.** `check --explain-bindings`; `check --coverage-report FILE
+> [--fail-on-opaque]`; `diff --coverage-report FILE [--fail-on-opaque-increase]`; `scaffold
+> --codec-comparison MAPPED-NAME --comparison-out FILE` (a paired, non-production RFC 8785
+> canonical-JSON parity runner — **evidence, never a wire authority**). Coverage is
+> **reporting-first**: informational unless a gate flag is passed.
+>
+> **6. `Keiro.Snapshot.Codec.FoldVersion` + `defaultStateCodecWithFold`.** The recommended codec for a
+> **hand-written** service: `defaultStateCodec` with a hand-owned token already composed through
+> `withFoldFingerprint`. `FoldVersion` is a change *detector*, not an encoding version — change it in
+> the same edit that changes any guard, update, emit, or target, including helper functions the fold
+> calls. Generated services keep using `withFoldFingerprint` with a spec-derived fingerprint.
+>
+> **7. Service workspaces (`.keiro-workspace`) — SHIPPED BUT UNRELEASED.** New `Workspace`,
+> `WorkspaceAdoption`, `WorkspaceDiff`, `WorkspaceRecord`, `WorkspaceScaffold` modules; 7 new
+> composition-refusal codes (`WorkspaceMemberUnreadable`, `WorkspaceMemberParseFailed`,
+> `WorkspaceContextMismatch`, `WorkspaceAuthorityConflict`, `WorkspaceDuplicateDeclaration`,
+> `WorkspaceDuplicateNodeName`, `WorkspacePathCollision`) plus 2 whole-workspace diff advisories
+> (`OwnershipMoved`, `WorkspaceAuthorityChanged`); `Validate.nodeIdentity` now exported. All four
+> commands dispatch on the `.keiro-workspace` extension.
+>
+> This sits in `keiro-dsl`'s **`[Unreleased]`** section — it is *not* in `0.4.0.1`. It is nonetheless
+> fully landed, exported, CLI-dispatched, and acceptance-tested in committed source, and this docs tree
+> is cross-checked against **source**, not releases. **Decision: documented, with an explicit
+> unreleased callout** on the new page and in `compatibility-and-upgrades.mdx`. Revisit the callout when
+> the next release ships.
+>
+> ### Pages
+>
+> **ADDED** — `content/docs/keiro/reference/keiro-dsl-mapped-types.mdx` (the two modes and how to
+> choose, the three `wire` grammars, type expressions, `on-missing` defaults, the resolved graph and
+> its 15 rejections, the `Keiro.Codec.Structural` contract, `genericStructuralBinding`, the evolution
+> code families, and the generated-module inventory) and
+> `content/docs/keiro/reference/keiro-dsl-workspaces.mdx` (the manifest and its set semantics, the 7
+> composition refusals, multi-file `note:` diagnostics, per-command behaviour, the workspace-keyed
+> record and its legacy coexistence proof, `record`/`banner` adoption evidence, and whole-workspace
+> diff). Both admitted as reference pages under `TRIAGE.md` §2 — each is a new named surface a reader
+> must look up field by field, and neither fits inside the CLI page without burying it.
+>
+> **UPDATED** — `reference/keiro-dsl-cli.mdx` (rewritten command summary with workspace dispatch; new
+> `--explain-bindings`, coverage-gate, `--codec-comparison`, compatibility-vector, `--gate`,
+> `--explain`, and `--report-out` sections; CI-gate block extended with the structural conformance and
+> forward-versus-replay-equality assertions); `reference/snapshot.mdx` (`FoldVersion`,
+> `defaultStateCodecWithFold`, a which-codec-to-use table, and mapped register identities in the
+> fingerprint list); `explanation/the-keiro-dsl-toolchain.mdx` (mapped types and workspaces in *what
+> the specification can own*, plus a new *why a tier is not enough* section);
+> `how-to/check-a-service-spec.mdx`, `how-to/scaffold-and-fill-holes.mdx`,
+> `how-to/gate-spec-evolution-with-diff.mdx` (the new flags in their task context);
+> `getting-started/compatibility-and-upgrades.mdx`; `reference/index.mdx` + `reference/meta.json`.
+>
+> ### Deliberately not documented
+>
+> - **The Kafka consumer fatal-observability contract (ADR 0011, MasterPlan 23, plans 135–137).**
+>   These commits are **prose-only in the keiro repo** — ADRs, masterplan, and plans; zero source. The
+>   implementation lives in a *commit-pinned `hw-kafka-client` fork* and/or
+>   `shibuya-kafka-adapter`, and the `shibuya-kafka-adapter` pointer is **current at `65111ae` with
+>   zero drift**, so the contract is not in any tracked repo's reviewed source. The claims involved —
+>   fatals reported in-band as `RdKafkaRespErrFatal` from every poll in **both** callback poll modes;
+>   routine partition conditions and idle commits must **not** kill a consumer; trace context is
+>   per-record; and close must never be deferred to the GC because an unclosed consumer keeps polling
+>   and starves its partitions — would have to be transcribed from an ADR, which the *shipped source
+>   wins* rule forbids. `content/docs/integrations/shibuya-kafka-adapter.mdx` already documents fatal
+>   surfacing through the source stream and supervision, so nothing there is *wrong*; the
+>   deterministic-close obligation is the notable missing piece. **Next round:** check whether the fork
+>   or the adapter has landed in a tracked repo, and if so fold the close rule into that page's
+>   *Errors and Shutdown* section.
+> - **Upstream prose commits**, read for intent only, no doc action: the brownfield transducer-modeling
+>   guide and the guarantee ledger (`docs/guides/*`), the production-status regrouping and its 0.4 /
+>   Hackage refresh, the improvement-request bundle and OKF profile updates, the MasterPlan 25/26
+>   plans and EP completions, and `docs/research/*`.
+> - **`docs: correct user and guide inaccuracies, add a work-queues reference` + `feat(jitsurei): add a
+>   work-queue example`** — upstream added a work-queues reference and backed the guide with an in-repo
+>   `jitsurei` example. `content/docs/keiro/reference/pgmq-jobs.mdx` already covers the shipped
+>   `Keiro.PGMQ` surface and no `keiro-pgmq/src` change accompanied these commits, so this round treated
+>   them as upstream-prose NO-OPs. **Known gap:** the upstream work-queues *guide* prose was not
+>   cross-read against `pgmq-jobs.mdx` for corrections it may imply.
+> - The `jitsurei/` package inside the keiro repo is a legacy source anchor and not release evidence;
+>   its 6 changed files were not treated as `content/docs/example-app/` input (that tree has its own
+>   pointer).
+>
+> ### Also found
+>
+> **8 pre-existing broken `#anchor` links** surfaced by a hand-run heading-slug audit (anchors are
+> ungated — `check-doc-links.mjs` strips them). Three had unambiguous targets and were fixed:
+> `keiro/faq.mdx` → `the-keiro-dsl-toolchain#the-ownership-firewall`,
+> `cookbook/notify-once-from-a-process-manager.mdx` →
+> `reference/process-manager#deterministic-ids-and-duplicate-confirmation`, and
+> `reference/telemetry.mdx` → `reference/projection#projection-lag`. **Five remain**, all pointing at
+> headings that do not exist anywhere on the target page, so each needs a judgement call rather than a
+> rename: `keiro/faq.mdx` → `reference/router#the-resolve-seam`;
+> `walkthrough/durable-execution/00-start-here.mdx` →
+> `02-the-effect-and-replay-loop#this-is-not-a-keiki-transducer-and-that-is-deliberate` (the real slug
+> has a **double** hyphen from the em dash — exactly the trap `SKILL.md` warns about);
+> `walkthrough/workflow/00-start-here.mdx` →
+> `01-the-process-manager-dispatch-loop#the-payoff-the-managers-own-state-is-a-keiki-transducer`;
+> `cookbook/inbox-disposition-the-three-inversions.mdx` →
+> `reference/keiro-dsl-notation#contract--intake--emit--publisher`; and
+> `how-to/back-a-rule-with-a-register.mdx` →
+> `walkthrough/command-cycle/02-hydration#what-an-event-does-to-the-machine-output-inversion`. None
+> were introduced by this range.
+>
+> **Note (prior range).** The `c68dcc7..778c75c` range (63 commits) is the **evolution-safety and
 > durable-execution hardening** review. Two themes dominate; a third is infrastructural.
 >
 > **1. The transducer evolution story (MasterPlan 24, plans 138–143; ADRs 0002–0004).** Because keiki
@@ -319,6 +491,16 @@ docs(plans): supersede pgmq hardening plans
 
 ### Previous pointers (for traceability)
 
+- `778c75ce60398bf44d12b81d563a7870deb4d3f5` (`778c75c`, 2026-07-23, Keiro 0.3.0.0) — the baseline
+  before the structural-consumer-types and service-workspaces review. **This SHA no longer exists on
+  `master`:** upstream rewrote history after it, and its content-identical rewritten twin is
+  `71d680155725e66f2f2f683910e21749bb7125d5` (`71d6801`, 2026-07-24, same subject). The
+  `71d6801..430c3d2` range (65 commits) landed `keiro-core`'s `Keiro.Codec.Structural` binding API and
+  its exact-nominal generic adapter, `keiro-dsl` mapped structural/opaque consumer types with a
+  resolved type graph and ~39 new diagnostic codes, six-surface compatibility vectors with `--gate` /
+  `--explain` / `--report-out`, reporting-first coverage with opt-in opacity gates, the historical
+  codec-comparison engine, `FoldVersion` / `defaultStateCodecWithFold`, unreleased `.keiro-workspace`
+  service workspaces, and the `0.4.0.0` / `0.4.0.1` releases onto keiki 0.4.
 - `c68dcc7b9cea8d9c180d1c04254a72aa43804cac` (`c68dcc7`, 2026-07-14, Keiro 0.3.0.0) — the baseline
   before the evolution-safety and durable-execution hardening review. The `c68dcc7..778c75c` range
   (63 commits) landed replay-only edges and the computed guard-tightening twin, two-stage event
@@ -398,12 +580,14 @@ docs(plans): supersede pgmq hardening plans
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline 778c75c..HEAD
-   git -C "$KEIRO" diff --stat 778c75c..HEAD
+   git -C "$KEIRO" log --oneline 430c3d2..HEAD
+   git -C "$KEIRO" diff --stat 430c3d2..HEAD
    ```
    keiro's own `docs/adr/*` is now the fastest way to read a decision's *rationale and consequences*
-   (ADRs 0001–0008 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only
-   edges, the snapshot discriminator, gate placement, and the four workflow lifecycle rules).
+   (ADRs 0001–0016 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only
+   edges, the snapshot discriminator, gate placement, the four workflow lifecycle rules, Kafka
+   consumer fatal observability, one schema authority with total bindings, reporting-first coverage
+   with opt-in opacity gates, and the two workspace ADRs; `docs/adr/log.md` is the per-date index).
    keiro also keeps its own `docs/`, `CHANGELOG.md`, and `docs/plans|masterplans` entries — the
    prose diff there is the fastest way to understand intent before touching the source. Note that
    keiro's in-repo `docs/research/*` and `docs/plans/*` notes **predate the implementation and

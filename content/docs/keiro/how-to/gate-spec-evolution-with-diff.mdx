@@ -111,3 +111,32 @@ valid new spec can still break history.
 
 Neither command reads your database. A clean `diff` with an `affected` verdict is not a green light —
 it is a *request* for the [real-log audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy).
+
+## Reading a per-surface verdict
+
+A finding whose verdict differs across surfaces prints a second indented `vector:` line. Read it before
+deciding whether the tier applies to your deploy:
+
+```text
+BREAKING: aggregate event OrderPlaced: payload changed without a version bump [EventPayloadChanged]
+    vector: private-history-read=breaking snapshot-hydration=advisory consumer-build=breaking rollout=workers-first
+```
+
+Three flags make this actionable:
+
+```bash
+# Explain the failing direction and the remediation choices for each finding.
+keiro-dsl diff --since origin/main --explain service.keiro
+
+# Also block on old (not-yet-upgraded) binaries reading new events.
+keiro-dsl diff --since origin/main --gate old-binary-read-new-events service.keiro
+
+# Write the whole report as keiro-dsl/diff-report/1 JSON.
+keiro-dsl diff --since origin/main --report-out diff-report.json service.keiro
+```
+
+`old-binary-read-new-events` is the one surface **outside** the default gate — a rolling deploy where
+old binaries briefly see new events is normal. Add it when a deploy cannot be ordered. There is no flag
+to remove a surface from the gate: accept a breaking verdict by changing the spec or by making the call
+outside the tool. See [compatibility
+vectors](/docs/keiro/reference/keiro-dsl-cli#compatibility-vectors).

@@ -64,6 +64,39 @@ Short answers to the questions people ask most about keiki. Each links to the pa
     safely](/docs/keiki/cookbook/evolve-a-schema-safely).
   </Accordion>
 
+  <Accordion title="I made a guard stricter and replay broke. Why, and what is the fix?">
+    Because keiki has **one edge set for both execution and replay**. Tightening a guard does not only
+    change what new commands may do — it reinterprets stored history, and events emitted under the old
+    rule no longer find an inverting edge. No codec upcaster helps: the wire shape never changed.
+
+    The fix is a **replay-only twin** (keiki 0.3.0.0): keep the tightened live edge, and add a second
+    edge carrying the removed region (`old-guard ∧ ¬new-guard`) marked `B.replayOnly`. It is invisible
+    to forward stepping, and inversion tries it only when no live edge attributes the event. See
+    [Tighten a guard without breaking
+    replay](/docs/keiki/how-to/tighten-a-guard-without-breaking-replay).
+  </Accordion>
+
+  <Accordion title="When can I delete a replay-only twin?">
+    Only once **every stream containing the removed region's events is terminal or truncated**. Deleting
+    a deployed twin re-creates exactly the break it fixed — the affected events lose their only
+    inverting edge. Elapsed time is not the condition; "no live stream can still be asked to replay one
+    of those events" is. keiro's [replay audit](/docs/keiro/reference/replay-audit) answers that against
+    real stored data rather than by judgement.
+  </Accordion>
+
+  <Accordion title="Can I guard on a field of a type keiki knows nothing about?">
+    Yes, with a **typed field projection** (keiki 0.4.0.0) — as long as the *field* type is in the
+    curated symbolic registry, even when the owner type is not. Define one tag type and one coherent
+    `FieldProjection` instance per logical field, then read it with `regProj` / `inpProj`. Repeated
+    reads of the same typed path share one solver variable, so this is a real gain over an opaque
+    `TApp`.
+
+    Three limits: projections are **guard-only** (an update or output placement is
+    `ProjectionOutsideGuard`), the base must be a register slot or one input field, and symbolic
+    agreement is **one-way** — a solver model over projections does not reconstruct an owner. See
+    [Field projections](/docs/keiki/reference/core#field-projections).
+  </Accordion>
+
   <Accordion title="Should I call delta and omega, or step?">
     Use **`step`** — and `stepEither` when you want the rejection reason. `delta` (the next-state
     half) and `omega` (the output half) are the lower-level pieces `step` is built from; reach for

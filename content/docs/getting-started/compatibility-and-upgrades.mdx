@@ -12,16 +12,25 @@ own build, migration, and integration tests before upgrading.
 
 | Surface | Reviewed packages | Reviewed source |
 | --- | --- | --- |
-| keiki | `keiki 0.2.0.0`, `keiki-codec-json 0.2.0.0` | `ce5748b5f2311de1355e648db564da8b404e42f2` |
-| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, and `keiro-migrations` at `0.3.0.0` | `c68dcc7b9cea8d9c180d1c04254a72aa43804cac` |
-| Kiroku | `kiroku-store 0.3.0.1`, migrations `0.3.0.0`, CLI `0.2.0.0`, OTel `0.2.0.1`, metrics `0.1.0.1` | `58aff77b3a6d6093e3613753a0543aab62db9fac` |
+| keiki | `keiki 0.4.0.0`, `keiki-codec-json 0.4.0.0` | `6807aac817fe53bbcc1b11b9e1a1b226bae14413` |
+| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, and `keiro-migrations` at `0.4.0.1` | `430c3d2cca0f491697d7e67a85362b78718a50be` |
+| Kiroku | `kiroku-store 0.3.1.0`, migrations `0.3.0.0`, CLI `0.2.0.0`, OTel `0.2.0.1`, metrics `0.1.0.1` | `3009dda7238f7d05b1d0c97b04ec5d4c55031304` |
 | Shibuya | `shibuya-core 0.8.0.1`, `shibuya-metrics 0.8.0.1` | `172df245f40a454af46dd7f4cde855eaa4414c5a` |
-| pgmq-hs | `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and `pgmq-migration` at `0.4.0.1` | `f4a101843ea6f5c055277fd84859ece02865eff4` |
+| pgmq-hs | `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and `pgmq-migration` at `0.4.0.1` | `b4cab751198b5012f025353610dfb4f3782c6eea` |
 | pg-migrate | All six public packages at `1.1.0.0` | `f39d64e354818999667d345a1452f33eb4857fc1` |
 
-Keiro's substantive 0.2 surface was followed by a 0.3.0.0 package release whose
-later keiro-dsl change is metadata-only. The exported `Keiro.version` constant
-still reports a legacy value and must not be used as the package release source.
+The Keiro package family requires **keiki `>=0.4 && <0.5`** (and `keiki-codec-json 0.4` where used).
+`0.4.0.1` is a packaging patch over `0.4.0.0` — it adds PVP upper bounds so `cabal check` is clean,
+with no API or behaviour change; `0.4.0.0` was tagged but never published. The exported
+`Keiro.version` constant still reports a legacy value and must not be used as the package release
+source.
+
+<Callout type="warn">
+  **keiro-dsl service workspaces are unreleased.** The `.keiro-workspace` manifest and whole-service
+  composition are shipped in the keiro source tree at the reviewed commit but sit in `keiro-dsl`'s
+  `[Unreleased]` changelog section — they are **not** in `0.4.0.1`. See [service
+  workspaces](/docs/keiro/reference/keiro-dsl-workspaces).
+</Callout>
 
 ## Adapter compatibility
 
@@ -45,10 +54,28 @@ Treat every pre-1.0 minor line as potentially breaking.
   intentionally cause one cache miss and full replay for non-empty 0.1
   snapshots. See [persist a register
   snapshot](/docs/keiki/how-to/persist-a-register-snapshot#upgrading-from-keiki-01).
+- **keiki 0.3:** `Edge` gains `mode :: EdgeMode`; hand-written edges must set
+  `mode = Live`. Tightening a guard now has a sanctioned remedy — see [tighten a
+  guard without breaking
+  replay](/docs/keiki/how-to/tighten-a-guard-without-breaking-replay).
+- **keiki 0.4:** `Term` gains `TFieldProj`, and
+  `TransducerValidationWarning` / `ComposeAlignmentWarning` gain projection
+  constructors, so exhaustive matches must be extended;
+  `checkComposeAlignment` now requires `WeakenR rs1`. See [field
+  projections](/docs/keiki/reference/core#field-projections).
 - **Keiro 0.3 line:** command, replay, worker, read-model, and workflow outcomes
   are typed more precisely; framework tables live in `keiro`; public event
   streams require replay validation. For `.keiro` specs, follow [migrate a spec
   to 0.2](/docs/keiro/how-to/migrate-a-keiro-spec-to-0-2).
+- **Keiro 0.4:** `scheduleTimerOnceTx` returns `Bool`; `ChildRow` gains
+  `failureReason` and `markChildFailedTx` takes the terminal reason as its third
+  argument; snapshot hydration requires a third
+  control-state/fold discriminator, so snapshots written without it are
+  invalidated and rebuilt once (migration
+  `0019-keiro-snapshots-state-shape-hash.sql`); validated event-stream assembly
+  rejects invalid codec schema versions, event tags, and upcaster chains, with
+  `mkEventStreamUnchecked` as the explicit emergency-forensics bypass. Requires
+  keiki 0.4. See [Snapshots](/docs/keiro/reference/snapshot).
 - **Kiroku 0.3:** update cursor, validation, store-error, subscription-source,
   CLI, and adapter handling using the [0.3 upgrade
   matrix](/docs/kiroku/how-to/upgrade-to-0-3).
@@ -92,8 +119,11 @@ operator gates.
 - The Message DB adapter is not on the Shibuya 0.8 compatibility line, as noted
   above.
 - `keiro-runtime-jitsurei` and `content/docs/example-app/` remain pending
-  modernization. They are an older architecture tour, not proof of the current
-  package matrix.
+  modernization, and the gap has **widened**: the application has since been
+  re-architected onto the validated runtime and the `keiro-dsl` toolchain, and
+  24 of the 30 source files that tour quotes have changed. It is an older
+  architecture tour, not proof of the current package matrix — see the warning on
+  [the example-app landing page](/docs/example-app).
 
 <Cards>
   <Card title="Install the selected stack" href="/docs/getting-started/installation" description="Package selection, migration components, and runtime startup order." />

@@ -70,6 +70,7 @@ emailDeliveryASTEdges = \case
                     (OFCons (inpSendEmail #at) OFNil)))
             ]
         , target = EmailSentVertex
+        , mode = Live
         }
     ]
 
@@ -79,7 +80,14 @@ emailDeliveryASTEdges = \case
 `Guarded Regs Vertex Cmd Event` is the synonym for
 `SymTransducer (HsPred Regs Cmd) Regs Vertex Cmd Event`; either spelling works.
 
-## The four `Edge` fields
+<Callout type="warn">
+  **`mode` is required, from keiki 0.3.0.0.** `Edge` is a record with no defaults, so a hand-written
+  edge that omits `mode` does not compile. Write `mode = Live` unless you specifically want a
+  replay-only twin — see [tighten a guard without breaking
+  replay](/docs/keiki/how-to/tighten-a-guard-without-breaking-replay).
+</Callout>
+
+## The five `Edge` fields
 
 ### `guard`
 
@@ -135,6 +143,12 @@ The TH-derived `<Ctor>TermFields` record is **not** available here — it's part
 
 The next vertex, set directly. There is no `goto`-style validation — the type checker enforces it.
 
+### `mode`
+
+`Live` or `ReplayOnly`. `Live` is what you want for essentially every hand-authored edge; the builder
+defaults to it and only `B.replayOnly` changes it. There is no `Default` instance and no field
+omission — write it explicitly.
+
 ## ε-edges in AST form
 
 The only difference from a letter edge is `output = []`. From `userRegAST`'s GDPR edge:
@@ -146,8 +160,65 @@ Edge
                   (inpGdpr #at)
   , output = []                  -- ε-edge: no event
   , target = Deleted
+  , mode   = Live
   }
 ```
+
+## Guarding on a consumer-owned field
+
+*(keiki 0.4.0.0.)* The AST is also where you reach for a [field
+projection](/docs/keiki/reference/core#field-projections) by hand: a solver-visible read of one scalar
+out of a value keiki knows nothing about. Define **one** tag type and **one** coherent instance per
+logical field, then build the term with `regProj` (register base) or `inpProj` (input-constructor
+base):
+
+```haskell
+-- One fresh tag per logical field. Reuse this canonical tag everywhere.
+data ShippingPostcode
+
+instance FieldProjection ShippingPostcode where
+  type FieldName  ShippingPostcode = "postcode"
+  type FieldOwner ShippingPostcode = Address     -- consumer-owned, not symbolic
+  type FieldResult ShippingPostcode = Text       -- in the symbolic registry
+  fieldShapeId _ = "Address.postcode/v1"
+  projectFieldValue _ = addressPostcode          -- must be total
+
+postcodeWitness :: FieldWitness ShippingPostcode
+postcodeWitness = fieldWitness
+
+guard =
+  isShip
+    .&& (regProj postcodeWitness
+           (#shipTo :: Index OrderRegs Address)
+           .== lit "10001")
+```
+
+Three constraints decide whether this will work, and it is worth checking them before you write the
+instance:
+
+1. **`FieldResult` must be in the curated symbolic registry** — otherwise validation reports
+   `ProjectionResultUnsupported` (or `ProjectionOrderingUnsupported` if you compared with `.<`/`.>`
+   and the type has equality but no ordering dictionary).
+2. **The projection must be in a guard.** An update or output placement is
+   `ProjectionOutsideGuard`. Raw evaluation stays total, but validated construction rejects it.
+3. **The base must be a register slot or one input field.** `ProjBase` cannot express a computed
+   owner, by design — that restriction is what gives the solver a stable typed path.
+
+Prove the instance honest with `fieldWitnessAgrees`, QuickCheck-ed over your own owner generator:
+
+```haskell
+prop_postcodeHonest :: Address -> Bool
+prop_postcodeHonest = fieldWitnessAgrees postcodeWitness addressPostcode
+```
+
+<Callout type="warn">
+  Reusing **one** canonical tag per logical field is what makes repeated reads share a solver
+  variable. Two different tags for the same field stay sound but the solver treats them as
+  independent values, so `regProj tagA #x .== regProj tagB #x` is merely satisfiable, not valid.
+
+  And remember the agreement is **one-way**: a concrete owner can bind a matching symbolic value, but
+  a solver model over projections does **not** reconstruct an owner.
+</Callout>
 
 ## What you keep, what you lose
 
@@ -185,3 +256,4 @@ match on `isFinal` and edge counts across every vertex. Equivalent specs exist f
 - [Write a multi-event command](/docs/keiki/how-to/write-a-multi-event-command) — the builder view of the multi-`pack` edge above.
 - [Ergonomic emit](/docs/keiki/how-to/ergonomic-emit) — why `TermFields` is builder-only.
 - [Core reference](/docs/keiki/reference/core) — every smart constructor used here.
+- [Tighten a guard without breaking replay](/docs/keiki/how-to/tighten-a-guard-without-breaking-replay) — the one case where `mode = ReplayOnly` is what you want.

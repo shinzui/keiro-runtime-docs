@@ -124,9 +124,13 @@ data ComposeAlignmentWarning s1 s2
       , cawSharedName :: String, cawReadPosition :: Int, cawAvailableFields :: Int }
   | PoisonedNameInComposition
       { cawName :: String, cawSide :: String }
+  | NonStructuralProjectionBoundary
+      { cawProjectionT1Edge :: EdgeRef s1, cawProjectionT2Edge :: EdgeRef s2
+      , cawProjectionPath :: String, cawProjectionShape :: String
+      , cawProjectionReason :: String }
 
 checkComposeAlignment
-  :: (Bounded s1, Enum s1, Ord s1, Bounded s2, Enum s2, Ord s2)
+  :: (WeakenR rs1, Bounded s1, Enum s1, Ord s1, Bounded s2, Enum s2, Ord s2)
   => SymTransducer (HsPred rs1 ci1) rs1 s1 ci1 mid
   -> SymTransducer (HsPred rs2 mid) rs2 s2 mid co
   -> [ComposeAlignmentWarning s1 s2]
@@ -142,9 +146,35 @@ composeChecked
 ```
 
 The checker catches emitted constructors with no consumer, downstream expectations with no producer,
-out-of-range positional field reads, and boundary names stamped by lossy profunctor maps. Its
-reachability walk is conservative: every warning is a reviewable structural fact, but `Right` is not
-a proof about arbitrary opaque Boolean guard logic.
+out-of-range positional field reads, boundary names stamped by lossy profunctor maps, and mapped
+boundaries that cannot retain a stable typed projection path. Its reachability walk is conservative:
+every warning is a reviewable structural fact, but `Right` is not a proof about arbitrary opaque
+Boolean guard logic.
+
+<Callout type="warn">
+  **Breaking in keiki 0.4.0.0.** `ComposeAlignmentWarning` gained
+  `NonStructuralProjectionBoundary`, and `checkComposeAlignment` now requires **`WeakenR rs1`** — the
+  structural evidence it needs to inspect mapped upstream terms. `composeChecked` already carried
+  that constraint, so only direct `checkComposeAlignment` callers are affected.
+</Callout>
+
+### Field projections across a boundary
+
+*(keiki 0.4.0.0.)* Composition classifies each downstream [field
+projection](/docs/keiki/reference/core#field-projections) by what its owner becomes upstream:
+
+| Upstream owner | Outcome |
+|---|---|
+| a direct register or input | the projection is **preserved** over the substituted owner |
+| a literal | the projection is **folded** to its literal result |
+| anything computed | the projection is **lowered** to an opaque `TApp1` |
+
+Lowering is sound but precision-losing: the solver stops seeing the typed path and gets a fresh
+opaque variable. **Raw `compose` remains forward-correct** and accepts all three;
+`composeChecked` rejects the lowering case, reporting `NonStructuralProjectionBoundary` with
+`cawProjectionReason` naming which situation produced it —
+`"upstream computed output"`, or `"pending write"` for a projection whose owner is a pending write
+inside a multi-event chain.
 
 ### Stateful update semantics
 

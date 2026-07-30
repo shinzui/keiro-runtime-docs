@@ -117,8 +117,10 @@ cannot both hold and so that repeated reads of one register share one solver var
 
 ```haskell
 data SymEnv = SymEnv
-    { seInputCtor :: SBV.SBV String
-    , seVarCache  :: IORef (Map String SomeSBV)
+    { seInputCtor         :: SBV.SBV String
+    , seInputArm          :: SBV.SBool
+    , seVarCache          :: IORef (Map SymVarKey SomeSBV)
+    , seProjectionOrdinal :: IORef Int
     }
 
 mkSymEnv :: SBV.Symbolic SymEnv
@@ -127,17 +129,76 @@ mkSymEnv :: SBV.Symbolic SymEnv
 <TypeTable
   type={{
     seInputCtor: { type: "SBV.SBV String", description: "Shared symbolic input-constructor tag; PInCtor atoms assert seInputCtor .== literal (icName ic), so two atoms over distinct constructors are mutually unsatisfiable" },
-    seVarCache: { type: "IORef (Map String SomeSBV)", description: "Per-translation memo cache keyed by deterministic variable name; lazily populated so unread slots stay unconstrained" },
+    seInputArm: { type: "SBV.SBool", description: "True denotes the outer Left arm of the input, False denotes Right" },
+    seVarCache: { type: "IORef (Map SymVarKey SomeSBV)", description: "Per-translation memo cache keyed by a structural variable key; lazily populated so unread slots stay unconstrained" },
+    seProjectionOrdinal: { type: "IORef Int", description: "Next internal projection label; Keiki generates projection labels itself so arbitrary schema names never reach SBV's restricted label namespace" },
   }}
 />
 
-The memo cache (`seVarCache`) is the key correctness mechanism. `TReg` allocates under
-`"reg/<slot>"`; `TInpCtorField` allocates under `"inp/<ctor>/<field>"`. The **first** read of a
-name allocates one `SBV.free` variable and caches it; **every later read of the same name returns
-the cached variable**. So the solver sees two reads of `#x` as the *same* value, and
-`proj #x .== proj #x` is **valid**, not merely satisfiable. The cache is scoped to one
-`translatePred` walk (one `mkSymEnv`), so variables are shared *within* a query but never leak
-across independent queries.
+The memo cache (`seVarCache`) is the key correctness mechanism, keyed by a **structural** variable
+key rather than a rendered string:
+
+```haskell
+data SymVarKey
+    = RegVar String
+    | InpVar String String
+    | ProjectionVar
+        ProjectionBaseKey
+        SomeTypeRep    -- the projection tag
+        SomeTypeRep    -- FieldOwner
+        SomeTypeRep    -- FieldResult
+    deriving stock (Eq, Ord, Show)
+
+data ProjectionBaseKey
+    = ProjectionReg String Int
+    | ProjectionInp String String Int
+    deriving stock (Eq, Ord, Show)
+```
+
+`TReg` keys on `RegVar <slot>`; `TInpCtorField` keys on `InpVar <ctor> <field>`; `TFieldProj` keys on
+`ProjectionVar` over its base path (slot name **and** `indexPosition`) plus the three `TypeRep`s. The
+**first** read of a key allocates one `SBV.free` variable and caches it; **every later read of the
+same key returns the cached variable**. So the solver sees two reads of `#x` as the *same* value, and
+`proj #x .== proj #x` is **valid**, not merely satisfiable — and likewise for two reads of the same
+typed projection path. The cache is scoped to one `translatePred` walk (one `mkSymEnv`), so variables
+are shared *within* a query but never leak across independent queries.
+
+<Callout type="info">
+  Projection identity is deliberately **structural, not string-keyed**: the tag's `TypeRep` decides
+  sharing, so caller-controlled diagnostic strings (`FieldName`, `fieldShapeId`,
+  `fieldProjectionPath`) never determine solver identity. The SBV *label* a projection variable gets
+  is a generated `"proj/<ordinal>"` from `seProjectionOrdinal`, keeping arbitrary schema names out of
+  SBV's restricted label namespace.
+</Callout>
+
+### `constrainFieldProjection`
+
+*(keiki 0.4.0.0.)*
+
+```haskell
+constrainFieldProjection ::
+    forall projection rs ci ifs.
+    ( Typeable projection
+    , Typeable (FieldOwner projection)
+    , Sym (FieldResult projection)
+    ) =>
+    SymEnv ->
+    FieldWitness projection ->
+    ProjBase rs ci ifs (FieldOwner projection) ->
+    FieldResult projection ->
+    SBV.Symbolic ()
+```
+
+Binds the memoized projection variable for a typed path to a **concrete** getter result, for
+concrete-to-symbolic agreement tests. It resolves the same `ProjectionVar` key the translator would,
+then `constrain`s it equal to the literal.
+
+<Callout type="warn">
+  The supported agreement is **one-way**. Every concrete owner can bind a matching symbolic
+  projection value, but an arbitrary symbolic projection model need not correspond to a constructible
+  owner — `symSatExt` does **not** reconstruct consumer-owned values from free projection scalars.
+  See [field projections](/docs/keiki/reference/core#field-projections).
+</Callout>
 
 ### `translateTermSym`
 
@@ -150,7 +211,9 @@ translateTermSym ::
     SBV.Symbolic (SBV.SBV (SymRep r))
 ```
 
-The translation is structural for `TLit`, `TReg`, `TInpCtorField`, and `TArith`. A `TArith` over
+The translation is structural for `TLit`, `TReg`, `TInpCtorField`, `TArith`, and `TFieldProj` (which
+is exactly `memoFree env (projectionVarKey witness base)` — a free variable for the typed path). A
+`TArith` over
 a type whose `SymRep` is SBV-numeric (a `discoverSymNum` hit) emits a real `+`/`-`/`*` over the
 translated operands, so a guard over a *computed* value is visible to the solver. `TApp1` and
 `TApp2` wrap opaque Haskell functions and translate to **fresh** `SBV.free "app1"`/`"app2"`

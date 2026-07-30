@@ -1,0 +1,270 @@
+---
+title: "Mapped consumer types"
+description: "The mapped structural and mapped opaque declarations, the wire shape grammar, the resolved type graph and its validation, the Keiro.Codec.Structural binding contract, and mapped evolution diagnostics."
+---
+
+A **mapped consumer type** lets a `.keiro` spec use a type your application already owns — an
+`EmailAddress`, a `Money`, a `ShippingAddress` — in a command, event, or register, without keiro
+inventing a duplicate. Two modes, and the choice between them is the whole design:
+
+| Mode | Keiro knows | Wire authority |
+|---|---|---|
+| `mapped structural` | the type's full **wire shape**, field by field | the **checked declaration** and the generated codec |
+| `mapped opaque` | only that a value crosses a **declared JSON boundary** | your `codec` at that boundary |
+
+<Callout type="info">
+  Prefer `structural`. It is what makes evolution diagnosable — keiro can tell you that a field was
+  removed, a tag renamed, or a nullability flipped, because it knows the shape. An `opaque` value is a
+  sealed box: safe, but keiro can only report *that* the boundary exists.
+
+  The `--coverage-report` and `--fail-on-opaque` flags on
+  [`check`](/docs/keiro/reference/keiro-dsl-cli#--coverage-report-file-and-the-opacity-gates) exist to
+  make that trade-off visible and, when you are ready, to ratchet it.
+</Callout>
+
+<Callout type="warn">
+  **A structural binding must be total.** If converting a valid shape into your consumer type can
+  *fail*, the declaration is not structural and must use `opaque` instead. Consumer invariants have to
+  be represented **by the shape**, not enforced by a partial constructor — see [the binding
+  contract](#the-binding-contract) below.
+</Callout>
+
+## `mapped structural`
+
+Three kinds, distinguished by their wire encoding: `record`, `enum`, and `union`.
+
+```text
+mapped structural record ShippingAddress {
+  haskell package = acme-domain module = Acme.Domain.Address type = Address
+  binding = "acmeAddressBinding"
+  binding-version = "1"
+  canonical-type = "Acme.Domain.Address/v1"
+  fixtures = "acmeAddressFixtures"
+  initial = "emptyAddress"
+  wire object constructor = Address unknown-fields = reject {
+    line1      as "line1"   : Text            required
+    line2      as "line2"   : Optional Text   optional on-missing = null
+    postcode   as "postcode": Text            required
+    tags       as "tags"    : List Text       optional on-missing = []
+  }
+}
+```
+
+<TypeTable
+  type={{
+    haskell: { type: "package = … module = … type = …", description: "Where the consumer type lives. Unquoted: a package name, a module prefix, and a type identifier." },
+    binding: { type: "quoted symbol", description: "The consumer-owned StructuralBinding value you must write." },
+    "binding-version": { type: "quoted string", description: "Identity of the binding; a change is a mapped evolution finding." },
+    "canonical-type": { type: "quoted string", description: "The persisted canonical identity of the mapped type, independent of its Haskell module path." },
+    fixtures: { type: "quoted symbol", description: "The consumer-owned FixtureCases value the generated harness exercises." },
+    initial: { type: "quoted symbol", description: "The register-initial value, when this type is used as a register." },
+    wire: { type: "required", description: "The shape. The only mandatory clause — every other clause is optional at the grammar level so diagnostics can name the omission rather than fail to parse." },
+  }}
+/>
+
+Each clause may appear **at most once**; a duplicate is a parse error naming the clause.
+
+### `wire object` — records
+
+```text
+wire object constructor = <Ctor> unknown-fields = reject|ignore { <field>… }
+<haskellName> as "<wireKey>" : <type> required|optional [on-missing = <default>]
+```
+
+### `wire string` — enums
+
+```text
+wire string { <Ctor> as "<wireTag>" … }
+```
+
+### `wire tagged-object` — unions
+
+```text
+wire tagged-object tag = "<tagKey>" contents = "<contentsKey>" unknown-fields = reject|ignore {
+  <Ctor> as "<wireTag>" [: <type>]
+}
+```
+
+An arm's payload type is optional — omit it for a nullary constructor.
+
+### Type expressions
+
+```text
+Text  Int  Bool  Natural  Time  UTCTime  Json
+Optional <t>   List <t>   Map <t>
+<Name>                      -- a reference to another mapped declaration
+```
+
+`Time` and `UTCTime` are synonyms. `Optional`, `List`, and `Map` take one argument, parenthesised when
+it is itself a compound. A bare identifier is a **reference** to another mapped declaration, which is
+what makes the graph a graph.
+
+### `on-missing` defaults
+
+```text
+null   []   {}   true   false   "<text>"   <integer>   <Ctor>
+```
+
+## The resolved type graph
+
+Parser declarations keep mandatory facts *optional* so diagnostics can name what is missing.
+Resolution is the phase boundary after which missing facts and unresolved references are
+**unrepresentable** — and it is what drives stable validation diagnostics, root-aware compatibility
+vectors, replay impact, and deterministic golden stand-ins.
+
+Resolution rejects:
+
+| Code | Rejects |
+|---|---|
+| `MappedUnresolvedName` | a reference to a declaration that does not exist |
+| `MappedAmbiguousName` | a name that resolves more than one way |
+| `MappedRecursiveType` | a cycle in the declaration graph |
+| `MappedDuplicateFieldName` / `MappedDuplicateWireKey` | two fields sharing a Haskell name or a wire key |
+| `MappedDuplicateArmName` / `MappedDuplicateWireTag` | two union arms sharing a constructor or a tag |
+| `MappedNonInjectiveNullability` | a nullability arrangement that cannot round-trip |
+| `MappedUnsupportedEncoding` | an encoding the generator cannot emit |
+| `MappedMissingIngredient` | a clause the mode requires |
+| `MappedMissingInitialValue` | a register use with no `initial` |
+| `MappedInvalidHaskellName` / `MappedInvalidIdentity` | an ill-formed package/module/type or identity string |
+| `MappedImportConflict` | two declarations whose imports collide |
+| `MappedDefaultIllTyped` | an `on-missing` default that does not match its field type |
+| `MappedGuardUnsupported` | a guard over a mapped value the symbolic layer cannot support |
+
+<Callout type="info">
+  `MappedGuardUnsupported` is where this page meets keiki. A guard can read one **scalar** out of a
+  mapped consumer value through keiki's [typed field
+  projections](/docs/keiki/reference/core#field-projections) — the generated
+  `Generated.<Context>.Structural.StructuralProjections` facade exposes exactly the eligible total
+  scalar getters. Reading something the projection contract cannot support is this diagnostic.
+</Callout>
+
+## `mapped opaque`
+
+```text
+mapped opaque AuditBlob {
+  haskell package = acme-domain module = Acme.Domain.Audit type = AuditBlob
+  codec = "acmeAuditCodec"
+  version = "2"
+  fixtures = "acmeAuditFixtures"
+  initial = "emptyAudit"
+}
+```
+
+Keiro delegates the value **only at its declared JSON boundary** and knows nothing of its interior. A
+change to `codec` or `version` is `MappedOpaqueCodecChanged`.
+
+## The binding contract
+
+`Keiro.Codec.Structural` lives in `keiro-core` and is re-exported from `keiro`, so a generated consumer
+keeps a single direct `keiro` dependency.
+
+```haskell
+data StructuralBinding a shape = StructuralBinding
+    { bindingToShape   :: !(a -> shape)
+    , bindingFromShape :: !(shape -> a)
+    }
+
+newtype FixtureCases a = FixtureCases
+    { fixtureCases :: NonEmpty (Text, a) }
+
+bindingDomainRoundTrip :: (Eq a)     => StructuralBinding a shape -> a     -> Bool
+bindingShapeRoundTrip  :: (Eq shape) => StructuralBinding a shape -> shape -> Bool
+
+encodeViaBinding :: StructuralBinding a shape -> (shape -> Value) -> a -> Value
+decodeViaBinding ::
+    StructuralBinding a shape -> (Value -> Either Text shape) -> Value -> Either Text a
+```
+
+Both functions in a `StructuralBinding` are **total** — that is the whole requirement, and the reason a
+partial conversion must use `opaque` mode.
+
+The two law helpers are what the generated harness exercises:
+`bindingDomainRoundTrip` checks a consumer value survives conversion through its shape;
+`bindingShapeRoundTrip` checks every declared shape survives conversion through the consumer type.
+
+`FixtureCases` values are **deterministic and labelled** — never invented through `Arbitrary` or
+`Default`, because a generated harness failure must keep a stable identity. The generator checks the
+cases against every declared union and nullable branch, and rejects empty or duplicate labels.
+
+<Callout type="warn">
+  **Delegation is one-way.** A consumer `ToJSON`/`FromJSON` instance may delegate *to* the generated
+  codec via `encodeViaBinding` / `decodeViaBinding` — that is the sanctioned direction, keeping the
+  generated shape encoder as the wire authority. Keiro **never** delegates structural encoding to a
+  consumer instance. All decode failure comes from parsing JSON into the generated shape; applying the
+  binding introduces no hidden semantic rejection.
+</Callout>
+
+### `genericStructuralBinding`
+
+```haskell
+genericStructuralBinding ::
+    (GNominalBinding (Rep a) (Rep shape), Generic a, Generic shape) =>
+    StructuralBinding a shape
+```
+
+An **opt-in, exact nominal** adapter from `Keiro.Codec.Structural.Generic`. It accepts only identical
+constructor names, selector names, field order, arity, and field types. There are deliberately **no**
+coercion, prefix-stripping, or positional-only options: an exact representation mismatch fails at
+compile time with a type error directing you to the scaffolded binding module.
+
+It supplies nominal construction and destruction *only*. Wire keys, union tags, presence, nullability,
+and defaults stay exclusively in the `.keiro` spec and the generated codec — and **both binding laws
+plus the finite codec cases remain required evidence** regardless, because a generic derivation
+rules out representation mistakes, not semantic ones.
+
+## Evolution diagnostics
+
+`diff` classifies mapped-declaration change with its own code family, each carrying a
+[compatibility vector](/docs/keiro/reference/keiro-dsl-cli#compatibility-vectors) and complete
+command/event/register use-site paths:
+
+| Area | Codes |
+|---|---|
+| Fields | `MappedFieldAddedWithDefault`, `MappedFieldAddedNoDefault`, `MappedFieldRemoved`, `MappedFieldTypeChanged`, `MappedWireKeyChanged` |
+| Presence and defaults | `MappedPresenceChanged`, `MappedNullabilityChanged`, `MappedDefaultRemoved`, `MappedDefaultChanged` |
+| Unions and enums | `MappedUnionEncodingChanged`, `MappedArmAdded`, `MappedArmRemoved`, `MappedArmTagChanged`, `MappedEnumValueAdded`, `MappedEnumValueRemoved`, `MappedEnumSpellingChanged` |
+| Identity and source | `MappedHaskellSourceChanged`, `MappedRecordConstructorChanged`, `MappedBindingChanged`, `MappedFixturesChanged`, `MappedInitialChanged`, `MappedCanonicalTypeChanged`, `MappedOpaqueCodecChanged` |
+| Declaration lifecycle | `MappedDeclAdded`, `MappedDeclRemoved`, `MappedModeCrossed` |
+| Coverage | `CoverageOpaqueSurface`, `CoverageOpaqueBoundaryAdded`, `CoverageOpaqueGateExceeded` |
+| Migration evidence | `CodecCompareDifference`, `CodecCompareCoverageGap`, `CodecCompareInvalidInput` |
+
+`MappedModeCrossed` — switching a declaration between `structural` and `opaque` — is called out
+separately because it changes what keiro can *see*, not merely what it encodes.
+
+Mapped register wire, binding, and initial identities participate in the aggregate **fold
+fingerprint**, so changing one raises `AggFoldSurfaceChanged` and invalidates snapshots. See
+[Snapshots](/docs/keiro/reference/snapshot).
+
+## Scaffolding and generated modules
+
+A spec with mapped types scaffolds:
+
+- private `Generated.<Context>.Structural.Shape.*` wire representations, with `Generic` derived for the
+  private shape types;
+- structural codecs generated from the declared keys, defaults, and tags;
+- opaque delegation **only** at each declared JSON boundary;
+- imports of the consumer types into the aggregate domains;
+- a narrow `StructuralProjections` witness facade exposing the eligible total scalar getters;
+- **create-once** hand-owned binding, fixture, and register-initial skeletons, grouped by their
+  declared owner modules.
+
+Preflight refuses a consumer module placed **inside** the generated namespace before writing anything,
+reports consumer packages and modules, includes consumer requirements in the manifest, persists
+canonical structural/opaque mapping identities as forward-compatible JSON rows, and reports mapping
+drift on later runs.
+
+Ask what you still owe with
+[`check --explain-bindings`](/docs/keiro/reference/keiro-dsl-cli#--explain-bindings); re-scaffolding
+never overwrites a hole and reports granular newly-required holes instead.
+
+## Related
+
+- [keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) — `--explain-bindings`, coverage gates, and
+  `--codec-comparison`.
+- [Service workspaces](/docs/keiro/reference/keiro-dsl-workspaces) — sharing mapped declarations across
+  several `.keiro` files.
+- [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) — the hand-owned-hole workflow.
+- [keiki field projections](/docs/keiki/reference/core#field-projections) — what a guard over a mapped
+  value compiles to.
+- [Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution) — why wire authority
+  sits in the declaration.

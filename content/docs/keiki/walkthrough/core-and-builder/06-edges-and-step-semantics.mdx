@@ -13,7 +13,7 @@ if you have not — `OutTerm` and `HsPred` are the `Edge` fields this chapter co
 
 ## `Edge`: one transition
 
-An edge bundles a guard, an update, a list of outputs, and a target vertex:
+An edge bundles a guard, an update, a list of outputs, a target vertex, and a mode:
 
 ```haskell
 -- keiki/src/Keiki/Core.hs
@@ -23,6 +23,7 @@ data Edge phi rs ci co s where
         , update :: Update rs w ci
         , output :: [OutTerm rs ci co]
         , target :: s
+        , mode :: EdgeMode
         } ->
         Edge phi rs ci co s
 ```
@@ -33,10 +34,11 @@ data Edge phi rs ci co s where
     update: { type: "Update rs w ci", description: "The copyless register update this edge applies. Its write-set index w is existentially hidden — see below." },
     output: { type: "[OutTerm rs ci co]", description: "The events emitted: [] for an ε-edge, [o] for a letter edge, [o1, o2, …] for a multi-event edge." },
     target: { type: "s", description: "The vertex this edge transitions to." },
+    mode: { type: "EdgeMode", description: "Live or ReplayOnly (keiki 0.3.0.0): which execution paths this edge serves." },
   }}
 />
 
-Two design choices are worth pausing on.
+Three design choices are worth pausing on.
 
 **`output` is a list, not a `Maybe`.** The source comment spells out the three cases:
 
@@ -89,6 +91,35 @@ edgeReadsInput :: Edge phi rs ci co s -> Bool
 edgeReadsInput Edge{update = u} = updateReadsInput u
 ```
 
+**`mode` splits one edge set across two execution paths.** *(keiki 0.3.0.0.)* An `EdgeMode` is
+`Live` or `ReplayOnly`:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+data EdgeMode = Live | ReplayOnly
+  deriving stock (Eq, Ord, Show, Bounded, Enum)
+
+instance Semigroup EdgeMode where
+  Live <> m = m
+  ReplayOnly <> _ = ReplayOnly
+
+instance Monoid EdgeMode where
+  mempty = Live
+```
+
+This field exists because of the central tension in this design: **one edge set serves both execution
+and replay.** Tightening a guard therefore does not just change what new commands may do — it
+reinterprets stored history, because the events already in the log were emitted under the old rule and
+must still find an inverting edge. A `ReplayOnly` edge is how you keep both: retain the removed region
+(`old-guard ∧ ¬new-guard`) as a *replay-only twin*, and the tightened rule governs all new traffic
+while stored events still replay. The twin's `update` defines how that history folds **today**.
+
+The `Monoid` law is the composition rule — `Live` is the identity, `ReplayOnly` absorbs — so a
+composite edge may fire forward only when every component may.
+
+We see both halves of the mechanism in the evaluators below: `delta`'s comprehension filters
+`mode e == Live`, and `applyEvent` runs its candidate search twice, once per phase.
+
 ## `SymTransducer`: the control graph
 
 A transducer is "a finite control graph plus a register file evolved by edges' update terms":
@@ -137,17 +168,23 @@ delta ::
 delta t s regs ci =
     case [ (target e, applyEdgeUpdate e regs ci)
          | e <- edgesOut t s
+         , mode e == Live
          , models (guard e) (regs, ci)
          ] of
         [single] -> Just single
         _ -> Nothing
 ```
 
-The list comprehension collects every edge whose guard `models` the `(regs, ci)` pair. The case
-match is the whole semantics: **`[single]` returns `Just`; everything else — zero matches *and* two
-or more matches — returns `Nothing`.** That a `>1`-match also collapses to `Nothing` is the runtime
-face of the single-valuedness invariant; the symbolic determinism checker proves statically that it
-cannot happen.
+The list comprehension collects every **live** edge whose guard `models` the `(regs, ci)` pair. The
+case match is the whole semantics: **`[single]` returns `Just`; everything else — zero matches *and*
+two or more matches — returns `Nothing`.** That a `>1`-match also collapses to `Nothing` is the
+runtime face of the single-valuedness invariant; the symbolic determinism checker proves statically
+that it cannot happen — and because only live edges reach this comprehension, that checker scopes to
+`Live`/`Live` pairs too.
+
+The `mode e == Live` guard is the forward half of the edge-mode mechanism: a replay-only edge is
+invisible here, so **no command can ever fire one**. `omega`, `step`, and `stepEither` all carry the
+same filter.
 
 <Callout type="warn">
 `delta` cannot tell you *why* it returned `Nothing`. "No outgoing edges", "no edge matched", and
@@ -287,6 +324,48 @@ The old `applyEvent` entry point is letter-flavoured: it inverts only an edge's 
 returns `Nothing` for both no match and ambiguity. Keiki 0.2 keeps it for compatibility, but durable
 hydration starts with `applyEventStreamingEither`, which preserves multi-event state and the exact
 failure reason.
+
+### Inversion is two-phase
+
+*(keiki 0.3.0.0.)* Replay is where a `ReplayOnly` edge earns its keep, and `applyEvent` shows the rule
+in eight lines:
+
+```haskell
+-- keiki/src/Keiki/Core.hs
+applyEvent t s regs co =
+  case candidates Live of
+    [single] -> Just single
+    [] -> case candidates ReplayOnly of
+      [single] -> Just single
+      _ -> Nothing
+    _ -> Nothing
+  where
+    candidates phase =
+      [ (target e, applyEdgeUpdate e regs ci)
+      | e <- edgesOut t s,
+        mode e == phase,
+        o : _ <- [output e],
+        Just ci <- [solveOutput o regs co],
+        models (guard e) (regs, ci)
+      ]
+```
+
+Read the case arms in order. **Live candidates are sought first.** Exactly one live candidate wins
+outright. Only when there are **zero** live candidates is the replay-only phase tried at all. And
+critically, ambiguity is judged *within the phase that produced candidates*: two live candidates fail
+immediately without ever consulting the replay-only arms.
+
+The consequence is the property that makes the mechanism safe to deploy: **an event attributable under
+the current rules always attributes there.** Only genuinely unattributable history — an event from the
+region a guard-tightening removed — falls through to a replay-only twin. Adding a twin cannot change
+how any currently-valid event replays.
+
+<Callout type="warn">
+Because the twin is the *only* inverting edge for that history, **deleting a deployed replay-only twin
+re-creates exactly the break it fixed.** Delete one only once every stream containing the region's
+events is terminal or truncated. See [tighten a guard without breaking
+replay](/docs/keiki/how-to/tighten-a-guard-without-breaking-replay).
+</Callout>
 
 ### `InFlight`: settled or mid-chain
 

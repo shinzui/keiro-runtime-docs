@@ -171,3 +171,46 @@ tutorials. `runStoreResource` is the `resourcet`-scoped variant.
   Open the store (and run migrations) **before** interpreting any `Store` effect: interpreters use
   the pool inside `KirokuStore`, which `withStore` acquires. The store never runs DDL.
 </Callout>
+
+## The store resource
+
+`Kiroku.Store.Effect.Resource` carries the acquired handle itself, so code deeper in the stack can
+retrieve it without it being threaded through every call:
+
+```haskell
+data KirokuStoreResource :: Effect
+type instance DispatchOf KirokuStoreResource = Static WithSideEffects
+
+getKirokuStore :: (KirokuStoreResource :> es) => Eff es KirokuStore
+
+withKirokuStore ::
+  (IOE :> es) => ConnectionSettings -> Eff (KirokuStoreResource : es) a -> Eff es a
+
+runKirokuStoreWith ::
+  (IOE :> es) => KirokuStore -> Eff (KirokuStoreResource : es) a -> Eff es a
+```
+
+It is a **static** effect, deliberately: the handle is acquired once per program and is not meant
+to be mocked — the mocking surface is the dynamic `Store` effect above, which operates *against* the
+handle. It is `Static WithSideEffects` rather than `Static NoSideEffects` because the pool performs
+IO during operation lookup.
+
+The two runners differ only in who owns the handle's lifetime:
+
+| Runner | Acquires / releases | Use when |
+|---|---|---|
+| `withKirokuStore` | yes — brackets `withStore` | the action *is* the program's store scope |
+| `runKirokuStoreWith` | no — the caller owns the handle | you already hold an open store and run several independent actions against it |
+
+<Callout type="info">
+  `runKirokuStoreWith` (kiroku-store **0.3.1.0**) exists to stop callers paying for acquisition per
+  action. Each `withKirokuStore` costs a connection pool, a dedicated `LISTEN` connection, and a
+  publisher thread; a process that opens exactly one store — the arrangement this effect is designed
+  for — should acquire once and install the handle repeatedly.
+
+  It still requires `IOE` despite neither bracketing nor unlifting, because `evalStaticRep` demands
+  `IOE` for any `Static WithSideEffects` effect.
+</Callout>
+
+Keiro's transactional command runners require this effect; see
+[the Command reference](/docs/keiro/reference/command).

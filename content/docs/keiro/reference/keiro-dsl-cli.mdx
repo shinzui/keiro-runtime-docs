@@ -10,15 +10,22 @@ Run `keiro-dsl` from an installed environment. In the Keiro source tree, use
 
 ```text
 keiro-dsl new <kind>
-keiro-dsl parse <file.keiro>
-keiro-dsl check <file.keiro> [--emit]
-keiro-dsl scaffold <file.keiro> --out DIR \
-  [--module-root PREFIX] [--collocate] [--force-generated-overwrite] [--goldens DIR]
-keiro-dsl diff --since <git-ref> <file.keiro> \
-  [--emit-goldens DIR] [--replay-impact-out FILE]
+keiro-dsl parse <FILE>
+keiro-dsl check <FILE> [--emit] [--explain-bindings] \
+  [--coverage-report FILE [--fail-on-opaque]]
+keiro-dsl scaffold <FILE> --out DIR \
+  [--module-root PREFIX] [--collocate] [--force-generated-overwrite] [--goldens DIR] \
+  [--codec-comparison MAPPED-NAME --comparison-out FILE]
+keiro-dsl diff --since <git-ref> <FILE> \
+  [--emit-goldens DIR] [--replay-impact-out FILE] \
+  [--gate SURFACE]… [--explain] [--report-out FILE] \
+  [--coverage-report FILE [--fail-on-opaque-increase]]
 ```
 
-`FILE` can be `/dev/stdin`.
+`FILE` is a path to a `.keiro` spec **or** a `.keiro-workspace` manifest, and can be `/dev/stdin`.
+Dispatch is by extension: a path ending in `.keiro-workspace` takes the
+[workspace](/docs/keiro/reference/keiro-dsl-workspaces) path, everything else takes the single-file
+path described here.
 
 ## `new`
 
@@ -71,6 +78,44 @@ service.keiro:<line>: <error|warning>[Code]: <message>
 
 Fix the `.keiro` source. Scaffold calls the same validator and cannot generate an invalid spec.
 
+### `--explain-bindings`
+
+On success, instead of `OK`, print a deterministic report of every **consumer-owned symbol** that
+[structural mapped types](/docs/keiro/reference/keiro-dsl-mapped-types) require you to write by hand
+— binding, fixture, and register-initial symbols, with their package, module, signature, and
+use sites:
+
+```bash
+keiro-dsl check service.keiro --explain-bindings
+```
+
+This is the answer to "the scaffold left me holes; what exactly do I owe, and where does each one get
+used?" It resolves the mapped type graph, so a spec that validates but whose graph does not resolve
+exits nonzero with the graph errors.
+
+### `--coverage-report FILE` and the opacity gates
+
+Write **reporting-only** structural/opaque mapped-root coverage as JSON:
+
+```bash
+keiro-dsl check service.keiro --coverage-report coverage.json
+```
+
+Without a gate flag, coverage is purely informational — it never changes the exit code. Two opt-in
+gates turn it into a policy check (each requires `--coverage-report`):
+
+| Flag | Command | Fails when |
+|---|---|---|
+| `--fail-on-opaque` | `check` | a **private persisted root** still contains an opaque boundary |
+| `--fail-on-opaque-increase` | `diff` | the change **adds** a named opaque boundary |
+
+<Callout type="info">
+  The default is deliberately reporting-first: opacity is a legitimate modelling choice, and which
+  roots must be fully structural is an operator decision, not a validator's. Adopt `--fail-on-opaque`
+  once a service has finished its structural adoption, and `--fail-on-opaque-increase` from the start
+  to ratchet.
+</Callout>
+
 ## `scaffold`
 
 ```bash
@@ -103,6 +148,30 @@ Embeds versioned old-payload fixtures into the generated aggregate harnesses, wh
 each one through `decodeRaw`. The default root is `<spec-dir>/golden-payloads`, so a project that
 adopts the convention needs no flag. Capture the fixtures with `diff --emit-goldens` at the moment of
 a version bump — see below.
+
+### `--codec-comparison MAPPED-NAME --comparison-out FILE`
+
+The two flags are a pair; supplying one without the other is an error. Together they emit a
+**non-production** historical-codec comparison module and runner for one structural mapped type:
+
+```bash
+keiro-dsl scaffold service.keiro --out gen \
+  --codec-comparison ShippingAddress \
+  --comparison-out gen/Generated/Ordering/Structural/Compare/ShippingAddress.hs
+```
+
+`--comparison-out` must be the **exact** generated module path under `--out`; a mismatch is refused
+before anything is written, with the expected path in the message.
+
+The generated runner classifies RFC 8785 canonical-JSON parity between the **declared** codec and a
+**historical** one, reporting structured migration differences plus declared-versus-observed branch
+coverage gaps. Use it to *prove* a migration rather than assert it.
+
+<Callout type="warn">
+  The comparison module and its runner are **evidence, never a wire authority**. Wire policy lives
+  exclusively in the checked declaration and the generated codec. Do not import a comparison module
+  from production code, and do not treat its output as a licence to skip a version bump.
+</Callout>
 
 ### Replay-audit module
 
@@ -151,6 +220,76 @@ BREAKING: <node> <facet> <subject>: <detail> [Code]
 | `ADDITIVE` | 0 | A compatible surface was added |
 | `WARNING` | 0 | Forward policy/behavior changed and requires review |
 | `BREAKING` | nonzero | Persisted bytes, rows, cursors, jobs, or derived IDs can remain under the old contract |
+
+### Compatibility vectors
+
+A single tier per finding was too coarse: one change can be safe for stored history and unsafe for a
+consumer's build, and which of those blocks *your* deploy depends on your rollout. So each finding
+carries a **compatibility vector** — an independent verdict on six surfaces:
+
+| Surface (`--gate` name) | The question it answers |
+|---|---|
+| `private-history-read` | can this binary still read its own stored history? |
+| `old-binary-read-new-events` | can a **not-yet-upgraded** binary read events the new one writes? |
+| `snapshot-hydration` | do existing snapshots still hydrate, or is a rebuild forced? |
+| `public-consumer` | does a published contract change under consumers? |
+| `persisted-identity` | does a durable identity (ID prefix, category, stable name, table, queue) move? |
+| `consumer-build` | does hand-owned consumer code still compile? |
+
+Each surface gets `compatible`, `advisory`, `breaking`, or `n/a`. When the vector is **not uniform**,
+`diff` prints it as a second indented line, omitting `n/a` surfaces and appending any rollout
+constraint:
+
+```text
+BREAKING: aggregate event OrderPlaced: payload changed without a version bump [EventPayloadChanged]
+    vector: private-history-read=breaking snapshot-hydration=advisory consumer-build=breaking rollout=workers-first
+```
+
+The four rollout constraints are `stop-the-world`, `workers-first`, `drain-required`, and
+`producer-last`. A finding with any rollout constraint is at least `WARNING`, even when no surface is
+breaking — the bytes are fine but the *order* is not.
+
+The printed tier is derived from the vector and the active gate: `BREAKING` when any **gated** surface
+is breaking, `WARNING` when any surface is advisory-or-breaking or a rollout constraint is present,
+`ADDITIVE` otherwise.
+
+### `--gate SURFACE`
+
+The default gate is **every surface except `old-binary-read-new-events`** — that one is excluded
+because a rolling deploy where old binaries briefly see new events is normal, and gating it by default
+would block ordinary additive work. `--gate` is repeatable and only ever *adds* to the default set:
+
+```bash
+# Also block on old binaries reading new events — for a deploy that cannot be ordered.
+keiro-dsl diff --since origin/main --gate old-binary-read-new-events service.keiro
+```
+
+There is no flag to *remove* a surface from the gate. Accept a breaking verdict by changing the spec
+or by making the deploy decision outside the tool, not by loosening the gate.
+
+### `--explain`
+
+Print, for every finding with an advisory or breaking surface, the containing paths, which direction
+each affected surface fails in, and the remediation choices:
+
+```text
+explain [EventPayloadChanged]
+  path: …
+  direction: private-history-read is breaking; …
+  remedy: …
+```
+
+Remedies are drawn from a closed vocabulary — version bump, upcaster, deployment order, contract
+revision, replay-only edge, state-codec bump, recompile consumers, re-scaffold workspace, run
+conformance, or an explicit do-not-deploy.
+
+### `--report-out FILE`
+
+Write the full machine-readable report, schema `keiro-dsl/diff-report/1`. It carries the active gate
+and every finding with its vector. **Consumers must ignore unknown object keys**: vector keys and
+`paths` entries are append-only, so later work can refine findings without invalidating a version-1
+reader. A workspace input adds a top-level `workspace` object and optional per-finding `declaration`
+and `useSites` keys; single-file reports keep their original bytes.
 
 Examples of breaking identity include an ID prefix, process category, workflow stable name, router
 stable name/key/target, read-model table/subscription, or queue identity. Event payload changes need
@@ -206,18 +345,25 @@ Affected event arrays are sorted. Feed the file to
 ## CI gates
 
 ```bash
-keiro-dsl check service.keiro
+keiro-dsl check service.keiro --coverage-report coverage.json
 keiro-dsl scaffold service.keiro --out generated --goldens golden-payloads
 cabal test your-generated-harness-component
 keiro-dsl diff --since origin/main \
   --emit-goldens golden-payloads \
   --replay-impact-out replay-impact.json \
+  --report-out diff-report.json \
+  --coverage-report coverage.json --fail-on-opaque-increase \
   service.keiro
 ```
 
 `check` proves current validity. Scaffold proves the generated plan is safe. The harness proves
-hand-owned behavior agrees with generated facts *and* that supplied old payloads still decode. `diff`
-proves the upgrade does not contain an unapproved breaking persistence or identity change.
+hand-owned behavior agrees with generated facts *and* that supplied old payloads still decode — and,
+for a spec with structural mapped types, that both binding laws hold, that the declared codec policy
+and current payload goldens match, that enum/union/optional fixtures are covered, that canonical
+projection witnesses agree, and that **forward stepping and replay reach equal state** over every
+mapped and scalar register. `diff` proves the upgrade does not contain an unapproved breaking
+persistence or identity change on any gated surface, and `--fail-on-opaque-increase` ratchets opacity
+in one direction.
 
 None of them reads your database. When the verdict is `affected`, the deploy gate is the
 [real-log replay audit](/docs/keiro/how-to/audit-real-logs-before-a-deploy).

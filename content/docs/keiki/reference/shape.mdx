@@ -1,16 +1,19 @@
 ---
 title: "Shape"
-description: "The GHC-upgrade-safe shape hash for a register file: regFileShapeHash, the canonical pre-hash encoding, and the CanonicalTypeName escape hatch."
+description: "The GHC-upgrade-safe shape hashes for a control state and a register file: stateShapeHash, regFileShapeHash, the canonical pre-hash encodings, and the CanonicalTypeName escape hatch."
 ---
 
-The types and functions on this page live in `Keiki.Shape`. A register file's *shape* is its
-type-level slot list — the ordered list of `(name, type)` pairs. The **shape hash** is a compact,
-deterministic discriminator over that slot list: a single SHA-256 of a canonical rendering of every
-slot's name and type, in order.
+The types and functions on this page live in `Keiki.Shape`. A snapshot persister needs a compact
+discriminator for **both halves** of the persisted state, and this module hashes each:
 
-A snapshot persister keys on it. keiro (経路) carries a `StateCodec (s, RegFile rs)`; before it can
+- [`stateShapeHash`](#canonicalstateshape--the-control-state-hash) hashes a generic rendering of the
+  **control-state datatype** *(keiki 0.3.1.0)*.
+- [`regFileShapeHash`](#regfileshapehash) hashes a canonical rendering of the **register file's**
+  type-level slot list — the ordered list of `(name, type)` pairs.
+
+A snapshot persister keys on them. keiro (経路) carries a `StateCodec (s, RegFile rs)`; before it can
 fast-forward hydration from a stored snapshot it must know that the snapshot was written against the
-*same* register-file shape this binary expects. The shape hash is that check.
+*same* control state and register-file shape this binary expects. The shape hashes are that check.
 
 <Callout type="info">
 The shape hash is **sensitive to structural change** — renaming, adding, removing, reordering a slot,
@@ -20,7 +23,51 @@ user-defined type that accepts the `CanonicalTypeName` default still includes it
 override the name when that module path is not part of your persistence identity.
 </Callout>
 
-## The model
+## `CanonicalStateShape` — the control-state hash
+
+*(keiki 0.3.1.0.)* Canonical structural identity for a control-state datatype.
+
+```haskell
+class CanonicalStateShape a where
+  -- | Canonical pre-hash rendering of the control-state datatype.
+  stateShapeCanonical :: Proxy a -> Text
+  default stateShapeCanonical :: (GStateShape (G.Rep a)) => Proxy a -> Text
+
+stateShapeHash :: forall a. CanonicalStateShape a => Proxy a -> Text
+```
+
+`stateShapeHash` is lower-case hexadecimal SHA-256 over the UTF-8 bytes of `stateShapeCanonical`.
+Pure, no `IO` — exactly like `regFileShapeHash`.
+
+Application datatypes opt in with an **empty instance**, which takes the `Generic`-derived default:
+
+```haskell
+data State = Pending | Complete Text
+  deriving stock (Generic)
+
+instance CanonicalStateShape State
+```
+
+### What the generic default records
+
+The datatype name, the constructor names **and their order**, and each constructor field's
+`CanonicalTypeName`. Rendered as `state:<Datatype>{<Ctor>|<Ctor>(<field>,<field>)|…}`, with `U1`
+(nullary) constructors contributing no parentheses and `K1` fields recursing through
+`CanonicalTypeName`.
+
+<Callout type="warn">
+  It deliberately records **no** field names, values, typeclass instances, function bodies, guards,
+  updates, or any other runtime semantics. A structural description cannot see a semantic fold
+  change: rewriting *how* a state folds without touching the datatype leaves `stateShapeHash`
+  identical.
+
+  A snapshot consumer must therefore carry a **separate version or fold fingerprint** for semantic
+  changes. keiro does exactly that — its snapshot compatibility discriminator composes this hash with
+  a fold fingerprint; see [snapshot
+  compatibility](/docs/keiro/reference/snapshot).
+</Callout>
+
+## The register-file model
 
 `regFileShapeHash` is **one** SHA-256 over **one** canonical pre-hash string. The string is built
 slot by slot, in slot-list order. Each slot contributes:
