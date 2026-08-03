@@ -11,6 +11,7 @@ documented with their owners below.
 ## File structure
 
 ```keiro-dsl
+language keiro-dsl 4
 context hospital-capacity
 module Acme.Services
 layout collocated
@@ -22,6 +23,13 @@ rule lifeCriticalOverride : DivertStatus -> Bool
 
 # top-level nodes follow
 ```
+
+The optional `language keiro-dsl <N>` preamble must be the **first significant clause** and must
+precede `context`. It selects a released parser and semantic contract before any body syntax is
+interpreted. A file without it is `legacy-unversioned` and means effective version 1; it is never
+silently rewritten. Language **4** is the sole stable contract — see
+[language versions](/docs/keiro/reference/keiro-dsl-language-versions) for the registry, the syntax
+profiles, and the source-selection diagnostics.
 
 `#` begins a line comment. Whitespace and newlines separate tokens but indentation is not structural;
 keywords and braces define the grammar. Quoted strings support `\"`, `\\`, `\n`, `\t`, and `\r`;
@@ -92,6 +100,86 @@ overwrites only files marked `-- @generated`. Typical output is:
 
 Operations primarily validate and connect references; they do not produce a separate generated
 module. Always use the emitted manifest as the exact module/dependency inventory for a concrete spec.
+
+## Aggregate transition expressions
+
+*(Language 2 and later.)* A transition's guard and register writes are a small **typed scalar
+expression language**, checked at `check` time and lowered into structural Keiki terms.
+
+```keiro-dsl
+  Open -- Adjust -->
+    guard cmd.balance + reg.balance >= -100
+      && reg.reserved + cmd.requested <= reg.capacity
+      && cmd.observedAt >= reg.openedAt
+      && cmd.limits.minimum >= reg.limits.minimum
+      && cmd.active == false
+      && cmd.mode == reg.mode
+      && cmd.requestId == reg.requestId
+    write balance := reg.balance + cmd.balance * 2
+    write reserved := reg.reserved + (cmd.requested - reg.capacity)
+    write machine := -7
+    write label := "adjusted"
+    write active := true
+    write mode := AccountMode.Restricted
+    write requestId := RequestId("req_01h455vb4pex5vsknk084sn02q")
+    write openedAt := "2026-02-03T04:05:06Z"
+    write limits := cmd.limits
+    emit Adjusted
+    goto Reviewed
+```
+
+<TypeTable
+  type={{
+    "reg.<name>": { type: "root", description: "Reads a register. A bare register name is also accepted where unambiguous." },
+    "cmd.<field>": { type: "root", description: "Reads a field of the consumed command." },
+    "<root>.<path>": { type: "structural path", description: "Reads into a mapped structural type. The path is required and checked against the resolved wire shape." },
+    "+ - *": { type: "arithmetic", description: "Exact Integer arithmetic; for Natural, + and * plus total monus subtraction." },
+    "== != < <= > >=": { type: "comparison", description: "Same-declaration equality and ordering. Cross-declaration, nominal-to-Text, and unqualified enum comparisons are rejected at check time." },
+    "&& ||": { type: "boolean", description: "Guard composition." },
+    "<Enum>.<Ctor>": { type: "enum literal", description: "Must be qualified by its declaration." },
+    "<Id>(\"…\")": { type: "nominal literal", description: "Validated against the declared identifier domain." },
+  }}
+/>
+
+<Callout type="warn">
+  **`Natural` subtraction is total monus, not partial subtraction.** `reg.reserved - reg.capacity`
+  evaluates to `0` when `capacity` exceeds `reserved` — it does not throw and does not go negative.
+  Both the concrete evaluator and the solver agree on this. If you meant "fail when it would go
+  negative", write the ordering guard explicitly. See [the keiki term
+  language](/docs/keiki/reference/core#the-term-language).
+</Callout>
+
+Scalar literal families cover `Integer` (including negatives), `Natural`, `Int`, `Text`, `Bool`,
+`Time` (as an ISO-8601 quoted string), qualified enum constructors, and validated nominal
+identifiers. Direct aggregate `Time` and `Natural` fields and registers check, scaffold, compile,
+encode, snapshot, and replay — that unified policy lives in `Keiro.Dsl.AggregateType` and is shared
+by validation, lowering, imports, packages, samples, fold fingerprints, diffs, replay impact, and
+scaffold refusals.
+
+### `implementation hole`
+
+A transition may instead declare that its behaviour is **hand-owned**:
+
+```keiro-dsl
+  Reviewed -- Close -->
+    implementation hole
+    emit ClosedEvent
+    goto Closed
+```
+
+Every version-2 transition is **exclusively** generated-owned or explicitly `implementation hole` —
+never both, and never implicitly one of them. Ownership is part of the checked semantic graph, the
+canonical rendering, the diff surface, the scaffold record, and the fold fingerprint. See
+[scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) for what each owner may write.
+
+<Callout type="info">
+  **A transition that changes state without emitting is rejected** *(Keiro 0.7.0.0,
+  `AggregateEventlessStateChange`)*. An accepted edge with no event is legal only as a **true
+  no-op** — same vertex, no register writes. Otherwise the change would be invisible to replay, so a
+  persisted log would fold to a different state than the live command produced.
+  `EventOutputCommandMismatch` is the sibling code for an emitted event whose fields do not
+  correspond to the consumed command.
+</Callout>
 
 ## CLI and lifecycle
 

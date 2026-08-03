@@ -278,6 +278,34 @@ The safe procedure:
 5. If you cannot bump (emergency), delete the affected `keiro_snapshots` rows; the miss path is
    benign.
 
+<Callout type="warn">
+  **The Keiro 0.9.0.0 upgrade is one scheduled instance of step 2, for every generated stream at
+  once.** Aggregate fold fingerprints widened from a 16-hex FNV-1a-64 digest to a 32-hex FNV-1a-128
+  one, so *every* DSL-generated snapshot misses on the deploy that adopts 0.9. Nothing is corrupt and
+  nothing needs bumping by hand — but size the window for one full replay per snapshot-bearing
+  stream, and run step 3's replay audit as usual.
+</Callout>
+
+<Callout type="info">
+  **Two silent-invalidation hazards were closed in 0.9.0.0 (ADR-18), and they are worth knowing
+  because they used to make step 2 unreliable in the *other* direction.** The pre-hash surface reused
+  the human-facing pretty printer, so a presentation-only rendering edit could invalidate every
+  snapshot with no intended fold migration; pre-hash bytes now come only from
+  `Keiro.Dsl.CanonicalEncoding`, frozen by complete surface goldens, and pretty printing may evolve
+  independently. And an unknown runtime-semantics identifier used to mint a new fold segment by
+  default, so merely registering a successor language version could invalidate snapshots even when it
+  changed no replay behaviour; fold identity now derives from
+  [runtime capability profiles](/docs/keiro/reference/keiro-dsl-language-versions#runtime-capability-profiles),
+  where each capability must *explicitly* decide whether it contributes a segment.
+
+  Two smaller correctness wins ride along: fold surface construction is now **total** — resolution
+  failures return a `FoldSurfaceError` that diff, replay-impact, workspace, CLI, and scaffold
+  planning propagate or refuse on, instead of silently omitting a canonical segment — and replay
+  comparison now groups transitions structurally, cancels exact and provable guard-loosening
+  multisets, and sorts remaining canonical values before pairing, so pairing guard-disambiguated
+  siblings is **declaration-order invariant**.
+</Callout>
+
 For invisible changes with a missed manual bump, the audit's seeded-vs-full comparison is the
 pre-deploy backstop and `keiro.snapshot.seed.divergence` is the sampled runtime backstop.
 

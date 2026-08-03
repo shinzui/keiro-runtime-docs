@@ -37,6 +37,50 @@ keiro-dsl scaffold reservation.keiro --out src --module-root Acme --collocate
 `<Ctx>` is the spec's `context` name in PascalCase (`hospital-capacity` → `HospitalCapacity`);
 `<Node>` is the aggregate/process/etc. name. The namespace **is** the on-disk path under `--out`.
 
+### Context-level modules
+
+Not everything is per-node. Two modules live one level up, at the **context** root:
+
+- `Generated.<Ctx>.ReplayAudit` — the context-wide `auditTargets` list.
+- `Generated.<Ctx>.Nominals` *(Keiro 0.7.0.0, **breaking**)* — every service-level ID and enum.
+
+<Callout type="warn">
+  **Language 3 moved the nominals, and made them abstract.** Before Keiro 0.7.0.0, service-level IDs
+  and enums were **redeclared in every aggregate's `Domain` module**. They now live in exactly one
+  `Generated.<Ctx>.Nominals`, and each generated prefix-bearing ID is **abstract**: import
+  `parseX`, `mkX`, and `xText` from `Nominals`. The raw constructor and `unsafeXFromLegacyText`
+  exist only in the generated *internal replay* module, which hand-owned code must not import.
+
+  A hand-owned module that constructed these values by reaching into an aggregate `Domain` will not
+  compile after re-scaffolding — repoint the import at `Nominals`. Re-scaffolding overwrites only
+  generated files, and **event wire bytes and canonical nominal identities are unchanged**, so this
+  is a source-level break with no data consequence.
+
+  Version 1, version 2, and legacy-unversioned generated output retain their released constructor and
+  decoder behaviour. Aggregate rings import only the declarations they actually use, unused
+  declarations are not pulled into unrelated domains, and reordering members or moving ownership
+  between files leaves generated nominal type identity unchanged.
+</Callout>
+
+### Per-aggregate behaviour modules
+
+*(Keiro 0.6.0.0 for version-2 aggregates; adjusted in 0.9.0.0.)* A version-2 aggregate additionally
+emits:
+
+- `Generated.<Ctx>.<Node>.Transducer` — the assembled machine, its fold fingerprint,
+  `BehaviorOwnership`, and a labelled `...PredicateVerifications` action.
+- `Generated.<Ctx>.<Node>.BehaviorContract` and the create-once `<Ctx>.<Node>.BehaviorHoles` — see
+  [prove aggregate behaviour is
+  complete](/docs/keiro/how-to/prove-aggregate-behavior-is-complete).
+
+<Callout type="info">
+  **No `Expressions` module is emitted** as of Keiro 0.9.0.0 — not even for a Hole-only aggregate.
+  Each generated-owned `B.onCmd` block renders its checked guard and ordered writes **inline** beside
+  its emits and target; nested projection plumbing is shared only through transition-local `let`
+  aliases rather than becoming a guard/write helper seam. If you have a generated `Expressions`
+  module from an earlier scaffold, delete it and remove it from `other-modules`.
+</Callout>
+
 ### Make it the spec's standing default
 
 A team's layout usually belongs in the `.keiro` file so every checkout scaffolds the same way. Add

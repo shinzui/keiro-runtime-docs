@@ -1,0 +1,290 @@
+---
+title: "keiro-dsl language versions"
+description: "The language keiro-dsl N preamble, the released-language registry, syntax profiles, runtime capability profiles, and the source-selection diagnostics that fire before any body grammar runs."
+---
+
+Everything on this page lives in `Keiro.Dsl.LanguageVersion` *(new in Keiro 0.6.0.0; extended
+through 0.9.0.0)*. It answers one question: **which released contract is this `.keiro` file written
+against?**
+
+Before Keiro 0.6.0.0 nothing in a `.keiro` source said which parser and semantic contract its author
+intended, so a newer tool could accept syntax an older tool rejected while both appeared to be
+reading the same unversioned language. The preamble closes that gap. See ADR-16 for the full
+rationale.
+
+## The preamble
+
+The **first significant clause** of a `.keiro` file may be a language declaration, and it must
+precede `context`:
+
+```text
+language keiro-dsl 4
+
+context Billing { … }
+```
+
+The parser recognises this clause **without interpreting body syntax**, resolves it through one
+supported-version registry, and only then invokes the selected body grammar. That ordering is the
+whole point: an unsupported future version fails at the boundary with a clear answer rather than
+producing a pile of confusing syntax errors from a grammar that was never going to fit.
+
+<Callout type="info">
+  **A missing preamble is legal.** Such a source is `LegacyUnversioned` and selects effective
+  version 1. It is **never silently rewritten** into an explicit declaration — only an explicit
+  upgrade operation does that.
+</Callout>
+
+```haskell
+data SourceLanguage
+    = LegacyUnversioned
+    | DeclaredLanguage
+        { declaredLanguageVersion :: !LanguageVersion
+        , languageVersionLoc :: !Loc
+        }
+    deriving stock (Eq, Show)
+
+sourceFormText :: SourceLanguage -> Text          -- "legacy-unversioned" | "declared"
+declaredLanguageVersionMaybe :: SourceLanguage -> Maybe LanguageVersion
+effectiveLanguageVersion :: SourceLanguage -> LanguageVersion
+```
+
+Note the pair of accessors: `declaredLanguageVersionMaybe` is `Nothing` for a legacy source, while
+`effectiveLanguageVersion` is `1`. Keeping "what the file says" separate from "what it means" is
+what lets a [workspace](/docs/keiro/reference/keiro-dsl-workspaces) merge a legacy member and an
+explicitly-version-1 member honestly — provenance wraps the semantic graph rather than becoming a
+field on it:
+
+```haskell
+data ParsedSource = ParsedSource
+    { parsedSourceLanguage :: !SourceLanguage
+    , parsedSpec :: !Spec
+    }
+    deriving stock (Eq, Show)
+```
+
+## The released registry
+
+```haskell
+data LanguageDefinition = LanguageDefinition
+    { definitionVersion :: !LanguageVersion
+    , definitionPredecessor :: !(Maybe LanguageVersion)
+    , definitionBodyParser :: !LanguageBodyParser
+    , definitionSyntaxProfile :: !SyntaxProfile
+    , definitionRuntimeSemanticsProfile :: !RuntimeSemanticsProfile
+    , definitionSupport :: !LanguageSupport
+    }
+    deriving stock (Eq, Show, Generic)
+
+languageRegistry :: NonEmpty LanguageDefinition
+supportedLanguageVersions :: NonEmpty LanguageVersion
+currentStableLanguageVersion :: LanguageVersion
+lookupLanguageDefinition :: LanguageVersion -> Maybe LanguageDefinition
+languageSupportForVersion :: LanguageVersion -> Maybe LanguageSupport
+```
+
+The registry is **append-only**. Four contracts are released:
+
+<TypeTable
+  type={{
+    "1": { type: "syntax-profile/1 · runtime-semantics/1", description: "compatibility-only. The language frozen when versioning landed. No predecessor." },
+    "2": { type: "syntax-profile/2 · runtime-semantics/1", description: "compatibility-only. Adds nominal bindings, Integer scalars, typed aggregate expressions, and explicit transition implementation ownership." },
+    "3": { type: "syntax-profile/2 · runtime-semantics/2", description: "compatibility-only. Same syntax as 2; adds the enforced TypeID-v7 generated-ID domain and exact nominal equality." },
+    "4": { type: "syntax-profile/2 · runtime-semantics/3", description: "STABLE. Same syntax as 2 and 3; adds contract-field TypeID admission and strict spec-surface validation." },
+  }}
+/>
+
+<Callout type="warn">
+  **Accepted and stable are different registry facts.** `supportedLanguageVersions` enumerates every
+  accepted contract; `currentStableLanguageVersion` selects the **one** entry marked `Stable` and
+  *fails* if the registry ever contains zero or several. Versions 1–3 and `LegacyUnversioned` remain
+  fully readable with their immutable released meaning — designating a new stable version changes the
+  authoring and primary-test baseline, never the behaviour of a predecessor.
+
+  ```haskell
+  data LanguageSupport = CompatibilityOnly | Stable
+      deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+  languageSupportText :: LanguageSupport -> Text   -- "compatibility-only" | "stable"
+  ```
+
+  Since Keiro 0.9.0.0, language 4 is stable and every `keiro-dsl new <kind>` skeleton starts there.
+</Callout>
+
+Once a version is released, new syntax or semantics must be registered under a **successor** with its
+predecessor relation. Existing version parsers and their rejection fixtures are never widened.
+
+### Syntax profiles
+
+A syntax profile is an **exact named set of grammar capabilities**, not a numeric
+minimum-version rule. That distinction matters: versions 2, 3, and 4 all deliberately select
+`keiro-dsl/syntax-profile/2`, so adding a future version cannot inherit syntax by accident of
+numeric ordering.
+
+```haskell
+data LanguageFeature
+    = NominalBindingSyntax
+    | IntegerScalarSyntax
+    | TypedAggregateExpressionSyntax
+    | ExplicitTransitionImplementationSyntax
+    deriving stock (Eq, Ord, Show)
+
+syntaxProfileIdentifier :: SyntaxProfile -> Text
+syntaxProfileSupportsFeature :: SyntaxProfile -> LanguageFeature -> Bool
+languageFeatureMinimumVersion :: LanguageFeature -> LanguageVersion
+languageVersionsSupportingFeature :: LanguageFeature -> [LanguageVersion]
+languageSupportsFeature :: LanguageVersion -> LanguageFeature -> Bool
+```
+
+`keiro-dsl/syntax-profile/1` is empty; `keiro-dsl/syntax-profile/2` carries all four features. Keeping
+these gates beside the registry is what stops the parser growing an independent list of textual
+spellings — a version-2 feature gate arises from its grammar production, not from a raw source
+substring.
+
+### Runtime capability profiles
+
+*(Keiro 0.9.0.0, ADR-18.)* Runtime behaviour used to be represented by opaque identifier strings,
+with each consumer maintaining its own comparison or membership list — so adding a successor could
+silently omit one list and fall back to legacy behaviour. Consumers now query **named capabilities**:
+
+```haskell
+data RuntimeCapability
+    = GeneratedIdDomainTypeIdV7
+    | NominalEqualityV2
+    | ContractIdDomainTypeIdV7
+    | StrictSpecSurfaceValidation
+    deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+runtimeProfileIdentifier :: RuntimeSemanticsProfile -> Text
+runtimeProfileHasCapability :: RuntimeSemanticsProfile -> RuntimeCapability -> Bool
+runtimeProfileFoldSegments :: RuntimeSemanticsProfile -> [Text]
+capabilityFoldSegment :: RuntimeCapability -> Maybe Text
+```
+
+The `RuntimeSemanticsProfile` constructor stays **private**, so a caller can only select an
+authoritative registry profile — runtime behaviour cannot be widened ad hoc. Released successor
+profiles are **monotone**, enforced by a registry test.
+
+The subtle part is fold identity. Each capability **exhaustively** chooses `Just segment` or
+`Nothing`:
+
+<TypeTable
+  type={{
+    GeneratedIdDomainTypeIdV7: { type: "Just \"semantic-contract:keiro-dsl/runtime-semantics/2\"", description: "Enforced TypeID-v7 domain on generated prefix-bearing IDs — changes replay behaviour." },
+    NominalEqualityV2: { type: "Just \"semantic-contract:keiro-dsl/runtime-semantics/2\"", description: "Exact nominal equality — shares the runtime-semantics-2 segment." },
+    ContractIdDomainTypeIdV7: { type: "Nothing", description: "Contract-field ID admission is a boundary check; it contributes no aggregate fold segment." },
+    StrictSpecSurfaceValidation: { type: "Nothing", description: "Check-time validation only; contributes no aggregate fold segment." },
+  }}
+/>
+
+A profile's segments are the **deduplicated ascending union** of its capabilities' segments. So
+adding a capability is a compile-time obligation to decide whether it changes replay behaviour —
+there is no unknown-identifier fallback that mints fold identity by default, which is exactly the
+hazard that used to invalidate snapshots on a version registration that changed nothing.
+
+<Callout type="warn">
+  **Breaking in Keiro 0.8.0.0.** `LanguageDefinition` gained `definitionSyntaxProfile` and
+  `definitionRuntimeSemantics`, and is exported as `LanguageDefinition (..)` — so positional
+  construction and non-wildcard record patterns no longer compile. `definitionBodyParser` remains as
+  a **compatibility projection** but no longer drives parser dispatch; dispatch reads
+  `definitionSyntaxProfile`. Likewise `definitionRuntimeSemantics` is a stable `Text` projection for
+  serialized records and diagnostic text — runtime behaviour must query
+  `definitionRuntimeSemanticsProfile`.
+
+  ```haskell
+  definitionRuntimeSemantics :: LanguageDefinition -> Text
+  ```
+</Callout>
+
+## Source-selection diagnostics
+
+These fire **before** a body grammar is selected, so they are reported separately from ordinary
+validation findings.
+
+```haskell
+data SourceLanguageErrorCode
+    = InvalidLanguageVersion
+    | UnsupportedLanguageVersion
+    | DuplicateLanguagePreamble
+    | MisplacedLanguagePreamble
+    | LanguageFeatureRequiresVersion
+    deriving stock (Eq, Ord, Show)
+
+data SourceLanguageDiagnostic = SourceLanguageDiagnostic
+    { sourceLanguageErrorCode :: !SourceLanguageErrorCode
+    , sourceLanguageSource :: !FilePath
+    , sourceLanguageLoc :: !Loc
+    , sourceLanguageToken :: !(Maybe Text)
+    , sourceLanguageDeclaredVersion :: !(Maybe LanguageVersion)
+    , sourceLanguageSupportedVersions :: !(NonEmpty LanguageVersion)
+    }
+    deriving stock (Eq, Show)
+
+sourceLanguageErrorCodeText :: SourceLanguageErrorCode -> Text
+sourceLanguageDiagnosticMessage :: SourceLanguageDiagnostic -> Text
+renderSourceLanguageDiagnostic :: SourceLanguageDiagnostic -> Text
+```
+
+<TypeTable
+  type={{
+    InvalidLanguageVersion: { type: "constructor", description: "Zero or a non-decimal value. Only positive decimals are versions at all." },
+    UnsupportedLanguageVersion: { type: "constructor", description: "A well-formed positive version this build does not know. The diagnostic carries the complete supported set." },
+    DuplicateLanguagePreamble: { type: "constructor", description: "More than one preamble." },
+    MisplacedLanguagePreamble: { type: "constructor", description: "A preamble after context. A nested language field inside a declaration is not a preamble at all and does not trigger this." },
+    LanguageFeatureRequiresVersion: { type: "constructor", description: "The body uses a grammar feature the selected syntax profile does not carry." },
+  }}
+/>
+
+The parse boundary keeps the two kinds of failure apart:
+
+```haskell
+data ParseFailure
+    = SourceLanguageFailure !SourceLanguageDiagnostic
+    | BodyGrammarFailure !Text
+    deriving stock (Eq, Show)
+
+renderParseFailure :: ParseFailure -> Text
+```
+
+<Callout type="info">
+  **The preamble is recognised structurally, not textually.** Comments, strings, wire keys, and legal
+  identifiers containing `using`, `Integer`, `implementation hole`, `reg.`, or `cmd.` are inert, and a
+  nested `language` field inside a declaration does not look like a misplaced or duplicate preamble.
+  This was a bug fix in Keiro 0.7.0.0.
+</Callout>
+
+## Inspecting a source
+
+```bash
+keiro-dsl inspect FILE --format=json
+```
+
+Reports source-language provenance for a single `.keiro` file or a workspace manifest: the declared
+version (or `legacy-unversioned`), the effective version, and each version's support lifecycle —
+language 4 as `stable`, 1–3 as `compatibility-only`. See
+[the CLI reference](/docs/keiro/reference/keiro-dsl-cli). Source-language rows also appear in
+scaffold and workspace records.
+
+## The located surface frontend
+
+*(Keiro 0.8.0.0, advanced API.)* `Keiro.Dsl.Source`, `Keiro.Dsl.Syntax`, and `Keiro.Dsl.Frontend`
+publish an ordered, **located** `SurfaceSource` with exact half-open spans, and lower explicitly to
+the existing `ParsedSource`/`Spec` semantic boundary. Structured frontend failures carry the phase
+(source selection, body parsing, or lowering), a stable code, an exact primary span, a message,
+expected items, and supported-version metadata. Megaparsec types remain internal.
+
+Reach for this only when building **source-aware tooling** — an editor integration, a formatter, a
+codemod. Ordinary validation, scaffolding, and diffing consume only lowered semantic values.
+
+<Callout type="warn">
+  Canonical pretty printing remains **non-lossless**: the located surface layer does not retain
+  comments or whitespace. `parseSource`, `parseSpec`, `parseSpecText`, their rendered diagnostics, and
+  generated Haskell bytes were all unchanged by this addition.
+</Callout>
+
+## Related
+
+- [The keiro-dsl toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain) — where the language
+  contract sits in the check → scaffold → diff pipeline.
+- [Notation](/docs/keiro/reference/keiro-dsl-notation) — the grammar the profiles gate.
+- [Workspaces](/docs/keiro/reference/keiro-dsl-workspaces) — how provenance survives composition.
+- [The CLI](/docs/keiro/reference/keiro-dsl-cli) — `inspect` and the rest of the commands.

@@ -1,0 +1,205 @@
+---
+title: "Prove aggregate behaviour is complete"
+description: "Enumerate every obligation an aggregate's transition graph creates, fill the generated BehaviorHoles witnesses, and gate CI on the compiled keiro/behavior-conformance/1 report."
+---
+
+You have a `keiro-dsl` aggregate and you want a gate that fails when a transition, a rejection, or a
+replay path is **untested** — not merely when an existing test breaks. Coverage tools answer "did
+this line run?"; this answers "is there any behaviour the source graph obliges that nothing has
+demonstrated?"
+
+<Callout type="info">
+  Requires Keiro 0.7.0.0 or later and a **version-2 or later** aggregate (`language keiro-dsl 2`
+  through `4`). Assumes you can already
+  [scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes).
+</Callout>
+
+## Goal
+
+A CI target that reconciles the obligations your `.keiro` source creates against the witnesses your
+code supplies, and exits non-zero when the two disagree.
+
+## The two layers
+
+Keep them apart; they answer different questions and fail for different reasons.
+
+| Layer | Command | Needs consumer code? | Answers |
+| --- | --- | --- | --- |
+| **Static obligations** | `keiro-dsl behavior-obligations` | No | What does the graph *require*? |
+| **Compiled conformance** | the generated report | Yes | Has each requirement been *demonstrated*? |
+
+## Steps
+
+1. **Inventory the obligations.** This needs nothing but the spec, so run it the moment you change a
+   transition:
+
+   ```bash
+   keiro-dsl behavior-obligations service.keiro --format=text
+   ```
+
+   It enumerates three kinds — every **live transition** from a live-reachable state, every
+   **reachable rejection cell**, and every **replay-only transition** — each with a stable semantic
+   key and its owning workspace member.
+
+2. **Scaffold.** Every version-2 aggregate gets a generated `BehaviorContract` module and a
+   **create-once** `BehaviorHoles` module:
+
+   ```bash
+   keiro-dsl scaffold service.keiro --out src
+   ```
+
+   `Generated.<Ctx>.<Aggregate>.BehaviorContract` is regenerated on every run and must not be
+   edited. `<Ctx>.<Aggregate>.BehaviorHoles` is yours — scaffold creates it once and never
+   overwrites it.
+
+3. **Fill each witness.** `behaviorWitnesses` is a plain list. Each entry pairs an obligation key
+   with the evidence for it:
+
+   ```haskell
+   data BehaviorWitness
+       = Pending BehaviorKey
+       | LiveWitness
+           { witnessKey :: BehaviorKey
+           , witnessHistory :: [JourneyEvent]
+           , witnessCommand :: JourneyCommand
+           , witnessExpected :: LiveExpectation
+           }
+       | ReplayWitness
+           { witnessKey :: BehaviorKey
+           , witnessHistoryPrefix :: [JourneyEvent]
+           , witnessObservedChunk :: [JourneyEvent]
+           }
+       deriving stock (Eq, Show)
+
+   data LiveExpectation
+       = Emits (NonEmpty JourneyEvent)
+       | Rejects RejectionClass
+       | NoOp
+       deriving stock (Eq, Show)
+   ```
+
+   A `LiveWitness` states a history, a command, and what should happen. Note that all three
+   outcomes are first-class: `Emits` for a transition, `Rejects` for a reachable rejection cell, and
+   `NoOp` for an accepted transition that emits nothing. `Pending` is the honest placeholder for an
+   obligation you have not gotten to — it is *recorded*, and it **fails the gate**.
+
+   ```haskell
+   behaviorWitnesses :: [BehaviorWitness]
+   behaviorWitnesses =
+     [ live "behavior-v1-37578058289e05a9" [] (startCommand 0) (Emits (startedEvent 0 :| []))
+     , live "behavior-v1-43b8fc7fa48595dd" activeHistory (startCommand 0) (Rejects RejectNoMatchingEdge)
+     , live "behavior-v1-ea258e9c47d66aac" activeHistory pingCommand NoOp
+     , ReplayWitness (key "behavior-v1-f0fbe3a3ba0b40e8") activeHistory
+         [retiredEvent 0, retirementAuditedEvent 0]
+     ]
+   ```
+
+4. **Run the report and gate on it.** The generated `behaviorCoverageReport` reconciles witnesses
+   against requirements, and the compiled target exits non-zero on failure:
+
+   ```bash
+   cabal run <your-behavior-conformance-target>
+   cabal run <your-behavior-conformance-target> -- --format=json
+   ```
+
+## Reading the report
+
+The `keiro/behavior-conformance/1` schema has nine buckets, and the distinctions are the point:
+
+```haskell
+data BehaviorConformanceReport = BehaviorConformanceReport
+    { reportRequired :: ![BehaviorKey]
+    , reportFilled :: ![BehaviorKey]
+    , reportPending :: ![BehaviorKey]
+    , reportMissing :: ![BehaviorKey]
+    , reportDuplicate :: ![BehaviorKey]
+    , reportStale :: ![BehaviorKey]
+    , reportFailed :: ![BehaviorFailure]
+    , reportVerified :: ![BehaviorKey]
+    , reportUnverified :: ![BehaviorKey]
+    }
+    deriving stock (Eq, Show)
+```
+
+<TypeTable
+  type={{
+    required: { type: "[BehaviorKey]", description: "Every obligation the graph creates." },
+    filled: { type: "[BehaviorKey]", description: "Obligations with a witness that executed and agreed." },
+    pending: { type: "[BehaviorKey]", description: "Explicitly deferred with Pending. Honest, and still a failure." },
+    missing: { type: "[BehaviorKey]", description: "Required but no witness at all — usually a transition you just added." },
+    duplicate: { type: "[BehaviorKey]", description: "Two witnesses claim one key. Ambiguous evidence, so it fails." },
+    stale: { type: "[BehaviorKey]", description: "A witness for a key the graph no longer requires — usually a transition you just deleted." },
+    failed: { type: "[BehaviorFailure]", description: "A witness ran and disagreed. Carries a stable code and detail." },
+    verified: { type: "[BehaviorKey]", description: "Symbolically verified in addition to being executed." },
+    unverified: { type: "[BehaviorKey]", description: "Executed and correct, but the guard was not symbolically proved." },
+  }}
+/>
+
+Each witness is checked hard. The report uses exact Keiki edge attribution
+([`stepDetailedEither`](/docs/keiki/reference/core#detailed-forward-success) and
+[`applyEventsDetailedEither`](/docs/keiki/reference/core#replay-attribution)) to confirm the **exact
+edge** that fired, and it checks codec-crossing replay, the event values, the final vertex, and
+**every register** — not just that the command was accepted.
+
+## The one real decision: `--fail-on-unverified`
+
+Completeness fails by default. The separate question is what to do about an obligation that executes
+correctly but whose guard could not be *symbolically* proved:
+
+```haskell
+behaviorConformancePassedWith :: Bool -> BehaviorConformanceReport -> Bool
+behaviorConformancePassedWith failOnUnverified report =
+    null (reportPending report)
+        && null (reportMissing report)
+        && null (reportDuplicate report)
+        && null (reportStale report)
+        && null (reportFailed report)
+        && (not failOnUnverified || null (reportUnverified report))
+```
+
+- **Leave it off** (the default) for most services. `unverified` is reported and visible, and your
+  behaviour is still demonstrated by execution.
+- **Turn it on** when policy demands proof-strength evidence — a regulated aggregate, a
+  security-relevant guard.
+
+<Callout type="warn">
+  Before you turn it on, know why keys land in `unverified`. A guard behind an `implementation hole`
+  is opaque by construction. And since Keiki 0.7, a predicate crossing a **one-way** generated
+  projection is classified `UnverifiedOpaque` even when it is in fact fine — recovering a `Verified*`
+  result requires an exact projection with a reverse witness, which is what the enforced
+  [TypeID-v7 id domain](/docs/keiro/reference/codec#the-enforced-identifier-domain) supplies for
+  language-3 prefix-bearing IDs. Do **not** relabel an unverified key as source-proved to make the
+  gate green; that is the one thing the honest surface exists to prevent.
+</Callout>
+
+## Verify it worked
+
+The text render prints one count per bucket, then a `FAIL` line per failure:
+
+```text
+behavior conformance: Journey
+schema: keiro/behavior-conformance/1
+required: 14
+filled: 14
+pending: 0
+missing: 0
+duplicate: 0
+stale: 0
+failed: 0
+verified: 11
+unverified: 3
+```
+
+The proof that the gate has teeth is negative: delete one witness and confirm the key moves to
+`missing` and the target exits non-zero. Keiro's own suite does exactly this with a mutation test.
+
+## Related
+
+- [The keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) — `behavior-obligations` and its output
+  formats.
+- [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) — the create-once module
+  protocol this reuses.
+- [Check a service spec](/docs/keiro/how-to/check-a-service-spec) — the validation gate that runs
+  first.
+- [Language versions](/docs/keiro/reference/keiro-dsl-language-versions) — why this needs a
+  version-2 or later aggregate.

@@ -11,6 +11,9 @@ Run `keiro-dsl` from an installed environment. In the Keiro source tree, use
 ```text
 keiro-dsl new <kind>
 keiro-dsl parse <FILE>
+keiro-dsl pretty <FILE>
+keiro-dsl inspect <FILE> [--format=json]
+keiro-dsl behavior-obligations <FILE> [--format=text|json]
 keiro-dsl check <FILE> [--emit] [--explain-bindings] \
   [--coverage-report FILE [--fail-on-opaque]]
 keiro-dsl scaffold <FILE> --out DIR \
@@ -44,6 +47,13 @@ keiro-dsl check service.keiro
 read models needed by its dispatch example. Each starter is compiled by the upstream skeleton
 conformance suite.
 
+<Callout type="info">
+  *(Keiro 0.9.0.0.)* Every skeleton now begins with a `language keiro-dsl 4` preamble, because
+  language 4 is the sole `Stable` registry entry. The starter version is **derived** from that
+  registry fact rather than hard-coded, so a future stable designation moves the skeletons with it.
+  See [language versions](/docs/keiro/reference/keiro-dsl-language-versions).
+</Callout>
+
 ## `parse`
 
 `parse` parses and pretty-prints the canonical spec. It exits 0 on success and nonzero with a located
@@ -56,6 +66,65 @@ keiro-dsl parse service.keiro
 The parser rejects raw newlines in strings, duplicate singleton aggregate clauses (`wire`,
 `projection`), duplicate transition `goto`, invalid identifiers, overflowed `Int` literals, and
 missing grammar-mandatory policy arms before semantic validation runs.
+
+## `pretty`
+
+`pretty` parses a `.keiro` file and prints its **canonical source form**. Note that canonical
+printing is deliberately **non-lossless** — comments and whitespace are not retained.
+
+```bash
+keiro-dsl pretty service.keiro
+```
+
+## `inspect`
+
+*(Keiro 0.6.0.0.)* `inspect` reports **source-language provenance** as JSON, for a single `.keiro`
+file or a whole workspace manifest.
+
+```bash
+keiro-dsl inspect service.keiro --format=json
+keiro-dsl inspect service.keiro-workspace --format=json
+```
+
+It answers three separate questions per source: what the file **declared** (a version, or
+`legacy-unversioned`), what version is therefore **effective**, and what that version's **support
+lifecycle** is — `stable` for language 4, `compatibility-only` for 1 through 3.
+
+<Callout type="info">
+  The declared/effective split is not pedantry. A workspace can hold a legacy-unversioned member and
+  an explicitly-version-1 member; both are effective version 1, but only one of them said so. `inspect`
+  reports each member honestly rather than inventing one declaration for the merged graph. The same
+  rows appear in scaffold and workspace records. See [language
+  versions](/docs/keiro/reference/keiro-dsl-language-versions).
+</Callout>
+
+## `behavior-obligations`
+
+*(Keiro 0.7.0.0.)* `behavior-obligations` inventories the **complete finite behaviour surface** of
+every version-2 aggregate in a file or workspace — a static listing, with no compilation and no
+consumer code involved.
+
+```bash
+keiro-dsl behavior-obligations service.keiro --format=text
+keiro-dsl behavior-obligations service.keiro --format=json
+```
+
+Three obligation kinds are enumerated:
+
+- every **live transition** from a live-reachable state;
+- every **reachable rejection cell** — a (state, command) pair that is reachable and has no
+  accepting transition; and
+- every **replay-only transition**.
+
+Each row carries a stable semantic key and its owning workspace member. Rows are **additive**: a
+scaffold record retains the key and owner across runs, so an obligation can be tracked over time.
+
+<Callout type="warn">
+  This command reports what your specification **obliges**, never what a consumer has actually
+  filled — the records deliberately make no fill-status claim. Proving obligations are met is the
+  compiled conformance report's job; see [prove aggregate behaviour is
+  complete](/docs/keiro/how-to/prove-aggregate-behavior-is-complete).
+</Callout>
 
 ## `check`
 

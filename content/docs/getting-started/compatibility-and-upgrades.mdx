@@ -13,31 +13,21 @@ own build, migration, and integration tests before upgrading.
 | Surface | Reviewed packages | Reviewed source |
 | --- | --- | --- |
 | keiki | `keiki 0.8.0.0`, `keiki-codec-json 0.8.0.0` | `9ee8de0` (`chore(release): 0.8.0.0`) |
-| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, and `keiro-migrations` at `0.4.0.1` | `430c3d2cca0f491697d7e67a85362b78718a50be` |
+| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, and `keiro-migrations` at `0.9.0.0` | `f05102b` (`chore(release): 0.9.0.0`) |
 | Kiroku | `kiroku-store 0.3.1.0`, migrations `0.3.0.0`, CLI `0.2.0.0`, OTel `0.2.0.1`, metrics `0.1.0.1` | `3009dda7238f7d05b1d0c97b04ec5d4c55031304` |
 | Shibuya | `shibuya-core 0.8.0.1`, `shibuya-metrics 0.8.0.1` | `172df245f40a454af46dd7f4cde855eaa4414c5a` |
 | pgmq-hs | `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and `pgmq-migration` at `0.4.0.1` | `b4cab751198b5012f025353610dfb4f3782c6eea` |
 | pg-migrate | All six public packages at `1.1.0.0` | `f39d64e354818999667d345a1452f33eb4857fc1` |
 
-<Callout type="warn">
-  **The keiki and Keiro rows are at different review boundaries.** keiki has been reviewed through
-  `0.8.0.0`; Keiro is still reviewed at `0.4.0.1`, whose bounds pin **keiki `>=0.4 && <0.5`**. So the
-  keiki pages on this site describe 0.8, while the Keiro pages describe a release that cannot yet
-  consume it. Do not read the keiki row as a supported Keiro pairing — pin what the Keiro row says
-  until the Keiro review catches up.
-</Callout>
+The Keiro package family requires **keiki `>=0.8 && <0.9`** (and `keiki-codec-json 0.8` where used),
+and every published package moves to `0.9.0.0` in lockstep. The exported `Keiro.version` constant
+still reports a legacy value and must not be used as the package release source.
 
-The Keiro package family requires **keiki `>=0.4 && <0.5`** (and `keiki-codec-json 0.4` where used).
-`0.4.0.1` is a packaging patch over `0.4.0.0` — it adds PVP upper bounds so `cabal check` is clean,
-with no API or behaviour change; `0.4.0.0` was tagged but never published. The exported
-`Keiro.version` constant still reports a legacy value and must not be used as the package release
-source.
-
-<Callout type="warn">
-  **keiro-dsl service workspaces are unreleased.** The `.keiro-workspace` manifest and whole-service
-  composition are shipped in the keiro source tree at the reviewed commit but sit in `keiro-dsl`'s
-  `[Unreleased]` changelog section — they are **not** in `0.4.0.1`. See [service
-  workspaces](/docs/keiro/reference/keiro-dsl-workspaces).
+<Callout type="info">
+  **`keiro-dsl` language 4 is the sole stable authoring contract** as of Keiro 0.9.0.0. Languages 1–3
+  and unversioned sources remain readable as `compatibility-only` with their immutable released
+  meaning, and every `keiro-dsl new <kind>` skeleton starts at language 4. See [language
+  versions](/docs/keiro/reference/keiro-dsl-language-versions).
 </Callout>
 
 ## Adapter compatibility
@@ -92,6 +82,43 @@ Treat every pre-1.0 minor line as potentially breaking.
   `showWrittenSlots` and `showGuardSummary` in favour of `updateMode` and `guardMode`. Readable
   rendering discloses `lit` values: secrets must use `opaqueLit`. See [readable and opaque
   literals](/docs/keiki/reference/core#readable-and-opaque-literals).
+- **Keiro 0.5:** `keiro-dsl` **service workspaces** ship. `DiagnosticCode` gains nine append-only
+  workspace constructors, `ScaffoldRun.Refusal` gains `GoldenRootDivergence`,
+  `ScaffoldRun.WriteDisposition` gains `Unchanged`, and `DiffReport.Remedy` gains
+  `RemedyRescaffoldWorkspace`; exhaustive matches must be extended. No existing behaviour changed,
+  and a single `.keiro` file behaves as a one-member workspace. See [service
+  workspaces](/docs/keiro/reference/keiro-dsl-workspaces).
+- **Keiro 0.6:** requires keiki `>=0.6 && <0.7`. Adds the `language keiro-dsl N` preamble and
+  language 2 (nominal consumer bindings, `Keiro.Codec.Nominal`, typed aggregate expressions,
+  direct `Time`/`Natural` aggregate fields). The public expression AST gains located arithmetic,
+  scalar literals, explicit roots/paths, and transition implementation ownership; aggregate fields
+  use `AggregateField` and register types use `TypeExpr` instead of a raw `Name`. `DiagnosticCode`
+  gains the aggregate-type, source-language, nominal, and scalar-expression codes. See [language
+  versions](/docs/keiro/reference/keiro-dsl-language-versions).
+- **Keiro 0.7:** requires keiki `>=0.7 && <0.8` — Keiki now classifies a predicate crossing a
+  one-way generated projection conservatively, so symbolic verification may return
+  `UnverifiedOpaque` where an earlier release reported a verified result. **Runtime command
+  execution and replay are unchanged**; only proof strength moves. Adds language 3 and the enforced
+  `Keiro.Codec.IdDomain` TypeID-v7 contract: generated prefix-bearing IDs become **abstract**
+  (`parseX`/`mkX`/`xText` from `Generated.<Context>.Nominals`) and service-level IDs and enums move
+  out of per-aggregate `Domain` modules into one context-level `Nominals` module, so hand-owned
+  imports must be updated. New diagnostics: `IdDomainContractChanged`, `EventOutputCommandMismatch`,
+  `AggregateEventlessStateChange`.
+- **Keiro 0.8:** `keiro-dsl` only. `LanguageDefinition` gains `definitionSyntaxProfile` and
+  `definitionRuntimeSemantics` and is exported as `LanguageDefinition (..)`, so positional
+  construction and non-wildcard record patterns no longer compile. Generated bytes, the 0.7
+  acceptance matrix, and rendered diagnostics are unchanged.
+- **Keiro 0.9:** requires keiki `>=0.8 && <0.9`. Language 4 becomes the sole stable contract.
+  **Aggregate fold fingerprints widen from 16-hex FNV-1a-64 to 32-hex FNV-1a-128, intentionally
+  invalidating existing snapshots** — generated transducers must be refreshed. Read-model,
+  mapped-wire, and behavior-key 64-bit identities do not move. Fold, diff, replay-impact, and
+  workspace-diff APIs now return `Either FoldSurfaceError`, and the `Spec`-only legacy wrappers are
+  **removed** in favour of passing a `CheckedService`. Generated runtime surfaces close over `Text`
+  (closed outcome sums, `<aggregate>CommandCategory`, a generated `WorkflowFacts` record), structural
+  projection witnesses are renamed to deterministic owner-and-JSON-pointer names, and the unreachable
+  grammar types `Derivation`, `DerivStrategy`, `Disposition`, `DispAction`, `EnvelopeBinding`, and
+  `EnvelopeLayer` are removed. `DiagnosticCode` and `RolloutConstraint` gain append-only
+  constructors.
 - **Keiro 0.3 line:** command, replay, worker, read-model, and workflow outcomes
   are typed more precisely; framework tables live in `keiro`; public event
   streams require replay validation. For `.keiro` specs, follow [migrate a spec

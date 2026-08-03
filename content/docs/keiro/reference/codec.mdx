@@ -133,3 +133,156 @@ has an inverting edge or folds to the same state — that is a separate question
 gates divide the work, and
 [Deploy ordering](/docs/keiro/reference/deploy-ordering) for why a codec bump cannot ride an ordinary
 rolling deploy.
+
+## Nominal bindings
+
+*(`Keiro.Codec.Nominal`, new in Keiro 0.6.0.0; re-exported from `Keiro` so a generated consumer keeps
+a single direct dependency.)*
+
+This is the published contract between a **consumer-owned** nominal domain type and the Keiro-owned
+wire representation sitting immediately inside the JSON boundary. `keiro-dsl` generates code against
+it, and the generated conformance harness checks a consumer's binding with it.
+
+```haskell
+data NominalBinding domain representation = NominalBinding
+    { nominalToRepresentation :: !(domain -> representation)
+    , nominalFromRepresentation :: !(representation -> domain)
+    }
+```
+
+<Callout type="warn">
+  **Both directions must be total, and the pair must be an isomorphism.** A consumer type whose
+  constructor *rejects*, *normalizes*, or *identifies* values of the representation is **refined**,
+  not nominal, and must not use this API — a smart constructor that lowercases, trims, or validates
+  breaks the round trip in a way the fixture corpus may not reveal. The generated codec remains the
+  only authority for JSON parsing and rendering; a binding never sees JSON.
+</Callout>
+
+The two laws are executable:
+
+```haskell
+nominalDomainRoundTrip ::
+    (Eq domain) => NominalBinding domain representation -> domain -> Bool
+nominalRepresentationRoundTrip ::
+    (Eq representation) => NominalBinding domain representation -> representation -> Bool
+```
+
+A generated harness drives them from a labelled fixture corpus:
+
+```haskell
+data NominalFixture domain = NominalFixture
+    { nominalFixtureLabel :: !Text
+    , nominalFixtureWire :: !Value
+    , nominalFixtureDomain :: !domain
+    }
+    deriving stock (Eq, Show)
+
+newtype NominalFixtureCases domain = NominalFixtureCases
+    { nominalFixtureCases :: NonEmpty (NominalFixture domain)
+    }
+    deriving stock (Eq, Show)
+```
+
+<Callout type="info">
+  The corpus is **evidence, not proof**. It exercises the binding contract over the cases you
+  declare and says nothing about values outside them. It is non-empty by construction, so a binding
+  cannot be admitted with no evidence at all.
+</Callout>
+
+Stability: types and record field names are stable within a major version. Additions are permitted;
+a rename or a semantic change requires a major bump and a coordinated `keiro-dsl` release.
+
+## The enforced identifier domain
+
+*(`Keiro.Codec.IdDomain`, new in Keiro 0.7.0.0; re-exported from `Keiro`.)* This is the **frozen**
+runtime contract for canonical prefix-bearing TypeID-v7 identifiers — the domain that `keiro-dsl`
+[language 3](/docs/keiro/reference/keiro-dsl-language-versions) enforces on every generated
+prefix-bearing ID.
+
+```haskell
+enforcedIdDomainVersion :: Text
+enforcedIdDomainVersion = "keiro-dsl/id-domain/typeid-v7/1"
+```
+
+The contract is a record, built for a prefix by `typeIdV7Domain`:
+
+```haskell
+data IdNormalization = CanonicalLowercase
+    deriving stock (Eq, Ord, Show)
+
+data IdDomainContract = IdDomainContract
+    { idDomainVersion :: !Text
+    , idDomainPrefix :: !Text
+    , idDomainSeparator :: !Char
+    , idDomainSuffixLength :: !Int
+    , idDomainMaxLength :: !Int
+    , idDomainNormalization :: !IdNormalization
+    , idDomainJsonRepresentation :: !Text
+    }
+    deriving stock (Eq, Ord, Show)
+
+typeIdV7Domain :: Text -> IdDomainContract
+```
+
+<TypeTable
+  type={{
+    idDomainVersion: { type: "Text", description: "Always the frozen \"keiro-dsl/id-domain/typeid-v7/1\"." },
+    idDomainPrefix: { type: "Text", description: "The declared prefix, e.g. \"inc\"." },
+    idDomainSeparator: { type: "Char", description: "'_' — exactly one underscore between prefix and suffix." },
+    idDomainSuffixLength: { type: "Int", description: "26 — the Crockford base32 suffix length." },
+    idDomainMaxLength: { type: "Int", description: "26 for an empty prefix, otherwise prefix length + 27." },
+    idDomainNormalization: { type: "IdNormalization", description: "CanonicalLowercase — the only admitted normalization." },
+    idDomainJsonRepresentation: { type: "Text", description: "\"canonical-json-text\"." },
+  }}
+/>
+
+Admission is deliberately narrow. A value is accepted only when it is **canonical lowercase TypeID
+text**, carries the **declared prefix and exactly one underscore**, has a **26-character Crockford
+suffix**, and its UUID satisfies the **v7 version and variant bits**. Each rejection is named:
+
+```haskell
+data IdDomainFailure
+    = IdDomainNonCanonical
+    | IdDomainWrongPrefix !Text !Text     -- expected, actual
+    | IdDomainMalformed !Text
+    | IdDomainNotUuidV7 !Text
+    deriving stock (Eq, Ord, Show)
+
+idDomainAcceptsText :: IdDomainContract -> Text -> Bool
+validateIdDomainText :: IdDomainContract -> Text -> Either IdDomainFailure ()
+```
+
+<Callout type="info">
+  `IdDomainNonCanonical` and `IdDomainMalformed` are genuinely different answers. Text that parses
+  only *after* lowercasing — and then round-trips — is reported as non-canonical rather than
+  malformed, so an operator can tell "your producer is upper-casing" apart from "this is not a
+  TypeID at all". The underlying dependency separates canonical parsing from the UUID version check,
+  and both steps are part of this frozen contract.
+</Callout>
+
+*(Keiro 0.9.0.0.)* Two parsers construct a **prefix-indexed** `KindID` — and only after Keiro's
+admission policy has already succeeded, so a generated consumer cannot accidentally widen the domain
+by reaching for the dependency's own parser:
+
+```haskell
+parseKindIdV7Text ::
+    forall prefix. (ValidPrefix prefix) => Text -> Either IdDomainFailure (KindID prefix)
+parseKindIdV7Value ::
+    forall prefix. (ValidPrefix prefix) => Value -> Parser (KindID prefix)
+```
+
+`parseKindIdV7Value` is the one generated integration-contract fields use. Paired with Aeson's
+`explicitParseField`, it attaches the **owning JSON field path** to the stable failure, so a rejected
+identifier says which field it came from.
+
+Two helpers close the loop with the rest of the stack:
+
+```haskell
+idDomainTextPattern :: IdDomainContract -> Either DomainConstructionError TextPattern
+idDomainSampleText :: IdDomainContract -> Text
+```
+
+`idDomainTextPattern` yields the matching **exact Keiki projection domain**
+([`TextPattern`](/docs/keiki/reference/projection-domain)) — that is what lets a generated aggregate
+guard comparing two same-declaration IDs reach a *verified* symbolic result rather than a
+conservative one. `idDomainSampleText` renders a valid sample for scaffolded fixtures.

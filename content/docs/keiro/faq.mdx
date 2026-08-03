@@ -104,7 +104,8 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     (target stream + command) per resolved target; keiro does the idempotent dispatch afterward.
     Returning `[]` means "this event routes nowhere". It can run more than once for the same event
     (the worker retries), which is safe because it only reads and the dispatch is keyed by a
-    deterministic id. See [the `resolve` seam](/docs/keiro/reference/router#the-resolve-seam).
+    deterministic id. See [the router definition](/docs/keiro/reference/router#definition) and [dispatch and duplicate
+    proof](/docs/keiro/reference/router#dispatch-and-duplicate-proof).
   </Accordion>
 
   <Accordion title="How do I know an event stream is safe to replay?">
@@ -312,5 +313,74 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     slowest action needs. Losing the lease throws `WorkflowLeaseLost` before further side effects and
     is counted as `leaseSkipped` — it consumes no crash attempt. See [Run the workflow resume
     worker](/docs/keiro/how-to/run-the-workflow-resume-worker).
+  </Accordion>
+
+  <Accordion title="Which keiro-dsl language version should I write?">
+    **4** — it is the sole `Stable` registry entry, and every `keiro-dsl new <kind>` skeleton starts
+    there. Declare it as the first significant clause, before `context`:
+
+    ```text
+    language keiro-dsl 4
+    ```
+
+    Languages 1 through 3 and unversioned sources stay `compatibility-only`: fully readable, with
+    their immutable released meaning, never silently upgraded. Nothing forces a move. Expect language
+    4 to reject more, though — it enforces numeric floors, duplicate and shadowing rules, runtime
+    identity uniqueness, Kafka and PostgreSQL naming, intake coupling, contract topic aliases, and the
+    aggregate wire convention. Read each new error as a latent defect the earlier contract could not
+    see. See [language versions](/docs/keiro/reference/keiro-dsl-language-versions).
+  </Accordion>
+
+  <Accordion title="Every snapshot missed after upgrading to Keiro 0.9 — is something corrupt?">
+    No. Aggregate fold fingerprints widened from a 16-hex-digit FNV-1a-64 digest to a 32-hex-digit
+    FNV-1a-128 one, which **intentionally** invalidates snapshots written under the old
+    discriminator. A discriminator mismatch is an ordinary cache **miss**, not a correctness event:
+    each snapshot-bearing stream full-replays once from its durable log and then reseeds. Refresh your
+    generated transducers and size the deploy window for that replay. Read-model shape hashes,
+    mapped-wire identities, and behaviour keys keep their 64-bit form and are unaffected. See
+    [Snapshots](/docs/keiro/reference/snapshot).
+  </Accordion>
+
+  <Accordion title="Can I still hand-write an aggregate guard?">
+    Yes — but you must say so. Since Keiro 0.6.0.0 every version-2 transition is **exclusively**
+    generated-owned or explicitly `implementation hole`. Declare the hole and the guard is yours;
+    leave it out and the checked guard and *ordered* writes are lowered into Keiki terms and
+    necessarily executed by the generated transducer. A hand-owned module can still construct declared
+    event and output values, but it cannot replace the predicate, reorder the writes, or supply an
+    alternative transducer.
+
+    The escape hatch is permanent and deliberate — a closed expression language cannot anticipate
+    every domain predicate. What is no longer possible is a hole *silently* replacing behaviour the
+    DSL claims to own while diff, replay, snapshot, and symbolic surfaces keep describing the source
+    expression. See [scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes).
+  </Accordion>
+
+  <Accordion title="My generated aggregate guard is reported UnverifiedOpaque — did something break?">
+    No. Keiro 0.7.0.0 moved to Keiki 0.7, which classifies a predicate crossing a **one-way**
+    generated projection conservatively. **Concrete command execution and replay are unchanged** —
+    the same generated term still runs. Only proof strength moved, and the earlier "verified" answer
+    was the overstatement.
+
+    To recover a `Verified*` classification the projection needs an exact domain and a reverse
+    witness, which is exactly what the enforced
+    [TypeID-v7 id domain](/docs/keiro/reference/codec#the-enforced-identifier-domain) supplies for
+    language-3 prefix-bearing IDs. Do **not** have conformance tooling relabel an unverified result
+    as source-proved.
+  </Accordion>
+
+  <Accordion title="My hand-owned module stopped compiling after re-scaffolding.">
+    Three renames account for almost all of these, all source-level with no data consequence:
+
+    - **Language 3** moved service-level IDs and enums out of every aggregate's `Domain` module into
+      one `Generated.<Ctx>.Nominals`, and made generated prefix-bearing IDs **abstract** — import
+      `parseX`, `mkX`, and `xText` from `Nominals`. The raw constructor and `unsafeXFromLegacyText`
+      live only in the generated internal replay module.
+    - **Keiro 0.9** renamed structural projection witnesses from hex-mangled identifiers to
+      deterministic owner-and-JSON-pointer names. Values and semantics are unchanged.
+    - **Keiro 0.9** also stopped emitting an `Expressions` module at all; delete any leftover and
+      remove it from `other-modules`.
+
+    Event wire bytes and canonical nominal identities are unchanged throughout. See [place generated
+    modules](/docs/keiro/how-to/place-generated-modules-and-wire-cabal).
   </Accordion>
 </Accordions>

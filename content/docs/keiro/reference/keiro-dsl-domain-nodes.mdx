@@ -125,6 +125,42 @@ transitively referenced rule bodies — so a spec-visible fold change invalidate
 automatically and raises the non-breaking `AggFoldSurfaceChanged` advisory at diff time. Logic changed
 only inside `Holes` is *not* covered: bump `stateCodecVersion` yourself.
 
+<Callout type="warn">
+  **Breaking in Keiro 0.9.0.0 — the fingerprint widened, and every existing snapshot is invalidated
+  once.** Aggregate fold fingerprints move from a **16-hex-digit FNV-1a-64** digest to a
+  **32-lowercase-hex-digit FNV-1a-128** one. This is deliberate: the new discriminator does not
+  collide with the old, so every snapshot written under the previous fingerprint misses and its
+  stream replays from the log. Refresh generated transducers and expect one full replay per
+  snapshot-bearing stream on the deploy that adopts 0.9.
+
+  Unrelated 64-bit identities do **not** move — read-model shape hashes, mapped-wire identities, and
+  behaviour keys keep their `fnv1a:` 16-hex form. Only aggregate fold identity widened.
+</Callout>
+
+<Callout type="info">
+  *(Keiro 0.9.0.0, ADR-18.)* Two related hazards were closed with the widening. Pre-hash bytes now
+  come **only** from `Keiro.Dsl.CanonicalEncoding`, whose expression and transition representations
+  are frozen by complete surface goldens — previously the pre-hash surface reused the *human-facing*
+  pretty printer, so a presentation-only rendering edit could invalidate snapshots with no intended
+  fold migration. And fold identity now derives from
+  [runtime capability profiles](/docs/keiro/reference/keiro-dsl-language-versions#runtime-capability-profiles)
+  rather than an opaque identifier string, so registering a successor version that changes no replay
+  behaviour no longer mints a new fold segment by default. Presentation pretty printing may now evolve
+  independently of persisted identity.
+</Callout>
+
+<Callout type="warn">
+  **Fold surface construction became total, and its APIs changed shape.** *(Keiro 0.9.0.0,
+  breaking.)* Type-graph, nominal, register, guard, and event-output resolution failures now return a
+  `FoldSurfaceError` instead of silently omitting a canonical segment. The aggregate fold, diff,
+  replay-impact, and workspace-diff service APIs therefore return `Either FoldSurfaceError`, and
+  scaffold planning **refuses before generating any module**. The misleading `Spec`-only wrappers —
+  `aggregateFoldFingerprint`, `aggregateFoldSurface`, `diffSpecs`, `replayImpact`,
+  `nominalEqualityContract`, `nominalEqualityIdentity`, and `nominalEqualityIdentities` — are
+  **removed**; callers retain and pass a `CheckedService`, or construct one explicitly with
+  `legacyCheckedService`.
+</Callout>
+
 ### Principal validation rules
 
 References, states, commands, events, register writes, initial values, guard atoms, reachability,

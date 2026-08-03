@@ -10,6 +10,28 @@ notation, and leaves behavior-bearing code in typed hand-owned seams.
 It is an authoring tool, not an application runtime dependency. Generated modules compile against
 Keiro and Keiki; an application does not import `keiro-dsl`.
 
+## A source declares its contract
+
+*(Keiro 0.6.0.0, ADR-16.)* Before anything below runs, a `.keiro` file says **which released
+language it is written against**:
+
+```text
+language keiro-dsl 4
+```
+
+The reason is honesty about compatibility. Without it, nothing in a source records which parser and
+semantic contract its author intended, so a newer tool can accept syntax an older tool rejects while
+both appear to be reading the same unversioned language. The preamble is resolved through one
+registry *before* body parsing, so an unsupported version fails at that boundary rather than as a
+pile of confusing syntax errors.
+
+Once released, a language contract is frozen. New syntax or semantics go in a **successor** version;
+existing version parsers and their rejection fixtures are never widened. Language 4 is the sole
+`Stable` entry as of Keiro 0.9.0.0; 1 through 3 and unversioned sources remain readable with their
+immutable released meaning and are never silently upgraded. Designating a new stable version moves
+the authoring baseline, not the behaviour of any predecessor. See
+[language versions](/docs/keiro/reference/keiro-dsl-language-versions).
+
 ## One source, six gates
 
 The lifecycle has six distinct jobs:
@@ -89,6 +111,30 @@ wiring consumes the validated value.
 The firewall is mechanical: generated modules may not contain Keiki symbolic operators such as
 `./=`, `.==`, `lit`, `B.slot`, or `B.requireGuard`. Those operators belong in hand-owned aggregate
 holes, where the generated types constrain them and the harness tests them.
+
+### Where the firewall moved for aggregate transitions
+
+*(Keiro 0.6.0.0, ADR-17.)* The table above still describes read models, processes, routers, queues,
+and workflows. Aggregate **transition** behaviour changed hands.
+
+Guard and write expressions used to be rendered as *comments* in a create-once holes module, with
+consumer code owning the transducer that ran. That is a real correctness gap: a checked expression
+could be ignored or reimplemented with different semantics while Keiro's diff, replay, snapshot, and
+symbolic surfaces went on describing the source expression. The two obvious fixes both fail.
+Generating **all** transition behaviour closes the gap but creates a product failure — a closed
+expression language cannot anticipate every domain predicate, so removing the hole strands users or
+pushes them into dishonest encodings to stay inside the DSL. Partial callbacks do not help either:
+they cannot express an unsupported register update, and a callback that overrides generated values
+just recreates ambiguous ownership.
+
+The resolution is to make ownership **explicit and exclusive**. Every version-2 transition is either
+generated-owned or explicitly `implementation hole` — never both, never implicitly. Ownership is part
+of the checked semantic graph, the canonical rendering, the diff surface, the scaffold record, and
+the fold fingerprint, so it cannot drift silently. Under generated ownership the guard and *ordered*
+writes are necessarily executed by the generated transducer; a hand-owned module may construct
+declared event and output values but cannot replace the predicate, reorder the writes, or substitute
+a transducer. The escape hatch survives in full; what dies is a hole quietly replacing behaviour the
+DSL claims to own.
 
 Before the first write, scaffold validates the spec, detects exact and case-folded module collisions,
 checks faithful lowering and the firewall, and protects any existing generated target without its

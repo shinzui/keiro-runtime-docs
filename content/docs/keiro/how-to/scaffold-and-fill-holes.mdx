@@ -54,9 +54,33 @@ The per-context scaffold record powers later `stale:` output. Scaffold never del
 
 ## Fill only hand-owned seams
 
+<Callout type="warn">
+  **Aggregate transition behaviour changed owner in Keiro 0.6.0.0 (language 2, ADR-17).** Guard and
+  write expressions used to be rendered as *comments* in a create-once `Holes` module, with consumer
+  code owning the transducer that actually ran — so a checked expression could be quietly ignored or
+  reimplemented with different semantics while Keiro's diff, replay, snapshot, and symbolic surfaces
+  kept describing the source expression.
+
+  Every version-2 aggregate transition now has **exactly one** behaviour owner: **generated
+  ownership** (the default) or **explicit `implementation hole`**. Ownership is part of the checked
+  semantic graph, the canonical rendering, the diff surface, the scaffold record, and the fold
+  fingerprint.
+
+  Under generated ownership the declared guard and *ordered* register writes are type-checked,
+  lowered into structural Keiki terms, and **necessarily executed** by the generated transducer. A
+  hand-owned module may still construct declared event and output values, but it cannot replace the
+  transition predicate, reorder or override its writes, or supply an alternative transducer.
+
+  The escape hatch is deliberately preserved rather than removed: a closed expression language cannot
+  anticipate every domain predicate, so `implementation hole` remains permanently available and
+  honest. What is no longer possible is a hole *silently* replacing behaviour the DSL claims to own.
+  Version-1 generated output remains frozen.
+</Callout>
+
 Read each typed signature and `-- HOLE …` annotation, then use generated names/constants:
 
-- aggregate: symbolic guard/write/emit/goto and upcasters;
+- aggregate: upcasters, explicit event fields, and any transition explicitly declared
+  `implementation hole` — a generated-owned transition's guard and writes are **not** yours to fill;
 - read model: qualified-table SQL, apply, and query;
 - process/router: resolver/handler, stream/category, projections, and runtime assembly;
 - integration: decode/handler/bridge behavior;
@@ -65,6 +89,14 @@ Read each typed signature and `-- HOLE …` annotation, then use generated names
 
 Never put Keiki symbolic operators in generated modules. A wrong generated file means the spec or
 scaffolder is wrong.
+
+<Callout type="info">
+  *(Keiro 0.7.0.0.)* Version-2 `fields(Command)` event values are now generated **directly** from a
+  checked total identity mapping. Direct, aliased-wire, optional, nominal, `Time`, `Natural`, and
+  structural fields no longer pass through a create-once identity-copy output hook. Explicit event
+  fields stay hand-owned. If you still have an obsolete generated-identity function from an earlier
+  scaffold it is *reported* and cannot affect runtime execution — but delete it.
+</Callout>
 
 For hand-written duplicate dispatch, call `confirmBenignDuplicate` with the target stream and
 attempted event ID. Do not acknowledge a bare global `DuplicateEvent`.

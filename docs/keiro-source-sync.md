@@ -17,14 +17,14 @@ the affected pages, then bump the pointer below.
   scaffolds depends only on keiro/keiki),
   `keiro-test-support` (test fixtures). The in-repository `jitsurei` package remains a legacy source
   anchor and is not current release evidence.
-- **Reviewed release:** the Keiro package family at `0.4.0.1`.
+- **Reviewed release:** the Keiro package family at `0.9.0.0`.
 
 ## Last reviewed commit
 
 ```text
-430c3d2cca0f491697d7e67a85362b78718a50be  (430c3d2)
-2026-07-29T12:28:14-07:00
-test(dsl): complete multi-file workspace acceptance
+f05102bab0db447c1b653309f43f075739fc8747  (f05102b)
+2026-08-02T20:22:02-07:00
+chore(release): 0.9.0.0
 ```
 
 > ### ⚠ Upstream history was rewritten between these two pointers
@@ -49,7 +49,138 @@ test(dsl): complete multi-file workspace acceptance
 > rewritten twin of the pin by subject and date and diff the two trees to confirm
 > the boundary before deciding what is new.
 
-> **Current range.** The `71d6801..430c3d2` range (65 genuinely-new commits; see the rewrite note
+> **Current range.** The `430c3d2..f05102b` range (101 commits) folds in **five** releases —
+> 0.5.0.0 through 0.9.0.0 — and is overwhelmingly `keiro-dsl`. The headline is that the DSL grew an
+> explicit **source-language contract** (versions 1→4, with 4 designated the sole stable authoring
+> contract) and closed the gap between what a spec *declares* and what generated code *does*.
+>
+> **The scope-collapsing finding, recorded so the next round does not redo it.** The raw diffstat
+> (1011 files, +107k/−56k) badly overstates the runtime-side work. Two mechanical checks settle it:
+>
+> - `git diff --name-status 430c3d2..f05102b -- '*.sql'` is **empty**. No migration, table, index, or
+>   column changed anywhere in the range, so `reference/migrations-and-schema.mdx` and
+>   `reference/deploy-ordering.mdx` counts still hold — NO-OP.
+> - Diffing the **module export lists** across `keiro/src`, `keiro-core/src`, and `keiro-pgmq/src`
+>   yields **two new modules** and **one changed export list**. The ~30k lines of churn in those trees
+>   are `c5408db` (Fourmolu template migration) and `0af4b78` (language-extension centralisation) —
+>   doc-neutral. Do the export-list diff first next time; it takes a minute and collapses the round.
+>
+> **1. The source-language contract (0.6.0.0–0.9.0.0, ADR-16, ADR-18).** A `.keiro` file may open with
+> `language keiro-dsl <N>` as its first significant clause, resolved through one registry **before**
+> body parsing. A missing preamble is `LegacyUnversioned` → effective version 1 and is never silently
+> rewritten. Four contracts are released; **language 4 is the sole `Stable` entry** (1–3 are
+> `compatibility-only`) and every `new <kind>` skeleton starts there. Each registry row selects an
+> immutable **syntax profile** (an exact named capability set, not a numeric minimum — 2, 3, and 4 all
+> reuse `syntax-profile/2`) and a private, monotone **runtime capability profile**. Language 4 also
+> closes accepted-but-unenforced surfaces: values that cannot lower to working generated code are
+> rejected under *every* version, and language 4 additionally enforces numeric floors, duplicate and
+> shadowing rules, runtime identity uniqueness, Kafka/PostgreSQL naming, intake coupling, contract
+> topic aliases, and the aggregate wire convention.
+>
+> **ADDED:** `reference/keiro-dsl-language-versions.mdx` — the registry, both profile kinds, the five
+> source-selection diagnostics, and the located-surface frontend (`Keiro.Dsl.Source`/`.Syntax`/
+> `.Frontend`, 0.8.0.0). Admitted as a reference page because it is a new named module with a public
+> surface a reader looks up entry by entry, and because the preamble is a grammar-level concept the
+> notation page defers to. Wired into `reference/meta.json`, the `reference/index.mdx` card list, and
+> inbound links from notation, workspaces, the CLI, and the toolchain explanation.
+>
+> **2. Behaviour ownership and conformance (0.6.0.0, 0.7.0.0, ADR-17).** Every version-2 aggregate
+> transition is now **exclusively** generated-owned or explicitly `implementation hole` — ownership is
+> part of the checked semantic graph, canonical rendering, diff surface, scaffold record, and fold
+> fingerprint. Guards and ordered writes under generated ownership are lowered into structural Keiki
+> terms and *necessarily executed*; a hole is preserved as a permanent honest escape hatch but can no
+> longer silently replace behaviour the DSL claims to own. Alongside it: a typed scalar expression
+> language (`reg.`/`cmd.` roots, structural paths, exact `Integer` and total-monus `Natural`
+> arithmetic), `Keiro.Dsl.AggregateType` as the single resolution/capability policy, and direct
+> aggregate `Time`/`Natural` fields and registers.
+>
+> **ADDED:** `how-to/prove-aggregate-behavior-is-complete.mdx` — the `behavior-obligations` inventory,
+> the create-once `BehaviorHoles` witnesses, the nine-bucket `keiro/behavior-conformance/1` report,
+> and the `--fail-on-unverified` decision. Admitted as a how-to because that last choice is a real
+> decision the reference cannot settle: `unverified` is the *honest* classification for a Hole guard
+> or a one-way projection, so gating on it is a policy call, not a default. Wired into
+> `how-to/meta.json`, the `how-to/index.mdx` card group, and inbound links from the CLI reference and
+> the scaffold how-to.
+>
+> **3. Nominal bindings and the enforced ID domain (0.6.0.0, 0.7.0.0).** Two new `keiro-core` modules,
+> both re-exported by `keiro`: `Keiro.Codec.Nominal` (the total consumer-binding + fixture contract)
+> and `Keiro.Codec.IdDomain` (the frozen `keiro-dsl/id-domain/typeid-v7/1` admission policy, whose
+> `idDomainTextPattern` yields a Keiki *exact* projection domain — which is how a generated guard
+> recovers a `Verified*` result). Language 3 makes generated prefix-bearing IDs **abstract** and moves
+> service-level IDs and enums into one `Generated.<Ctx>.Nominals`; both are source-level breaks with
+> **no** wire or identity consequence. 0.9.0.0 added `parseKindIdV7Text` / `parseKindIdV7Value`.
+>
+> **4. Frozen fold identity (0.9.0.0, ADR-18) — the breaking change with an operational cost.**
+> Aggregate fold fingerprints widen from 16-hex FNV-1a-64 to **32-hex FNV-1a-128**, intentionally
+> invalidating every DSL-generated snapshot once. Unrelated 64-bit identities (read-model shape,
+> mapped-wire, behaviour keys) do **not** move. Two silent-invalidation hazards were closed with it:
+> pre-hash bytes now come only from `Keiro.Dsl.CanonicalEncoding` (frozen by surface goldens) rather
+> than the human-facing pretty printer, and fold segments derive from capability profiles rather than
+> an unknown-identifier fallback. Fold surface construction became **total** (`FoldSurfaceError`), so
+> the fold/diff/replay-impact/workspace-diff APIs return `Either` and the `Spec`-only legacy wrappers
+> were removed in favour of a `CheckedService`.
+>
+> **5. Workspaces released.** Service workspaces shipped in **0.5.0.0**; the "Unreleased" callout on
+> `reference/keiro-dsl-workspaces.mdx` and its twin in
+> `getting-started/compatibility-and-upgrades.mdx` are **retired**.
+>
+> **6. Generated runtime surfaces close over `Text` (0.9.0.0, breaking).** Workqueue `jobOutcomeFor`,
+> inbox outcome/disposition, aggregate stream categories (`<aggregate>CommandCategory`), and
+> `workflowFacts` → `WorkflowFacts`. Documented on `reference/keiro-dsl-runtime-nodes.mdx` rather than
+> scattered across the six runtime reference pages, because the hand-written `Keiro.*` APIs those
+> pages document did **not** change — this is a regeneration break.
+>
+> Also landed as: two new sections in `reference/codec.mdx`; fold-widening warnings in
+> `reference/snapshot.mdx`, `reference/keiro-dsl-domain-nodes.mdx`, `how-to/add-a-snapshot.mdx`, and
+> `explanation/evolution-and-replayability.mdx`; `pretty`/`inspect`/`behavior-obligations` sections in
+> `reference/keiro-dsl-cli.mdx`; the preamble and a new `## Aggregate transition expressions` section
+> in `reference/keiro-dsl-notation.mdx`; context-level and behaviour-module sections in
+> `how-to/place-generated-modules-and-wire-cabal.mdx`; ownership callouts in
+> `how-to/scaffold-and-fill-holes.mdx`; a new `## What language 4 additionally rejects` section in
+> `how-to/check-a-service-spec.mdx`; two new advisory rows in `how-to/gate-spec-evolution-with-diff.mdx`;
+> a witness-rename warning in `reference/keiro-dsl-mapped-types.mdx`; the `RetryDelay` re-export in
+> `reference/inbox.mdx`; new `## A source declares its contract` and
+> `### Where the firewall moved for aggregate transitions` sections in
+> `explanation/the-keiro-dsl-toolchain.mdx`; five FAQ entries; and the Keiro row, five new upgrade
+> bullets, and the retired workspaces callout in `getting-started/compatibility-and-upgrades.mdx`.
+>
+> **Version-skew callouts retired.** The keiki round (see `docs/keiki-source-sync.md`) added explicit
+> warnings to `getting-started/compatibility-and-upgrades.mdx`, `keiki/index.mdx`, and
+> `integrations/keiro-with-keiki.mdx` because keiki was reviewed at 0.8 while keiro was pinned at
+> 0.4.0.1. Keiro 0.9.0.0 requires `keiki >=0.8 && <0.9`, so **all three are removed**. The
+> integrations page instead now carries the substantive note: Keiki 0.7 classifies a predicate
+> crossing a one-way generated projection as `UnverifiedOpaque`, which changes **proof strength only**
+> — concrete execution and replay are unchanged, and conformance tooling must not relabel it.
+>
+> **Corrected while here** (not caused by this range): five dangling `#anchor` links that the gates
+> cannot see — `faq.mdx` → a non-existent `router#the-resolve-seam`;
+> `cookbook/inbox-disposition-the-three-inversions.mdx` pointing at a *notation*-page anchor that
+> lives on the runtime-nodes page; `how-to/back-a-rule-with-a-register.mdx` and
+> `walkthrough/workflow/00-start-here.mdx` naming headings that no longer exist; and
+> `walkthrough/durable-execution/00-start-here.mdx` missing the **double** hyphen github-slugger emits
+> for the em dash in "This is *not* a keiki transducer — and that is deliberate".
+>
+> **NO-OP:** the Fourmolu template migration (`c5408db`) and language-extension centralisation
+> (`0af4b78`); the internal grammar split behind the stable `Keiro.Dsl.Parser` facade (generated bytes,
+> the 0.7 acceptance matrix, and rendered diagnostics all unchanged); the conformance-corpus move to
+> language 4 (226 fixtures, 30 suites, 14 named exceptions — test-only); the okf profile bumps and
+> RFC3339 timestamp normalisation; and every `docs/plan`, `docs/masterplan`, `docs/research`, and
+> `agents/` commit. The removed unreachable grammar types (`Derivation`, `DerivStrategy`,
+> `Disposition`, `DispAction`, `EnvelopeBinding`, `EnvelopeLayer`) were never documented, so their
+> retirement is a no-op here.
+>
+> **Note on the pin.** Phase 1 surveyed `9349ae8` with 13 dirty files; upstream committed that work as
+> `f05102b` (`chore(release): 0.9.0.0`) mid-round. The delta is exactly the release stamp — version
+> bumps and per-package changelogs for work already reviewed — so the pointer advances to `f05102b`
+> and the worktree was clean at that SHA.
+>
+> **Deliberately not documented:** the `keiro-dsl` service-level API churn that only affects callers
+> embedding the toolchain as a library (`scaffoldContractForService`, `manifestDependenciesForService`,
+> `renderManifestForService` are mentioned but not given reference entries) — the docs describe the
+> CLI and the generated output, not the library API, and adding that surface is a scoping decision for
+> a future round.
+
+> **Note (prior range).** The `71d6801..430c3d2` range (65 genuinely-new commits; see the rewrite note
 > above) is the **structural consumer types and service workspaces** review, plus the `0.4.0.0` /
 > `0.4.0.1` releases. Source change is heavily concentrated in `keiro-dsl` — **11 new modules**,
 > ~10.3k added lines — with small, high-consequence additions in `keiro-core` and `keiro`.
@@ -491,6 +622,15 @@ test(dsl): complete multi-file workspace acceptance
 
 ### Previous pointers (for traceability)
 
+- `430c3d2cca0f491697d7e67a85362b78718a50be` (`430c3d2`, 2026-07-29, Keiro 0.4.0.1) — the baseline
+  before the source-language-contract review. The `430c3d2..f05102b` range (101 commits) landed five
+  releases, 0.5.0.0 through 0.9.0.0: service workspaces released (0.5.0.0), the `language keiro-dsl N`
+  preamble with nominal consumer bindings and typed scalar aggregate expressions (0.6.0.0), the
+  enforced TypeID-v7 id domain with abstract generated IDs and complete behaviour conformance
+  (0.7.0.0), the modular located frontend (0.8.0.0), and language 4 as the sole stable contract with
+  FNV-1a-128 fold fingerprints, capability-profile runtime semantics, and closed generated runtime
+  surfaces (0.9.0.0). No SQL migration changed anywhere in the range.
+
 - `778c75ce60398bf44d12b81d563a7870deb4d3f5` (`778c75c`, 2026-07-23, Keiro 0.3.0.0) — the baseline
   before the structural-consumer-types and service-workspaces review. **This SHA no longer exists on
   `master`:** upstream rewrote history after it, and its content-identical rewritten twin is
@@ -580,8 +720,8 @@ test(dsl): complete multi-file workspace acceptance
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline 430c3d2..HEAD
-   git -C "$KEIRO" diff --stat 430c3d2..HEAD
+   git -C "$KEIRO" log --oneline f05102b..HEAD
+   git -C "$KEIRO" diff --stat f05102b..HEAD
    ```
    keiro's own `docs/adr/*` is now the fastest way to read a decision's *rationale and consequences*
    (ADRs 0001–0016 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only
