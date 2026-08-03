@@ -168,9 +168,18 @@ data TransducerValidationWarning s
 - **`PossiblyDeadEdge`** — an edge that can never fire: its source vertex is unreachable from
   `initial`, or its guard is statically unsatisfiable. Labelled "possibly" because the structural
   pass is conservative.
-- **`OpaqueGuard`** — an edge whose guard branches on an opaque `TApp` term the symbolic analyses
-  translate to an unconstrained free variable, so they silently under-verify it. Advisory, not a
-  soundness error; opt in via `warnOpaqueGuards`.
+- **`OpaqueGuard`** — an edge whose guard branches on a term the symbolic analyses translate to an
+  unconstrained free variable, so they silently under-verify it. Advisory, not a soundness error;
+  opt in via `warnOpaqueGuards`.
+
+  <Callout type="warn">
+    **Widened in keiki 0.5.0.0.** The audit used to cover only opaque `TApp` terms. It now also
+    reports a **`TArith` whose carrier is absent from the symbolic numeric registry** — structural
+    arithmetic the solver still cannot read. Consequently `tvwDetail` no longer names `TApp`
+    specifically, so a test asserting on the exact message text needs updating. (`Natural` was the
+    motivating case in 0.5.0.0 and was itself admitted to the numeric registry in 0.6.0.0, so it no
+    longer triggers the warning.)
+  </Callout>
 - **`ProjectionResultUnsupported`** — a [field
   projection](/docs/keiki/reference/core#field-projections)'s result type is outside the curated
   symbolic **equality** registry. Translating such a guard would fall back to an opaque Boolean and
@@ -263,7 +272,9 @@ provablyOverlap a b = case (pureFragment a, pureFragment b) of
 ```
 
 The accepted fragment walks top-level conjunctions containing constructor tests and
-variable-versus-literal comparisons. Integral bounds use exact interval reasoning; other supported
+variable-versus-literal comparisons. Integral bounds use exact interval reasoning — including
+`Natural`, modelled as the exact interval `[0, ∞)` since keiki 0.5.0.0, so the validator can find
+non-literal interior witnesses for it. Other supported
 types use concrete literal witnesses. Disjunction, negation, arithmetic, opaque applications,
 variable-versus-variable comparison, and non-integral strict-bound density remain unknown and
 produce no pure warning. `NondeterministicPair` therefore has **no false positives**, but silence

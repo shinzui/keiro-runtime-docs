@@ -35,7 +35,8 @@ arm instead of three.
 ```haskell
 -- src/Keiki/Core.hs
 data Term (rs :: [Slot]) (ci :: Type) (ifs :: [Slot]) (r :: Type) where
-    TLit :: r -> Term rs ci ifs r
+    TLit :: (Show r) => r -> Term rs ci ifs r
+    TOpaqueLit :: r -> Term rs ci ifs r
     TReg :: Index rs r -> Term rs ci ifs r
     TInpCtorField :: InCtor ci ifs -> Index ifs r -> Term rs ci ifs r
     TApp1 ::
@@ -69,7 +70,8 @@ The constructors, top to bottom:
 
 <TypeTable
   type={{
-    TLit: { type: "r -> Term rs ci ifs r", description: "A constant. Leaves ifs free." },
+    TLit: { type: "(Show r) => r -> Term rs ci ifs r", description: "A readable constant. The Show dictionary is presentation evidence for renderers only; evaluation and proof paths never force it. Leaves ifs free." },
+    TOpaqueLit: { type: "r -> Term rs ci ifs r", description: "A display-opaque constant with the same executable and proof meaning as TLit — renderers print <lit> instead of the value. Leaves ifs free." },
     TReg: { type: "Index rs r -> Term rs ci ifs r", description: "Read a register slot via an Index (chapter 02). Leaves ifs free." },
     TInpCtorField: { type: "InCtor ci ifs -> Index ifs r -> Term rs ci ifs r", description: "Read field ix of the input constructor described by ic. Pins ifs to the constructor's field schema." },
     TApp1: { type: "(a -> r) -> Term rs ci ifs a -> Term rs ci ifs r", description: "Apply a unary Haskell function — an opaque escape hatch the solver cannot see into." },
@@ -111,14 +113,14 @@ from, and threading it through the AST is what makes structural output inversion
 -- The @ifs :: [Slot]@ parameter is the /input field schema/ this term
 -- may project from: it is pinned by 'TInpCtorField' (whose 'Index' is
 -- into @ifs@) and left free by terms that do not read an input field
--- ('TLit', 'TReg'). Threading @ifs@ through the AST is what lets an
+-- ('TLit', 'TOpaqueLit', 'TReg'). Threading @ifs@ through the AST is what lets an
 -- 'OutFields' (and hence an 'OPack') guarantee /by construction/ that
 -- every top-level input projection reads the same constructor schema as
 -- the 'OPack''s 'InCtor' — so 'solveOutput' recovers a command field
 -- with no @unsafeCoerce@. ...
 ```
 
-`TLit` and `TReg` are polymorphic in `ifs` (they read no input field). `TInpCtorField` *pins* it to the
+The literal constructors and `TReg` are polymorphic in `ifs` (they read no input field). `TInpCtorField` *pins* it to the
 schema of the constructor it reads. So an `OutFields` whose terms share one `ifs` (chapter 05) is
 statically guaranteed to project from a single input constructor — that is what lets `solveOutput`
 recover the command with no coercion.
@@ -177,10 +179,26 @@ proj = TReg
 inpCtor :: InCtor ci ifs -> Index ifs r -> Term rs ci ifs r
 inpCtor = TInpCtorField
 
--- | A constant 'Term'.
-lit :: r -> Term rs ci ifs r
+-- | A readable constant 'Term'. Renderers derive its text from 'show'; use
+-- 'opaqueLit' when the value has no 'Show' instance or must remain redacted.
+lit :: (Show r) => r -> Term rs ci ifs r
 lit = TLit
+
+-- | A display-opaque constant 'Term'. This changes presentation only: concrete
+-- evaluation and symbolic translation still treat the stored value exactly.
+opaqueLit :: r -> Term rs ci ifs r
+opaqueLit = TOpaqueLit
 ```
+
+<Callout type="warn">
+  **Breaking in keiki 0.8.0.0.** `TLit` gained its `Show` constraint and `TOpaqueLit` was added, so
+  an exhaustive `Term` match must handle the new constructor and a literal without `Show` must move
+  to `opaqueLit`. The two constructors are **executably identical** — `evalTerm` returns the stored
+  value for both, and symbolic translation cannot tell them apart. The difference exists only at the
+  [pretty-printer](/docs/keiki/walkthrough/rendering-and-codecs/01-pretty-printer). Note also what
+  *cannot* happen: because the display text is derived from the same value the machine executes, a
+  caller cannot attach a label that disagrees with behaviour.
+</Callout>
 
 The arithmetic trio is one declaration sharing a signature, each fixing a `NumOp`:
 
@@ -196,8 +214,17 @@ tsub = TArith OpSub
 tmul = TArith OpMul
 ```
 
-`lit`/`proj`/`inpCtor` build the leaf terms; `tadd`/`tsub`/`tmul` build structural arithmetic. (Chapter
-05 covers the infix `.+`/`.-`/`.*` aliases for the same three.)
+`lit`/`opaqueLit`/`proj`/`inpCtor` build the leaf terms; `tadd`/`tsub`/`tmul` build structural
+arithmetic. (Chapter 05 covers the infix `.+`/`.-`/`.*` aliases for the same three.)
+
+<Callout type="warn">
+  **`OpSub` is not always `(-)`.** For `Natural`, keiki 0.6.0.0 made `tsub` **total monus**:
+  `tsub a b` is `max 0 (a - b)`, so it is `0` when `b > a`. `evalTerm` special-cases the type before
+  invoking `(-)`, so concrete evaluation cannot throw `Underflow`, and the SBV translator emits
+  `ite (a .>= b) (a - b) 0` so the two interpreters agree. Ordinary SMT integer subtraction would
+  have returned a negative value no `Natural` denotes — that mismatch is exactly what the
+  special-case removes.
+</Callout>
 
 ## `evalTerm`: the interpreter
 
@@ -208,6 +235,7 @@ single `TArith` arm pays off the "one tag" choice from the top of the chapter:
 -- src/Keiki/Core.hs
 evalTerm :: Term rs ci ifs r -> RegFile rs -> ci -> r
 evalTerm (TLit r) _ _ = r
+evalTerm (TOpaqueLit r) _ _ = r
 evalTerm (TReg ix) regs _ = regs ! ix
 evalTerm (TInpCtorField ic ix) _ ci = case icMatch ic ci of
     Just rf -> rf ! ix
@@ -239,6 +267,8 @@ applyNumOp OpMul = (*)
 -- test/Keiki/CoreSpec.hs
 it "evaluates TLit" $
   evalTerm (TLit (42 :: Int)) RNil () `shouldBe` 42
+it "evaluates TOpaqueLit identically" $
+  evalTerm (TOpaqueLit (42 :: Int)) RNil () `shouldBe` 42
 it "evaluates TApp1" $
   evalTerm (TApp1 (+1) (TLit (5 :: Int)) :: Term '[] () '[] Int) RNil () `shouldBe` 6
 ```

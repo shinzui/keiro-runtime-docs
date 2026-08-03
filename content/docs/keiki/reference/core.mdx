@@ -17,7 +17,9 @@ type. This page is the verbatim API surface; the prose there is the "why".
 <Callout type="info">
 There is **no** `StepResult` type. A successful step is the bare triple `(s, RegFile rs, [co])`:
 the next vertex, the updated register file, and the list of emitted output letters (empty for an
-ε-edge). `step` wraps it in `Maybe`; `stepEither` wraps it in `Either StepFailure`.
+ε-edge). `step` wraps it in `Maybe`; `stepEither` wraps it in `Either StepFailure`. Since keiki
+0.7.0.0 there is one richer shape: [`stepDetailedEither`](#detailed-forward-success) returns a
+`StepSuccess` that also names the edge that fired.
 </Callout>
 
 ## Slots and the register file
@@ -88,7 +90,8 @@ A `Term` is a pure expression over the register file and the input symbol, yield
 
 ```haskell
 data Term (rs :: [Slot]) (ci :: Type) (ifs :: [Slot]) (r :: Type) where
-    TLit :: r -> Term rs ci ifs r
+    TLit :: (Show r) => r -> Term rs ci ifs r
+    TOpaqueLit :: r -> Term rs ci ifs r
     TReg :: Index rs r -> Term rs ci ifs r
     TInpCtorField :: InCtor ci ifs -> Index ifs r -> Term rs ci ifs r
     TApp1 ::
@@ -119,6 +122,16 @@ data Term (rs :: [Slot]) (ci :: Type) (ifs :: [Slot]) (r :: Type) where
 ```
 
 <Callout type="warn">
+  **Breaking in keiki 0.8.0.0.** `TLit` now carries a `Show` dictionary, and `Term` gained
+  `TOpaqueLit`. Code that matches `Term` exhaustively must handle the new constructor, and a literal
+  whose type has no `Show` instance must be built with [`opaqueLit`](#smart-constructors). The two
+  constructors have **identical** executable and proof meaning: concrete evaluation, replay
+  inversion, pure overlap analysis, symbolic translation, and composition all treat the stored value
+  the same way, and no runtime or proof path ever forces `Show`. The only difference is
+  presentation — see [readable rendering](#readable-and-opaque-literals).
+</Callout>
+
+<Callout type="warn">
   **Breaking in keiki 0.4.0.0.** `Term` gained `TFieldProj`. Code that matches `Term`
   exhaustively must handle it. See [field projections](#field-projections) below.
 </Callout>
@@ -126,7 +139,7 @@ data Term (rs :: [Slot]) (ci :: Type) (ifs :: [Slot]) (r :: Type) where
 <Callout type="info">
 **The `ifs` parameter** (`:: [Slot]`) is the *input-field schema* the term may project from. It is
 pinned by `TInpCtorField` (whose `Index` is into `ifs`) and left free by terms that read no input
-field (`TLit`, `TReg`). Threading `ifs` through the AST is what lets an `OutFields` — and hence an
+field (`TLit`, `TOpaqueLit`, `TReg`). Threading `ifs` through the AST is what lets an `OutFields` — and hence an
 `OPack` — guarantee *by construction* that every top-level input projection reads the same
 constructor schema as the `OPack`'s `InCtor`, so `solveOutput` can recover a command field with no
 `unsafeCoerce`. Terms that never appear in an invertible output position (`Update` right-hand sides,
@@ -134,7 +147,8 @@ constructor schema as the `OPack`'s `InCtor`, so `solveOutput` can recover a com
 surface.
 </Callout>
 
-`NumOp` is the single arithmetic tag carried by `TArith`: `OpAdd`/`OpSub`/`OpMul` are `+`/`-`/`*`.
+`NumOp` is the single arithmetic tag carried by `TArith`: `OpAdd` and `OpMul` are `+` and `*`.
+`OpSub` is ordinary subtraction *except* for `Natural`, where it is **total monus**.
 
 ```haskell
 data NumOp = OpAdd | OpSub | OpMul
@@ -144,22 +158,59 @@ data NumOp = OpAdd | OpSub | OpMul
 Unlike the opaque `TApp1`/`TApp2` escape hatches, `TArith` is read *for real* by the SBV translator,
 so a guard over a computed value (a weighted sum, a derived cap) stays visible to the solver.
 
+<Callout type="warn">
+  **Breaking semantic fix in keiki 0.6.0.0 — `Natural` subtraction is total monus.**
+  `tsub a b` on a `Natural` evaluates to `max 0 (a - b)`, so it is `0` when `b > a`. Concrete
+  evaluation never calls the partial `Natural` `(-)` on an underflowing pair, so it cannot throw
+  `Underflow`; the symbolic form is `ite (a >= b) (a - b) 0`. Both interpreters therefore agree.
+  A model that relied on the old throwing behaviour to signal an invalid state must guard the
+  ordering explicitly (`proj #balance .>= lit amount`) instead.
+</Callout>
+
+### Readable and opaque literals
+
+*(keiki 0.8.0.0.)* `TLit` retains a `Show` dictionary as **presentation evidence**: renderers derive
+a literal's text from the executable value itself, so a caller cannot attach a display label that
+disagrees with what the machine computes. `TOpaqueLit` stores the same kind of value with no display
+evidence and renders as `<lit>`.
+
+The distinction is presentation only. Neither constructor changes what a term means:
+
+- Concrete `evalTerm`, replay inversion, and the pure overlap validator return the stored value.
+- Symbolic translation treats both identically.
+- Structural rewrites in `Keiki.Composition` and `Keiki.Profunctor` preserve whichever evidence the
+  term already had.
+- A [field-projection](#field-projections) fold over a literal owner produces `TOpaqueLit`, because
+  the `FieldProjection` interface cannot supply `Show` for the projected result. That is
+  presentation loss, **not** symbolic opacity — the folded value is still exactly translated.
+
+<Callout type="warn">
+  **Readable rendering discloses `lit` values.** Because `toMermaid` now renders complete guards and
+  updates by default, any secret, credential, personal datum, or deliberately redacted value must be
+  built with `opaqueLit` — or the whole diagram rendered under
+  [`topologyMermaidOptions`](/docs/keiki/reference/render-mermaid), which redacts all guard and
+  update semantics. A partial, expensive, or stylised `Show` can change rendering but can never
+  change execution or a proof result; `Show` text is not canonical serialization.
+</Callout>
+
 ### Smart constructors
 
 Author terms with these instead of the raw constructors.
 
 ```haskell
-lit :: r -> Term rs ci ifs r
+lit :: (Show r) => r -> Term rs ci ifs r
+opaqueLit :: r -> Term rs ci ifs r
 proj :: Index rs r -> Term rs ci ifs r
 inpCtor :: InCtor ci ifs -> Index ifs r -> Term rs ci ifs r
 ```
 
-`lit` is a constant; `proj` reads a register; `inpCtor` reads field `ix` of the input constructor
-described by `ic` (its result `Term`'s `ifs` is the constructor's field schema, so an `OutFields`
-built from these is statically tied to the `OPack`'s `InCtor`).
+`lit` is a readable constant; `opaqueLit` is the display-opaque constant for a value with no `Show`
+instance or one that must stay redacted; `proj` reads a register; `inpCtor` reads field `ix` of the
+input constructor described by `ic` (its result `Term`'s `ifs` is the constructor's field schema, so
+an `OutFields` built from these is statically tied to the `OPack`'s `InCtor`).
 
 The arithmetic smart constructors build a `TArith` over `+`/`-`/`*`. The operand type must be `Num`
-and `Typeable`.
+and `Typeable`. For `Natural`, `tsub` is total monus as described above.
 
 ```haskell
 tadd
@@ -206,7 +257,7 @@ provenance.
 
 ```haskell
 type role FieldWitness nominal
-data FieldWitness projection = FieldWitness
+data FieldWitness projection   -- abstract; the constructor is not exported
 
 fieldWitness ::
     ( FieldProjection projection,
@@ -218,9 +269,12 @@ fieldWitness ::
     FieldWitness projection
 ```
 
-An abstract nominal token for a coherent instance. The nominal role stops you swapping the
-projection tag with `coerce`, and the tag's `TypeRep` supplies symbolic cache identity independently
-of any caller-controlled diagnostic string.
+An abstract nominal token for a coherent instance **and its private symbolic-domain evidence**. The
+nominal role stops you swapping the projection tag with `coerce`, and the tag's `TypeRep` supplies
+symbolic cache identity independently of any caller-controlled diagnostic string. Since keiki
+0.7.0.0 the witness also records whether the projection carries an exact domain — `fieldWitness`
+records none, [`exactFieldWitness`](#exact-projections) records one — which is why the constructor
+is not exported.
 
 ### The base
 
@@ -258,11 +312,127 @@ a projected read as a read of the whole underlying input field.
 <Callout type="warn">
   **Symbolic agreement is one-way, by design.** Repeated reads of the same typed path share one
   symbolic variable, so `regProj w #owner .== regProj w #owner` is *valid*, not merely satisfiable.
-  But the symbolic value is an **over-approximation**: every concrete owner can be bound to a
-  matching symbolic projection value, while an arbitrary symbolic model **need not correspond to a
-  constructible owner**. `symSatExt` does not reconstruct consumer-owned values from free projection
-  scalars. Treat a solver model over projections as evidence about the *scalars*, not about the owner.
+  But the symbolic value of a plain `fieldWitness` is an **over-approximation**: every concrete owner
+  can be bound to a matching symbolic projection value, while an arbitrary symbolic model **need not
+  correspond to a constructible owner**. `symSatExt` does not reconstruct consumer-owned values from
+  free projection scalars. Treat a solver model over projections as evidence about the *scalars*, not
+  about the owner.
+
+  **Corrected in keiki 0.7.0.0.** Path identity and proof strength are separate concerns, and keiki
+  used to conflate them: a one-way projection was treated as an *exact* translation whenever its
+  result carrier happened to be solver-supported. It no longer is. A predicate containing a
+  `TFieldProj` over a released `fieldWitness` is now reported as `UnverifiedOpaque` by
+  [`verifyPredicate`](/docs/keiki/reference/symbolic). Path-stable repeated reads and the
+  conservative `symIsBot` emptiness proof are unaffected — definite unsatisfiability over the larger
+  free-scalar domain still proves the smaller concrete domain empty.
 </Callout>
+
+### Exact projections
+
+*(keiki 0.7.0.0.)* An `ExactFieldProjection` instance opts one nominal projection tag into a
+stronger contract: its declared domain is exactly the image of its getter, and it supplies a
+canonical inverse. That is what lets the solver reach a *verified* answer over a consumer-owned
+value rather than a conservative one.
+
+```haskell
+class (FieldProjection projection) => ExactFieldProjection projection where
+    fieldProjectionDomain ::
+        Proxy projection -> ProjectionDomain (FieldResult projection)
+    reconstructFieldOwner ::
+        Proxy projection ->
+        FieldResult projection ->
+        Maybe (FieldOwner projection)
+```
+
+Both directions are laws:
+
+- every well-formed owner projects to a member of `fieldProjectionDomain`; and
+- every domain member is accepted by `reconstructFieldOwner`, whose returned owner projects back to
+  that same key.
+
+Build the domain value with the combinators in
+[`Keiki.ProjectionDomain`](/docs/keiki/reference/projection-domain).
+
+Defining the instance changes nothing on its own — callers opt in **per use site** with
+`exactFieldWitness` instead of `fieldWitness`:
+
+```haskell
+exactFieldWitness ::
+    ( ExactFieldProjection projection,
+      KnownSymbol (FieldName projection),
+      Typeable projection,
+      Typeable (FieldOwner projection),
+      Typeable (FieldResult projection),
+      Eq (FieldResult projection)
+    ) =>
+    FieldWitness projection
+```
+
+The two laws are executable, so a consumer or generated conformance suite can test them:
+
+```haskell
+data ProjectionLawFailure
+    = ProjectionWitnessIsUnconstrained
+    | ProjectedKeyOutsideDeclaredDomain
+    | ProjectionInverseRejectedDomainKey
+    | ProjectionInverseRoundTripMismatch
+    deriving stock (Eq, Show)
+
+checkFieldProjectionOwner ::
+    (FieldProjection projection) =>
+    FieldWitness projection ->
+    FieldOwner projection ->
+    Either ProjectionLawFailure ()
+
+checkFieldProjectionKey ::
+    (FieldProjection projection) =>
+    FieldWitness projection ->
+    FieldResult projection ->
+    Either ProjectionLawFailure (FieldOwner projection)
+```
+
+`checkFieldProjectionOwner` runs the owner-to-domain direction plus the inverse round trip for one
+owner value. `checkFieldProjectionKey` checks one declared key and returns its reconstructed owner
+on success; call it for every member of a finite domain, and combine it with schema-derived
+generators for a validated infinite text domain. Both return
+`ProjectionWitnessIsUnconstrained` for a plain `fieldWitness`.
+
+<Callout type="warn">
+  **Exact-domain soundness is conditional on the owner-side law.** Keiki checks every
+  solver-returned model for domain membership, inverse success, and getter round-trip, so it can
+  catch an inverse that rejects an admitted key or returns a non-round-tripping owner. It **cannot**
+  observe a domain that *omits* a key a real owner produces — that under-declaration manufactures a
+  false UNSAT before any satisfying model exists. `VerifiedUnsatisfiable`, `symIsBot`, a determinism
+  disjointness blessing, and a dead-edge proof over `exactFieldWitness` predicates are therefore
+  sound only conditional on the declaration laws. Predicates using only the one-way `fieldWitness`
+  keep the unconditional over-approximation guarantee. A generator that emits exact witnesses must
+  also emit the owner-side conformance tests.
+</Callout>
+
+<Callout type="info">
+  **Per-projection exactness is not predicate-global exactness.** One base path may use a single
+  nominal exact tag repeatedly, but two distinct tags over one owner — or a direct owner read
+  combined with any projection — stay conservative, because independent solver variables do not
+  encode their joint owner relation. An *input* projection is exact only when the complete predicate
+  logically implies its matching constructor guard. Projection arithmetic and ordering remain
+  conservative; the exact surface is structural equality and its negation. `verifyPredicate` reports
+  the difference, and `predicateTranslationReport` names the specific
+  [`TranslationIssue`](/docs/keiki/reference/symbolic).
+</Callout>
+
+Three read-only queries expose the witness's private evidence without exposing its constructor, so
+tooling can inspect a witness but cannot *claim* exactness:
+
+```haskell
+fieldWitnessHasExactDomain :: FieldWitness projection -> Bool
+fieldWitnessDomain ::
+    FieldWitness projection -> Maybe (ProjectionDomain (FieldResult projection))
+fieldWitnessReconstruct ::
+    FieldWitness projection -> FieldResult projection -> Maybe (FieldOwner projection)
+```
+
+`fieldWitnessHasExactDomain` returns `False` for every witness built by `fieldWitness`, and
+`fieldWitnessDomain`/`fieldWitnessReconstruct` return `Nothing` for one.
 
 <Callout type="info">
   **Projections are guards-only** in validated transducers. Raw evaluation stays total everywhere,
@@ -541,6 +711,22 @@ equals `isJust (icMatch ic ci)`.
 matchInCtor :: InCtor ci ifs -> HsPred rs ci
 ```
 
+*(keiki 0.7.0.0.)* `predicateImpliesInCtor` is the sound structural implication check behind that
+guard: it answers whether **every** satisfying valuation of a predicate must match the named input
+constructor.
+
+```haskell
+predicateImpliesInCtor :: String -> HsPred rs ci -> Bool
+```
+
+Conjunction needs either side to imply the constructor; disjunction needs both; negation and
+non-constructor atoms establish nothing. Unlike the crash-safety walk behind
+`guardImpliesInputReadWarnings`, it is deliberately **independent of conjunction operand order**, so
+symbolic translation classifies `projection .&& matchInCtor ic` exactly as it classifies
+`matchInCtor ic .&& projection`. (Concrete evaluation keeps its existing left-to-right partiality
+warning.) This is the check that decides whether an input projection is exact — see
+[exact projections](#exact-projections).
+
 ## The effective Boolean algebra
 
 `BoolAlg` is the effective Boolean algebra over `a`-typed witnesses, used as the guard carrier of
@@ -784,6 +970,39 @@ stepEither ::
     Either (StepFailure s) (s, RegFile rs, [co])
 ```
 
+### Detailed forward success
+
+*(keiki 0.7.0.0.)* `stepDetailedEither` is the selection and evaluation **authority** for both
+entry points: it additionally reports *which* edge fired. `stepEither` is now defined by erasing
+that attribution, so failures are identical and a success projects to exactly the historical triple.
+
+```haskell
+data StepSuccess (rs :: [Slot]) s co = StepSuccess
+    { stepSuccessEdge :: EdgeRef s
+    , stepSuccessMode :: EdgeMode
+    , stepSuccessState :: s
+    , stepSuccessRegs :: RegFile rs
+    , stepSuccessOutputs :: [co]
+    }
+
+stepDetailedEither ::
+    (BoolAlg phi (RegFile rs, ci)) =>
+    SymTransducer phi rs s ci co ->
+    (s, RegFile rs) ->
+    ci ->
+    Either (StepFailure s) (StepSuccess rs s co)
+```
+
+<TypeTable
+  type={{
+    stepSuccessEdge: { type: "EdgeRef s", description: "Exact construction-local edge selected by the evaluator" },
+    stepSuccessMode: { type: "EdgeMode", description: "Selected mode; forward success is always Live, since forward stepping never considers a ReplayOnly edge" },
+    stepSuccessState: { type: "s", description: "Declared target state of the selected edge" },
+    stepSuccessRegs: { type: "RegFile rs", description: "Register file after applying the selected edge update" },
+    stepSuccessOutputs: { type: "[co]", description: "Evaluated output word in declaration order, including [] for an accepted ε-output edge" },
+  }}
+/>
+
 ### Replay
 
 Replay inverts persisted events through the same edges that handle commands. New code should use the
@@ -883,6 +1102,81 @@ The compatibility names are implemented by erasing the `Left`: `applyEventStream
 and `reconstitute` return `Maybe`; `applyEvent` is additionally letter-only. Prefer them only when a
 bare accepted/rejected answer is truly sufficient.
 
+### Replay attribution
+
+*(keiki 0.7.0.0.)* The detailed replay entry points return, alongside the settled result, an
+ordered **completed-edge factorization** of the event log: which edge consumed which events.
+
+```haskell
+data ReplayEventSpan = ReplayEventSpan
+    { replaySpanStart :: !Int
+    , replaySpanEnd :: !Int
+    }
+    deriving stock (Eq, Show)
+
+data ReplayAttribution s = ReplayAttribution
+    { replayAttributionEdge :: !(EdgeRef s)
+    , replayAttributionMode :: !EdgeMode
+    , replayAttributionSource :: !s
+    , replayAttributionTarget :: !s
+    , replayAttributionSpan :: !ReplayEventSpan
+    , replayAttributionEventCount :: !Int
+    }
+    deriving stock (Eq, Show)
+
+data ReplaySuccess (rs :: [Slot]) s = ReplaySuccess
+    { replaySuccessState :: !s
+    , replaySuccessRegs :: RegFile rs
+    , replaySuccessTrace :: [ReplayAttribution s]
+    }
+```
+
+`ReplayEventSpan` is zero-based and **half-open** — `[start, end)`, so its length is `end - start`.
+
+<TypeTable
+  type={{
+    replayAttributionEdge: { type: "EdgeRef s", description: "Exact construction-local edge selected by replay inversion" },
+    replayAttributionMode: { type: "EdgeMode", description: "The actual live-first phase that selected the edge — ReplayOnly here means the event was unattributable under the current live rules" },
+    replayAttributionSource: { type: "s", description: "Settled state before the edge consumed its head event" },
+    replayAttributionTarget: { type: "s", description: "Declared target reached after the complete output word" },
+    replayAttributionSpan: { type: "ReplayEventSpan", description: "Half-open interval of observed events consumed by this edge" },
+    replayAttributionEventCount: { type: "Int", description: "Declared output-word length; equals the span length and is always positive" },
+  }}
+/>
+
+`ReplaySuccess` deliberately has no `Eq` or `Show` — the register file prevents deriving them —
+so inspect the slots your aggregate cares about.
+
+```haskell
+applyEventsDetailedEither ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    SymTransducer phi rs s ci co ->
+    (s, RegFile rs) ->
+    [co] ->
+    Either (ReplayFailure s co) (ReplaySuccess rs s)
+
+reconstituteDetailedEither ::
+    (BoolAlg phi (RegFile rs, ci), Eq co) =>
+    SymTransducer phi rs s ci co ->
+    [co] ->
+    Either (ReplayFailure s co) (ReplaySuccess rs s)
+```
+
+These are the detailed counterparts of `applyEventsEither` and `reconstituteEither`, with identical
+failures. Three properties of the trace are worth knowing:
+
+- A multi-event edge completes **one** attribution covering its whole tail, not one per event.
+- An **epsilon-output edge is unobservable in replay** and so never appears in the trace — there is
+  no event to attribute to it.
+- The live-first phase is reported exactly, so a `ReplayOnly` entry marks history that no current
+  live edge could explain.
+
+<Callout type="info">
+  Attribution is **opt-in and costs nothing when unused.** All replay paths share one evaluation
+  kernel; the existing functions retain a nullary no-trace policy with O(1) auxiliary trace state,
+  so adding these entry points did not slow ordinary replay down.
+</Callout>
+
 ## Step diagnostics
 
 `stepEither` reports failure through `StepFailure`. There are three cases:
@@ -911,6 +1205,14 @@ data EdgeRef s = EdgeRef
     }
     deriving stock (Eq, Show)
 ```
+
+<Callout type="warn">
+  **An `EdgeRef` is construction-local, not a stable application identifier.** `edgeIndex` is the
+  zero-based position in `edgesOut t edgeSource` for *this concrete transducer construction*, so it
+  changes whenever outgoing declaration order changes. It is the shared local edge-identity
+  vocabulary for build-time diagnostics, [`StepSuccess`](#detailed-forward-success), and
+  [`ReplayAttribution`](#replay-attribution) — do not persist it.
+</Callout>
 
 The summaries deliberately carry **no** register values — diagnostics summarize, they do not dump
 state.
@@ -965,6 +1267,7 @@ synthetic = SymTransducer
                       , update = UKeep
                       , output = [ pack inCtorTrue wcStringTrue oNil ]
                       , target = True
+                      , mode   = Live
                       }
                ]
       True  -> []

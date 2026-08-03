@@ -1,6 +1,6 @@
 ---
 title: "02 — Mermaid core"
-description: "The single-transducer topology walk: how toMermaid emits a stateDiagram-v2, how an edge label is built, and why the default is guard-free."
+description: "The single-transducer topology walk: how toMermaid emits a stateDiagram-v2, how an edge label is built, and why the default is readable."
 ---
 
 <Callout type="info">
@@ -33,7 +33,7 @@ primitives. This chapter reads those primitives and the topology walk; options a
 chapter [03](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels), composites are
 chapter [04](/docs/keiki/walkthrough/rendering-and-codecs/04-composites).
 
-## `toMermaid`: the guard-free default
+## `toMermaid`: the readable default
 
 ```haskell
 toMermaid ::
@@ -41,24 +41,42 @@ toMermaid ::
     SymTransducer (HsPred rs ci) rs s ci co ->
     Text
 toMermaid = toMermaidWith defaultMermaidOptions
+
+toTopologyMermaid ::
+    (Enum s, Bounded s, Show s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    Text
+toTopologyMermaid = toMermaidWith topologyMermaidOptions
 ```
 
-`toMermaid` is `toMermaidWith defaultMermaidOptions`, and `defaultMermaidOptions` turns every annotation
-off, so the default output carries **no `[w: …]` and no `[g: …]` suffix** — just topology and
-`<input> / <output>` labels. The header makes the contract explicit: the diagrams in the explanation
-material depend on this guard-free default staying byte-identical. `MermaidSpec` guards it twice — the
-primary golden and a redundant equality check:
+Both entry points are one-liners over `toMermaidWith`; all the policy lives in the two named options
+values read in chapter
+[03](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels).
+
+<Callout type="warn">
+  **keiki 0.8.0.0 flipped which one is `toMermaid`.** Through keiki 0.7, `defaultMermaidOptions`
+  turned every annotation off and `toMermaid` emitted topology only. It now emits complete guards
+  (`g:`), complete register assignments (`u:`), and multiline labels;
+  `topologyMermaidOptions` is the named policy carrying the old bytes.
+</Callout>
+
+The byte-exactness contract moved with it. The topology form is what stays golden-pinned, while the
+readable form is checked by a property — reasonable, since its text tracks whatever the domain terms
+say:
 
 ```haskell
--- test/Keiki/Render/MermaidSpec.hs
-describe "toMermaid (single SymTransducer)" $
-    it "renders userReg to the canonical stateDiagram-v2 block" $
-        toMermaid userReg `shouldBe` userRegCanonical
+-- jitsurei/test/Jitsurei/Render/MermaidLoanSpec.hs
+describe "toMermaid loanApplication" $
+    it "renders readable business semantics" $
+        toMermaid loanApplication `shouldSatisfy` hasReadableSemantics
 
-describe "toMermaidWith defaultMermaidOptions (byte-identical default)" $
-    it "equals toMermaid userReg exactly" $
-        toMermaidWith defaultMermaidOptions userReg `shouldBe` toMermaid userReg
+describe "toTopologyMermaid loanApplication" $
+    it "reproduces the canonical topology block" $
+        toTopologyMermaid loanApplication `shouldBe` loanApplicationCanonical
 ```
+
+`toMermaidWith defaultMermaidOptions t` remains byte-identical to `toMermaid t`, so either spelling
+can be pinned.
 
 ## The topology walk
 
@@ -122,8 +140,10 @@ vertexLabel :: (Show s) => s -> Text
 vertexLabel = T.pack . show
 ```
 
-You can see all three rules in the `userReg` golden — note that the `Deleted` vertex is the only final
-state, and the renderer omits no source/non-final vertices because every vertex here is reachable:
+You can see all three rules in the `userReg` topology golden — note that the `Deleted` vertex is the
+only final state, and the renderer omits no source/non-final vertices because every vertex here is
+reachable. (Shown under `toTopologyMermaid`, so the structure is not buried under the `u:`/`g:`
+segments the readable default appends to each line.)
 
 ```text
 stateDiagram-v2
@@ -131,7 +151,7 @@ stateDiagram-v2
     PotentialCustomer --> RequiresConfirmation : StartRegistration / RegistrationStarted; ConfirmationEmailSent
     RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed
     RequiresConfirmation --> RequiresConfirmation : ResendConfirmation / ConfirmationResent
-    RequiresConfirmation --> Deleted : FulfillGDPRRequest / ε
+    RequiresConfirmation --> Deleted : FulfillGDPRRequest / AccountDeleted
     Confirmed --> Deleted : FulfillGDPRRequest / AccountDeleted
     Deleted --> [*]
 ```
@@ -152,9 +172,8 @@ edgeLabelWithLayout layout e =
 ```
 
 Two fallbacks are worth memorising: a missing input-constructor name becomes `?`, and a missing output
-(an ε-edge) becomes `ε` (U+03B5). You can see the `ε` in the `userReg` golden on the
-`RequiresConfirmation --> Deleted : FulfillGDPRRequest / ε` line — that edge consumes a command but
-emits nothing.
+(an ε-edge) becomes `ε` (U+03B5). The loan capstone has one — its
+`CollectingDocuments --> UnderReview : Continue / ε` line consumes a command but emits nothing.
 
 ### `edgeInputName`: mining the guard for the input constructor
 
@@ -226,9 +245,10 @@ composites, all produced by this same `toMermaid` walk. We follow them into comp
 [04](/docs/keiki/walkthrough/rendering-and-codecs/04-composites).
 
 <Callout type="warn">
-The default is **guard-free on purpose.** `toMermaid` never prints a `[g: …]` segment, so the topology
-reads cleanly. If you want guard text in the label, you opt in through `MermaidOptions` — and that text
-goes through a single chokepoint, which is the subject of the next chapter.
+The default is **readable on purpose.** `toMermaid` appends a `g:` guard segment and a `u:` update
+segment to every label, so a reviewer reads behaviour off the diagram. If you want the bare topology
+back, that is `toTopologyMermaid`. Either way the segment text goes through a single chokepoint per
+segment kind, and is escaped there before layout — the subject of the next chapter.
 </Callout>
 
 Previous: [01 — The pretty-printer](/docs/keiki/walkthrough/rendering-and-codecs/01-pretty-printer).

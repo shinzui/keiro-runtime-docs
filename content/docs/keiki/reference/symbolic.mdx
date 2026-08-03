@@ -4,8 +4,10 @@ description: "The SBV/z3-backed symbolic surface: the Sym registry, predicate tr
 ---
 
 `Keiki.Symbolic` is the build-time symbolic upgrade of keiki's predicate algebra. It
-**re-exports all of [`Keiki.Core`](/docs/keiki/reference/core)** — one import gives you both the
-pure transducer surface and the symbolic machinery — and adds an `sbv`/z3-backed `BoolAlg`
+**re-exports all of [`Keiki.Core`](/docs/keiki/reference/core)** and, since keiki 0.7.0.0, all of
+[`Keiki.ProjectionDomain`](/docs/keiki/reference/projection-domain) — one import gives you the
+pure transducer surface, the exact-domain vocabulary, and the symbolic machinery — and adds an
+`sbv`/z3-backed `BoolAlg`
 instance that decides "are these two edge guards mutually exclusive?" precisely rather than
 syntactically. For the why, see [Why SMT](/docs/keiki/explanation/why-smt) and
 [The symbolic transducer](/docs/keiki/explanation/the-symtransducer).
@@ -14,8 +16,9 @@ syntactically. For the why, see [Why SMT](/docs/keiki/explanation/why-smt) and
 z3 (via `sbv`) is a **build/CI-time dependency only** — it is never on the per-event runtime hot
 path. The everyday step functions (`delta`/`omega`/`step`/`stepEither`/`reconstitute`) decide
 guards by **concrete evaluation**: `models (guard e) (regs, ci)` reduces to `evalPred`, never a
-solver call. Only `isBot`, `symIsBot`, `symSatExt`, `checkTransitionDeterminismSym`, and
-`checkDeadEdgesSym` invoke z3, and they are meant for tests and the symbolic CI gate (see
+solver call. Only `isBot`, `symIsBot`, `symSatExt`, `verifyPredicate`, `verifyPredicateDetailed`,
+`checkTransitionDeterminismSym`, and `checkDeadEdgesSym` (with their `…Detailed` variants) invoke
+z3, and they are meant for tests and the symbolic CI gate (see
 [The symbolic CI gate](/docs/keiki/explanation)).
 </Callout>
 
@@ -24,7 +27,8 @@ solver call. Only `isBot`, `symIsBot`, `symSatExt`, `checkTransitionDeterminismS
 A type has a `Sym` instance when it has a curated representation in the SBV symbolic universe.
 The associated type `SymRep a` pins the SBV-friendly carrier; `toSym`/`fromSym` round-trip a
 concrete Haskell value through the solver; `symDefault` supplies a fallback for unconstrained
-slots during witness extraction.
+slots during witness extraction; `constrainSymDomain` restricts the symbolic representation to
+values that actually denote an `a`.
 
 ```haskell
 class (SBV.SymVal (SymRep a), Typeable a) => Sym a where
@@ -32,6 +36,8 @@ class (SBV.SymVal (SymRep a), Typeable a) => Sym a where
     toSym :: a -> SymRep a
     fromSym :: SymRep a -> a
     symDefault :: a
+    constrainSymDomain :: SBV.SBV (SymRep a) -> SBV.Symbolic ()
+    constrainSymDomain _ = pure ()
 ```
 
 The `SBV.SymVal (SymRep a)` superclass gives `SBV.literal`, `SBV.free`, and `SBV.unliteral`
@@ -39,12 +45,23 @@ for free. `symDefault` is consumed by `symSatExt`: when the solver model binds n
 slot the predicate never referenced, the witness extractor falls back to it — sound, because an
 unreferenced slot is unconstrained and any value satisfies the predicate.
 
+<Callout type="info">
+  **`constrainSymDomain` — new in keiki 0.5.0.0 (PVP major, but source-compatible).** Most carriers
+  use their whole SBV domain and inherit the `pure ()` default, so existing hand-written instances
+  keep compiling unchanged. A **refined** carrier states its validity invariant here: `Natural` is
+  represented as an unbounded `Integer` and constrains it `.>= 0`. Keiki applies the constraint
+  everywhere it allocates a symbolic variable — `symFree`, structural register and input reads,
+  field projections, and opaque term fallbacks — so no solver path can produce a value outside the
+  carrier.
+</Callout>
+
 ### The instance registry
 
 <TypeTable
   type={{
     Bool: { type: "SymRep = Bool", description: "Identity round-trip; symDefault = False" },
     Integer: { type: "SymRep = Integer", description: "Identity round-trip; symDefault = 0" },
+    Natural: { type: "SymRep = Integer", description: "Unbounded Integer constrained .>= 0 at every allocation; symDefault = 0. Subtraction is total monus (keiki 0.5.0.0 / 0.6.0.0)" },
     Int: { type: "SymRep = Integer", description: "Encoded as unbounded Integer (no SInt of arbitrary size)" },
     Word8: { type: "SymRep = Word8", description: "Exact 8-bit unsigned modular arithmetic" },
     Word16: { type: "SymRep = Word16", description: "Exact 16-bit unsigned modular arithmetic" },
@@ -61,8 +78,24 @@ unreferenced slot is unconstrained and any value satisfies the predicate.
 `Int` alone uses the unbounded mathematical `Integer`, so guards whose truth depends on platform
 `Int` overflow should use an explicit fixed-width type. `Word8`/`Word16`/`Word32`/`Word64` and
 `Int32`/`Int64` use SBV's matching bit-vector representations, including modular wraparound.
-`UTCTime` is encoded losslessly as picoseconds since the Unix epoch.
+`UTCTime` is encoded as picoseconds through POSIX time — but that conversion **clamps leap-second
+day times**, so it is not a whole-carrier isomorphism.
 </Callout>
+
+### Whole-carrier exactness
+
+*(keiki 0.7.0.0.)* Having a `Sym` instance is **not** the same as being exactly representable.
+
+```haskell
+symbolicWholeCarrierExact :: forall r. (Typeable r) => Bool
+```
+
+`symbolicWholeCarrierExact` answers whether the curated representation covers the complete concrete
+carrier **bijectively**. It is the gate for
+[`wholeProjectionDomain`](/docs/keiki/reference/projection-domain): supporting symbolic equality
+alone is not sufficient. It holds for `Bool`, `Integer`, `Natural`, and the curated fixed-width
+integer types; it does **not** hold for `UTCTime` (leap-second clamping) or `Text` (SMT-LIB strings
+stop at U+2FFFF).
 
 ## The runtime registry: `SymDict` and `discoverSym`
 
@@ -93,12 +126,21 @@ discoverSymNum :: forall r. (Typeable r) => Maybe (SymNumDict r)
 ```
 
 `discoverSymOrd` reifies `SBV.OrdSymbolic` evidence (what `PCmp` needs to emit a real
-`.<`/`.<=`/`.>`/`.>=`); it covers the numeric and time types (`Int`, `Integer`, the fixed-width
-integers, and `UTCTime`) but **deliberately omits `Bool` and `Text`** — ordering a `Bool` guard
-is not meaningful and `SString` ordering is out of scope. `discoverSymNum` reifies `Num` evidence
-(what `TArith` needs to emit a real `+`/`-`/`*`); it covers the numeric integers and omits `Bool`,
-`Text`, and `UTCTime`. A `Nothing` from either makes the relevant translator fall back to a fresh
-opaque variable — sound, just imprecise.
+`.<`/`.<=`/`.>`/`.>=`); it covers the numeric and time types (`Int`, `Integer`, `Natural`, the
+fixed-width integers, and `UTCTime`) but **deliberately omits `Bool` and `Text`** — ordering a
+`Bool` guard is not meaningful and `SString` ordering is out of scope. `discoverSymNum` reifies
+`Num` evidence (what `TArith` needs to emit a real `+`/`-`/`*`); it covers the numeric integers
+**including `Natural` since keiki 0.6.0.0**, and omits `Bool`, `Text`, and `UTCTime`. A `Nothing`
+from either makes the relevant translator fall back to a fresh opaque variable — sound, just
+imprecise.
+
+<Callout type="info">
+  **`Natural` arithmetic is special-cased in the translator.** `OpAdd` and `OpMul` emit the ordinary
+  SBV operations, but `OpSub` emits `ite (a .>= b) (a - b) 0` so the symbolic form matches the total
+  monus concrete evaluation uses. Plain SMT integer subtraction would return a negative value that
+  no `Natural` denotes. In keiki 0.5.0.0 `Natural` was deliberately kept *out* of the arithmetic
+  registry for exactly this reason; 0.6.0.0 admitted it once the monus encoding existed.
+</Callout>
 
 ### Literals and free variables
 
@@ -117,10 +159,14 @@ cannot both hold and so that repeated reads of one register share one solver var
 
 ```haskell
 data SymEnv = SymEnv
-    { seInputCtor         :: SBV.SBV String
-    , seInputArm          :: SBV.SBool
-    , seVarCache          :: IORef (Map SymVarKey SomeSBV)
-    , seProjectionOrdinal :: IORef Int
+    { seInputCtor                 :: SBV.SBV String
+    , seInputArm                  :: SBV.SBool
+    , seVarCache                  :: IORef (Map SymVarKey SomeSBV)
+    , seVarLabels                 :: IORef (Map SymVarKey String)
+    , seProjectionKeyOrder        :: IORef [SymVarKey]
+    , seConstrainedProjectionKeys :: IORef (Set SymVarKey)
+    , seProjectionBindings        :: IORef (Map SymVarKey SomeProjectionBinding)
+    , seProjectionOrdinal         :: IORef Int
     }
 
 mkSymEnv :: SBV.Symbolic SymEnv
@@ -131,6 +177,10 @@ mkSymEnv :: SBV.Symbolic SymEnv
     seInputCtor: { type: "SBV.SBV String", description: "Shared symbolic input-constructor tag; PInCtor atoms assert seInputCtor .== literal (icName ic), so two atoms over distinct constructors are mutually unsatisfiable" },
     seInputArm: { type: "SBV.SBool", description: "True denotes the outer Left arm of the input, False denotes Right" },
     seVarCache: { type: "IORef (Map SymVarKey SomeSBV)", description: "Per-translation memo cache keyed by a structural variable key; lazily populated so unread slots stay unconstrained" },
+    seVarLabels: { type: "IORef (Map SymVarKey String)", description: "Stable model label for every memoized structural variable — how a solver model is read back (keiki 0.7.0.0)" },
+    seProjectionKeyOrder: { type: "IORef [SymVarKey]", description: "Projection keys in allocation / first-occurrence order, so a decoded model is deterministic (keiki 0.7.0.0)" },
+    seConstrainedProjectionKeys: { type: "IORef (Set SymVarKey)", description: "Keys whose complete exact-domain constraint was already emitted; a domain is constrained once per structured key, not once per read (keiki 0.7.0.0)" },
+    seProjectionBindings: { type: "IORef (Map SymVarKey SomeProjectionBinding)", description: "Exact evidence — domain and inverse — used to decode and reconstruct satisfiable models (keiki 0.7.0.0)" },
     seProjectionOrdinal: { type: "IORef Int", description: "Next internal projection label; Keiki generates projection labels itself so arbitrary schema names never reach SBV's restricted label namespace" },
   }}
 />
@@ -194,10 +244,18 @@ concrete-to-symbolic agreement tests. It resolves the same `ProjectionVar` key t
 then `constrain`s it equal to the literal.
 
 <Callout type="warn">
-  The supported agreement is **one-way**. Every concrete owner can bind a matching symbolic
-  projection value, but an arbitrary symbolic projection model need not correspond to a constructible
-  owner — `symSatExt` does **not** reconstruct consumer-owned values from free projection scalars.
-  See [field projections](/docs/keiki/reference/core#field-projections).
+  For a plain `fieldWitness` the supported agreement is **one-way**. Every concrete owner can bind a
+  matching symbolic projection value, but an arbitrary symbolic projection model need not correspond
+  to a constructible owner — `symSatExt` does **not** reconstruct consumer-owned values from free
+  projection scalars. See [field projections](/docs/keiki/reference/core#field-projections).
+
+  An [`exactFieldWitness`](/docs/keiki/reference/core#exact-projections) is the two-way case: its
+  declared [`ProjectionDomain`](/docs/keiki/reference/projection-domain) is constrained **once per
+  structured symbolic key**, and a satisfying model key is checked for domain membership, inverse
+  success, and getter round trip before it is exposed. A finite domain is accepted only when every
+  literal round-trips through its symbolic representation and satisfies backend bounds such as
+  `Text`'s U+2FFFF ceiling; an unsupported domain emits **no partial constraint** and leaves the
+  translation conservative.
 </Callout>
 
 ### `translateTermSym`
@@ -211,9 +269,10 @@ translateTermSym ::
     SBV.Symbolic (SBV.SBV (SymRep r))
 ```
 
-The translation is structural for `TLit`, `TReg`, `TInpCtorField`, `TArith`, and `TFieldProj` (which
-is exactly `memoFree env (projectionVarKey witness base)` — a free variable for the typed path). A
-`TArith` over
+The translation is structural for `TLit`, `TOpaqueLit`, `TReg`, `TInpCtorField`, `TArith`, and
+`TFieldProj`. The two literal constructors translate **identically** — display evidence never
+reaches the solver. `TFieldProj` is `memoFree env (projectionVarKey witness base)`, a free variable
+for the typed path, plus the exact-domain constraint when the witness carries one. A `TArith` over
 a type whose `SymRep` is SBV-numeric (a `discoverSymNum` hit) emits a real `+`/`-`/`*` over the
 translated operands, so a guard over a *computed* value is visible to the solver. `TApp1` and
 `TApp2` wrap opaque Haskell functions and translate to **fresh** `SBV.free "app1"`/`"app2"`
@@ -305,12 +364,187 @@ uncertainty. `symIsBot` uses that helper, so an undecided query is treated as "p
 never as proof that two guards are disjoint. A warm query runs in roughly ~10ms.
 
 `symSatExt` is full **witness extraction**: on a satisfiable predicate it returns
-`Just (regs, cmd)` where both are concrete values reconstructed from the SBV model, and
-`models p (regs, cmd) == True` holds for the returned witness — modulo escape-hatch terms
-(`TApp1`/`TApp2` and `PEq` over a non-`Sym` operand) whose values are not extracted. The model's
+`Just (regs, cmd)` where both are concrete values reconstructed from the SBV model. The model's
 input-constructor tag is confined to the known constructor domain (`KnownInCtors ci`), so a
 predicate without a `PInCtor` atom still reconstructs a real command. Since EP-44, `symSatExt`
 *is* the implementation of `Keiki.Core`'s `sat` method on `SymPred`.
+
+<Callout type="warn">
+  **Strengthened in keiki 0.7.0.0 — every `Just` now satisfies `models`.** `symSatExt` concretely
+  rechecks each reconstructed candidate before returning it, restoring the unconditional guarantee
+  that `models p (regs, cmd) == True` for the returned pair. Previously an unrealizable free
+  projection assignment, an opaque `TApp1`/`TApp2` assignment, or a non-`Sym` equality fallback
+  could yield a pair that failed concrete evaluation; those cases — and a constructor-guard
+  violation found during the recheck — now return `Nothing` instead.
+
+  `Nothing` therefore means **"no concrete witness recovered"**, which is *not* proof of
+  unsatisfiability. Use `symIsBot` when you need emptiness. `symSatExt` may install a relation-safe
+  reconstructed owner at the matching structural path for an
+  [exact projection](/docs/keiki/reference/core#exact-projections), but the final concrete recheck
+  remains authoritative.
+</Callout>
+
+## Verification: was the answer actually proved?
+
+*(`verifyPredicate` and `predicateTranslationExact`: keiki 0.6.0.0. The detailed surface:
+keiki 0.7.0.0.)*
+
+A solver call has two independent ways to fall short of a proof: the **translation** may be a sound
+over-approximation rather than an exact encoding, and the **solver** may return an inconclusive
+status. This surface reports both instead of collapsing them into a `Bool`.
+
+### Translation strength
+
+```haskell
+data TranslationStrength
+    = ExactTranslation
+    | ConservativeOverApproximation (NonEmpty TranslationIssue)
+    deriving stock (Eq, Show)
+
+predicateTranslationReport :: HsPred rs ci -> TranslationStrength
+predicateTranslationExact :: HsPred rs ci -> Bool
+```
+
+`predicateTranslationReport` combines per-node support with a **predicate-wide owner-path
+analysis**, so individually exact projections are not promoted when the solver lacks their joint
+relation. `predicateTranslationExact` is the `Bool` projection of it. Neither calls the solver.
+
+Every loss of exactness gets a named, deterministic reason:
+
+```haskell
+data TranslationIssue
+    = OpaqueApplication
+    | UnsupportedEquality SomeTypeRep
+    | UnsupportedOrdering SomeTypeRep
+    | UnsupportedArithmetic SomeTypeRep
+    | UnconstrainedProjection ProjectionDescriptor
+    | UnsupportedProjectionDomain ProjectionDescriptor String
+    | ProjectionUsedOutsideEquality ProjectionDescriptor
+    | ConflictingProjectionViews ProjectionBaseDescriptor
+    | DirectAndProjectedOwnerRead ProjectionBaseDescriptor
+    | UnguardedProjectionInputRead ProjectionDescriptor
+    deriving stock (Eq, Show)
+```
+
+<TypeTable
+  type={{
+    OpaqueApplication: { type: "constructor", description: "A TApp1/TApp2 escape hatch translated to a fresh opaque variable." },
+    UnsupportedEquality: { type: "SomeTypeRep", description: "PEq over an operand type absent from the curated Sym registry." },
+    UnsupportedOrdering: { type: "SomeTypeRep", description: "PCmp over a type absent from the ordering subset." },
+    UnsupportedArithmetic: { type: "SomeTypeRep", description: "TArith over a carrier absent from the numeric registry." },
+    UnconstrainedProjection: { type: "ProjectionDescriptor", description: "A one-way fieldWitness: a free scalar with no declared exact domain." },
+    UnsupportedProjectionDomain: { type: "ProjectionDescriptor, String", description: "An exact domain the backend could not compile; the constraint was omitted entirely rather than partially emitted." },
+    ProjectionUsedOutsideEquality: { type: "ProjectionDescriptor", description: "The exact surface is structural equality and its negation; arithmetic and ordering over a projection stay conservative." },
+    ConflictingProjectionViews: { type: "ProjectionBaseDescriptor", description: "Two distinct projection tags over one owner — independent solver variables do not encode their joint owner relation." },
+    DirectAndProjectedOwnerRead: { type: "ProjectionBaseDescriptor", description: "The same base is read both directly and through a projection." },
+    UnguardedProjectionInputRead: { type: "ProjectionDescriptor", description: "An input projection whose containing predicate does not logically imply its matching constructor guard (see predicateImpliesInCtor)." },
+  }}
+/>
+
+The two descriptors name the offending path structurally:
+
+```haskell
+data ProjectionBaseKind
+    = ProjectionRegisterOwner
+    | ProjectionInputOwner
+    deriving stock (Eq, Ord, Show)
+
+data ProjectionBaseDescriptor = ProjectionBaseDescriptor
+    { projectionBaseKind :: ProjectionBaseKind
+    , projectionBaseConstructorName :: Maybe String
+    , projectionBaseSlotName :: String
+    , projectionBasePosition :: Int
+    , projectionBaseOwnerType :: SomeTypeRep
+    }
+    deriving stock (Eq, Ord, Show)
+
+data ProjectionDescriptor = ProjectionDescriptor
+    { projectionDescriptorBase :: ProjectionBaseDescriptor
+    , projectionDescriptorPath :: String
+    , projectionDescriptorShape :: String
+    , projectionDescriptorTagType :: SomeTypeRep
+    , projectionDescriptorOwnerType :: SomeTypeRep
+    , projectionDescriptorResultType :: SomeTypeRep
+    }
+    deriving stock (Eq, Ord, Show)
+```
+
+### The verdicts
+
+```haskell
+data PredicateVerification
+    = VerifiedSatisfiable
+    | VerifiedUnsatisfiable
+    | UnverifiedOpaque
+    | UnverifiedSolverUnknown String
+    | UnverifiedSolverFailure String
+    deriving stock (Eq, Show)
+
+verifyPredicate :: HsPred rs ci -> IO PredicateVerification
+```
+
+`verifyPredicate` reports `VerifiedSatisfiable` or `VerifiedUnsatisfiable` **only** for a
+predicate-globally exact translation *and* a definite solver answer. An opaque application, an
+unsupported carrier, a solver timeout or `Unknown`, and a solver failure each get their own
+explicitly unverified constructor.
+
+<Callout type="warn">
+  **Behaviour change in keiki 0.7.0.0.** A predicate containing a `TFieldProj` over a released
+  one-way `fieldWitness` now returns `UnverifiedOpaque`. Before 0.7.0.0 such a projection was
+  wrongly treated as exact whenever its *result* carrier happened to be solver-supported. Nothing
+  about soundness regressed — `symIsBot` still proves such predicates empty, because definite
+  unsatisfiability over the larger free-scalar domain also proves the smaller concrete domain
+  empty — but `verifyPredicate` no longer overstates what was proved. Only definite UNSAT counts as
+  proof, and `symIsBot`, the determinism family, and the dead-edge paths all use the same
+  failure-aware solving kernel.
+</Callout>
+
+### The detailed result
+
+```haskell
+data PredicateVerificationDetail
+    = PredicateSatisfiable TranslationStrength [ProjectionModel]
+    | PredicateUnsatisfiable TranslationStrength
+    | PredicateSolverUnknown TranslationStrength String
+    | PredicateSolverFailure TranslationStrength String
+    | PredicateProjectionContractViolation
+        TranslationStrength
+        ProjectionDescriptor
+        String
+    deriving stock (Show)
+
+verifyPredicateDetailed :: HsPred rs ci -> IO PredicateVerificationDetail
+```
+
+`verifyPredicateDetailed` solves **once** and preserves the full solver status, the translation
+strength, and any checked projection models. It can therefore report a definite result for a
+conservative translation — something `verifyPredicate`, which is its compatibility projection,
+deliberately refuses to promote.
+
+`PredicateProjectionContractViolation` is the case worth wiring an alert to: an admitted model key
+was rejected by the declared inverse or failed its getter round trip, meaning an
+`ExactFieldProjection` instance does not satisfy its own laws.
+
+```haskell
+data ProjectionModel = ProjectionModel
+    { projectionModelDescriptor :: ProjectionDescriptor
+    , projectionModelKey :: Dynamic
+    , projectionModelOwner :: Dynamic
+    }
+    deriving stock (Show)
+
+projectionModelKeyAs :: (Typeable a) => ProjectionModel -> Maybe a
+projectionModelOwnerAs :: (Typeable a) => ProjectionModel -> Maybe a
+```
+
+Values stay `Dynamic` because one predicate can mention unrelated projection carriers; cast with the
+typed eliminators, **never** by matching on a display name. A model is decoded only after domain
+membership, inverse success, and getter round-trip all pass.
+
+<Callout type="warn">
+  A `ProjectionModel` is **path-local**: a checked key/owner pair for one structural path, not a
+  complete `(RegFile, ci)` witness. Ask `symSatExt` for that.
+</Callout>
 
 ## Witness-extraction evidence
 
@@ -382,10 +616,47 @@ does **not** compute the register configurations reachable at each vertex, so it
 a guard satisfiable in isolation but never under the registers reachable there; that needs a full
 reachable-state fixpoint and is left as future work.
 
+### The detailed variants
+
+*(keiki 0.7.0.0.)* Both analyses have a variant that keeps the full solver status and edge
+attribution instead of collapsing to a warning list.
+
+```haskell
+data DeterminismAnalysisDetail s = DeterminismAnalysisDetail
+    { determinismDetailEdgeA :: EdgeRef s
+    , determinismDetailEdgeB :: EdgeRef s
+    , determinismDetailVerification :: PredicateVerificationDetail
+    }
+
+checkTransitionDeterminismSymDetailed ::
+    (Bounded s, Enum s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    IO [DeterminismAnalysisDetail s]
+
+data DeadEdgeAnalysisDetail s = DeadEdgeAnalysisDetail
+    { deadEdgeDetailEdge :: EdgeRef s
+    , deadEdgeDetailVerification :: PredicateVerificationDetail
+    }
+
+checkDeadEdgesSymDetailed ::
+    (Bounded s, Enum s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    IO [DeadEdgeAnalysisDetail s]
+```
+
+`checkTransitionDeterminismSymDetailed` solves `guard a .&& guard b` once for every **`Live`/`Live`**
+outgoing pair (`firstIndex < secondIndex`), matching the mode scoping of the compatibility check.
+`checkDeadEdgesSymDetailed` solves every edge guard once, across all modes. Note the weaker
+constraints — neither needs `Show s`, because they report `EdgeRef`s rather than rendered names —
+and that both live in `IO` rather than behind `unsafePerformIO`. The compatibility warnings are
+projections of exactly these results, using the same single solver call and the same attribution.
+
 ## See also
 
 - [Keiki.Core](/docs/keiki/reference/core) — everything re-exported here, plus the pure
   [`validateTransducer`](/docs/keiki/reference/validate) umbrella.
+- [Projection domains](/docs/keiki/reference/projection-domain) — also re-exported here; the
+  vocabulary an `exactFieldWitness` declares.
 - [What gets derived](/docs/keiki/explanation/what-gets-derived) and
   [Why SMT](/docs/keiki/explanation/why-smt).
 - The behaviours on this page are exercised in `test/Keiki/SymbolicSpec.hs`.

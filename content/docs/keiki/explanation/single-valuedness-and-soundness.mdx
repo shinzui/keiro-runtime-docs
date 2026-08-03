@@ -79,9 +79,18 @@ register-value-dependent and arithmetic overlaps the syntactic one cannot prove.
 
 The solver only sees what the SBV translation can express, and the translation is built over a
 **curated registry** of types. `discoverSym` recognizes exactly: `Bool`, `Int`, `Integer`,
-`Text`, `UTCTime`, and the fixed-width integers `Word8`/`Word16`/`Word32`/`Word64`/
+`Natural`, `Text`, `UTCTime`, and the fixed-width integers `Word8`/`Word16`/`Word32`/`Word64`/
 `Int32`/`Int64`. A guard over any of these translates *precisely* — `PEq` becomes `(.==)`,
 `PCmp` becomes a real `.<`/`.<=`/`.>`/`.>=` comparison.
+
+<Callout type="info">
+  **Being in the registry is not the same as being exactly representable.** *(keiki 0.7.0.0.)* Two
+  of those types are faithful for equality and ordering but are **not** whole-carrier isomorphisms:
+  `UTCTime` is encoded as picoseconds through POSIX time, which clamps leap-second day times, and
+  `Text` exceeds SMT-LIB's U+2FFFF string ceiling. That distinction only matters when a projection
+  wants to declare its exact image — `symbolicWholeCarrierExact` is the query, and it holds for
+  `Bool`, `Integer`, `Natural`, and the curated fixed-width integers only.
+</Callout>
 
 Outside that set, two escape hatches appear in the term language: `TApp1` and `TApp2`, which
 wrap opaque Haskell functions. They have no symbolic meaning, so `translateTermSym` maps each to
@@ -133,16 +142,49 @@ merely satisfiable. And unlike an opaque `TApp`, keiki knows when it is under-ve
 finding rather than a silent fallback to an opaque Boolean.
 
 <Callout type="warn">
-  What you do **not** get is invertibility. The agreement is deliberately **one-way**: every concrete
-  owner can bind a matching symbolic projection value, but an arbitrary symbolic model over projection
-  scalars need not correspond to a *constructible* owner. `symSatExt` does not reconstruct
-  consumer-owned values from free projection scalars.
+  What you do **not** get from a plain `fieldWitness` is invertibility. The agreement is deliberately
+  **one-way**: every concrete owner can bind a matching symbolic projection value, but an arbitrary
+  symbolic model over projection scalars need not correspond to a *constructible* owner. `symSatExt`
+  does not reconstruct consumer-owned values from free projection scalars.
 
   So a satisfying model over projections is evidence about the **scalars**, not a witness command you
   can replay. This is why projections are permitted in guards and rejected in updates and outputs: a
   guard only needs the solver to reason about the scalar, whereas an update or an output would need
   the owner back.
 </Callout>
+
+<Callout type="warn">
+  **Corrected in keiki 0.7.0.0 — path identity is not proof strength.** Keiki used to treat a
+  one-way projection as an *exact* translation whenever its result carrier happened to be
+  solver-supported, which quietly overstated what had been proved. It no longer does: a predicate
+  containing a `TFieldProj` over a released `fieldWitness` is `UnverifiedOpaque` to
+  `verifyPredicate`. Nothing about the gate regressed — the shared-variable path identity above still
+  holds, and `symIsBot` can still prove such a predicate empty, since definite unsatisfiability over
+  the larger free-scalar domain also proves the smaller concrete domain empty.
+</Callout>
+
+### Exact projections: buying the other direction
+
+*(keiki 0.7.0.0.)* An [`exactFieldWitness`](/docs/keiki/reference/core#exact-projections) is the
+opt-in that *does* give invertibility. The projection tag declares a
+[`ProjectionDomain`](/docs/keiki/reference/projection-domain) — the exact image of its getter — plus
+a canonical inverse, and keiki constrains the solver variable to that domain and checks every
+satisfying model for domain membership, inverse success, and getter round trip before exposing it.
+
+The price is that **soundness becomes conditional**, and it is worth being precise about which half.
+Keiki's model checks catch an inverse that rejects an admitted key or returns a non-round-tripping
+owner. They cannot catch a domain that *omits* a key some real owner produces, because that
+under-declaration manufactures a false UNSAT before any satisfying model exists — there is nothing
+for a check to look at. So `VerifiedUnsatisfiable`, `symIsBot`, a determinism disjointness blessing,
+and a dead-edge proof over exact-projection predicates are sound **only conditional on the
+declaration laws**, and a generator emitting exact witnesses must emit owner-side conformance tests
+with them. Predicates using only the one-way `fieldWitness` keep the unconditional over-approximation
+guarantee.
+
+Per-projection exactness is also not predicate-global exactness. One base path may use a single exact
+tag repeatedly, but two distinct tags over one owner — or a direct owner read combined with any
+projection — stay conservative, since independent solver variables do not encode their joint owner
+relation.
 
 ## Caveat 2 — the Unknown/timeout rule
 
@@ -162,6 +204,10 @@ native picosecond resolution.
 instance Sym Word64 where
     type SymRep Word64 = Word64
 ```
+
+`Natural` is modelled as an unbounded SMT integer **constrained non-negative** at every allocation
+(`constrainSymDomain`), and its subtraction is total monus in both interpreters — `a - b = max 0 (a - b)`
+— because ordinary SMT integer subtraction would return a negative value no `Natural` denotes.
 
 Platform-sized `Int` remains modeled as unbounded `Integer`, because its width varies by target.
 If a proof depends on `Int` overflow, use an explicitly sized type instead. The OrderCart money

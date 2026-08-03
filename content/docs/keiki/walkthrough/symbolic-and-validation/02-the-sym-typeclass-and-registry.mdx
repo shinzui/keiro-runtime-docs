@@ -21,6 +21,8 @@ class (SBV.SymVal (SymRep a), Typeable a) => Sym a where
     toSym :: a -> SymRep a
     fromSym :: SymRep a -> a
     symDefault :: a
+    constrainSymDomain :: SBV.SBV (SymRep a) -> SBV.Symbolic ()
+    constrainSymDomain _ = pure ()
 ```
 
 <TypeTable
@@ -29,8 +31,30 @@ class (SBV.SymVal (SymRep a), Typeable a) => Sym a where
     toSym: { type: "a -> SymRep a", description: "Push a concrete Haskell value into its SBV representation (used by symLit / extraction inputs)." },
     fromSym: { type: "SymRep a -> a", description: "Pull a concrete witness back out of a model value." },
     symDefault: { type: "a", description: "Fallback value symSatExt uses for a slot/field the model left unconstrained — sound because such slots satisfy the predicate at any value." },
+    constrainSymDomain: { type: "SBV (SymRep a) -> Symbolic ()", description: "Restrict the representation to values that denote a real a. Defaults to no constraint; refined carriers override it (keiki 0.5.0.0)." },
   }}
 />
+
+<Callout type="info">
+  **`constrainSymDomain` is new in keiki 0.5.0.0** and forced a PVP major bump, since the class
+  definition changed — but the method has a **default**, so every hand-written instance kept
+  compiling untouched. It exists because a carrier's `SymRep` can be *wider* than the carrier:
+  `Natural` is represented as an unbounded `Integer`, which admits negative values that no `Natural`
+  denotes. The instance closes that gap in one line:
+
+  ```haskell
+  instance Sym Natural where
+      type SymRep Natural = Integer
+      toSym = fromIntegral
+      fromSym = fromInteger
+      symDefault = 0
+      constrainSymDomain value = SBV.constrain (value SBV..>= 0)
+  ```
+
+  Keiki applies it at **every** allocation site — `symFree`, structural register and input reads,
+  field projections, and opaque term fallbacks — so there is no path by which a solver model can hand
+  back an out-of-domain value.
+</Callout>
 
 The `SBV.SymVal (SymRep a)` superclass is doing real work: it hands the translator `SBV.literal`,
 `SBV.free`, and `SBV.unliteral` for the carrier type for free. The header spells out why

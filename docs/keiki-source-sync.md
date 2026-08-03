@@ -9,22 +9,209 @@ reviewed by the documentation.
 - **Qualified name (mori):** `shinzui/keiki`; resolve it with
   `mori registry show shinzui/keiki --full`.
 - **Path at last sync:** `/Users/shinzui/Keikaku/bokuno/keiki`.
-- **Reviewed releases:** `keiki 0.4.0.0`, `keiki-codec-json 0.4.0.0`, and
-  `keiki-codec-json-test 0.4.0.0`.
+- **Reviewed releases:** `keiki 0.8.0.0`, `keiki-codec-json 0.8.0.0`, and
+  `keiki-codec-json-test 0.8.0.0`.
 - **Primary modules:** `Keiki.Core`, `Keiki.Builder`, `Keiki.Operators`,
   `Keiki.Acceptor`, `Keiki.Generics`, `Keiki.Generics.TH`, `Keiki.Composition`,
-  `Keiki.Profunctor`, `Keiki.Symbolic`, `Keiki.Shape`, `Keiki.Validate`, and the
-  render and JSON-codec modules.
+  `Keiki.Profunctor`, `Keiki.Symbolic`, `Keiki.ProjectionDomain`, `Keiki.Shape`,
+  `Keiki.Validate`, and the render and JSON-codec modules.
+- **Upstream prose read this round:** `CHANGELOG.md` (both packages), ADR-0003
+  (substantially rewritten) and the new ADR-0006, `docs/guide/mermaid-rendering.md`,
+  `docs/guide/user-guide.md`, `docs/guide/why-smt.md`, `docs/guide/symbolic-ci.md`,
+  and the regenerated `docs/guide/diagrams/*`.
 
 ## Last reviewed commit
 
 ```text
-6807aac817fe53bbcc1b11b9e1a1b226bae14413  (6807aac)
-2026-07-28T06:32:08-07:00
-docs(plan): record 0.4.0.0 release
+9ee8de0fece845bf12dda861604b77856782d90b  (9ee8de0)
+2026-08-02T10:16:23-07:00
+chore(release): 0.8.0.0
 ```
 
-> **Current range.** The `ce5748b..6807aac` range (13 commits) folds in **three**
+> **Current range.** The `6807aac..9ee8de0` range (38 commits) folds in **four**
+> releases — 0.5.0.0, 0.6.0.0, 0.7.0.0, and 0.8.0.0 — along four threads. Three of
+> the four carry breaking changes, and two of those are *semantic* fixes that change
+> the answer an existing program gets rather than only its type.
+>
+> **1. `Natural` becomes a first-class symbolic carrier (0.5.0.0, 0.6.0.0).** 0.5.0.0
+> pinned `Natural`'s `CanonicalTypeName`, admitted it to the symbolic equality and
+> ordering registries, and added `Sym.constrainSymDomain` — a **defaulted** class
+> method (hence PVP major, but source-compatible) that lets a refined carrier state
+> the validity invariant of its representation. `Natural` is an unbounded `Integer`
+> constrained `.>= 0` at every allocation site: `symFree`, structural register and
+> input reads, field projections, and opaque term fallbacks. 0.5.0.0 deliberately
+> kept `Natural` *out* of the arithmetic registry, because Haskell's `Natural`
+> subtraction throws `Underflow` where SMT integer subtraction returns a negative.
+> 0.6.0.0 closed that with a **breaking semantic fix**: `tsub` on a `Natural` is
+> total monus (`a - b = max 0 (a - b)`) in *both* interpreters — concrete evaluation
+> special-cases the type before calling `(-)`, the translator emits
+> `ite (a .>= b) (a - b) 0` — after which `Natural` joined the numeric registry.
+> Two side effects: the opt-in opaque-guard audit widened to cover a `TArith` whose
+> carrier is outside the numeric registry (so its `tvwDetail` no longer names `TApp`
+> specifically, and tests asserting on the text break), and the fast pure overlap
+> validator models `Natural` as the exact interval `[0, ∞)`. `keiki-codec-json`
+> 0.5.0.0 added `Natural` wire support: a JSON number that rejects negative and
+> fractional values rather than truncating.
+>
+> Landed as: a `Natural` row and a monus callout in `reference/symbolic.mdx`
+> (plus the `constrainSymDomain` method and a `discoverSymNum` correction), the
+> `Natural` monus warning in `reference/core.mdx` and
+> `walkthrough/core-and-builder/03-term-language.mdx`, a `Naturals` row in
+> `reference/shape.mdx`, the widened-audit callout in `reference/validate.mdx`
+> (and its interval note), the wire callout in `reference/codec-json.mdx`, the
+> instance walkthrough in `walkthrough/symbolic-and-validation/02-*.mdx`, the
+> registry list and representation paragraph in
+> `explanation/single-valuedness-and-soundness.mdx`, and an FAQ entry.
+>
+> **2. Verification honesty and exact projections (0.6.0.0, 0.7.0.0).** 0.6.0.0
+> added `verifyPredicate` / `predicateTranslationExact` / `PredicateVerification`,
+> separating "the translation was exact" from "the solver was definite". 0.7.0.0
+> then made the distinction load-bearing with a **semantic correctness fix**: a
+> one-way `fieldWitness` projection is no longer treated as exact merely because
+> its *result* carrier is solver-supported, so predicates containing one now report
+> `UnverifiedOpaque`. Soundness did not regress — `symIsBot` still proves such
+> predicates empty — but `verifyPredicate` stopped overstating.
+>
+> The opt-in that *does* buy exactness is the **new module `Keiki.ProjectionDomain`**
+> (`ProjectionDomain`, `TextPattern`, `DomainConstructionError`,
+> `maximumSmtCodePoint`, `finiteProjectionDomain`, `wholeProjectionDomain`,
+> `textProjectionDomain`, `textLiteral`, `textCharSet`, `textCharRanges`,
+> `textConcat`, `textAlternation`, `textRepeatBetween`, `memberProjectionDomain`,
+> `matchesTextPattern` — re-exported wholesale by `Keiki.Symbolic`), plus
+> `ExactFieldProjection` / `exactFieldWitness` / `ProjectionLawFailure` /
+> `checkFieldProjectionOwner` / `checkFieldProjectionKey` and the read-only
+> queries `fieldWitnessHasExactDomain` / `fieldWitnessDomain` /
+> `fieldWitnessReconstruct` in `Keiki.Core`. `FieldWitness` is now a real record
+> over private evidence, still exported abstractly. Whole-carrier exactness is
+> gated by `symbolicWholeCarrierExact` and holds only for `Bool`, `Integer`,
+> `Natural`, and the curated fixed-width integers — `UTCTime` clamps leap-second
+> day times, `Text` exceeds SMT-LIB's U+2FFFF ceiling.
+>
+> Two caveats are stated everywhere a reader could land, because they are the
+> whole point: exact-domain soundness is **conditional on the owner-side law**
+> (keiki checks every model for domain membership, inverse success, and getter
+> round trip, but cannot see a domain that *omits* a real owner's key — that
+> under-declaration manufactures a false UNSAT), and per-projection exactness is
+> **not** predicate-global exactness (two tags over one owner, or a direct read
+> plus a projection, stay conservative; an input projection is exact only when the
+> predicate implies its constructor guard, which is what the newly exported
+> `predicateImpliesInCtor` decides). Also in 0.7.0.0: `symSatExt` concretely
+> rechecks every candidate, so every `Just` satisfies `models` unconditionally and
+> the previously-documented escape-hatch caveat is gone — at the price that
+> `Nothing` now strictly means "no witness recovered". Reporting surface:
+> `predicateTranslationReport`, `TranslationStrength`, the ten-constructor
+> `TranslationIssue`, `verifyPredicateDetailed`, `PredicateVerificationDetail`,
+> `ProjectionModel` + its typed eliminators, `ProjectionBaseKind` /
+> `ProjectionBaseDescriptor` / `ProjectionDescriptor`, and the `IO`-returning
+> `checkTransitionDeterminismSymDetailed` / `checkDeadEdgesSymDetailed` (which
+> drop the `Show s` constraint the compatibility checks need).
+>
+> **ADDED:** `reference/projection-domain.mdx` — the module has fifteen exports, a
+> two-interpretation design constraint, and a proof obligation a reader must look
+> up member by member, so it clears the reference-page admission test rather than
+> fitting inside `reference/symbolic.mdx`. Wired into `reference/meta.json`, the
+> "Symbolic analysis and validation" card group in `reference/index.mdx`, and
+> inbound links from `reference/core.mdx`, `reference/symbolic.mdx`, and
+> `explanation/single-valuedness-and-soundness.mdx`.
+>
+> Also landed as: a new `### Exact projections` section and a corrected witness
+> description in `reference/core.mdx`; a new `## Verification: was the answer
+> actually proved?` section, a `### Whole-carrier exactness` section, the four new
+> `SymEnv` fields, a `### The detailed variants` section, and a rewritten
+> `constrainFieldProjection` callout in `reference/symbolic.mdx`; a new
+> `### Exact projections: buying the other direction` subsection and two corrective
+> callouts in `explanation/single-valuedness-and-soundness.mdx`; two callouts in
+> `explanation/the-symbolic-ci-gate.mdx`; the recheck callout in
+> `walkthrough/symbolic-and-validation/05-symisbot-and-witness-extraction.mdx`;
+> and an FAQ entry.
+>
+> **3. Detailed attribution (0.7.0.0).** `stepDetailedEither` + `StepSuccess`
+> became the selection and evaluation *authority*, with `stepEither` redefined as
+> its erasure; `applyEventsDetailedEither` / `reconstituteDetailedEither` +
+> `ReplayEventSpan` / `ReplayAttribution` / `ReplaySuccess` expose an ordered
+> completed-edge factorization of a successful strict replay. Spans are zero-based
+> and half-open, a multi-event edge completes **one** attribution, an epsilon-output
+> edge is unobservable in replay and never appears, and the live-first phase is
+> reported exactly. All replay paths now share one `applyEventKernel`, so the
+> existing functions keep a nullary no-trace policy with O(1) auxiliary state.
+> `EdgeRef` gained explicit documentation that it is **construction-local** and must
+> not be persisted. Landed as two new sections (`### Detailed forward success`,
+> `### Replay attribution`) plus an `EdgeRef` stability callout in
+> `reference/core.mdx`.
+>
+> **4. Readable business semantics as the primary rendering contract (0.8.0.0,
+> ADR-0006).** The largest doc-facing change in the range, and a **reversal** of
+> what these pages previously taught. `TLit` and `lit` now require `Show`, `Term`
+> gained `TOpaqueLit` / `opaqueLit`, and `prettyTerm` prints a literal's real value
+> — `<lit>` is now reserved for the deliberate opaque constructor. `toMermaid` and
+> **every** no-options shape renderer default to readable guards, complete register
+> assignments, multiline labels, and no truncation; `toTopologyMermaid` /
+> `topologyMermaidOptions` are the named policy carrying the old keiki 0.7 bytes.
+> `MermaidOptions` **removed** `showWrittenSlots` and `showGuardSummary` (replaced
+> by `updateMode :: MermaidUpdateMode` and the existing `guardMode`, which are now
+> the sole authorities — the legacy-precedence rule is gone), and every composite,
+> nested, three-way, alternative, and feedback shape gained an options-aware route.
+> Semantic text is escaped once, before renderer-owned `<br/>` joins, on three
+> tiers: XML entities for safe punctuation, **visible full-width forms** for
+> parser-active angle brackets and backslashes, and control pictures for raw CR/LF,
+> with `<lit>` entity-encoded as a known-safe carve-out.
+>
+> The consequence worth repeating: readable rendering **discloses `lit` values**,
+> so secrets must use `opaqueLit` or the whole diagram must go through
+> `topologyMermaidOptions`. The two literal constructors are executably and
+> proof-wise identical — no runtime, replay, validation, pure-analysis, composition,
+> or symbolic path forces `Show`.
+>
+> Landed as: a substantially rewritten `reference/render-mermaid.mdx` (the default
+> section, `toTopologyMermaid`, both worked examples, the options-aware companion
+> table, `MermaidUpdateMode`, the rewritten `MermaidOptions` with both named
+> policies transcribed in full, and a new `## Escaping at the parser boundary`
+> section); new `### Readable and opaque literals` and rewritten smart-constructor
+> sections in `reference/core.mdx`; a rewritten literal table and examples in
+> `reference/render-pretty.mdx`; a rewritten `## Readable business semantics are the
+> primary contract` section with a `### Why the default was reversed` subsection in
+> `explanation/diagrams-from-one-declaration.mdx`; a re-aimed
+> `how-to/render-a-mermaid-diagram.mdx` (now "turn the guards back off") and
+> upgrade callout in `how-to/keep-diagrams-in-sync.mdx`; rewritten
+> `walkthrough/rendering-and-codecs/01-pretty-printer.mdx`,
+> `02-mermaid-core.mdx`, and `03-mermaid-options-and-labels.mdx` (the last gaining
+> a `## escapeSemanticText` section and losing the legacy-precedence walk);
+> `TOpaqueLit` arms in the six `Term`-walker chapters; and two FAQ entries.
+>
+> **Version wiring.** `getting-started/compatibility-and-upgrades.mdx` moved the
+> keiki row to `0.8.0.0` / `9ee8de0` and gained four new breaking-upgrade bullets;
+> `content/docs/keiki/index.mdx` restates the release arc.
+>
+> **The version-skew callouts are deliberate.** keiki is now reviewed at 0.8.0.0
+> while keiro is still pinned at `430c3d2` / `0.4.0.1`, whose bounds require
+> `keiki >=0.4 && <0.5`. Rather than leave that silently contradictory, explicit
+> warnings were added to `getting-started/compatibility-and-upgrades.mdx`,
+> `keiki/index.mdx`, and `integrations/keiro-with-keiki.mdx`. **Retire all three
+> when the keiro pointer advances** — keiro upstream has already adopted Keiki 0.8.
+>
+> **Corrected while here** (follow-the-source rule, not caused by this range): the
+> minimal `Edge` example at the foot of `reference/core.mdx` omitted the `mode`
+> field required since 0.3.0.0 and would not have compiled; the `userReg` golden in
+> `reference/render-mermaid.mdx` and `walkthrough/rendering-and-codecs/02-*.mdx`
+> showed an ε-output on the `RequiresConfirmation --> Deleted` edge, which upstream
+> jitsurei now emits as `AccountDeleted`; and both the mermaid how-to and
+> `how-to/keep-diagrams-in-sync.mdx` claimed `toMermaid loanApplication` is pinned
+> verbatim — the byte golden is `toTopologyMermaid`, while `toMermaid` is checked by
+> a `hasReadableSemantics` property.
+>
+> **NO-OP:** the CI commits (`2915efa`, `a696a50`, `796572c`, `f70b7be`), the
+> `d1bdd9a`/`7849198` revert-then-restore pair for detailed attribution (net effect
+> documented above), `2b3bf6a` benchmarks, `76341b8` and `a3c7662` test-only
+> commits, and every `docs(plan)` / `docs(research)` / `docs(ir)` commit in the
+> range — including `b7096a8`, which corrects IR-2's *implementation status* only.
+>
+> **Deliberately not documented:** nothing was withheld from this range. The
+> upstream worktree was clean at the reviewed SHA. Note that this round covers
+> **keiki only** — the keiro-side consequences of `TLit`'s `Show` constraint,
+> readable diagram output, and the `Natural`/verification changes belong to the
+> keiro pointer's next round.
+>
+> **Note (prior range).** The `ce5748b..6807aac` range (13 commits) folds in **three**
 > releases at once — 0.3.0.0, 0.3.1.0, and 0.4.0.0. None of them had reached the
 > `content/docs/keiki/` tree before this round, even though the keiro pointer had
 > already described `EdgeMode` from *keiro's* side; a grep for `EdgeMode`,
@@ -163,6 +350,15 @@ docs(plan): record 0.4.0.0 release
 
 ## Previous pointers
 
+- `6807aac817fe53bbcc1b11b9e1a1b226bae14413` (`6807aac`), 2026-07-28, `keiki 0.4.0.0`
+  — the baseline before the four-release Natural / verification / attribution /
+  readable-rendering round. The `6807aac..9ee8de0` range (38 commits) landed
+  `Natural` as a curated symbolic carrier with `constrainSymDomain` and total-monus
+  subtraction (0.5.0.0, 0.6.0.0, breaking), honest verification verdicts plus the new
+  `Keiki.ProjectionDomain` module and `exactFieldWitness` (0.6.0.0, 0.7.0.0, breaking
+  semantics), detailed forward-step and replay attribution (0.7.0.0), and readable
+  business semantics as the primary rendering contract (0.8.0.0, breaking: `Show` on
+  `TLit`, `TOpaqueLit`, and the `MermaidOptions` field removals).
 - `ce5748b5f2311de1355e648db564da8b404e42f2` (`ce5748b`), 2026-07-13, `keiki 0.2.0.0`
   — the baseline before the three-release evolution-and-projection round. The
   `ce5748b..6807aac` range (13 commits) landed `EdgeMode` + `replayOnly` (0.3.0.0,
@@ -181,8 +377,8 @@ docs(plan): record 0.4.0.0 release
 1. Resolve the source with mori and inspect committed drift:
    ```text
    KEIKI=$(mori registry show shinzui/keiki --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIKI" log --oneline 6807aac..HEAD
-   git -C "$KEIKI" diff --stat 6807aac..HEAD
+   git -C "$KEIKI" log --oneline 9ee8de0..HEAD
+   git -C "$KEIKI" diff --stat 9ee8de0..HEAD
    ```
 2. Read changed source, tests, changelogs, and release notes. Treat historical
    design notes as context only when they disagree with shipped modules.

@@ -20,36 +20,69 @@ All four views walk the same data: `[minBound .. maxBound]` over the vertex type
 transitions, `initial`/`isFinal` for the markers. There is no annotation file, no doc-comment DSL,
 nothing to keep in sync. Change an edge and the diagram changes with the next render.
 
-## The guard-free default is the point
+## Readable business semantics are the primary contract
 
-`toMermaid` renders edges as `<input ctor> / <output ctor>` and **shows no guard at all**:
+*(keiki 0.8.0.0, ADR-0006. Through keiki 0.7 the default was the opposite — see
+[the reversal](#why-the-default-was-reversed) below.)*
+
+`toMermaid` renders the complete behaviour of every edge: the command, the states, the event
+constructors, the full guard, and the register right-hand expressions.
 
 ```haskell
 toMermaid :: (Enum s, Bounded s, Show s)
           => SymTransducer (HsPred rs ci) rs s ci co -> Text
 ```
 
-This is deliberate, and it is the load-bearing pedagogy of the renderer. The guard-free view is the
-**one-way-door bug-spotting view**: it shows you the *shape* of the machine — which states reach
-which, which inputs fire which outputs, which states are final — without the noise of guard
-predicates. A whole class of structural bugs is visible at a glance in this view and *only* in this
-view:
+The argument for this is short. Keiki already *owns* the guard and update syntax trees — they are
+the same values `evalPred` and `runUpdate` execute. A renderer that hides them proves only topology
+and makes a reviewer reconstruct behaviour from source or a separate inspector dump. A renderer that
+shows them makes the diagram sufficient for behavioural review, and it cannot drift, because the
+text is derived from the executing value rather than from a comment.
+
+The compact topology view is still one function call away, and it now has an honest name:
+
+```haskell
+toTopologyMermaid :: (Enum s, Bounded s, Show s)
+                  => SymTransducer (HsPred rs ci) rs s ci co -> Text
+```
+
+That form is still the right tool for one specific job — the **one-way-door bug-spotting view**. It
+shows the *shape* of the machine without the noise of predicates, and a whole class of structural
+bug is visible at a glance in it:
 
 - a state with **no outgoing edges** that should not be a dead end;
 - an input that **fires from a state it should not** (an edge that should not exist);
 - a missing `[*] -->` initial marker, or a `--> [*]` final marker on the wrong state;
 - two edges from the same state on the same input — a fan-out you did not intend.
 
-Because the guard text is suppressed, these topology mistakes are not buried under
-`(ConfirmAccount && ConfirmAccount.confirmCode == confirmCode)`. You see the skeleton first; you
-check the skeleton; *then*, if you need the conditions, you opt into them.
+### Why the default was reversed
+
+The old default rested on an accident, not a principle. Ordinary `Term` literals carried no `Show`
+evidence, so *every* literal could only render as `<lit>` — a guard containing one was not readable
+even if you asked for it. Once `lit` requires `Show`, guard text derives from the executable value
+itself and the readable rendering is genuinely faithful, so hiding it stopped paying for itself.
+
+Adding display evidence deliberately changed **nothing** about meaning. Execution, replay inversion,
+pure overlap analysis, symbolic translation, and the domain of values keiki can model are all
+untouched; no runtime or proof path forces `Show`. Values without a `Show` instance stay executable
+through [`opaqueLit`](/docs/keiki/reference/core#readable-and-opaque-literals), and a partial,
+expensive, or stylised `Show` can affect a picture but never a result. `Show` text is not canonical
+serialization.
+
+<Callout type="warn">
+  **The cost is disclosure, and it is on you.** Readable rendering discloses ordinary `lit` values.
+  Secrets, credentials, personal data, and deliberately redacted values must use `opaqueLit`, which
+  renders `<lit>` while keeping the value fully executable and fully visible to the solver — or the
+  whole diagram must be rendered under `topologyMermaidOptions`, which redacts all guard and update
+  semantics at once.
+</Callout>
 
 <Callout type="info">
-Opting in is additive. `toMermaidWith` takes `MermaidOptions`, and with `defaultMermaidOptions` it is
-byte-identical to `toMermaid`. Turn on `showWrittenSlots` for the `[w: …]` segment, or set `guardMode`
-to `MermaidGuardPretty` for the domain-readable guard (the same `prettyPred` rendering the edge
-inspector uses) or `MermaidGuardStructuralSummary` for the constructor-tag walk. The default rendering
-is never changed by adding options.
+Both policies are explicit named values, and **every diagram shape has an options-aware route**:
+`toMermaidWith defaultMermaidOptions` is byte-identical to `toMermaid`, and the composite, nested,
+three-way, alternative, and feedback renderers all take `MermaidOptions` too. `guardMode` and
+`updateMode` are the sole authorities on what is shown — see
+[Render: Mermaid](/docs/keiki/reference/render-mermaid).
 </Callout>
 
 ## The edge inspector and the guard language
@@ -67,7 +100,7 @@ hand-written AST edges without a `PInCtor` yield `Nothing`, which `edgeLabel` re
 `edgeOutputName` reads the output constructor name(s), rendering an ε-edge (empty output) as `ε`.
 
 The guard language itself is `prettyPred` (from `Keiki.Render.Pretty`), the **domain-readable**
-rendering of the same `HsPred` AST — the diagram's optional `MermaidGuardPretty` mode and the edge
+rendering of the same `HsPred` AST — the diagram's default `MermaidGuardPretty` mode and the edge
 inspector share it, so the guard text reads the same everywhere it appears.
 
 ## The atlas: many diagrams, one document

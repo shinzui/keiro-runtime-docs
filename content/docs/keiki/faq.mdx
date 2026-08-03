@@ -30,9 +30,50 @@ Short answers to the questions people ask most about keiki. Each links to the pa
   <Accordion title="My guard branches on a collection and the build is green — is it verified?">
     Probably not. A clean build does **not** mean a guard is solver-visible; the opaque-guard audit
     is opt-in. Set `warnOpaqueGuards = True` and re-run the well-formedness check — it flags every
-    edge whose guard branches on an opaque `TApp` term the symbolic analyses cannot see. Once you
-    know which guard is invisible, project it to a scalar. See [Why
-    SMT?](/docs/keiki/explanation/why-smt).
+    edge whose guard branches on a term the symbolic analyses cannot see, which since keiki 0.5.0.0
+    includes a `TArith` over a carrier outside the numeric registry, not just an opaque `TApp`. Once
+    you know which guard is invisible, project it to a scalar. For a *per-predicate* answer with no
+    solver call, ask [`predicateTranslationReport`](/docs/keiki/reference/symbolic) — it names the
+    exact reason exactness was lost. See [Why SMT?](/docs/keiki/explanation/why-smt).
+  </Accordion>
+
+  <Accordion title="My diagrams all changed after upgrading to keiki 0.8 — what happened?">
+    `toMermaid` and every no-options shape renderer now default to **readable** output: complete
+    guards, complete register assignments, and multiline labels. That was a deliberate reversal —
+    readable business semantics are now the primary rendering contract. Two honest fixes: regenerate
+    the golden if the diagram should show behaviour, or switch the call to `toTopologyMermaid`, which
+    reproduces the keiki 0.7 topology bytes exactly. Do **not** look for `showWrittenSlots` or
+    `showGuardSummary` — those `MermaidOptions` fields were removed in favour of `updateMode` and
+    `guardMode`. See [Keep diagrams in sync](/docs/keiki/how-to/keep-diagrams-in-sync).
+  </Accordion>
+
+  <Accordion title="Will readable diagrams leak a secret in a guard?">
+    Yes, if you used `lit`. Since keiki 0.8.0.0 a `lit` value is rendered in the diagram's guard and
+    update text. Build secrets, credentials, personal data, and anything deliberately redacted with
+    **`opaqueLit`** instead — it renders `<lit>` while the value stays fully executable and fully
+    visible to the solver, so nothing about behaviour or proof changes. To redact a whole diagram at
+    once, render it under `topologyMermaidOptions`. See [readable and opaque
+    literals](/docs/keiki/reference/core#readable-and-opaque-literals).
+  </Accordion>
+
+  <Accordion title="Why does verifyPredicate say UnverifiedOpaque for a guard that used to pass?">
+    Because keiki 0.7.0.0 corrected an overstatement. A one-way `fieldWitness` projection used to be
+    treated as an *exact* translation whenever its result carrier happened to be solver-supported,
+    which is not sound reasoning about the owner. Any predicate containing such a projection is now
+    `UnverifiedOpaque`. Nothing regressed: `symIsBot` still proves such predicates empty, since
+    definite unsatisfiability over the larger free-scalar domain also proves the smaller concrete
+    domain empty. If you genuinely need a verified answer, declare an
+    [`ExactFieldProjection`](/docs/keiki/reference/core#exact-projections) and opt in per call site
+    with `exactFieldWitness` — but read the conditional-soundness caveat first.
+  </Accordion>
+
+  <Accordion title="My Natural subtraction stopped throwing Underflow.">
+    That is keiki 0.6.0.0's total-monus fix, and it is intentional. `tsub a b` on a `Natural` is now
+    `max 0 (a - b)` in **both** concrete and symbolic evaluation, so it yields `0` rather than
+    throwing when `b > a`. The old behaviour disagreed with the solver, which would have returned a
+    negative value no `Natural` denotes. If your model used the exception to signal an invalid state,
+    guard the ordering explicitly instead — `proj #balance .>= lit amount`. See [the term
+    language](/docs/keiki/reference/core#the-term-language).
   </Accordion>
 
   <Accordion title="Why does my replay return Nothing?">

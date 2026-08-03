@@ -120,6 +120,15 @@ the guards actually read (`symSatExt` names each SBV variable after its slot, e.
 witness satisfies `models p (regs, cmd)`, which is what the `jitsurei` specs assert with their
 sat → witness → `evalPred` agrees round-trips.
 
+<Callout type="info">
+  **Strengthened in keiki 0.7.0.0.** `symSatExt` now concretely rechecks every reconstructed
+  candidate before returning it, so `models p (regs, cmd)` holds **unconditionally** for a `Just`.
+  Previously an unrealizable free projection assignment, an opaque `TApp1`/`TApp2` assignment, or a
+  non-`Sym` equality fallback could produce a pair that failed concrete evaluation. Those now return
+  `Nothing` — which reinforces the rule above: `Nothing` means "no concrete witness recovered", never
+  "proved empty".
+</Callout>
+
 <Callout type="warn">
   `symSatExt` needs two extra evidence constraints the bare `isSingleValuedSym` does not:
   `ExtractRegFile rs` (to rebuild the register file) and `KnownInCtors ci` (to rebuild the
@@ -138,6 +147,18 @@ but it never makes an overlapping pair look empty in a way that matters for safe
 stays trustworthy. The full treatment — including the one place an opaque guard can silently
 *under*-verify, and the `unknown`/timeout rule — is in
 [Single-valuedness and soundness](/docs/keiki/explanation/single-valuedness-and-soundness).
+
+<Callout type="info">
+  **When you need to know *why* a gate answered as it did** *(keiki 0.7.0.0)*, the `Bool` is no
+  longer the only option. [`verifyPredicate`](/docs/keiki/reference/symbolic) separates "the
+  translation was exact" from "the solver was definite", reporting `UnverifiedOpaque`,
+  `UnverifiedSolverUnknown`, and `UnverifiedSolverFailure` as distinct outcomes instead of folding
+  them into a conservative `False`. `predicateTranslationReport` names the specific reason exactness
+  was lost — an opaque application, an unsupported carrier, a projection used outside equality — with
+  no solver call at all, and `checkTransitionDeterminismSymDetailed` / `checkDeadEdgesSymDetailed`
+  attach that verdict to the exact `EdgeRef` it came from. Useful for turning a red gate into an
+  actionable message.
+</Callout>
 
 ## Build-time only — never the hot path
 

@@ -1,26 +1,33 @@
 ---
 title: "03 — Options and labels"
-description: "MermaidOptions and the single guard-text chokepoint, the [w: …; g: …] suffix, and the stable-id / display-label variant with its collision check."
+description: "MermaidOptions and the guard/update segment chokepoints, the semantic-escaping pass, the u:/g: label segments, and the stable-id / display-label variant with its collision check."
 ---
 
 <Callout type="info">
 Part of the [rendering and codecs](/docs/keiki/walkthrough/rendering-and-codecs/00-start-here) tour.
 This chapter reads the options-aware path of `keiki/src/Keiki/Render/Mermaid.hs`: `MermaidOptions`,
-`renderGuardSegment`, `edgeLabelWith`, and `toMermaidWithLabels`.
+`renderGuardSegment`, `renderUpdateSegment`, `escapeSemanticText`, `edgeLabelWith`, and
+`toMermaidWithLabels`.
 </Callout>
 
-Chapter [02](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core) read the guard-free default.
-This chapter reads everything you opt into: written-slot and guard suffixes, three guard-rendering
-modes, multiline layout, truncation, and the stable-id / display-label split. The design discipline
-throughout is **additive**: every option defaults to the value that reproduces `toMermaid` byte-for-byte.
+Chapter [02](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core) read the render walk.
+This chapter reads the policy layer sitting on top of it: how the guard and update segments are
+produced, how semantic text is neutralised before layout, and the stable-id / display-label split.
 
-## `MermaidOptions` and its default
+<Callout type="warn">
+  **keiki 0.8.0.0 inverted this chapter's premise.** The options record used to be *additive* — every
+  field defaulted to the value reproducing a guard-free `toMermaid` byte-for-byte. Now
+  `defaultMermaidOptions` is the **readable** policy and `topologyMermaidOptions` is the named
+  compact one. The two boolean fields `showWrittenSlots` and `showGuardSummary` were **removed**,
+  which also removed the legacy-versus-explicit precedence rule this chapter used to walk through.
+</Callout>
+
+## `MermaidOptions` and its two named policies
 
 ```haskell
 data MermaidOptions = MermaidOptions
-    { showWrittenSlots :: Bool
-    , showGuardSummary :: Bool
-    , guardMode :: MermaidGuardMode
+    { guardMode :: MermaidGuardMode
+    , updateMode :: MermaidUpdateMode
     , labelLayout :: MermaidLabelLayout
     , maxInlineWrittenSlots :: Maybe Int
     , maxInlineGuardWidth :: Maybe Int
@@ -30,9 +37,19 @@ data MermaidOptions = MermaidOptions
 defaultMermaidOptions :: MermaidOptions
 defaultMermaidOptions =
     MermaidOptions
-        { showWrittenSlots = False
-        , showGuardSummary = False
-        , guardMode = MermaidGuardHidden
+        { guardMode = MermaidGuardPretty
+        , updateMode = MermaidUpdatePretty
+        , labelLayout = MermaidLabelMultiline
+        , maxInlineWrittenSlots = Nothing
+        , maxInlineGuardWidth = Nothing
+        , outputLayout = MermaidOutputSemicolon
+        }
+
+topologyMermaidOptions :: MermaidOptions
+topologyMermaidOptions =
+    MermaidOptions
+        { guardMode = MermaidGuardHidden
+        , updateMode = MermaidUpdateHidden
         , labelLayout = MermaidLabelInline
         , maxInlineWrittenSlots = Nothing
         , maxInlineGuardWidth = Nothing
@@ -40,47 +57,58 @@ defaultMermaidOptions =
         }
 ```
 
-The header documents the extension contract: new fields are appended with a default that reproduces the
-existing behaviour, and existing fields are never removed or reordered.
+Note what the two records tell you by being written out in full: the three truncation and layout
+knobs are *shared*, and the only difference between "readable" and "topology" is the first three
+fields. `topologyMermaidOptions` exists as a named value rather than an implicit fallback precisely
+so that discarding business semantics is legible at the call site.
 
 <TypeTable
   type={{
-    showWrittenSlots: { type: "Bool", default: "False", description: "Append the update's written-slot names, e.g. [w: email; confirmCode; registeredAt]." },
-    showGuardSummary: { type: "Bool", default: "False", description: "Legacy spelling of guardMode = MermaidGuardStructuralSummary; honoured only when guardMode is Hidden." },
-    guardMode: { type: "MermaidGuardMode", default: "MermaidGuardHidden", description: "How the guard segment renders: hidden, structural summary, or pretty. Wins over showGuardSummary." },
-    labelLayout: { type: "MermaidLabelLayout", default: "MermaidLabelInline", description: "Inline [seg; seg] or multiline <br/>-separated segments." },
+    guardMode: { type: "MermaidGuardMode", default: "MermaidGuardPretty", description: "How the guard segment renders: hidden, structural summary, or pretty." },
+    updateMode: { type: "MermaidUpdateMode", default: "MermaidUpdatePretty", description: "How the update segment renders: hidden, written slot names, or the complete update." },
+    labelLayout: { type: "MermaidLabelLayout", default: "MermaidLabelMultiline", description: "Inline [seg; seg] or multiline <br/>-separated segments." },
     maxInlineWrittenSlots: { type: "Maybe Int", default: "Nothing", description: "When Just k, show the first k slots then a single +{n-k} more token." },
     maxInlineGuardWidth: { type: "Maybe Int", default: "Nothing", description: "When Just w, truncate guard text to w chars plus an ellipsis." },
     outputLayout: { type: "MermaidOutputLayout", default: "MermaidOutputSemicolon", description: "Multi-event output rendering: semicolon (length-based), multiline, or counted." },
   }}
 />
 
-## The guard-segment chokepoint
+## The two segment chokepoints
 
-There are two ways to ask for guard text — the legacy boolean `showGuardSummary` and the newer
-`guardMode` — and `renderGuardSegment` is the **single place** that reconciles them and produces guard
-text. Nothing else in the module turns a guard into a string:
+`renderGuardSegment` and `renderUpdateSegment` are the **only** two places in the module that turn a
+guard or an update into a string. Both dispatch on their mode field alone — there is no second
+spelling to reconcile — and both escape their text before returning it:
 
 ```haskell
 renderGuardSegment :: MermaidOptions -> HsPred rs ci -> Maybe Text
 renderGuardSegment opts g =
-    case effectiveMode of
+    escapeSemanticText <$> case guardMode opts of
         MermaidGuardHidden -> Nothing
         MermaidGuardStructuralSummary -> Just (guardSummary g)
         MermaidGuardPretty -> Just (prettyPred g)
-  where
-    effectiveMode
-        | guardMode opts /= MermaidGuardHidden = guardMode opts
-        | showGuardSummary opts = MermaidGuardStructuralSummary
-        | otherwise = MermaidGuardHidden
+
+renderUpdateSegment :: MermaidOptions -> Update rs w ci -> Maybe Text
+renderUpdateSegment opts u =
+    case updateMode opts of
+        MermaidUpdateHidden -> Nothing
+        MermaidUpdateWrittenSlots ->
+            case truncateSlots
+                (maxInlineWrittenSlots opts)
+                (Prelude.map escapeSemanticText (writtenSlots u)) of
+                [] -> Nothing
+                xs -> Just (T.pack "w: " <> T.intercalate (T.pack "; ") xs)
+        MermaidUpdatePretty ->
+            Just (T.pack "u: " <> escapeSemanticText (prettyUpdate u))
 ```
 
-The precedence rule: an explicit `guardMode` (anything other than `MermaidGuardHidden`) wins; otherwise
-`showGuardSummary` is honoured as the legacy spelling of `MermaidGuardStructuralSummary`. The header
-calls this out as "the single chokepoint for guard /text/ production" — a sibling renderer that changes
-how *segments are laid out* wraps the assembly and leaves this function's text untouched.
+Two details worth reading off the update side. `MermaidUpdateWrittenSlots` returns `Nothing` for an
+edge that writes nothing — an empty `w:` would be noise — whereas `MermaidUpdatePretty` always
+returns a segment, because `prettyUpdate` renders `UKeep` as the informative `(keep)` rather than as
+nothing. And the segment prefix differs by mode: `w:` for slot names, `u:` for the complete update.
+Escaping is applied per slot name in one branch and to the whole rendered update in the other, so it
+happens exactly once either way.
 
-The three modes produce three flavours of guard text:
+The three guard modes produce three flavours of guard text:
 
 - **`MermaidGuardStructuralSummary`** uses `guardSummary` — the constructor-tag walk, e.g.
   `PAnd PInCtor PEq`. It deliberately does **not** print operand terms, because those can hold opaque
@@ -101,36 +129,84 @@ The three modes produce three flavours of guard text:
   [01](/docs/keiki/walkthrough/rendering-and-codecs/01-pretty-printer) — domain-readable text.
 - **`MermaidGuardHidden`** produces `Nothing`, no segment at all.
 
-`MermaidSpec` pins the same `userReg` transducer under both the structural and the pretty mode, so the
-difference is visible side by side. Structural:
+Side by side on the same `ConfirmAccount` edge — structural:
 
 ```text
 RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed [w: confirmedAt; g: PAnd PInCtor PEq]
 ```
 
-Pretty (real names, no written-slot segment because `showWrittenSlots` is left `False`):
+Pretty, under the default multiline layout — real names, complete assignments, `&amp;&amp;` because
+the escaping pass has already run:
 
 ```text
-RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed [g: (ConfirmAccount && ConfirmAccount.confirmCode == confirmCode)]
+RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed<br/>u: confirmedAt := ConfirmAccount.at, (keep)<br/>g: (ConfirmAccount &amp;&amp; ConfirmAccount.confirmCode == confirmCode)
 ```
 
-## `edgeLabelWith`: assembling the `[w: …; g: …]` suffix
+## `escapeSemanticText`: neutralising data before layout
 
-`edgeLabelWith` is where the base label gains its bracketed suffix. It owns segment *layout* and
-*truncation* and the output rendering — but guard *text* still comes from the chokepoint:
+*(keiki 0.8.0.0.)* Once guards and updates carry domain text, a value can contain characters the
+Mermaid pipeline treats as structure. The documentation backend decodes XML entities **before** it
+parses Mermaid, and it turns both `<br>` spellings *and* a literal `\n` into line breaks — so entity
+encoding alone cannot isolate semantic text. A guard containing `<br>` would otherwise become a real
+line break.
+
+`escapeSemanticText` runs **exactly once**, inside the two chokepoints, before any renderer-owned
+`<br/>` is inserted. It maps into a visible, non-structural alphabet on three tiers:
+
+```haskell
+escapeSemanticText :: Text -> Text
+escapeSemanticText =
+    T.intercalate (T.pack "&lt;lit&gt;")
+        . Prelude.map (T.concatMap escapeChar)
+        . T.splitOn (T.pack "<lit>")
+  where
+    escapeChar '\r' = T.pack "\x240D"   -- ␍ control picture
+    escapeChar '\n' = T.pack "\x240A"   -- ␊ control picture
+    escapeChar '\\' = T.pack "\xFF3C"   -- ＼ full-width
+    escapeChar '\'' = T.pack "&apos;"
+    escapeChar '"' = T.pack "&quot;"
+    escapeChar '&' = T.pack "&amp;"
+    escapeChar '<' = T.pack "\xFF1C"    -- ＜ full-width
+    escapeChar '>' = T.pack "\xFF1E"    -- ＞ full-width
+    escapeChar '|' = T.pack "&#124;"
+    escapeChar '{' = T.pack "&#123;"
+    escapeChar '}' = T.pack "&#125;"
+    escapeChar c = T.singleton c
+```
+
+The tiering is the interesting part. **Safe punctuation** (`&`, quotes, `|`, braces) becomes an XML
+entity, because the backend can decode those back to themselves harmlessly. **Parser-active**
+characters (angle brackets, backslash) become *full-width* forms instead — an entity would be decoded
+back into an active character, so the value has to change shape to stay inert. **Raw line endings**
+become control pictures, so a newline inside a guard is visible rather than structural.
+
+The `T.splitOn`/`T.intercalate` wrapper around the whole thing is a carve-out for one known token:
+the opaque-literal marker `<lit>` is entity-encoded to `&lt;lit&gt;` rather than full-width-escaped,
+because it cannot be mistaken for a break tag and should stay visually exact. That is the marker
+[`opaqueLit`](/docs/keiki/reference/core#readable-and-opaque-literals) produces.
+
+<Callout type="info">
+A full-width character in a rendered diagram is a **signal, not a bug**: it means semantic input was
+neutralised at the Mermaid boundary instead of being silently interpreted as structure. The suite
+pins this end to end — source line and transition counts, heuristic warnings, recovered SVG text, and
+this documentation site's checked-in `beautiful-mermaid` backend.
+</Callout>
+
+## `edgeLabelWith`: assembling the label
+
+`edgeLabelWith` owns segment *layout*, *truncation*, and the output rendering — the segment *text*
+comes from the two chokepoints:
 
 ```haskell
 edgeLabelWith opts e@Edge{update = u, guard = g} =
     let base = edgeLabelWithLayout (outputLayout opts) e
-        ws = if showWrittenSlots opts then writtenSlots u else []
-        wPart =
-            case truncateSlots (maxInlineWrittenSlots opts) ws of
-                [] -> []
-                xs -> [T.pack "w: " <> T.intercalate (T.pack "; ") xs]
+        uPart = case renderUpdateSegment opts u of
+            Just t -> [t]
+            Nothing -> []
         gPart = case renderGuardSegment opts g of
             Just t -> [T.pack "g: " <> truncateGuard (maxInlineGuardWidth opts) t]
             Nothing -> []
-        parts = wPart ++ gPart
+        parts = uPart ++ gPart
      in case labelLayout opts of
             MermaidLabelInline ->
                 if null parts
@@ -142,14 +218,18 @@ edgeLabelWith opts e@Edge{update = u, guard = g} =
 
 A few load-bearing details:
 
-- The `w:` segment is **omitted entirely** when the edge writes nothing — an empty `w:` would be noise.
-  `writtenSlots` recovers names by the same `Update` recursion the pretty-printer uses, so the slot
-  order is the `UCombine` nesting order.
-- With both flags on and inline layout, you get the single-line suffix
-  `… [w: registeredAt; confirmCode; email; g: PInCtor]` — the `userRegAnnotatedCanonical` golden.
-- With `labelLayout = MermaidLabelMultiline`, the base, the `w:` segment, and the `g:` segment land on
-  separate `<br/>`-joined lines (`userRegMultilineCanonical`). Note the 2-event output keeps its own
-  `;` separator — that is the *base* segment's length-based output rendering, not a label segment.
+- The whole edge `e` is reused for the base label while `u` and `g` are bound by the pattern — that
+  is what keeps the existential write-set in `update` from escaping, since the record selector cannot
+  be used as a function for it.
+- The update segment arrives **already prefixed** (`u: ` or `w: `), because the prefix depends on the
+  mode; the guard prefix `g: ` is added here instead, since it is the same in every mode.
+- Truncation is asymmetric by design: written slots are truncated *inside* `renderUpdateSegment`
+  (before the prefix), the guard *here* (after the chokepoint returns).
+- Under the default `MermaidLabelMultiline`, base, `u:`, and `g:` land on separate `<br/>`-joined
+  lines. Note the 2-event output keeps its own `;` separator — that is the *base* segment's
+  length-based output rendering, not a label segment.
+- Under `MermaidLabelInline` you get the single-line bracketed suffix
+  `… [w: registeredAt; confirmCode; email; g: PInCtor]`.
 
 Truncation is two small helpers. `truncateSlots` keeps the first `k` and replaces the rest with one
 `+{n-k} more` token; `truncateGuard` takes `w` characters and appends `…` (U+2026):
@@ -236,7 +316,8 @@ declLines =
 A `state "<display>" as <id>` line appears **only** when the display differs from the id. When they are
 equal — the `Show`-based default — `declLines` is empty, so feeding identical functions reproduces
 `toMermaidWith` byte-for-byte (a fact `MermaidSpec` pins directly). With friendly labels for the two
-spaced vertices, the golden gains exactly two declarations and the topology below is unchanged:
+spaced vertices, the golden gains exactly two declarations and the transitions below are unchanged
+(shown here under `topologyMermaidOptions`, so the `u:`/`g:` segments do not obscure the point):
 
 ```text
 stateDiagram-v2

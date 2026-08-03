@@ -103,12 +103,13 @@ exactly at the leaf:
 ```haskell
 -- src/Keiki/Composition.hs
 -- | Walk a 'Term' and weaken every register read across an rs2
--- suffix. 'TInpCtorField' / 'TLit' do not touch the register file,
+-- suffix. 'TInpCtorField', 'TLit', and 'TOpaqueLit' do not touch the register file,
 -- so they pass through unchanged.
 weakenLTerm
   :: forall rs1 rs2 ci ifs r.
      Term rs1 ci ifs r -> Term (Append rs1 rs2) ci ifs r
 weakenLTerm (TLit r)              = TLit r
+weakenLTerm (TOpaqueLit r)        = TOpaqueLit r
 weakenLTerm (TReg ix)             = TReg (weakenL @rs1 @rs2 ix)
 weakenLTerm (TInpCtorField ic ix) = TInpCtorField ic ix
 weakenLTerm (TApp1 f t)           = TApp1 f (weakenLTerm @rs1 @rs2 t)
@@ -118,7 +119,7 @@ weakenLTerm (TApp2 f a b)         = TApp2 f (weakenLTerm @rs1 @rs2 a)
                                               (weakenLTerm @rs1 @rs2 b)
 ```
 
-The two non-recursive cases are the point: `TLit` is a constant and `TInpCtorField` reads the *input*,
+The non-recursive cases are the point: a literal is a constant and `TInpCtorField` reads the *input*,
 not a register — neither mentions `rs1`, so both pass through with only the result type widened.
 `weakenLPred` and `weakenLUpdate` are the same idea one level up — they recurse through the predicate /
 update structure and delegate every embedded term to `weakenLTerm`:
@@ -160,7 +161,7 @@ weakenRTerm
      WeakenR rs1
   => Term rs2 ci ifs r -> Term (Append rs1 rs2) ci ifs r
 weakenRTerm (TReg ix)             = TReg (weakenR @rs1 ix)
--- TLit / TInpCtorField / TApp1 / TArith / TApp2 recurse as above
+-- TLit / TOpaqueLit / TInpCtorField / TApp1 / TArith / TApp2 recurse as above
 ```
 
 `weakenRPred`, `weakenRUpdate`, `weakenROutFields`, and `weakenROut` follow the same pattern. `weakenROut`

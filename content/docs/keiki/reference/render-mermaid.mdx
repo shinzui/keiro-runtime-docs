@@ -17,12 +17,23 @@ It is **not** the transducer validator `validateTransducer` in `Keiki.Core`, whi
 inputs (diagram text vs. AST) and share no code.
 </Callout>
 
-## The default is guard-free
+## The default is readable
 
-`toMermaid` emits the **control skeleton** and hides predicate guards. This is golden-pinned and
-load-bearing pedagogy: the guard-free topology is the one-way-door view you scan to spot a wrong
-edge — a transition that should not exist, or a missing one — before you ever read a guard. Turn
-guards on deliberately with `toMermaidWith` when you need them.
+<Callout type="warn">
+  **Breaking in keiki 0.8.0.0 — the default flipped.** Through keiki 0.7 `toMermaid` emitted a
+  guard-free control skeleton. It now emits **readable business semantics**: complete guards,
+  complete register assignments, multiline labels, and no semantic truncation. Every no-options
+  shape renderer changed with it. If you need the old bytes — a golden test, a topology-only
+  review view — call [`toTopologyMermaid`](#totopologymermaid) or pass
+  [`topologyMermaidOptions`](#the-two-named-policies) explicitly. See ADR-0006 and
+  [Diagrams from one declaration](/docs/keiki/explanation/diagrams-from-one-declaration) for the
+  rationale.
+</Callout>
+
+A diagram that shows only source, target, command, and event constructors proves *topology* but
+hides why an edge fires and how it changes state. Keiki already owns the guard and update syntax
+trees, so the primary renderer now shows them; a reviewer reads behaviour off the diagram instead of
+reconstructing it from source.
 
 Every `toMermaid` block has the same shape:
 
@@ -31,9 +42,18 @@ Every `toMermaid` block has the same shape:
 - one `<src> --> <tgt> : <edgeLabel>` line per outgoing edge of every vertex; and
 - a `<vertex> --> [*]` line for every vertex where `isFinal` returns `True`.
 
-The default edge label is `<input ctor> / <output ctor>`: a missing input constructor (no `PInCtor`
-in the guard) renders `?`, and an ε-edge (empty output) renders `ε`. See
-[Edge label primitives](#edge-label-primitives) for the exact format.
+The edge label's **base** is `<input ctor> / <output ctor>`: a missing input constructor (no
+`PInCtor` in the guard) renders `?`, and an ε-edge (empty output) renders `ε`. Under the default
+policy the base is followed by a `<br/>`-separated `u: …` update segment and `g: …` guard segment.
+See [Edge label primitives](#edge-label-primitives) for the exact format.
+
+<Callout type="warn">
+  **Readable rendering discloses literal values.** A `lit` value now appears in the rendered guard
+  or update. Build secrets, credentials, personal data, and deliberately redacted values with
+  [`opaqueLit`](/docs/keiki/reference/core#readable-and-opaque-literals) — which renders `<lit>` —
+  or render the whole diagram under `topologyMermaidOptions`, which redacts all guard and update
+  semantics.
+</Callout>
 
 ## Single-transducer renderers
 
@@ -49,13 +69,26 @@ toMermaid ::
   Text
 ```
 
+### `toTopologyMermaid`
+
+*(keiki 0.8.0.0.)* The explicit compact policy: guards and updates hidden, inline layout. It
+reproduces keiki 0.7's topology-only bytes. It is a separate named function rather than an implicit
+default so that losing the business semantics is always a visible choice at the call site.
+
+```haskell
+toTopologyMermaid ::
+  (Enum s, Bounded s, Show s) =>
+  SymTransducer (HsPred rs ci) rs s ci co ->
+  Text
+
+toTopologyMermaid = toMermaidWith topologyMermaidOptions
+```
+
 ### `toMermaidWith`
 
-Like `toMermaid`, but takes [`MermaidOptions`](#mermaidoptions) controlling the structural
-edge-summary suffix. With `defaultMermaidOptions` it is byte-identical to `toMermaid`. With
-`showWrittenSlots` and/or a `guardMode` enabled, each edge label gains a compact bracketed suffix
-`[w: <slots>; g: <guard>]`. **Only the single-transducer path is annotated** — the composite
-renderers keep the guard-free default.
+Like `toMermaid`, but takes the complete edge-semantics and layout policy
+([`MermaidOptions`](#mermaidoptions)) explicitly. `toMermaidWith defaultMermaidOptions` is
+byte-identical to `toMermaid`.
 
 ```haskell
 toMermaidWith ::
@@ -64,6 +97,13 @@ toMermaidWith ::
   SymTransducer (HsPred rs ci) rs s ci co ->
   Text
 ```
+
+<Callout type="info">
+  **Every diagram shape now has an options-aware route** *(keiki 0.8.0.0)*. Before 0.8 only the
+  single-transducer path could be annotated and the composite renderers were permanently
+  guard-free. Composite, nested, three-way, alternative, and feedback diagrams all take
+  `MermaidOptions` now — see [Composite renderers](#composite-renderers).
+</Callout>
 
 ### `toMermaidWithLabels`
 
@@ -107,17 +147,32 @@ duplicateStateIds ::
 ```mermaid
 stateDiagram-v2
     [*] --> PotentialCustomer
-    PotentialCustomer --> RequiresConfirmation : StartRegistration / RegistrationStarted; ConfirmationEmailSent
-    RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed
-    RequiresConfirmation --> RequiresConfirmation : ResendConfirmation / ConfirmationResent
-    RequiresConfirmation --> Deleted : FulfillGDPRRequest / ε
-    Confirmed --> Deleted : FulfillGDPRRequest / AccountDeleted
+    PotentialCustomer --> RequiresConfirmation : StartRegistration / RegistrationStarted; ConfirmationEmailSent<br/>u: registeredAt := StartRegistration.at, confirmCode := StartRegistration.confirmCode, email := StartRegistration.email, (keep)<br/>g: StartRegistration
+    RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed<br/>u: confirmedAt := ConfirmAccount.at, (keep)<br/>g: (ConfirmAccount &amp;&amp; ConfirmAccount.confirmCode == confirmCode)
+    RequiresConfirmation --> RequiresConfirmation : ResendConfirmation / ConfirmationResent<br/>u: registeredAt := ResendConfirmation.at, confirmCode := ResendConfirmation.code, (keep)<br/>g: ResendConfirmation
+    RequiresConfirmation --> Deleted : FulfillGDPRRequest / AccountDeleted<br/>u: deletedAt := FulfillGDPRRequest.at, (keep)<br/>g: FulfillGDPRRequest
+    Confirmed --> Deleted : FulfillGDPRRequest / AccountDeleted<br/>u: deletedAt := FulfillGDPRRequest.at, (keep)<br/>g: FulfillGDPRRequest
     Deleted --> [*]
 ```
 
-Note the guard-free labels, the two-event output rendered with a `;` separator
-(`RegistrationStarted; ConfirmationEmailSent`), and the ε-edge on `FulfillGDPRRequest` from
-`RequiresConfirmation`.
+Three things to read off it. The two-event output uses the `; ` separator
+(`RegistrationStarted; ConfirmationEmailSent`) — that is the default length-2 convention. The `u:`
+segment lists the **complete** assignments, right-hand terms included, ending in `(keep)` for the
+slots the update leaves alone. And `&amp;&amp;` in the `ConfirmAccount` guard is the escaped `&&`
+— see [Escaping](#escaping-at-the-parser-boundary).
+
+The same aggregate under `toTopologyMermaid` is the compact keiki 0.7 form:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PotentialCustomer
+    PotentialCustomer --> RequiresConfirmation : StartRegistration / RegistrationStarted; ConfirmationEmailSent
+    RequiresConfirmation --> Confirmed : ConfirmAccount / AccountConfirmed
+    RequiresConfirmation --> RequiresConfirmation : ResendConfirmation / ConfirmationResent
+    RequiresConfirmation --> Deleted : FulfillGDPRRequest / AccountDeleted
+    Confirmed --> Deleted : FulfillGDPRRequest / AccountDeleted
+    Deleted --> [*]
+```
 
 ## Composite renderers
 
@@ -138,7 +193,22 @@ identifier.
   }}
 />
 
-Full signatures (transcribed verbatim):
+Each one has an options-aware companion taking `MermaidOptions` as its **first** argument
+*(keiki 0.8.0.0)*. The no-options names are those companions applied to `defaultMermaidOptions`, so
+every composite shape is readable by default and every shape can be rendered topology-only:
+
+<TypeTable
+  type={{
+    "toMermaidCompositeWith": { type: "MermaidOptions -> …", description: "Options-aware toMermaidComposite." },
+    "toMermaidCompositeNestedWith": { type: "MermaidOptions -> …", description: "Options-aware toMermaidCompositeNested." },
+    "toMermaidCompose3With": { type: "MermaidOptions -> …", description: "Options-aware toMermaidCompose3." },
+    "toMermaidCompose3NestedWith": { type: "MermaidOptions -> …", description: "Options-aware toMermaidCompose3Nested." },
+    "toMermaidAlternativeWithOptions": { type: "MermaidOptions -> Text -> Text -> …", description: "Options-aware toMermaidAlternativeWith. Note the distinct name — toMermaidAlternativeWith already meant \"with arm names\"." },
+    "toMermaidFeedback1With": { type: "MermaidOptions -> …", description: "Options-aware toMermaidFeedback1." },
+  }}
+/>
+
+Full signatures of the no-options forms (transcribed verbatim):
 
 ```haskell
 toMermaidComposite ::
@@ -246,20 +316,33 @@ exactly two, and `e1<br/>e2<br/>…<br/>eN` for three or more.
 
 ### `MermaidGuardMode`
 
-How an edge's guard predicate renders into the `[g: …]` segment.
+How an edge's guard predicate renders into the `g: …` segment.
 
 <TypeTable
   type={{
-    "MermaidGuardHidden": { type: "constructor", description: "No guard segment at all (the default)." },
-    "MermaidGuardStructuralSummary": { type: "constructor", description: "The structural constructor-tag walk, e.g. PAnd PInCtor PEq. Selected by the legacy showGuardSummary flag." },
-    "MermaidGuardPretty": { type: "constructor", description: "The domain-readable rendering from Keiki.Render.Pretty.prettyPred." },
+    "MermaidGuardHidden": { type: "constructor", description: "No guard segment at all." },
+    "MermaidGuardStructuralSummary": { type: "constructor", description: "The structural constructor-tag walk produced by guardSummary, e.g. PAnd PInCtor PEq — the compact structural alternative to readable guards." },
+    "MermaidGuardPretty": { type: "constructor", description: "The domain-readable rendering from Keiki.Render.Pretty.prettyPred, e.g. (ConfirmAccount && ConfirmAccount.confirmCode == confirmCode). The default." },
+  }}
+/>
+
+### `MermaidUpdateMode`
+
+*(keiki 0.8.0.0.)* How an edge's register update renders.
+
+<TypeTable
+  type={{
+    "MermaidUpdateHidden": { type: "constructor", description: "No update segment at all." },
+    "MermaidUpdateWrittenSlots": { type: "constructor", description: "Only the names of written slots — the compact form retained for compatibility." },
+    "MermaidUpdatePretty": { type: "constructor", description: "The complete update from Keiki.Render.Pretty.prettyUpdate, right-hand terms included. The default." },
   }}
 />
 
 ### `MermaidLabelLayout`
 
-How dense edge labels are laid out: `MermaidLabelInline` (the single-line `[seg; seg]` form, default)
-or `MermaidLabelMultiline` (base on line one, each further segment on its own `<br/>`-separated line).
+How dense edge labels are laid out: `MermaidLabelInline` (the single-line `[seg; seg]` form) or
+`MermaidLabelMultiline` (base on line one, each further segment on its own `<br/>`-separated line —
+the default).
 
 ### `MermaidOutputLayout`
 
@@ -275,26 +358,84 @@ How a multi-event edge renders its output names.
 
 ### `MermaidOptions`
 
-Rendering options for the structural edge-summary suffix. Every field defaults (in
-`defaultMermaidOptions`) to the no-suffix setting, so the default rendering is byte-identical to
-`toMermaid`. An explicit `guardMode` (anything other than `MermaidGuardHidden`) wins over the legacy
-`showGuardSummary` flag.
+The complete edge-semantics and layout policy.
+
+<Callout type="warn">
+  **Breaking in keiki 0.8.0.0.** `MermaidOptions` **removed** the two boolean fields
+  `showWrittenSlots` and `showGuardSummary`. A record update mentioning either no longer compiles.
+  Replace them:
+
+  - `showWrittenSlots = True` → `updateMode = MermaidUpdateWrittenSlots`
+  - `showGuardSummary = True` → `guardMode = MermaidGuardStructuralSummary`
+
+  There is no longer a legacy-versus-explicit precedence rule to reason about: `guardMode` and
+  `updateMode` are the sole authorities.
+</Callout>
 
 <TypeTable
   type={{
-    showWrittenSlots: { type: "Bool", description: "Append the update's written-slot names, e.g. [w: email; confirmCode; registeredAt].", default: "False" },
-    showGuardSummary: { type: "Bool", description: "Legacy spelling of guardMode = MermaidGuardStructuralSummary; honoured only when guardMode is left at MermaidGuardHidden.", default: "False" },
-    guardMode: { type: "MermaidGuardMode", description: "How the guard segment is rendered; takes precedence over showGuardSummary.", default: "MermaidGuardHidden" },
-    labelLayout: { type: "MermaidLabelLayout", description: "Inline or multiline layout of an edge label's segments.", default: "MermaidLabelInline" },
-    maxInlineWrittenSlots: { type: "Maybe Int", description: "When Just k and n > k slots are written, show the first k then a single +{n-k} more token.", default: "Nothing" },
-    maxInlineGuardWidth: { type: "Maybe Int", description: "When Just w and the guard text exceeds w chars, take w chars then append the ellipsis.", default: "Nothing" },
+    guardMode: { type: "MermaidGuardMode", description: "How the guard segment is rendered.", default: "MermaidGuardPretty" },
+    updateMode: { type: "MermaidUpdateMode", description: "How the register-update segment is rendered.", default: "MermaidUpdatePretty" },
+    labelLayout: { type: "MermaidLabelLayout", description: "Inline bracketed segments or multiline <br/> layout.", default: "MermaidLabelMultiline" },
+    maxInlineWrittenSlots: { type: "Maybe Int", description: "When Just k and an edge writes n > k slots, show the first k then a single +{n-k} more token. Nothing disables truncation.", default: "Nothing" },
+    maxInlineGuardWidth: { type: "Maybe Int", description: "When Just w and the guard segment text exceeds w characters, take w characters then append the ellipsis …. Nothing disables truncation.", default: "Nothing" },
     outputLayout: { type: "MermaidOutputLayout", description: "How a multi-event edge renders its output names.", default: "MermaidOutputSemicolon" },
   }}
 />
 
+#### The two named policies
+
 ```haskell
 defaultMermaidOptions :: MermaidOptions
+defaultMermaidOptions =
+    MermaidOptions
+        { guardMode = MermaidGuardPretty
+        , updateMode = MermaidUpdatePretty
+        , labelLayout = MermaidLabelMultiline
+        , maxInlineWrittenSlots = Nothing
+        , maxInlineGuardWidth = Nothing
+        , outputLayout = MermaidOutputSemicolon
+        }
+
+topologyMermaidOptions :: MermaidOptions
+topologyMermaidOptions =
+    MermaidOptions
+        { guardMode = MermaidGuardHidden
+        , updateMode = MermaidUpdateHidden
+        , labelLayout = MermaidLabelInline
+        , maxInlineWrittenSlots = Nothing
+        , maxInlineGuardWidth = Nothing
+        , outputLayout = MermaidOutputSemicolon
+        }
 ```
+
+`defaultMermaidOptions` is the readable primary policy used by every no-options renderer.
+`topologyMermaidOptions` *(keiki 0.8.0.0)* is the explicit compact compatibility policy and
+reproduces keiki 0.7's topology-only bytes.
+
+## Escaping at the parser boundary
+
+*(keiki 0.8.0.0.)* Rendering guard and update text crosses a parser boundary: this documentation
+site's `beautiful-mermaid` backend decodes XML entities **before** it recognises break tags and
+literal `\n`, so naive entity escaping would let data turn into layout. Edge semantics are therefore
+escaped **before** the renderer's own `<br/>` joins, on three tiers:
+
+- **Safe punctuation** — XML entities (`&amp;`, `&quot;`, `&apos;`, `&#124;`, `&#123;`, `&#125;`).
+- **Parser-active characters** — angle brackets and backslashes become **visible full-width forms**
+  (`＜`, `＞`, `＼`), so `<br>` typed inside a guard renders as the visible text `＜br＞` rather than
+  becoming a line break.
+- **Raw CR/LF** — visible control pictures (`␍`, `␊`).
+
+The known `<lit>` marker is entity-encoded and stays visually exact.
+
+<Callout type="info">
+  A full-width character in a rendered diagram is a **deliberate signal**: it means semantic input
+  was neutralised at the Mermaid boundary rather than silently interpreted as structure. It is not a
+  rendering bug.
+</Callout>
+
+The behaviour is pinned end to end — the test suite checks source line and transition counts,
+heuristic warnings, recovered SVG text, and the checked-in documentation backend.
 
 ### `MermaidStateLabels`
 

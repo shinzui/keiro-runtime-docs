@@ -21,16 +21,24 @@ The module header states its job and its single hardest decision up front:
 -- keiki/src/Keiki/Render/Pretty.hs
 {- | Pure, domain-readable pretty-printer for keiki's predicate, term,
 and update syntax trees ('HsPred', 'Term', 'Update'). Produces
-'Data.Text.Text'. No solver, no IO. Shared by the Mermaid topology
+'Data.Text.Text'. No solver, no IO. Shared by the Mermaid behavioral
 renderer ('Keiki.Render.Mermaid') and the sibling edge-inspector /
 multiline-label renderers.
 
-Two things are provably unprintable and are marked, not dropped:
-applied opaque Haskell functions render as @<fn>(...)@; literal
-values render as @<lit>@ (a 'TLit' carries an unconstrained type
-with no 'Show').
+Two things are deliberately marked rather than invented: applied opaque
+Haskell functions render as @<fn>(...)@, and explicit display-opaque literal
+values render as @<lit>@. Ordinary 'TLit' values use their retained 'Show'
+evidence.
 -}
 ```
+
+<Callout type="warn">
+  **keiki 0.8.0.0 rewrote this module's premise.** Through keiki 0.7 a `TLit` carried an
+  unconstrained type with no `Show`, so *every* literal was genuinely unprintable and `<lit>` was
+  forced. Now `lit` requires `Show`, `prettyTerm` prints the real value, and `<lit>` is reserved for
+  the deliberate `TOpaqueLit`. This is what made readable diagrams worth defaulting to — see
+  [Diagrams from one declaration](/docs/keiki/explanation/diagrams-from-one-declaration).
+</Callout>
 
 The public surface is four functions:
 
@@ -65,7 +73,8 @@ themselves rather than fail:
 
 ```haskell
 prettyTerm :: Term rs ci ifs r -> Text
-prettyTerm (TLit _) = T.pack "<lit>"
+prettyTerm (TLit value) = T.pack (show value)
+prettyTerm (TOpaqueLit _) = T.pack "<lit>"
 prettyTerm (TReg ix) = T.pack (indexName ix)
 prettyTerm (TInpCtorField ic ix) =
     T.pack (icName ic) <> T.pack "." <> T.pack (indexName ix)
@@ -95,17 +104,19 @@ Read the cases against what each one *knows*:
     TArith: { type: "(a <op> b)", description: "Arithmetic prints structurally with + - * and explicit parentheses." },
     TApp1: { type: "<fn>(a)", description: "An opaque applied unary function is MARKED, not dropped — its argument still prints." },
     TApp2: { type: "<fn>(a, b)", description: "An opaque applied binary function is marked; both arguments print." },
-    TLit: { type: "<lit>", description: "A literal carries an unconstrained type with no Show, so it cannot print its value — it prints <lit>." },
+    TLit: { type: "show value", description: "An ordinary literal prints its value through the Show dictionary the constructor retains." },
+    TOpaqueLit: { type: "<lit>", description: "A display-opaque literal is MARKED, not dropped — it is still executed and translated exactly." },
   }}
 />
 
 <Callout type="warn">
-The **unprintable-marking convention** is the heart of this module. A `TLit` holds a value of an
-unconstrained type — there is no `Show` to call, so the value is genuinely unrecoverable. A `TApp1` /
-`TApp2` holds an opaque Haskell function. Rather than throw or silently drop these, the printer marks
-them (`<lit>`, `<fn>(…)`) and keeps recursing into whatever *is* printable. The result is total and
-faithful: it never claims to show something it cannot. Every downstream renderer inherits this property
-for free.
+The **marking convention** is the heart of this module, but note what it now means. A `TApp1` /
+`TApp2` holds an opaque Haskell function: genuinely unrecoverable, so it is marked `<fn>(…)`. A
+`TOpaqueLit` is different — its value *could* be shown, and the author chose that it should not be
+(no `Show` instance exists, or the value is a secret). Rather than throw or silently drop either, the
+printer marks them and keeps recursing into whatever *is* printable. The result stays total and
+faithful: it never claims to show something it was not given, and never invents a display label that
+disagrees with the executing value. Every downstream renderer inherits this for free.
 </Callout>
 
 `PrettySpec` pins each case exactly. A register read renders by slot name; the second register renders
@@ -113,8 +124,11 @@ as `limit`; an input-field read renders `Deposit.amount`; and the marks are nail
 
 ```haskell
 -- test/Keiki/Render/PrettySpec.hs
-it "renders a literal opaquely as <lit>" $
+it "renders an ordinary literal through Show" $
     prettyTerm (TLit (42 :: Int) :: Term Regs Cmd '[] Int)
+        `shouldBe` T.pack "42"
+it "renders an opaque literal as <lit>" $
+    prettyTerm (TOpaqueLit (42 :: Int) :: Term Regs Cmd '[] Int)
         `shouldBe` T.pack "<lit>"
 it "renders TApp1 as <fn>(arg)" $
     prettyTerm (TApp1 (+ (1 :: Int)) (TReg balanceIx) :: Term Regs Cmd '[] Int)
@@ -157,7 +171,8 @@ prettyPred (PCmp c l r) =
 
 `PInCtor` prints just the constructor name — this is the atom the Mermaid renderer also mines for an
 edge's input-constructor name (chapter [02](/docs/keiki/walkthrough/rendering-and-codecs/02-mermaid-core)).
-The nested-boolean golden in `PrettySpec` shows how the pieces compose, marks included:
+The nested-boolean golden in `PrettySpec` shows how the pieces compose — note the literals printing
+as `0`, which is what makes the readable diagram default worth having:
 
 ```haskell
 -- test/Keiki/Render/PrettySpec.hs
@@ -169,11 +184,13 @@ prettyPred
             (PNot (PEq (TReg limitIx) (TLit (0 :: Int))))
         ) :: HsPred Regs Cmd
     )
-    `shouldBe` T.pack "(Deposit && (balance >= <lit> || !(limit == <lit>)))"
+    `shouldBe` T.pack "(Deposit && (balance >= 0 || !(limit == 0)))"
 ```
 
-That exact string — `(Deposit && (balance >= <lit> || !(limit == <lit>)))` — is what
-`MermaidGuardPretty` mode embeds in an edge label.
+That exact string — `(Deposit && (balance >= 0 || !(limit == 0)))` — is what `MermaidGuardPretty`
+mode embeds in an edge label, after
+[`escapeSemanticText`](/docs/keiki/walkthrough/rendering-and-codecs/03-mermaid-options-and-labels)
+turns each `&` into `&amp;`.
 
 ## `prettyUpdate`: the written-slot side
 
@@ -187,19 +204,19 @@ prettyUpdate (USet ix t) = T.pack (indexNName ix) <> T.pack " := " <> prettyTerm
 prettyUpdate (UCombine a b) = prettyUpdate a <> T.pack ", " <> prettyUpdate b
 ```
 
-`PrettySpec` pins all three, including the unprintable mark on the RHS of a set:
+`PrettySpec` pins all three, including the rendered value on the RHS of a set:
 
 ```haskell
 -- test/Keiki/Render/PrettySpec.hs
 prettyUpdate (UKeep :: Update Regs '[] Cmd) `shouldBe` T.pack "(keep)"
 prettyUpdate (USet balanceN (TLit (0 :: Int)) :: Update Regs '["balance"] Cmd)
-    `shouldBe` T.pack "balance := <lit>"
+    `shouldBe` T.pack "balance := 0"
 prettyUpdate
     ( UCombine
         (USet balanceN (TReg limitIx))
         (USet balanceN (TLit (1 :: Int))) :: Update Regs '["balance", "balance"] Cmd
     )
-    `shouldBe` T.pack "balance := limit, balance := <lit>"
+    `shouldBe` T.pack "balance := limit, balance := 1"
 ```
 
 The `UCombine` order is preserved verbatim — left arm first, right arm second. The Mermaid renderer's

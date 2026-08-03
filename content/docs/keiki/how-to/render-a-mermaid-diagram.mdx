@@ -1,6 +1,6 @@
 ---
 title: "Render a Mermaid diagram"
-description: "Render a single transducer, a composite, and readable guard annotations to a Mermaid stateDiagram-v2 block."
+description: "Render a single transducer, a composite, and the compact topology-only form to a Mermaid stateDiagram-v2 block."
 ---
 
 You have a `SymTransducer` and want a topology diagram you can paste into a PR, a Markdown doc, or
@@ -15,8 +15,8 @@ block as plain `Text` — no IO, no layout engine, deterministic output you can 
 ## Goal
 
 Turn a `SymTransducer` whose vertex type derives `Enum`, `Bounded`, and `Show` into a Mermaid
-diagram string — first the bare topology, then a composite, then with domain-readable guard
-annotations.
+diagram string — first a single transducer, then a composite, then how to render *less* than the
+readable default when you want only the topology.
 
 ## Render a single transducer
 
@@ -32,9 +32,14 @@ loanApplicationDiagram = toMermaid loanApplication
 ```
 
 The output begins with the `stateDiagram-v2` header, an initial-state line, one line per outgoing
-edge, and a final-state line for every vertex where `isFinal` fires. Edge labels read
-`<input ctor> / <output ctor>`; an ε-edge (no output) renders its output half as `ε`. This is the
-exact render pinned by `Jitsurei.Render.MermaidLoanSpec`:
+edge, and a final-state line for every vertex where `isFinal` fires. Each edge label's **base** is
+`<input ctor> / <output ctor>`; an ε-edge (no output) renders its output half as `ε`. Since keiki
+0.8.0.0 the base is followed by `<br/>`-separated `u:` and `g:` segments carrying the complete
+register update and guard.
+
+Here is the **topology skeleton** — `toTopologyMermaid loanApplication`, which is the render pinned
+verbatim by `Jitsurei.Render.MermaidLoanSpec`. Read it as the base of each label; `toMermaid` emits
+these same transitions with the semantics appended:
 
 ```mermaid
 stateDiagram-v2
@@ -102,10 +107,30 @@ pipelineDiagram = toMermaidCompositeNested pipeline
   `toMermaidFeedback1`.
 </Callout>
 
-## Turn on readable guards
+## Turn the guards back off
 
-The default render hides edge guards. To annotate each edge with a domain-readable predicate, pass
-`MermaidOptions` to `toMermaidWith` with `guardMode = MermaidGuardPretty`:
+Since keiki 0.8.0.0 you get readable guards and complete register assignments **without asking** —
+`toMermaid` renders them, and so does every composite renderer. The decision this how-to leaves you
+is the opposite one: when to render *less*.
+
+Reach for the compact topology form when you are scanning for a structural mistake (a missing edge,
+an unintended fan-out, a wrong final state) and the predicates are noise, or when the guards contain
+values that must not appear in a published document:
+
+```haskell
+import Keiki.Render.Mermaid (toTopologyMermaid)
+
+topologyDiagram :: Text
+topologyDiagram = toTopologyMermaid loanApplication
+```
+
+```mermaid
+stateDiagram-v2
+    Intake --> CollectingDocuments : StartApplication / ApplicationStarted
+```
+
+For anything between the two extremes, pass an explicit policy. `guardMode` and `updateMode` are the
+only two authorities:
 
 ```haskell
 import Keiki.Render.Mermaid
@@ -113,41 +138,46 @@ import Keiki.Render.Mermaid
   , defaultMermaidOptions
   , MermaidOptions (..)
   , MermaidGuardMode (..)
+  , MermaidUpdateMode (..)
   )
 
-annotatedDiagram :: Text
-annotatedDiagram =
+slotsOnlyDiagram :: Text
+slotsOnlyDiagram =
   toMermaidWith
     defaultMermaidOptions
-      { guardMode       = MermaidGuardPretty
-      , showWrittenSlots = True
+      { guardMode  = MermaidGuardStructuralSummary
+      , updateMode = MermaidUpdateWrittenSlots
       }
     loanApplication
 ```
 
-Each edge label gains a bracketed suffix. `MermaidGuardPretty` renders the guard through
-`Keiki.Render.Pretty.prettyPred` (e.g. `(ConfirmAccount && ConfirmAccount.confirmCode == confirmCode)`);
-`showWrittenSlots = True` appends the update's written-slot names as `w: …`. So an annotated edge
-reads like:
+`MermaidGuardStructuralSummary` prints the structural constructor tags (`g: PAnd PInCtor PEq`)
+instead of the domain-readable `prettyPred` form; `MermaidUpdateWrittenSlots` lists written slot
+names without their right-hand terms.
 
-```mermaid
-stateDiagram-v2
-    Intake --> CollectingDocuments : StartApplication / ApplicationStarted [w: applicantName; g: StartApplication]
-```
+<Callout type="warn">
+  **If you are upgrading from keiki 0.7**, `showWrittenSlots` and `showGuardSummary` no longer
+  exist and a record update mentioning either will not compile. Replace
+  `showWrittenSlots = True` with `updateMode = MermaidUpdateWrittenSlots`, and
+  `showGuardSummary = True` with `guardMode = MermaidGuardStructuralSummary`. Any golden test
+  pinning `toMermaid` bytes needs either a regenerated expectation or a switch to
+  `toTopologyMermaid`.
+</Callout>
 
-<Callout type="info">
-  `showGuardSummary = True` is the legacy spelling of `guardMode = MermaidGuardStructuralSummary`
-  — it prints the structural constructor tags (e.g. `g: PAnd PInCtor PEq`) rather than the
-  domain-readable form. An explicit `guardMode` always wins; `showGuardSummary` is honoured only
-  when `guardMode` is left at its `MermaidGuardHidden` default.
+<Callout type="warn">
+  Before publishing a readable diagram, check what your `lit` values are. They are now visible in
+  the rendered guard and update text. A value that must stay secret belongs in
+  [`opaqueLit`](/docs/keiki/reference/core#readable-and-opaque-literals), which renders `<lit>`
+  while staying fully executable.
 </Callout>
 
 ## Verify it worked
 
-`toMermaid loanApplication` is pinned verbatim in `Jitsurei.Render.MermaidLoanSpec`, so the byte
-string is a stable golden. Paste any of the `mermaid` blocks above into GitHub or a Notion page and
-it renders inline. With `defaultMermaidOptions`, `toMermaidWith defaultMermaidOptions t` is
-byte-identical to `toMermaid t` — the annotations are strictly additive.
+`toTopologyMermaid loanApplication` is pinned verbatim in `Jitsurei.Render.MermaidLoanSpec`, so the
+topology byte string is a stable golden; the readable `toMermaid` render is checked there by a
+`hasReadableSemantics` property rather than a byte comparison. Paste any of the `mermaid` blocks
+above into GitHub or a Notion page and it renders inline. `toMermaidWith defaultMermaidOptions t` is
+byte-identical to `toMermaid t`, so pinning either of those gives the same bytes.
 
 ## Related
 

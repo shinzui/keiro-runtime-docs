@@ -1,0 +1,162 @@
+---
+title: "Projection domains"
+description: "Keiki.ProjectionDomain: backend-neutral exact images for nominal field projections — finite domains, whole-carrier domains, and the validated full-string TextPattern algebra."
+---
+
+Everything on this page lives in `Keiki.ProjectionDomain` *(new in keiki 0.7.0.0)*. It declares the
+**exact image** of a field projection: the closed, backend-neutral description of every value the
+projection's getter can produce.
+
+A domain matters only in one place. When a projection tag is declared
+[`ExactFieldProjection`](/docs/keiki/reference/core#exact-projections) and used through
+`exactFieldWitness`, this value is what lets the solver reach a *verified* answer over a
+consumer-owned type instead of a conservative one. Plain `fieldWitness` call sites never construct
+one.
+
+<Callout type="info">
+The module is re-exported wholesale by `Keiki.Symbolic`, so importing either one is enough.
+</Callout>
+
+Every domain is interpreted **twice**: concretely by `memberProjectionDomain`, and symbolically by
+the SBV translator. Keeping the two interpretations in agreement is the module's whole design
+constraint, which is why the constructors are hidden and the text combinators return `Either`.
+
+## The domain
+
+```haskell
+data ProjectionDomain a where
+    ProjectionWhole :: ProjectionDomain a
+    ProjectionFinite :: (Eq a) => NonEmpty a -> ProjectionDomain a
+    ProjectionText :: TextPattern -> ProjectionDomain Text
+```
+
+The constructors are **not exported**; build a domain with one of the three constructors below. The
+text case is indexed at `Text` so a text pattern cannot be attached to another result carrier.
+
+```haskell
+finiteProjectionDomain :: (Eq a) => NonEmpty a -> ProjectionDomain a
+wholeProjectionDomain :: ProjectionDomain a
+textProjectionDomain :: TextPattern -> ProjectionDomain Text
+```
+
+`finiteProjectionDomain` builds a non-empty finite domain, removing duplicates while **retaining the
+first occurrence** of each value. The symbolic compiler separately verifies that every retained
+literal round-trips through its symbolic representation and satisfies backend bounds; if one does
+not, the entire constraint is omitted and the containing translation becomes conservative rather
+than wrong.
+
+`wholeProjectionDomain` declares that every value of the result carrier is in the image.
+
+<Callout type="warn">
+  **Whole-carrier exactness is only admitted for carriers keiki has classified as isomorphic to
+  their symbolic representation** — currently `Bool`, `Integer`, `Natural`, and the curated
+  fixed-width integer types. `UTCTime` is encoded as picoseconds through POSIX time, which clamps
+  leap-second day times, and `Text` exceeds SMT-LIB's U+2FFFF ceiling; neither is a whole-carrier
+  isomorphism. Query the classification with
+  [`symbolicWholeCarrierExact`](/docs/keiki/reference/symbolic). A finite domain remains exact
+  whenever every literal is representable.
+</Callout>
+
+`textProjectionDomain` lifts an already-validated pattern.
+
+## The text pattern algebra
+
+`TextPattern` is a deliberately small **full-string** language: a pattern always matches the
+complete `Text` value, never a substring. Every constructor has both a pure interpreter and an exact
+SBV regular-expression translation.
+
+```haskell
+data TextPattern
+    = TextLiteral Text
+    | TextRanges (NonEmpty (Char, Char))
+    | TextConcat (NonEmpty TextPattern)
+    | TextAlternation (NonEmpty TextPattern)
+    | TextRepeatBetween Natural Natural TextPattern
+    deriving stock (Eq, Show)
+```
+
+Again the constructors are hidden. The combinators that can fail validation return `Either`; the two
+that cannot are total:
+
+```haskell
+textLiteral :: Text -> Either DomainConstructionError TextPattern
+textCharSet :: NonEmpty Char -> Either DomainConstructionError TextPattern
+textCharRanges :: NonEmpty (Char, Char) -> Either DomainConstructionError TextPattern
+textRepeatBetween ::
+    Natural -> Natural -> TextPattern -> Either DomainConstructionError TextPattern
+
+textConcat :: NonEmpty TextPattern -> TextPattern
+textAlternation :: NonEmpty TextPattern -> TextPattern
+```
+
+<TypeTable
+  type={{
+    textLiteral: { type: "Text -> Either …", description: "Match one literal text value." },
+    textCharSet: { type: "NonEmpty Char -> Either …", description: "Match exactly one member of a non-empty character set. Duplicates are removed, first occurrence retained." },
+    textCharRanges: { type: "NonEmpty (Char, Char) -> Either …", description: "Match exactly one character from one of the supplied inclusive ranges." },
+    textConcat: { type: "NonEmpty TextPattern -> TextPattern", description: "Concatenate a non-empty sequence of full-string patterns." },
+    textAlternation: { type: "NonEmpty TextPattern -> TextPattern", description: "Match any one of a non-empty sequence of full-string patterns." },
+    textRepeatBetween: { type: "Natural -> Natural -> TextPattern -> Either …", description: "Match a pattern between the inclusive lower and upper bounds." },
+  }}
+/>
+
+## Construction errors
+
+Validation happens at construction, not at solve time, so a rejected pattern can never become exact
+evidence.
+
+```haskell
+data DomainConstructionError
+    = CodePointAboveSmtMaximum Char
+    | ReversedCharacterRange Char Char
+    | InvalidRepetitionInterval Natural Natural
+    | RepetitionBoundTooLarge Natural
+    deriving stock (Eq, Show)
+```
+
+- `CodePointAboveSmtMaximum` — a character above SMT-LIB's string ceiling. SMT-LIB strings contain
+  code points U+0000 through U+2FFFF, exposed as `maximumSmtCodePoint`:
+
+  ```haskell
+  maximumSmtCodePoint :: Char
+  maximumSmtCodePoint = '\x2FFFF'
+  ```
+
+  Rejecting the character is what stops the pure and symbolic meanings from silently disagreeing.
+- `ReversedCharacterRange` — a range whose lower bound exceeds its upper bound.
+- `InvalidRepetitionInterval` — `textRepeatBetween` was given `lower > upper`.
+- `RepetitionBoundTooLarge` — SBV's regular-expression node stores machine `Int` bounds, so a
+  `Natural` above `maxBound :: Int` is rejected at construction rather than truncated.
+
+## Concrete interpretation
+
+```haskell
+memberProjectionDomain :: (Eq a) => ProjectionDomain a -> a -> Bool
+matchesTextPattern :: TextPattern -> Text -> Bool
+```
+
+`memberProjectionDomain` decides concrete membership — always `True` for a whole-carrier domain,
+element membership for a finite one, and a full-string match for a text one. `matchesTextPattern`
+interprets a pattern directly as a complete-string matcher.
+
+These are the functions [`checkFieldProjectionKey`](/docs/keiki/reference/core#exact-projections)
+runs, and the same values keiki checks every satisfying solver model against before reporting it.
+
+## What the domain does *not* prove
+
+<Callout type="warn">
+  A domain declaration is a **proof obligation you are taking on**, not one keiki discharges for
+  you. Keiki's model checks can catch an inverse that rejects an admitted key or returns a
+  non-round-tripping owner. They cannot see a domain that *omits* a key a real owner produces —
+  that under-declaration manufactures a false `VerifiedUnsatisfiable` before any satisfying model
+  exists. Only a consumer or a generator can test that no real owner key was left out, so an
+  `exactFieldWitness` must be accompanied by owner-side conformance tests. See
+  [single-valuedness and soundness](/docs/keiki/explanation/single-valuedness-and-soundness).
+</Callout>
+
+## See also
+
+- [`Keiki.Core` — exact projections](/docs/keiki/reference/core#exact-projections) for the
+  `ExactFieldProjection` class, `exactFieldWitness`, and the executable law checkers.
+- [`Keiki.Symbolic`](/docs/keiki/reference/symbolic) for `verifyPredicate`,
+  `predicateTranslationReport`, and how an inexact translation is reported.

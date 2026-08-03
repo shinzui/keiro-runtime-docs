@@ -179,10 +179,11 @@ real `()`.
 
 ## The round-trip guarantee, and its one limitation
 
-The contract is that `models p witness == True` for any witness `symSatExt` returns — **modulo opaque
-terms**. The escape-hatch terms (`TApp1`, `TApp2`, and the `neq` fallback for a non-`Sym` `PEq`)
-translate to fresh anonymous variables whose values are not extracted; the witness reflects only the
-slots and fields the predicate reaches through `TReg` / `TInpCtorField`. The header is precise:
+The contract is that `models p witness == True` for any witness `symSatExt` returns. The
+escape-hatch terms (`TApp1`, `TApp2`, and the `neq` fallback for a non-`Sym` `PEq`) translate to
+fresh anonymous variables whose values are not extracted, so the witness reflects only the slots and
+fields the predicate reaches through `TReg` / `TInpCtorField`. Through keiki 0.6 that made the
+contract conditional — the header carried the caveat:
 
 ```haskell
 -- @models p (regs, cmd) == True@ holds for the returned witness,
@@ -190,6 +191,19 @@ slots and fields the predicate reaches through `TReg` / `TInpCtorField`. The hea
 --   * /Escape-hatch terms/ ('TApp1', 'TApp2', and 'PEq' over a
 --     non-'Sym' operand type, the @neq@ fallback in 'goEq').
 ```
+
+<Callout type="warn">
+  **keiki 0.7.0.0 removed the caveat by adding a final check.** `symSatExt` now concretely evaluates
+  every reconstructed candidate before returning it, so `models p (regs, cmd) == True` holds
+  **unconditionally** for every `Just`. An unrealizable free projection assignment, an opaque
+  `TApp1`/`TApp2` assignment, a non-`Sym` equality fallback that the reconstructed registers and
+  input cannot realize, or a constructor-guard violation discovered during the recheck now yields
+  `Nothing`.
+
+  The trade is a slightly weaker `Nothing`: it means "no concrete witness recovered", which was
+  always true but is now the *only* reading. It is still never proof of unsatisfiability — that
+  remains `symIsBot`'s job.
+</Callout>
 
 Repeated reads are handled correctly because of the memo cache: two reads of `#x` share one variable,
 so the by-name extraction satisfies `proj #x .== proj #x`-style structural equality. The jitsurei
