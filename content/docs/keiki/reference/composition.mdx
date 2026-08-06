@@ -100,11 +100,30 @@ through `t1`'s structural reads and rebuild the original `ci1`.
 
 <Callout type="info">
 Structural-alignment precondition: substitution matches `t2`'s `TInpCtorField` reads against `t1`'s
-emitted `WireCtor` by `icName == wcName` string equality and positional field reads. `t1`'s outputs
+emitted `WireCtor` by **typed input-to-wire alignment** and positional field reads. `t1`'s outputs
 must be `OPack`, `t2`'s mid-side guards must be structural, and both must avoid the v1 escape hatches.
-When a constructor name fails to align, comparison leaves become unsatisfiable; mismatched reads in
+When a constructor fails to align, comparison leaves become unsatisfiable; mismatched reads in
 other positions become inspectable poison terms. Prefer `composeChecked` so drift is reported before
 the unchecked substitution path is constructed.
+</Callout>
+
+<Callout type="warn">
+  **Breaking in keiki 0.9.0.0 — this precondition used to be name equality.** Sequential composition
+  now substitutes mid-side fields and discharges constructor guards **only** through typed
+  input-to-wire alignment (the checked form of
+  [`classifyInputWireHeads`](/docs/keiki/reference/core#aligning-an-input-constructor-with-a-wire-constructor)).
+  Previously, two constructors with equal `icName`/`wcName` strings authorized a result-type
+  coercion — so a same-named pair with genuinely different structure silently type-coerced across
+  the boundary.
+
+  Structural mismatch and unavailable evidence now produce `StructurallyDifferentInputWire` or
+  `UnwitnessedInputWireAlignment` instead. In practice this means **boundary constructors must come
+  from trusted producers** (`mkInCtorVia`, `mkWireCtorVia`, TH) — an `unavailableInCtor` on a
+  composition boundary is reported as unwitnessed rather than assumed to align.
+
+  Relatedly, composition-only identity alignment now carries a typed `Either` prefix spine and
+  derives field equality by lockstep GADT refinement, so schema alignment **no longer contains an
+  `unsafeCoerce`**.
 </Callout>
 
 ### Checked alignment
@@ -122,6 +141,12 @@ data ComposeAlignmentWarning s1 s2
   | FieldArityMismatch
       { cawT1EdgeA :: EdgeRef s1, cawT2EdgeA :: EdgeRef s2
       , cawSharedName :: String, cawReadPosition :: Int, cawAvailableFields :: Int }
+  | StructurallyDifferentInputWire
+      { cawStructuralT1Edge :: EdgeRef s1, cawStructuralT2Edge :: EdgeRef s2
+      , cawStructuralWireName :: String, cawStructuralInCtorName :: String }
+  | UnwitnessedInputWireAlignment
+      { cawUnwitnessedT1Edge :: EdgeRef s1, cawUnwitnessedT2Edge :: EdgeRef s2
+      , cawUnwitnessedWireName :: String, cawUnwitnessedInCtorName :: String }
   | PoisonedNameInComposition
       { cawName :: String, cawSide :: String }
   | NonStructuralProjectionBoundary
@@ -146,10 +171,20 @@ composeChecked
 ```
 
 The checker catches emitted constructors with no consumer, downstream expectations with no producer,
-out-of-range positional field reads, boundary names stamped by lossy profunctor maps, and mapped
-boundaries that cannot retain a stable typed projection path. Its reachability walk is conservative:
-every warning is a reviewable structural fact, but `Right` is not a proof about arbitrary opaque
-Boolean guard logic.
+out-of-range positional field reads, same-named pairs whose structure differs or cannot be witnessed,
+boundary names stamped by lossy profunctor maps, and mapped boundaries that cannot retain a stable
+typed projection path. Its reachability walk is conservative: every warning is a reviewable
+structural fact, but `Right` is not a proof about arbitrary opaque Boolean guard logic.
+
+Note that the two 0.9.0.0 warnings are raised for pairs whose **names already match** —
+`wcName wireCtor == icName inputCtor` is the filter that selects candidate pairs, and the structural
+check then decides whether the pair may actually be substituted. A name mismatch is still reported
+as `UnconsumedWireOutput` / `UnmatchedInCtorExpectation` as before.
+
+<Callout type="warn">
+  **Breaking in keiki 0.9.0.0.** `ComposeAlignmentWarning` gained `StructurallyDifferentInputWire`
+  and `UnwitnessedInputWireAlignment`; exhaustive matches must be extended.
+</Callout>
 
 <Callout type="warn">
   **Breaking in keiki 0.4.0.0.** `ComposeAlignmentWarning` gained

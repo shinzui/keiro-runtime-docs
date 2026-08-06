@@ -4,8 +4,18 @@ description: "Declarative queue topology and idempotent startup reconciliation f
 ---
 
 `pgmq-config` lets an application declare desired queue topology as Haskell
-values and reconcile it on boot. Reconciliation is additive: it creates missing
-objects and leaves unrelated queues alone.
+values and reconcile it on boot. Reconciliation creates what is missing, reports
+what it will not repair, and mutates already-existing state in exactly one
+documented case.
+
+<Callout type="info">
+  The `ObservedQueueType`, `UpdatedNotifyThrottle`, `DetectedQueueTypeDrift`, and
+  `defaultThrottleMs` surfaces below are committed upstream for `0.5.0.0`, which
+  is **not yet released**. The published package family is still `0.4.0.1`; on
+  that version `ReconcileAction` has only the eight original constructors and a
+  declared throttle interval that differs from the stored one is silently
+  ignored.
+</Callout>
 
 ## Queue configuration values
 
@@ -45,9 +55,21 @@ withFifoIndex :: QueueConfig -> QueueConfig
 withTopicBinding :: TopicPattern -> QueueConfig -> QueueConfig
 ```
 
-`withNotifyInsert Nothing` uses pgmq's default notify throttle. `withFifoIndex`
-adds the GIN index used by grouped FIFO reads. `withTopicBinding` appends a
-topic pattern to the queue's bindings.
+`withNotifyInsert Nothing` uses `defaultThrottleMs`. `withFifoIndex` adds the GIN
+index used by grouped FIFO reads. `withTopicBinding` appends a topic pattern to
+the queue's bindings.
+
+```haskell
+-- | The throttle interval pgmq applies when none is given: 250 milliseconds.
+defaultThrottleMs :: Int32
+defaultThrottleMs = 250
+```
+
+A `NotifyConfig` whose `throttleMs` is `Nothing` means "use this value". The
+pgmq-hasql enable statement supplies it with a SQL `coalesce($2, 250)`, and
+`pgmq.enable_notify_insert` declares the same figure as its parameter default,
+so a `Nothing` config and a stored `250` agree and reconciliation does not flap
+between them.
 
 ## Reconciliation
 
@@ -57,25 +79,62 @@ ensureQueuesWithPool :: Pool -> [QueueConfig] -> IO (Either UsageError ())
 ensureQueuesReport :: [QueueConfig] -> Session [ReconcileAction]
 ```
 
-`ensureQueuesReport` first reads `listQueues`, `listTopicBindings`, and
-`listNotifyInsertThrottles`, then applies only missing queue creations,
-notification setup, and topic bindings. FIFO index creation is always applied
-when `fifoIndex` is `True` because the underlying pgmq function is idempotent.
+A run snapshots existing state with four read-only queries — queues (via
+`listQueuesUnvalidated`, so a foreign queue whose name this client would reject
+cannot break startup), topic bindings, notification throttles, and FIFO
+indexes — and then, per declared config:
+
+| Observed state | Effect | Reported as |
+| --- | --- | --- |
+| Queue absent | Created with the declared type | `CreatedQueue` |
+| Queue present, shape matches | Nothing issued | `SkippedQueue` |
+| Queue present, shape differs | Nothing issued | `DetectedQueueTypeDrift` |
+| Throttle row absent | Notify enabled with the declared interval | `EnabledNotify` |
+| Throttle row present, interval matches | Nothing issued | `SkippedNotify` |
+| Throttle row present, interval differs | Row updated in place | `UpdatedNotifyThrottle` |
+| FIFO index declared and absent | Index created | `CreatedFifoIndex` |
+| FIFO index declared and present | Nothing issued | `SkippedFifoIndex` |
+| Binding absent | Bound | `BoundTopic` |
+| Binding present | Nothing issued | `SkippedTopicBinding` |
+
+Queues, bindings, and throttles that exist in the database but are absent from
+the config are never touched. Nothing is ever dropped, disabled, or converted.
 
 ```haskell
+data ObservedQueueType
+  = ObservedStandard
+  | ObservedUnlogged
+  | ObservedPartitioned
+
 data ReconcileAction
-  = CreatedQueue QueueName QueueType
-  | EnabledNotify QueueName (Maybe Int32)
-  | CreatedFifoIndex QueueName
-  | BoundTopic QueueName TopicPattern
-  | SkippedQueue QueueName
-  | SkippedNotify QueueName
-  | SkippedFifoIndex QueueName
-  | SkippedTopicBinding QueueName TopicPattern
+  = CreatedQueue !QueueName !QueueType
+  | EnabledNotify !QueueName !(Maybe Int32)
+  | CreatedFifoIndex !QueueName
+  | BoundTopic !QueueName !TopicPattern
+  | SkippedQueue !QueueName
+  | SkippedNotify !QueueName
+  | SkippedFifoIndex !QueueName
+  | SkippedTopicBinding !QueueName !TopicPattern
+  | UpdatedNotifyThrottle !QueueName !Int32 !Int32
+  | DetectedQueueTypeDrift !QueueName !QueueType !ObservedQueueType
 ```
 
 The skipped constructors are useful in startup logs. They show the desired
 topology was already present instead of hiding all no-op work.
+
+`UpdatedNotifyThrottle` carries the queue, the observed interval, and the
+declared interval in milliseconds. It is the reconciler's **only** mutation of
+already-existing state, issued through `pgmq.update_notify_insert`. That
+function also resets the throttle's `last_notified_at` to the epoch, so the next
+insert on that queue notifies immediately; this happens at most once per real
+configuration change.
+
+`DetectedQueueTypeDrift` carries the queue, the declared type, and the observed
+type. It **replaces** `SkippedQueue` for the queue it concerns, so the report
+still carries exactly one queue-existence action per declared config. Only the
+three-way shape is compared: a declared `PartitionedQueue` against an observed
+partitioned queue matches regardless of its interval and retention settings,
+because `pgmq.list_queues()` does not report them.
 
 ## Effectful integration
 
@@ -93,6 +152,13 @@ queue reconciliation runs through whichever interpreter you install, including
 
 <Callout type="warn">
   Reconciliation does not delete queues, remove topic bindings, disable notify,
-  or change an existing queue from standard to unlogged or partitioned. Treat it
-  as an additive boot-time ensure step, not a destructive migration engine.
+  or change an existing queue from standard to unlogged or partitioned.
+  Converting a queue between those shapes means dropping and recreating it,
+  destroying every message it holds, which a process that runs automatically at
+  startup — potentially on several replicas at once — must never do. The drift is
+  surfaced as `DetectedQueueTypeDrift` and a human decides.
+
+  The general rule: reconcile automatically only where the repair is
+  non-destructive and pgmq's API supports it in place; otherwise report and stop.
+  The throttle interval is the one case that qualifies.
 </Callout>

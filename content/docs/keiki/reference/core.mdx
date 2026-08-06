@@ -492,29 +492,91 @@ constructor's payload and a typed register file `RegFile ifs`. The slot list `if
 schema for the constructor; together with `Index` it lets call sites read fields via
 `OverloadedLabels` (for example `inpStart #email`).
 
+<Callout type="warn">
+  **Breaking in keiki 0.9.0.0.** `InCtor` construction and record update are sealed behind a
+  **read-only pattern**. The module exports `InCtor (InCtor, icName, icSchema, icMatch, icBuild)` —
+  you can match and project, but you cannot build or record-update. See
+  [Constructing a sealed `InCtor`](#constructing-a-sealed-inctor) below.
+</Callout>
+
 ```haskell
-data InCtor ci (ifs :: [Slot]) where
-    InCtor ::
-        (AssembleRegFile ifs, KnownSlotNames ifs) =>
-        { icName :: String
-        , icMatch :: ci -> Maybe (RegFile ifs)
-        , icBuild :: RegFile ifs -> ci
-        } ->
-        InCtor ci ifs
+pattern InCtor ::
+  () =>
+  (AssembleRegFile ifs, KnownSlotNames ifs) =>
+  String ->
+  InCtorSchema ci ifs ->
+  (ci -> Maybe (RegFile ifs)) ->
+  (RegFile ifs -> ci) ->
+  InCtor ci ifs
 ```
 
 <TypeTable
   type={{
-    icName: { type: "String", description: "The named constructor's name (e.g. \"StartRegistration\")" },
+    icName: { type: "String", description: "The named constructor's name (e.g. \"StartRegistration\") — diagnostic only; it never participates in structural comparison" },
+    icSchema: { type: "InCtorSchema ci ifs", description: "Abstract Generic-derived constructor path and typed slot spine, or the unavailable marker" },
     icMatch: { type: "ci -> Maybe (RegFile ifs)", description: "Returns Just iff ci is the named constructor, decoding its payload into a typed register file" },
     icBuild: { type: "RegFile ifs -> ci", description: "Left inverse of icMatch: icMatch (icBuild rf) == Just rf for every well-formed rf" },
   }}
 />
 
-The `AssembleRegFile` and `KnownSlotNames` constraints on the constructor mean any code holding an
+The `AssembleRegFile` and `KnownSlotNames` constraints mean any code holding an
 `InCtor` can mechanically rebuild a `RegFile` from a bag of `(Index, value)` pairs and recover the
 slot names of `ifs` at run time. Both instances are automatic for any concrete slot list, so users
 write no extra code.
+
+### Constructing a sealed `InCtor`
+
+Trusted construction requires a strict capability from a hidden library module. Public callers cannot
+import that capability, and so get exactly three routes:
+
+```haskell
+-- Manual behavior, explicitly without structural evidence.
+unavailableInCtor ::
+  (AssembleRegFile ifs, KnownSlotNames ifs) =>
+  String ->
+  (ci -> Maybe (RegFile ifs)) ->
+  (RegFile ifs -> ci) ->
+  InCtor ci ifs
+
+-- Change only the diagnostic name, preserving behavior and trusted evidence.
+renameInCtor :: String -> InCtor ci ifs -> InCtor ci ifs
+```
+
+plus the trusted producers in [`Keiki.Generics`](/docs/keiki/reference/generics) —
+`mkInCtorVia`, `mkInCtorRecordVia` — and TH derivation.
+
+<Callout type="info">
+  **Migration.** Replace an intentional manual `InCtor` record with
+  `unavailableInCtor name match build`. Prefer `mkInCtorVia` for constructors wrapping record
+  payloads and `mkInCtorRecordVia` for constructors whose fields are declared directly with record
+  syntax. Use `renameInCtor` instead of record update when only the diagnostic name changes, and use
+  a trusted producer on every boundary passed to `composeChecked` or relied on for symbolic
+  constructor exclusion.
+</Callout>
+
+### Structural evidence and head classification
+
+`InCtorSchema` is an abstract, `Generic`-derived structural schema: the constructor's path through
+the representation, plus its ordered slot spine. Diagnostic names never participate.
+
+```haskell
+data InCtorSchemaAvailability = ...
+inCtorSchemaUnavailable :: InCtorSchema ci ifs
+inCtorSchemaAvailability :: InCtorSchema ci ifs -> InCtorSchemaAvailability
+
+data InputHeadRelation
+  = InputHeadsStructurallyEqual
+  | InputHeadsStructurallyDifferent
+  | InputHeadsUnwitnessed
+
+classifyInputHeads :: InCtor ci left -> InCtor ci right -> InputHeadRelation
+```
+
+`classifyInputHeads` is proof-safe: `InputHeadsUnwitnessed` is returned whenever either side lacks
+evidence, and callers must treat it conservatively rather than as "different".
+
+The trust model roots in **lawful `Generic` instances**. A deliberately unlawful hand-written
+instance is outside the threat model, exactly as `unsafeCoerce` is.
 
 ## The update language
 
@@ -556,21 +618,67 @@ combine ::
 A `WireCtor` is a wire-type tag for one constructor of the user's output sum `co`. Its functions let
 `solveOutput` pattern-match an observed `co` and `evalOut` rebuild a `co` from its fields.
 
+<Callout type="warn">
+  **Breaking in keiki 0.9.0.0.** Like `InCtor`, `WireCtor` construction and record update are sealed
+  behind a read-only pattern: `WireCtor (WireCtor, wcName, wcSchema, wcMatch, wcBuild)`.
+</Callout>
+
 ```haskell
-data WireCtor co fields = WireCtor
-    { wcName :: String
-    , wcMatch :: co -> Maybe fields
-    , wcBuild :: fields -> co
-    }
+pattern WireCtor ::
+  String ->
+  WireSchema co fields ->
+  (co -> Maybe fields) ->
+  (fields -> co) ->
+  WireCtor co fields
 ```
 
 <TypeTable
   type={{
-    wcName: { type: "String", description: "The wire constructor's name" },
+    wcName: { type: "String", description: "The wire constructor's name — diagnostic only" },
+    wcSchema: { type: "WireSchema co fields", description: "Abstract Generic-derived constructor path and ordered field types, or the unavailable marker" },
     wcMatch: { type: "co -> Maybe fields", description: "Returns Just (the field tuple) iff co is this wire constructor" },
     wcBuild: { type: "fields -> co", description: "Rebuilds the output value from its field tuple" },
   }}
 />
+
+The construction routes mirror the input side:
+
+```haskell
+unavailableWireCtor ::
+  String ->
+  (co -> Maybe fields) ->
+  (fields -> co) ->
+  WireCtor co fields
+
+renameWireCtor :: String -> WireCtor co fields -> WireCtor co fields
+
+data WireHeadRelation
+  = WireHeadsStructurallyEqual
+  | WireHeadsStructurallyDifferent
+  | WireHeadsUnwitnessed
+
+classifyWireHeads :: WireCtor co left -> WireCtor co right -> WireHeadRelation
+```
+
+with `mkWireCtorVia`, `mkWireCtor0Via`, and `mkWireCtorRecordVia` as the trusted `Generic`
+producers.
+
+### Aligning an input constructor with a wire constructor
+
+```haskell
+data InputWireHeadRelation
+  = InputWireHeadsAligned
+  | InputWireHeadsStructurallyDifferent
+  | InputWireHeadsUnwitnessed
+
+classifyInputWireHeads :: InCtor mid ifs -> WireCtor mid fields -> InputWireHeadRelation
+```
+
+This compares an input constructor's evidence against an output wire constructor's evidence **at the
+same carrier**. It is the observer form of the checked alignment that authorizes
+sequential-composition substitution; the typed alignment witness itself stays internal. Diagnostic
+names never participate — which is precisely what makes it sound where the old equal-names check was
+not. See [Composition](/docs/keiki/reference/composition).
 
 `OutFields` is an HList of `Term`s, one per field of the wire constructor; the field-tuple type is
 built nested-pair style so `solveOutput` can walk it structurally. Its `ifs` parameter is the shared

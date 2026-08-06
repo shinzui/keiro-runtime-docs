@@ -15,9 +15,11 @@ keiro-dsl pretty <FILE>
 keiro-dsl inspect <FILE> [--format=json]
 keiro-dsl behavior-obligations <FILE> [--format=text|json]
 keiro-dsl check <FILE> [--emit] [--explain-bindings] \
+  [--min-language N] [--deny-warnings] [--deny CODE[,CODE...]]… [--report-out FILE] \
   [--coverage-report FILE [--fail-on-opaque]]
 keiro-dsl scaffold <FILE> --out DIR \
   [--module-root PREFIX] [--collocate] [--force-generated-overwrite] [--goldens DIR] \
+  [--apply-name-migrations] \
   [--codec-comparison MAPPED-NAME --comparison-out FILE]
 keiro-dsl diff --since <git-ref> <FILE> \
   [--emit-goldens DIR] [--replay-impact-out FILE] \
@@ -162,15 +164,75 @@ This is the answer to "the scaffold left me holes; what exactly do I owe, and wh
 used?" It resolves the mapped type graph, so a spec that validates but whose graph does not resolve
 exits nonzero with the graph errors.
 
+### The CI warning policy
+
+`check` exits 0 on warnings by default. Three flags turn selected warnings into failures:
+
+| Flag | Effect |
+| --- | --- |
+| `--deny-warnings` | exit non-zero when **any** warning-severity diagnostic fires |
+| `--deny CODE[,CODE...]` | exit non-zero for these stable codes only; repeatable and comma-separated |
+| `--min-language N` | require at least registered released language version `N` |
+
+Neither `--deny` form changes a diagnostic's *severity* — a denied warning is still reported as a
+warning. They change only the exit code.
+
+<Callout type="warn">
+  **`--deny-warnings` was not an honest gate before keiro-dsl 0.11.0.0.** When an invocation supplied
+  `--coverage-report`, coverage findings were printed but excluded from the warning policy, so
+  `check spec --coverage-report r --deny-warnings` printed coverage warnings and **exited 0** — a CI
+  job that believed it had a no-warning gate did not have one.
+
+  Coverage findings are now ordinary diagnostics of the run: `--deny-warnings` and
+  `--deny CoverageOpaqueSurface` escalate them, they appear in the `keiro-dsl/check-report/1`
+  diagnostics array as line-0 entries, and the report's `ok` accounts for them. Coverage output is
+  now emitted **with** the other diagnostics, before `--emit` and `--explain-bindings` output rather
+  than after.
+</Callout>
+
+<Callout type="warn">
+  **`--deny CODE` now refuses a code `check` cannot emit**, instead of accepting a denial that can
+  never match. Any CI file naming such a code was not gating on it and now fails loudly. Three
+  classes are rejected:
+
+  - **Cross-revision codes** (for example `EvtFieldWireKeyChanged`, `WorkflowShapeChanged`) — these
+    are a `diff` concern, and are rejected outright.
+  - **Structural-coverage codes** — rejected unless the same invocation passes `--coverage-report`.
+  - **`CoverageOpaqueGateExceeded`** — rejected in *every* invocation, because that code is the error
+    `--fail-on-opaque` itself raises and is never a deniable warning. Pass the flag instead.
+
+  `Keiro.Dsl.Validate` exports the underlying `DiagnosticOrigin` and `diagnosticOrigin` registry if
+  you need to reproduce this classification.
+</Callout>
+
+<Callout type="warn">
+  **Adopter action: `RouterBenignInversion` split out of `ProcessBenignInversion`.** Router
+  duplicate-disposition notices moved to their own code, so a CI list passing
+  `--deny ProcessBenignInversion` silently stops matching router rows. Add
+  `--deny RouterBenignInversion` to preserve the previous gate.
+</Callout>
+
+### `--report-out FILE` (check)
+
+Writes the append-only `keiro-dsl/check-report/1` schema for sources and workspaces, through the
+`Keiro.Dsl.CheckReport` module. It creates missing parent directories.
+
+A workspace refused during composition now writes the report that a single spec has always written
+for the equivalent failure. Such a report serializes `"language": null`, because no service graph was
+composed — `reportLanguage` is `Maybe CheckReportLanguage`, and `workspaceRefusalReport` builds it. A
+parse failure, or an unreadable or unparseable workspace manifest, still writes **no** report: those
+precede any coded diagnostic.
+
 ### `--coverage-report FILE` and the opacity gates
 
-Write **reporting-only** structural/opaque mapped-root coverage as JSON:
+Write structural/opaque mapped-root coverage as JSON:
 
 ```bash
 keiro-dsl check service.keiro --coverage-report coverage.json
 ```
 
-Without a gate flag, coverage is purely informational — it never changes the exit code. Two opt-in
+Without a gate flag, coverage does not change the exit code on its own — but see the warning-policy
+callout above, since `--deny-warnings` now escalates coverage findings. Two opt-in
 gates turn it into a policy check (each requires `--coverage-report`):
 
 | Flag | Command | Fails when |
@@ -183,6 +245,13 @@ gates turn it into a policy check (each requires `--coverage-report`):
   roots must be fully structural is an operator decision, not a validator's. Adopt `--fail-on-opaque`
   once a service has finished its structural adoption, and `--fail-on-opaque-increase` from the start
   to ratchet.
+</Callout>
+
+<Callout type="warn">
+  **Breaking JSON change in 0.11.0.0.** The `keiro-dsl/coverage-report/1` schema now spells warning
+  severity `"warning"` rather than `"advisory"`, matching `keiro-dsl/check-report/1`. There is one
+  severity vocabulary across keiro-dsl's JSON. A consumer matching the literal string `"advisory"`
+  (available since 0.4.0.0) must be updated.
 </Callout>
 
 ## `scaffold`
@@ -201,6 +270,71 @@ The command has a plan-then-write boundary. Before any write it checks:
 
 Any refusal exits 1 and writes nothing. `--force-generated-overwrite` bypasses only the fifth check;
 use it to adopt a reviewed file as generated output, never as a general recovery switch.
+
+### Nodes that generate nothing
+
+A declaration can validate and be diff-classified without producing any generated module. The
+scaffold report names them rather than leaving you to wonder:
+
+```text
+no-modules: emit orderPlaced, emit orderCancelled (validated and diff-classified; no generated modules)
+```
+
+<Callout type="info">
+  *(0.11.0.0.)* `WorkspaceScaffoldReport` gains `wsrInertNodes`, so a **workspace** scaffold now
+  renders the same `no-modules:` line a single-spec report has always rendered.
+  `Keiro.Dsl.ScaffoldRun` exports the shared `inertNodesOf` and `renderInertNodeSection`.
+
+  This line is also why `EmitDeriveHoleUnrealized` was removed: that code fired unconditionally on
+  every `emit` node because `derive … hole` is mandatory grammar, so it carried no information and
+  made `check --deny-warnings` permanently red for any emit-bearing service. The `no-modules:` line
+  already names each emit node that contributes nothing.
+</Callout>
+
+### `--apply-name-migrations`
+
+*(keiro-dsl 0.11.0.0.)* Ordinary scaffolding **reports** the complete migration plan and writes
+nothing. This flag applies an explicitly reviewed legacy-to-current move: it backs up original
+generated and create-once files, rewrites exact Haskell module references outside comments and
+literals, journals content digests, and resumes exact interrupted states.
+
+```bash
+keiro-dsl scaffold service.keiro --out gen                          # review the plan
+keiro-dsl scaffold service.keiro --out gen --apply-name-migrations  # apply it
+```
+
+<Callout type="warn">
+  **Breaking in 0.11.0.0: one checked naming edition for generated Haskell.** Generated module
+  segments, types, constructors, values, selectors, and create-once source paths now use a single
+  UpperCamelCase/lowerCamelCase policy. Compound logical names move — `service_oncall` generates
+  `ServiceOncall` where it used to generate `Service_oncall` — so consumers must apply the reported
+  source migration and recompile. See
+  [ADR-0019](/docs/keiro/explanation/the-keiro-dsl-toolchain).
+
+  New diagnostics: `IdentUnsafeNormalization`, `GeneratedOccurrenceReserved`,
+  `GeneratedOccurrenceCollision`, `GeneratedHaskellNameChanged`. New refusals:
+  `GeneratedNameInvariantViolation`, `NameMigrationRequired`, `NameMigrationRefusal`.
+  `ScaffoldReport` and `WorkspaceScaffoldReport` gain generated-name source-move evidence, and
+  `ScaffoldRecord` / `WorkspaceRecord` gain a naming edition plus stable module-role rows; missing
+  additive rows decode as the legacy edition.
+</Callout>
+
+<Callout type="info">
+  **Collision planning got more accurate, not just stricter.** Generated-name collision planning now
+  registers the selector generation actually emits — the explicit `haskell` alias when declared,
+  otherwise the raw DSL name — instead of a camelized rendering of it. So `{foo_bar, fooBar}` in one
+  record is no longer reported as a collision between two fields that in fact generate distinct
+  selectors, and the diagnostic no longer claims `foo_bar` "normalizes to" `fooBar`, which
+  generation never did. A name that genuinely cannot be a Haskell selector is still refused, by the
+  generated-name audit that owns that rule and names the offending declaration.
+</Callout>
+
+<Callout type="warn">
+  **A refusal after the renames are applied no longer claims "nothing was written."** Sidecar renames
+  are applied before the later scaffold gates run, so `Refusal` gained `SidecarMovesAlreadyApplied`;
+  exhaustive matches must be extended. The note is appended to such a refusal set and states that the
+  renames are idempotent and need no undo.
+</Callout>
 
 Placement precedence is CLI flag, then spec clause, then default:
 
@@ -251,21 +385,61 @@ replay-neutral diff needs no audit, an affected diff needs `AuditTargeted`, a ru
 `AuditFull`, and any non-zero exit blocks deployment. See
 [Replay audit](/docs/keiro/reference/replay-audit).
 
-### Manifest
+### Sidecar files
 
-`keiro-dsl-manifest.<context>.txt` contains paste-ready `other-modules:` and `build-depends:` blocks.
-It is the authority for wiring one concrete scaffold into Cabal.
+*(Renamed in keiro-dsl 0.11.0.0 — see the callout below.)* Every successful `scaffold` run writes
+role-bearing sidecars next to the generated tree:
 
-### Scaffold record and stale paths
+| File | Role |
+| --- | --- |
+| `keiro-dsl-cabal-fragment.context.<context>.txt` | paste-ready `other-modules:` and `build-depends:` blocks — the authoritative generated build inventory |
+| `keiro-dsl-cabal-fragment.workspace.<service>.txt` | the workspace form of the same |
+| `keiro-dsl-ledger.context.<context>.txt` | the planned paths, used to report stale ones on a later run |
+| `keiro-dsl-ledger.workspace.<service>.txt` | the workspace form of the same |
+| `keiro-dsl-conformance-ledger.txt` | the conformance record, in the versioned `keiro-dsl conformance ledger v1` format |
 
-`keiro-dsl-scaffold-record.<context>.txt` records the planned paths. A later run reports paths it no
-longer emits under `stale:` and exits 0. Scaffold never deletes them:
+A later run reports paths it no longer emits under `stale:` and exits 0. Scaffold never deletes them:
 
 - `generated` entries are deletion candidates after review;
 - `hole` entries are hand-owned and require code inspection.
 
 If the report says the previous spec path differs, two specs share one context and output directory.
 Separate the outputs unless that ownership is deliberate.
+
+<Callout type="warn">
+  **Breaking in keiro-dsl 0.11.0.0 — an old-name tree refuses without writing.** The names changed
+  to carry their role:
+
+  | Was | Is |
+  | --- | --- |
+  | `keiro-dsl-scaffold-record.<context>.txt` | `keiro-dsl-ledger.context.<context>.txt` |
+  | `keiro-dsl-scaffold-record.workspace.<service>.txt` | `keiro-dsl-ledger.workspace.<service>.txt` |
+  | `keiro-dsl-conformance-record.txt` | `keiro-dsl-conformance-ledger.txt` |
+  | `keiro-dsl-manifest.<context>.<ext>` | `keiro-dsl-cabal-fragment.context.<context>.<ext>` |
+  | `keiro-dsl-manifest.workspace.<service>.<ext>` | `keiro-dsl-cabal-fragment.workspace.<service>.<ext>` |
+
+  Review the listed moves, then rerun with `scaffold --apply-name-migrations` to rename them
+  losslessly. Duplicate old files that cannot be renamed are preserved under
+  `.keiro-dsl-name-migrations/sidecar-v1/`.
+
+  The rename is why "manifest" is gone from the vocabulary: the **Cabal fragment**, not the former
+  manifest name, is the authoritative generated build inventory.
+
+  A legacy `keiro-dsl-conformance-record.txt` is migrated wherever it appears in the output tree,
+  not only when the run also plans a conformance package — a spec that stopped generating one used
+  to leave the record orphaned and unreadable. The scan is depth-bounded and skips the
+  `.keiro-dsl-name-migrations` backup root.
+</Callout>
+
+<Callout type="warn">
+  **The conformance ledger also changed format.** The whitespace-row
+  `keiro-dsl-conformance-record.txt` becomes the versioned `keiro-dsl conformance ledger v1` with
+  typed JSON file rows. The parser ignores unknown row kinds and unknown JSON keys so future rows
+  decode, while retaining the service-key, malformed-record, unsafe-path, and case-folded
+  duplicate-path refusals. **Legacy records are converted only by the explicit
+  `--apply-name-migrations` path** — there is no implicit upgrade, and the current reader has no
+  legacy parser.
+</Callout>
 
 ## `diff`
 
@@ -308,6 +482,14 @@ carries a **compatibility vector** — an independent verdict on six surfaces:
 Each surface gets `compatible`, `advisory`, `breaking`, or `n/a`. When the vector is **not uniform**,
 `diff` prints it as a second indented line, omitting `n/a` surfaces and appending any rollout
 constraint:
+
+<Callout type="info">
+  *(keiro-dsl 0.11.0.0.)* **Generated-only source evolution** — a change that moves generated Haskell
+  names without touching persisted meaning — is now classified as `consumer-build` **advisory**, with
+  re-scaffold, recompile, and conformance remedies. Wire, replay, SQL, runtime, and persisted
+  identities remain compatible. This is the classification the naming-edition migration falls under:
+  your code stops compiling, but nothing stored moves.
+</Callout>
 
 ```text
 BREAKING: aggregate event OrderPlaced: payload changed without a version bump [EventPayloadChanged]

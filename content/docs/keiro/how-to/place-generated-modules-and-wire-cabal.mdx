@@ -1,12 +1,12 @@
 ---
 title: "Place generated modules and wire them into Cabal"
-description: "Choose where keiro-dsl scaffolds modules — a parallel Generated.* tree or collocated next to your domain code (--module-root / --collocate, or the module/layout spec clauses) — and paste the emitted manifest's other-modules/build-depends into your .cabal stanza."
+description: "Choose where keiro-dsl scaffolds modules — a parallel Generated.* tree or collocated next to your domain code (--module-root / --collocate, or the module/layout spec clauses) — and paste the emitted Cabal fragment's other-modules/build-depends into your .cabal stanza."
 ---
 
 By default `keiro-dsl scaffold` writes the generated layer into a parallel `Generated.*` tree rooted
 at `--out`. This guide shows the two things teams usually want instead: **collocating** the generated
 modules next to their hand-written domain code, and **wiring** the result into a Cabal stanza from the
-emitted manifest instead of hand-transcribing module paths. For the grammar and full CLI see the
+emitted Cabal fragment instead of hand-transcribing module paths. For the grammar and full CLI see the
 [notation reference](/docs/keiro/reference/keiro-dsl-notation); for the scaffold/fill workflow see
 [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes).
 
@@ -102,23 +102,23 @@ move hand-owned code or use `--force-generated-overwrite` only for a deliberate,
 </Callout>
 
 Changing placement creates a new set of paths. Re-scaffold, then review the `stale:` report produced
-from `keiro-dsl-scaffold-record.<context>.txt`. Scaffold deletes nothing: remove stale generated
+from `keiro-dsl-ledger.context.<context>.txt`. Scaffold deletes nothing: remove stale generated
 entries only after checking imports, and migrate stale hole entries as hand-owned code. Do not delete
 an old tree wholesale when it contains filled holes.
 
-## Wire the modules into Cabal from the manifest
+## Wire the modules into Cabal from the fragment
 
-Every successful `scaffold` run writes `keiro-dsl-manifest.<context>.txt` into `--out`. It contains
+Every successful `scaffold` run writes `keiro-dsl-cabal-fragment.context.<context>.txt` into `--out`. It contains
 two paste-ready blocks: the `other-modules` (every generated and hole module, dotted) and the
 `build-depends` implied by the node kinds in the spec.
 
 ```bash
 keiro-dsl scaffold reservation.keiro --out src --module-root Acme --collocate
-cat src/keiro-dsl-manifest.hospital-capacity.txt
+cat src/keiro-dsl-cabal-fragment.context.hospital-capacity.txt
 ```
 
 ```text
--- keiro-dsl build manifest for reservation.keiro
+-- keiro-dsl build fragment for reservation.keiro
 -- Paste the two blocks below into the consuming Cabal stanza.
 -- The generated layer is overwritten on every scaffold; hole modules are
 -- create-if-absent (filled by hand).
@@ -161,16 +161,16 @@ library
 ```
 
 <Callout type="info">
-The manifest is a **paste aid**, not an automated `.cabal` edit — editing a consumer's build file in
+The Cabal fragment is a **paste aid**, not an automated `.cabal` edit — editing a consumer's build file in
 place is out of scope by design. The `build-depends` set is the union implied by the node kinds
 present (e.g. an aggregate pulls `aeson, keiki, keiro, text`; a process adds `time, uuid`). The
-manifest is regenerated on every successful scaffold, so re-run and reconcile it when you add or
+fragment is regenerated on every successful scaffold, so re-run and reconcile it when you add or
 remove a node.
 </Callout>
 
 ## Confirm placement landed
 
-The stderr report names every module written and where the manifest went, so you can eyeball the
+The stderr report names every module written and where the fragment went, so you can eyeball the
 namespaces without spelunking the tree:
 
 ```text
@@ -179,14 +179,14 @@ scaffold: reservation.keiro -> src (module-root=Acme, layout=collocated)
   hole       Acme.HospitalCapacity.Reservation.Holes              (created)
   …
 firewall: OK (5 generated modules scanned, 0 forbidden operators)
-manifest: src/keiro-dsl-manifest.hospital-capacity.txt
+fragment: src/keiro-dsl-cabal-fragment.context.hospital-capacity.txt
 ```
 
 ## Related
 
 - [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) — the scaffold/fill workflow.
 - [keiro-dsl notation](/docs/keiro/reference/keiro-dsl-notation) — the `module`/`layout` clauses.
-- [keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) — flags, protected paths, manifests, and stale
+- [keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) — flags, protected paths, sidecar files, and stale
   records.
 - [Author a service with keiro-dsl](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) — the full
   write → check → scaffold → fill → harness → diff loop.

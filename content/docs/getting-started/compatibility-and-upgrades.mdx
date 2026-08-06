@@ -12,16 +12,24 @@ own build, migration, and integration tests before upgrading.
 
 | Surface | Reviewed packages | Reviewed source |
 | --- | --- | --- |
-| keiki | `keiki 0.8.0.0`, `keiki-codec-json 0.8.0.0` | `9ee8de0` (`chore(release): 0.8.0.0`) |
-| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, and `keiro-migrations` at `0.9.0.0` | `f05102b` (`chore(release): 0.9.0.0`) |
+| keiki | `keiki 0.9.0.0`, `keiki-codec-json 0.9.0.0` | `9714d37` (`chore(release): 0.9.0.0`) |
+| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, and `keiro-migrations` at `0.11.0.0` | `fc935b7` (`docs(plans): author the keiro-ops operational CLI initiative`) |
 | Kiroku | `kiroku-store 0.3.1.0`, migrations `0.3.0.0`, CLI `0.2.0.0`, OTel `0.2.0.1`, metrics `0.1.0.1` | `3009dda7238f7d05b1d0c97b04ec5d4c55031304` |
 | Shibuya | `shibuya-core 0.8.0.1`, `shibuya-metrics 0.8.0.1` | `172df245f40a454af46dd7f4cde855eaa4414c5a` |
-| pgmq-hs | `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and `pgmq-migration` at `0.4.0.1` | `b4cab751198b5012f025353610dfb4f3782c6eea` |
+| pgmq-hs | `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and `pgmq-migration` at `0.4.0.1` — **source reviewed ahead of the release**, see below | `5eca8d6515cc629d29b9a15b0bd3b2243048d7bc` |
 | pg-migrate | All six public packages at `1.1.0.0` | `f39d64e354818999667d345a1452f33eb4857fc1` |
 
-The Keiro package family requires **keiki `>=0.8 && <0.9`** (and `keiki-codec-json 0.8` where used),
-and every published package moves to `0.9.0.0` in lockstep. The exported `Keiro.version` constant
+The Keiro package family requires **keiki `>=0.9 && <0.10`** (and `keiki-codec-json 0.9` where used),
+and every published package moves to `0.11.0.0` in lockstep. The exported `Keiro.version` constant
 still reports a legacy value and must not be used as the package release source.
+
+<Callout type="warn">
+  **pgmq-hs is the one row where the docs run ahead of a release.** `0.5.0.0` is committed upstream
+  but not cut — all five `.cabal` files still read `0.4.0.1`. The pgmq pages document its surface
+  behind explicit version callouts, because most of that release is correctness work whose defects
+  are live on `0.4.0.1` today. Read the callouts before copying a pgmq snippet into a running
+  service; start at the [pgmq landing page](/docs/pgmq).
+</Callout>
 
 <Callout type="info">
   **`keiro-dsl` language 4 is the sole stable authoring contract** as of Keiro 0.9.0.0. Languages 1–3
@@ -82,6 +90,16 @@ Treat every pre-1.0 minor line as potentially breaking.
   `showWrittenSlots` and `showGuardSummary` in favour of `updateMode` and `guardMode`. Readable
   rendering discloses `lit` values: secrets must use `opaqueLit`. See [readable and opaque
   literals](/docs/keiki/reference/core#readable-and-opaque-literals).
+- **keiki 0.9:** `InCtor` and `WireCtor` construction **and record update** are sealed behind
+  read-only patterns — replace manual records with `unavailableInCtor` / `unavailableWireCtor`, a
+  `Via` producer, or TH. `mkInCtor`, `mkInCtor0`, `mkWireCtor`, `mkWireCtor0` are deprecated;
+  `renameInCtor` / `renameWireCtor` replace record update for relabelling. Sequential composition
+  substitutes only through typed input-to-wire alignment, so `ComposeAlignmentWarning` gains
+  `StructurallyDifferentInputWire` and `UnwitnessedInputWireAlignment`. Nullary TH wires match via
+  `Generic co` instead of `Eq co`. Default `inversionAmbiguityWarnings` classifies heads
+  structurally and can prove some candidates disjoint, so **a recompile may report a different
+  warning set** and `tvwDetail` text changed. The JSON wire format is unchanged. See [what replay
+  proves](/docs/keiki/explanation/what-replay-proves).
 - **Keiro 0.5:** `keiro-dsl` **service workspaces** ship. `DiagnosticCode` gains nine append-only
   workspace constructors, `ScaffoldRun.Refusal` gains `GoldenRootDivergence`,
   `ScaffoldRun.WriteDisposition` gains `Unchanged`, and `DiffReport.Remedy` gains
@@ -119,6 +137,37 @@ Treat every pre-1.0 minor line as potentially breaking.
   grammar types `Derivation`, `DerivStrategy`, `Disposition`, `DispAction`, `EnvelopeBinding`, and
   `EnvelopeLayer` are removed. `DiagnosticCode` and `RolloutConstraint` gain append-only
   constructors.
+- **Keiro 0.10:** no user-facing changes. `keiro-core` and `keiro-migrations` report "no changes";
+  `keiro`, `keiro-pgmq` move only their lockstep bounds. Released with the package set for the
+  `keiro-dsl` 0.10.0.0 work.
+- **Keiro 0.11:** requires keiki `>=0.9 && <0.10` and `keiki-codec-json 0.9`. Generated aggregates
+  already use the trusted TH path, so keiki 0.9's seal needs no source change — but validation
+  results may differ where 0.9 distinguishes structural heads. **JSON event and snapshot formats are
+  unchanged.** `Keiro.Timer.Schema.TimerStatus` additionally derives `Enum` and `Bounded`; stored
+  representations are unchanged.
+
+  `keiro-dsl` carries the rest, and it is a substantial adopter upgrade:
+
+  - **Scaffold sidecars are renamed** and an old-name tree **refuses without writing**. Review the
+    reported moves and rerun `scaffold --apply-name-migrations`. The conformance ledger also changes
+    to the versioned `keiro-dsl conformance ledger v1` format, converted only by that explicit path.
+  - **Generated Haskell uses one checked naming edition** — `service_oncall` now generates
+    `ServiceOncall`, not `Service_oncall`. Apply the reported source migration and recompile.
+  - **`check --deny-warnings` is an honest gate at last.** With `--coverage-report` it previously
+    printed coverage warnings and exited 0. `--deny CODE` now refuses codes `check` cannot emit, so a
+    CI file naming one fails loudly. Router notices moved to `RouterBenignInversion` — add it to any
+    `--deny ProcessBenignInversion` list.
+  - **Four accepted-but-unimplemented spellings are now refused** (`body lenient`, non-`AckOk`
+    `on-appended`, `not-mine Fired`, unknown intake headers), and a process `dispatch-id` line is
+    checked as strictly as a router's.
+  - **Every workqueue payload field is required**; `WqField` loses `wqfRequired`, and adding a
+    payload field is now classified breaking however spelled.
+  - `keiro-dsl/coverage-report/1` spells warning severity `"warning"`, not `"advisory"`.
+  - Language 4 gains **field aliases** (`haskell <selector>`, `as "<wire-key>"`) and moves to
+    `syntax-profile/3`.
+
+  See the [keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) and [language
+  versions](/docs/keiro/reference/keiro-dsl-language-versions).
 - **Keiro 0.3 line:** command, replay, worker, read-model, and workflow outcomes
   are typed more precisely; framework tables live in `keiro`; public event
   streams require replay validation. For `.keiro` specs, follow [migrate a spec

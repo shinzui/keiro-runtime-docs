@@ -17,15 +17,133 @@ the affected pages, then bump the pointer below.
   scaffolds depends only on keiro/keiki),
   `keiro-test-support` (test fixtures). The in-repository `jitsurei` package remains a legacy source
   anchor and is not current release evidence.
-- **Reviewed release:** the Keiro package family at `0.9.0.0`.
+- **Reviewed release:** the Keiro package family at `0.11.0.0`.
 
 ## Last reviewed commit
 
 ```text
-f05102bab0db447c1b653309f43f075739fc8747  (f05102b)
-2026-08-02T20:22:02-07:00
-chore(release): 0.9.0.0
+fc935b790b3f9665d352f2b0de46bc3daeca9f2b  (fc935b79)
+2026-08-05T20:10:32-07:00
+docs(plans): author the keiro-ops operational CLI initiative
 ```
+
+> ### ⚠ This pin is deliberately behind upstream `HEAD`
+>
+> Upstream moved **during** this round. At the time of writing, `HEAD` is
+> `672f2369` and two commits sit past this pin:
+>
+> ```text
+> 5b87693f perf(workflow): align workflow discovery with the active partial index
+> 672f2369 fix(workflow): make every wake-lifecycle transition leave the instance discoverable
+> ```
+>
+> They are **not reviewed and not documented.** They are real runtime changes —
+> `keiro/src/Keiro/Workflow/{Awakeable,Awakeable/Schema,Schema,Sleep}.hs`, +284/−24
+> — concerning workflow discoverability across wake-lifecycle transitions and
+> query alignment with the partial index `keiro_workflows_active_idx`. No `.sql`
+> file changed, so no migration/table/index was added; the index referenced
+> already exists. Start the next round at `fc935b7..HEAD` and expect
+> `reference/durable-workflows.mdx` and the durable-execution walkthrough to be
+> the affected pages.
+
+> **Current range.** The `f05102b..fc935b7` range (66 commits) folds in **two**
+> releases, 0.10.0.0 and 0.11.0.0, and is almost entirely `keiro-dsl`.
+>
+> **The scope-collapsing finding, again, and it collapsed harder than last time.**
+> The previous round's advice — do the SQL and export-list diffs first — paid off
+> immediately:
+>
+> - `git diff --name-status f05102b..fc935b7 -- '*.sql'` is **empty**. No
+>   migration, table, index, or column changed, so
+>   `reference/migrations-and-schema.mdx` and `reference/deploy-ordering.mdx`
+>   counts still hold — NO-OP.
+> - `git diff --stat f05102b..fc935b7 -- keiro/src keiro-core/src keiro-pgmq/src
+>   keiro-migrations keiro-test-support` is **one source file**:
+>   `keiro/src/Keiro/Timer/Schema.hs`, +4/−1 (`TimerStatus` gains `Enum`/`Bounded`).
+>   Everything else in 666 changed files is `keiro-dsl` (598), `docs` (47), and
+>   release bookkeeping.
+>
+> So 0.10.0.0 is a pure lockstep release ("no changes", "no user-facing changes")
+> and 0.11.0.0's runtime story is one deriving clause plus new keiki bounds.
+>
+> **1. keiki 0.9 bounds (breaking, but quiet).** `keiro-core`, `keiro`, and
+> `keiro-dsl` require `keiki >=0.9 && <0.10`; `keiro` also `keiki-codec-json
+> >=0.9`. Generated aggregates already use the trusted TH path
+> (`deriveAggregateCtorsAll` / `deriveWireCtorsAll`), so **no generated source
+> changes** — but `validateEventStream`, `mkEventStream`, and generated validation
+> harnesses may report a *different conservative warning set* after recompilation,
+> because keiki 0.9 can distinguish structural heads and prove some replay
+> candidates disjoint. Runtime event execution and the JSON wire format are
+> unchanged.
+>
+> **2. Sidecar renames + the conformance ledger format (ADR-0022, breaking,
+> operational).** Role-bearing names replace the old ones, an old-name tree
+> **refuses without writing**, and `scaffold --apply-name-migrations` is the
+> explicit repair. `keiro-dsl-manifest.*` → `keiro-dsl-cabal-fragment.*`;
+> `keiro-dsl-scaffold-record.*` → `keiro-dsl-ledger.*`;
+> `keiro-dsl-conformance-record.txt` → `keiro-dsl-conformance-ledger.txt`, which
+> also moves from whitespace rows to versioned `keiro-dsl conformance ledger v1`
+> JSON rows. The scaffold report's own labels changed to `fragment:` and
+> `ledger:` — verified in `ScaffoldRun.renderScaffoldReport`, and the docs' sample
+> outputs were updated to match.
+>
+> **3. One checked generated-Haskell naming edition (ADR-0019, breaking).**
+> `service_oncall` now generates `ServiceOncall`, not `Service_oncall`. Classified
+> as `consumer-build` **advisory** — your code stops compiling, nothing stored
+> moves.
+>
+> **4. `check`'s warning policy became honest (breaking for CI).** With
+> `--coverage-report`, `--deny-warnings` used to print coverage warnings and exit
+> 0. Coverage findings are now ordinary diagnostics. `--deny CODE` refuses codes
+> `check` cannot emit. `RouterBenignInversion` split from `ProcessBenignInversion`.
+> `coverage-report/1` spells severity `"warning"`, not `"advisory"`.
+>
+> **5. Refusing spec surfaces no runtime implements.** Four new codes
+> (`DecodeBodyPostureUnsupported`, `DispatchOnAppendedUnsupported`,
+> `TimerNotMineUnsupported`, `IntakeBindHeaderUnknown`), each warning below
+> language 4 and erroring from 4 on; a process `dispatch-id` line is now checked
+> as strictly as a router's. Three previously descriptive-only surfaces became
+> checked. Two codes were **removed** with the models they described:
+> `EmitDeriveHoleUnrealized` and `WqFieldOptionalUnsupported` (with
+> `WqField.wqfRequired`) — **every workqueue payload field is required, and adding
+> one is now breaking however spelled.**
+>
+> **6. Field aliases (ADR-0021, language 4).** `haskell <selector>` and
+> `as "<wire-key>"` are independent. Language 4 therefore moved to
+> **`syntax-profile/3`** — the docs still claimed `/2`, now corrected — with the
+> new `FieldAliasSyntax` feature. `AggregateField` and `ContractField` gained
+> fields; positional construction breaks.
+>
+> **Pages:** no page added or retired — this range is dense but lands almost
+> entirely in pages that already exist. Updated `reference/keiro-dsl-cli.mdx`
+> (largest share), `reference/keiro-dsl-language-versions.mdx`,
+> `reference/keiro-dsl-runtime-nodes.mdx`, `reference/keiro-dsl-domain-nodes.mdx`,
+> `reference/keiro-dsl-mapped-types.mdx`, `reference/keiro-dsl-workspaces.mdx`,
+> `reference/timers.mdx`, `how-to/check-a-service-spec.mdx`,
+> `how-to/scaffold-and-fill-holes.mdx`,
+> `how-to/place-generated-modules-and-wire-cabal.mdx`,
+> `tutorials/author-a-service-with-keiro-dsl.mdx`, `index.mdx`, plus the shared
+> `getting-started/compatibility-and-upgrades.mdx`.
+>
+> **Fixed while in the files (pre-existing, out of range):**
+> `keiro/index.mdx` announced keiro as `0.3.0.0` — eight releases stale.
+> `how-to/check-a-service-spec.mdx` and `reference/keiro-dsl-domain-nodes.mdx`
+> cited `IdentHaskellKeyword`, `IdentNotConstructorSafe`, and
+> `DuplicateUpcasterSource`, and `reference/keiro-dsl-mapped-types.mdx` cited
+> `MappedGuardUnsupported` — all four confirmed absent from `keiro-dsl/src`
+> (grep count 0). Note `CodecDuplicateUpcasterSources` in `reference/codec.mdx` is
+> a **different, still-live** type in `keiro-core`, and was correctly left alone.
+> Renaming the CLI heading to *Sidecar files* broke an inbound anchor from
+> `reference/keiro-dsl-workspaces.mdx`; repointed.
+>
+> **Deliberately not documented:** the two unreviewed workflow commits above. The
+> `keiro-ops` operational CLI initiative (`fc935b7`) is a **plan only** — no source
+> exists — so nothing was ported from it; do not transcribe signatures from that
+> plan next round. ADR-0020 (*service conformance packages import one runtime-owned
+> facade*) is recorded but its consumer-visible surface is the conformance ledger
+> already covered above. The `.keiro-dsl-name-migrations/sidecar-v1/` backup
+> layout is mentioned but not documented as a stable interface, since upstream
+> treats it as a recovery artifact.
 
 > ### ⚠ Upstream history was rewritten between these two pointers
 >
@@ -49,7 +167,7 @@ chore(release): 0.9.0.0
 > rewritten twin of the pin by subject and date and diff the two trees to confirm
 > the boundary before deciding what is new.
 
-> **Current range.** The `430c3d2..f05102b` range (101 commits) folds in **five** releases —
+> **Note (prior range).** The `430c3d2..f05102b` range (101 commits) folds in **five** releases —
 > 0.5.0.0 through 0.9.0.0 — and is overwhelmingly `keiro-dsl`. The headline is that the DSL grew an
 > explicit **source-language contract** (versions 1→4, with 4 designated the sole stable authoring
 > contract) and closed the gap between what a spec *declares* and what generated code *does*.
@@ -622,6 +740,16 @@ chore(release): 0.9.0.0
 
 ### Previous pointers (for traceability)
 
+- `f05102bab0db447c1b653309f43f075739fc8747` (`f05102b`, 2026-08-02, Keiro 0.9.0.0) — the baseline
+  before the keiro-dsl adoption-hardening review. The `f05102b..fc935b7` range (66 commits) landed
+  0.10.0.0 (pure lockstep, no user-facing changes) and 0.11.0.0: role-bearing scaffold sidecars with
+  a refusing old-name tree and `--apply-name-migrations`, one checked generated-Haskell naming
+  edition, an honest `check --deny-warnings` gate, four refused accepted-but-unimplemented spec
+  surfaces, required-only workqueue payload fields, language-4 field aliases on `syntax-profile/3`,
+  and keiki `>=0.9` bounds. Runtime-side source changed in exactly one file
+  (`Keiro/Timer/Schema.hs`: `TimerStatus` gains `Enum`/`Bounded`); no SQL migration changed anywhere
+  in the range.
+
 - `430c3d2cca0f491697d7e67a85362b78718a50be` (`430c3d2`, 2026-07-29, Keiro 0.4.0.1) — the baseline
   before the source-language-contract review. The `430c3d2..f05102b` range (101 commits) landed five
   releases, 0.5.0.0 through 0.9.0.0: service workspaces released (0.5.0.0), the `language keiro-dsl N`
@@ -720,11 +848,15 @@ chore(release): 0.9.0.0
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline f05102b..HEAD
-   git -C "$KEIRO" diff --stat f05102b..HEAD
+   git -C "$KEIRO" log --oneline fc935b79..HEAD
+   git -C "$KEIRO" diff --stat fc935b79..HEAD
+
+   # Do these two FIRST — they have collapsed the last two rounds dramatically:
+   git -C "$KEIRO" diff --name-status fc935b79..HEAD -- '*.sql'
+   git -C "$KEIRO" diff --stat fc935b79..HEAD -- keiro/src keiro-core/src keiro-pgmq/src
    ```
    keiro's own `docs/adr/*` is now the fastest way to read a decision's *rationale and consequences*
-   (ADRs 0001–0016 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only
+   (ADRs 0001–0022 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only
    edges, the snapshot discriminator, gate placement, the four workflow lifecycle rules, Kafka
    consumer fatal observability, one schema authority with total bindings, reporting-first coverage
    with opt-in opacity gates, and the two workspace ADRs; `docs/adr/log.md` is the per-date index).

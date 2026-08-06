@@ -651,6 +651,101 @@ constraints — neither needs `Show s`, because they report `EdgeRef`s rather th
 and that both live in `IO` rather than behind `unsafePerformIO`. The compatibility warnings are
 projections of exactly these results, using the same single solver call and the same attribution.
 
+## Replay-inversion ambiguity analysis
+
+*(keiki 0.9.0.0.)* An **opt-in** SBV analysis of the two replay candidates behind an
+`inversionAmbiguityWarnings` pair, against shared registers and a structurally aligned observed
+head. It is never called by default validation or by runtime replay.
+
+```haskell
+checkInversionAmbiguitySymDetailed ::
+    forall s rs ci co.
+    (Bounded s, Enum s, Show s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    IO [InversionAnalysisDetail s]
+
+checkInversionAmbiguitySym ::
+    (Bounded s, Enum s, Show s) =>
+    SymTransducer (HsPred rs ci) rs s ci co ->
+    IO [TransducerValidationWarning s]
+```
+
+```haskell
+data InversionAnalysisDetail s = InversionAnalysisDetail
+    { iadSource :: s
+    , iadLeftEdge :: EdgeRef s
+    , iadRightEdge :: EdgeRef s
+    , iadLeftSchemaAvailability :: WireSchemaAvailability
+    , iadRightSchemaAvailability :: WireSchemaAvailability
+    , iadHeadRelation :: WireHeadRelation
+    , iadVerdict :: InversionProofVerdict
+    , iadSolverStatus :: InversionSolverStatus
+    , iadTranslationIssues :: [InversionTranslationIssue]
+    }
+
+data InversionProofVerdict
+    = InversionProvedDisjoint
+    | InversionNotProvedDisjoint
+
+data InversionSolverStatus
+    = InversionSolverNotRun
+    | InversionSolverSatisfiable
+    | InversionSolverUnsatisfiable
+    | InversionSolverUnknown String
+    | InversionSolverTimedOut
+    | InversionSolverFailure String
+```
+
+<Callout type="warn">
+  **Only a definite `InversionSolverUnsatisfiable` removes a warning.** `checkInversionAmbiguitySym`
+  is a compatibility projection of the detailed form: it returns the exact existing warning values,
+  dropping a pair only after a definite UNSAT for that exact source-and-edges key. It joins verdicts
+  to warnings by **source vertex and both edge indices**, and **fails closed** — a missing,
+  duplicate, or reordered detail retains the warning.
+</Callout>
+
+`InversionTranslationIssue` is a deterministic explanation for a relationship deliberately omitted
+from the replay-pair formula. **Every omission widens the formula**, so the issue list is how you
+tell "proved disjoint" from "could not model it precisely enough to try":
+
+```haskell
+data InversionTranslationIssue
+    = InversionWireSchemasUnwitnessed
+    | InversionUnsupportedObservedFieldCarrier Int SomeTypeRep
+    | InversionOpaqueDerivedOutput InversionCandidate Int
+    | InversionUnsupportedDerivedArithmetic InversionCandidate Int SomeTypeRep
+    | InversionUnsupportedDerivedProjection
+        InversionCandidate Int ProjectionDescriptor String
+    | InversionInputConstructorIdentityUnwitnessed InversionCandidate String
+    | InversionGuardTranslationIssue InversionCandidate TranslationIssue
+
+data InversionCandidate = InversionCandidateA | InversionCandidateB
+```
+
+### What changed in the default check
+
+The **default** `inversionAmbiguityWarnings` did not become solver-backed — it stays pure. But in
+0.9.0.0 it now uses structural head classification, and suppresses a same-mode warning when exact
+integral register-versus-literal conjuncts prove the two replay candidates disjoint.
+
+<Callout type="warn">
+  **This changes results on recompilation.** Unsupported and opaque guards remain conservative
+  warnings, and their `tvwDetail` now identifies the construct that blocked the cheap proof. Runtime
+  replay and the opt-in symbolic checker are unchanged, but a program that asserted on an exact
+  warning set — or on `tvwDetail` text — may see a different one. Tests asserting that `tvwDetail`
+  names `TApp` specifically are the known breakage, because the opaque-guard audit widened to cover
+  a `TArith` whose carrier is outside the numeric registry.
+</Callout>
+
+### Constructor identity in translation
+
+`PInCtor` translation now uses shared structural constructor-path decisions rather than diagnostic
+names. Same-named **trusted** constructors remain distinct; unwitnessed equal names share a
+conservative fallback atom, while unequal names remain independent and therefore **cannot
+manufacture mutual exclusion**. Witness reconstruction uses a separate stable `KnownInCtors` ordinal,
+so predicate identity is encoded independently from the trusted structural paths. Diagnostic
+constructor names never become SBV identifiers.
+
 ## See also
 
 - [Keiki.Core](/docs/keiki/reference/core) — everything re-exported here, plus the pure

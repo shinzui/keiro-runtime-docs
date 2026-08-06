@@ -30,9 +30,34 @@ list, not the design note. The exercising tests live at `test/Keiki/Generics/THS
 ## Input / command builders
 
 These build an `InCtor` — a command constructor whose payload is inverted to a `RegFile` slot list.
-There are three, trading off how much you spell out by hand.
+They trade off how much you spell out by hand — but since 0.9.0.0 they also differ in something more
+important than ergonomics.
+
+<Callout type="warn">
+  **Trusted vs untrusted producers (keiki 0.9.0.0).** Only the `Via` producers and TH derivation
+  establish the structural constructor evidence that composition checking and symbolic constructor
+  exclusion depend on. `mkInCtor` and `mkInCtor0` are **deprecated**: their closure-taking interfaces
+  cannot establish evidence, so they now delegate to `unavailableInCtor` and yield a constructor
+  whose schema is unavailable.
+
+  | Producer | Evidence | Status |
+  | --- | --- | --- |
+  | `mkInCtorVia` | trusted | preferred |
+  | `mkInCtorRecordVia` | trusted | preferred (direct record constructors) |
+  | TH `deriveAggregateCtorsAll` | trusted | preferred |
+  | `unavailableInCtor` | none, explicitly | for genuinely manual behavior |
+  | `mkInCtor`, `mkInCtor0` | none | **deprecated** |
+
+  The same split applies on the wire side. An unwitnessed constructor is not *wrong* — it is
+  treated conservatively — but it forfeits the checks below.
+</Callout>
 
 ### `mkInCtor`
+
+<Callout type="warn">
+  Deprecated in 0.9.0.0. Use `mkInCtorVia` for `Generic` constructors, or `unavailableInCtor` for
+  manual behavior.
+</Callout>
 
 Build an `InCtor` from an explicit name, a sum-side matcher, and a pack function. The `RegFile`
 inversion is derived from the payload record's `Generic` instance; the payload `data` must derive
@@ -68,6 +93,11 @@ neither the `RegFile` tower nor the slot literals.
 
 ### `mkInCtor0`
 
+<Callout type="warn">
+  Deprecated in 0.9.0.0, for the same reason as `mkInCtor`. Use `mkInCtorVia @"Continue"`, which
+  infers the empty slot list and carries trusted evidence.
+</Callout>
+
 Build an `InCtor` for a no-payload (singleton) command constructor. There is no payload record, so
 the slot list is `'[]`; the match compares against the named singleton via `Eq`, and the build
 ignores the empty `RegFile`.
@@ -97,13 +127,19 @@ mkInCtorVia
      ( KnownSymbol name
      , Generic ci
      , GHasCtor name (Rep ci) d
+     , GWireCtorPath name (Rep ci)
      , Generic d
      , GRecord (Rep d) ifs
+     , GInCtorFieldSchema (Rep d) ifs
      , AssembleRegFile ifs
      , KnownSlotNames ifs
      )
   => InCtor ci ifs
 ```
+
+The `GWireCtorPath` and `GInCtorFieldSchema` constraints are new in 0.9.0.0. They are what
+produce the trusted structural evidence — the constructor's path through `Rep ci`, and the typed slot
+spine — and they are solved automatically for any lawful `Generic`.
 
 ```haskell
 inCtorStart    :: InCtor UserCmd (RegFieldsOf StartRegistrationData)
@@ -117,6 +153,29 @@ For a no-payload constructor (e.g. `Continue`) the inferred slot list is `'[]`. 
 the [Template Haskell layer](/docs/keiki/reference/generics-th) emits for every record-payload
 command constructor.
 
+### `mkInCtorRecordVia`
+
+*(keiki 0.9.0.0.)* `mkInCtorVia` resolves a payload type `d` by walking `ci`'s representation for
+the named constructor — which assumes the constructor *wraps* a record. `mkInCtorRecordVia` is for
+the other shape: a constructor whose fields are declared **directly** with record syntax, with no
+intermediate payload type.
+
+```haskell
+mkInCtorRecordVia
+  :: forall (name :: Symbol) ci ifs.
+     ( KnownSymbol name
+     , Generic ci
+     , GRecordCtor name (Rep ci) ifs
+     , GWireCtorPath name (Rep ci)
+     , AssembleRegFile ifs
+     , KnownSlotNames ifs
+     )
+  => InCtor ci ifs
+```
+
+It derives the schema safely for that shape, so such constructors are no longer forced onto the
+untrusted path. `mkWireCtorRecordVia` is its wire-side twin.
+
 ## Wire / event builders
 
 These build a `WireCtor` — an event constructor whose payload is inverted to the nested-pair field
@@ -124,6 +183,10 @@ tuple that `WireCtor` and `OutFields` carry. A record with fields `f1, f2, f3` c
 tuple `(f1, (f2, (f3, ())))`.
 
 ### `mkWireCtor`
+
+<Callout type="warn">
+  Deprecated in 0.9.0.0. Use `mkWireCtorVia`, or `unavailableWireCtor` for manual behavior.
+</Callout>
 
 Build a `WireCtor` from an explicit name, a sum-side matcher, and a pack function. The nested-pair
 conversion is derived from the payload record's `Generic` instance.
@@ -150,6 +213,10 @@ wireRegistrationStarted = mkWireCtor "RegistrationStarted"
 
 ### `mkWireCtor0`
 
+<Callout type="warn">
+  Deprecated in 0.9.0.0. Use `mkWireCtor0Via`.
+</Callout>
+
 Build a `WireCtor` for a no-payload (singleton) event constructor — the event-side twin of
 `mkInCtor0`. Its field tuple is `()` (a payload-free event carries nothing), matching `OFNil`.
 
@@ -175,11 +242,36 @@ mkWireCtorVia
      ( KnownSymbol name
      , Generic co
      , GHasCtor name (Rep co) d
+     , GWireCtorPath name (Rep co)
      , Generic d
      , GTuple (Rep d) fs
+     , GWireFieldSchema (Rep d) fs
      )
   => WireCtor co fs
 ```
+
+### `mkWireCtor0Via`
+
+*(keiki 0.9.0.0.)* The trusted replacement for `mkWireCtor0`.
+
+```haskell
+mkWireCtor0Via
+  :: forall (name :: Symbol) co.
+     ( KnownSymbol name
+     , Generic co
+     , GHasCtor name (Rep co) ()
+     , GWireCtorPath name (Rep co)
+     )
+  => WireCtor co ()
+```
+
+<Callout type="warn">
+  **Breaking behaviour change.** TH-derived nullary wires now use structural `Generic` matching via
+  `mkWireCtor0Via`. Matching therefore requires **`Generic co` instead of `Eq co`**; `solveOutput`
+  still requires `Eq co`. The practical consequence: a *quotienting* custom `Eq` instance — one that
+  treats distinct values as equal — no longer changes `wcMatch` behavior. If you were relying on
+  that, matching is now structural and will not honour it.
+</Callout>
 
 ```haskell
 wireRegistrationStarted

@@ -1,0 +1,140 @@
+---
+title: "What replay proves"
+description: "Which event fields replay re-derives and which it takes on trust, why constructor evidence is structural rather than name-based, and where the proof chain finally bottoms out."
+---
+
+<Callout type="info">
+  This page is about the *integrity* question — what an event log is allowed to prove — not the
+  determinism question. For what the CI gate proves about forward dispatch, read
+  [Single-valuedness and soundness](/docs/keiki/explanation/single-valuedness-and-soundness).
+</Callout>
+
+Replaying an event means asking which outgoing edge could have produced it. That sounds like
+forward evaluation run backwards, but it deliberately is not a complete equation between the edge's
+output expression and the stored event. Some output fields *reconstruct* the command; others are
+*recomputed and checked*. Knowing which is which is essential before you treat a stored field as an
+integrity constraint.
+
+## Head attribution comes first
+
+For each candidate edge, replay applies `solveOutput` to the edge's first `OPack`:
+
+<Steps>
+<Step>`wcMatch` projects the observed event into its ordered field tuple.</Step>
+<Step>Top-level `TInpCtorField` positions supply values for the candidate command.</Step>
+<Step>`icBuild` reconstructs that candidate command once every command field is available.</Step>
+<Step>Derived output positions are recomputed from the pre-event registers and the reconstructed command.</Step>
+<Step>The rebuilt event must equal the observation, and the edge guard must hold for the reconstructed command.</Step>
+</Steps>
+
+Multi-event tails do not participate in this choice. Once the head attributes the event to one edge,
+replay checks the tail sequentially through its in-flight state.
+
+## Invertible positions retain the observation
+
+`solveOutput` keeps these output positions at their **observed** values:
+
+- `TLit`
+- `TOpaqueLit`
+- `TReg`
+- `TInpCtorField`
+
+They are *invertible* because replay can accept the observed value without evaluating the original
+output expression. A top-level `TInpCtorField` additionally contributes its value to command
+reconstruction.
+
+<Callout type="warn">
+  **This is the part that surprises people.** An output `TLit 3` does **not** prove the stored field
+  is `3`, and an output `TReg #balance` does **not** prove the stored audit value equals the current
+  replay register.
+
+  That is deliberate rather than a gap. Rechecking a `TReg` position would make old events depend on
+  whatever register snapshot replay happened to start from — a stored audit value would "fail"
+  against a legitimately different later state. So the observation *is* the value for these
+  positions.
+
+  If you need a stored value to be provably derived from other command or state data, express that
+  relationship as a derived term, or validate it at another trusted boundary. A literal-looking
+  output field is presentation, not an integrity constraint.
+</Callout>
+
+## Derived positions are recomputed
+
+These are recomputed and compared against the observation:
+
+- `TArith`
+- `TApp1`
+- `TApp2`
+- `TFieldProj`
+
+If an event stores both a quantity and `lineTotal = quantity * unitPrice`, replay reconstructs the
+command from its invertible quantity and unit-price positions, recomputes `lineTotal`, and **rejects
+a tampered total**.
+
+The concrete evaluator can run any Haskell function. The optional symbolic checker cannot inspect an
+arbitrary `TApp1` or `TApp2`, so it drops the unsupported relationship and *retains* the ambiguity
+warning. Losing precision is acceptable; manufacturing a false disjointness proof is not.
+
+## Why constructor identity is structural, not nominal
+
+*(keiki 0.9.0.0.)* Two edges may share a diagnostic `wcName` without exposing the same event
+constructor or the same field order. Names are labels a human chose; they are not evidence.
+
+So keiki shares one symbolic observed field between replay candidates **only** when both `WireCtor`s
+carry trusted `Generic`-derived schemas with the same constructor path *and* a position-by-position
+type alignment. Everything else stays conservative:
+
+| Schema state | Effect |
+| --- | --- |
+| Both trusted, same path and aligned fields | fields may be shared; candidates can be proved disjoint |
+| Manual (`wireSchemaUnavailable`) | keeps the existing warning |
+| Prefix-related (composition across checked `Either` arms) | keeps the existing warning |
+| Rewritten by a meaning-changing transformation | evidence dropped; keeps the warning |
+
+An unavailable or prefix-related schema **never authorizes a cast or a name-based proof**. This is
+why 0.9.0.0 sealed `InCtor` and `WireCtor` construction: evidence that any caller could staple onto
+an arbitrary match/build pair would prove nothing at all.
+
+## What each validation layer answers
+
+The layers answer genuinely different questions, and conflating them is the usual mistake:
+
+- **`checkHiddenInputs`** — does the head carry every command field replay needs?
+- **Default `inversionAmbiguityWarnings`** — pure and conservative. It starts no solver.
+- **`checkInversionAmbiguitySymDetailed`** — an explicit `IO` analysis that models two independently
+  reconstructed commands against shared pre-event registers and, where structurally witnessed,
+  shared observed fields. Opt-in; never on the runtime path.
+
+<Callout type="warn">
+  **Only a definite `Unsatisfiable` removes a compatibility warning.** `Satisfiable` means "not
+  proved disjoint" — *not* "here is a concrete ambiguity witness". Unknown, timeout, a missing z3,
+  unsupported carriers, opaque functions, and missing schemas all **retain** the warning. Every
+  proof gate here fails closed.
+</Callout>
+
+## Where the trust bottoms out
+
+Trusted schemas are non-forgeable through keiki's public API: their constructors are sealed, their
+types have nominal roles, and the construction capability lives in a hidden module. But every proof
+chain has a root, and here it is **the lawfulness of your event and command types' derived `Generic`
+instances**.
+
+`deriving stock (Generic)` is always lawful, so ordinary types get honest evidence by construction.
+A hand-written, deliberately dishonest `Generic` instance could pair trusted evidence with behavior
+it does not describe. That is a way of lying to the compiler, and keiki treats it exactly as it
+treats `unsafeCoerce`: outside the threat model.
+
+The boundaries exist to prevent **accidents**, not to survive a consumer who deliberately subverts
+the language. Structural schemas stop accidental cross-edge field alignment from coincidental names;
+they do not make arbitrary consumer-owned Haskell functions trustworthy. Runtime replay and these
+build-time checks still rely on the honesty laws of `InCtor` and `WireCtor` — their matchers and
+builders must describe the constructor they claim.
+
+## Related
+
+- [Core](/docs/keiki/reference/core#input-constructors) — the sealed constructors and the
+  head-classification API.
+- [Symbolic](/docs/keiki/reference/symbolic#replay-inversion-ambiguity-analysis) — the opt-in
+  solver-backed analysis and its verdict vocabulary.
+- [Validate](/docs/keiki/reference/validate) — where `InversionAmbiguity` is raised.
+- [Tighten a guard without breaking replay](/docs/keiki/how-to/tighten-a-guard-without-breaking-replay).

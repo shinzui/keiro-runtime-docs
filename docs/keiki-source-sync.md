@@ -9,26 +9,103 @@ reviewed by the documentation.
 - **Qualified name (mori):** `shinzui/keiki`; resolve it with
   `mori registry show shinzui/keiki --full`.
 - **Path at last sync:** `/Users/shinzui/Keikaku/bokuno/keiki`.
-- **Reviewed releases:** `keiki 0.8.0.0`, `keiki-codec-json 0.8.0.0`, and
-  `keiki-codec-json-test 0.8.0.0`.
+- **Reviewed releases:** `keiki 0.9.0.0`, `keiki-codec-json 0.9.0.0`, and
+  `keiki-codec-json-test 0.9.0.0`.
 - **Primary modules:** `Keiki.Core`, `Keiki.Builder`, `Keiki.Operators`,
   `Keiki.Acceptor`, `Keiki.Generics`, `Keiki.Generics.TH`, `Keiki.Composition`,
   `Keiki.Profunctor`, `Keiki.Symbolic`, `Keiki.ProjectionDomain`, `Keiki.Shape`,
-  `Keiki.Validate`, and the render and JSON-codec modules.
-- **Upstream prose read this round:** `CHANGELOG.md` (both packages), ADR-0003
-  (substantially rewritten) and the new ADR-0006, `docs/guide/mermaid-rendering.md`,
-  `docs/guide/user-guide.md`, `docs/guide/why-smt.md`, `docs/guide/symbolic-ci.md`,
-  and the regenerated `docs/guide/diagrams/*`.
+  `Keiki.Validate`, and the render and JSON-codec modules. **New this round (both
+  internal, neither exposed):** `Keiki.Internal.WireSchema` and
+  `Keiki.Internal.ConstructorEvidence`.
+- **Upstream prose read this round:** `CHANGELOG.md` (both packages),
+  `docs/foundations/07-replay-verification-and-trusted-events.md` (new, and the
+  single best source for this range), `docs/research/full-symbolic-replay-inversion-model.md`,
+  and plans 85–89.
 
 ## Last reviewed commit
 
 ```text
-9ee8de0fece845bf12dda861604b77856782d90b  (9ee8de0)
-2026-08-02T10:16:23-07:00
-chore(release): 0.8.0.0
+9714d37033c37595e3aaa3319ca0ca77466782e0  (9714d37)
+2026-08-04T20:35:48-07:00
+chore(release): 0.9.0.0
 ```
 
-> **Current range.** The `6807aac..9ee8de0` range (38 commits) folds in **four**
+> **Current range.** The `9ee8de0..9714d37` range (40 commits) is **one release,
+> 0.9.0.0, with one theme**: replace *name-based* constructor identity with
+> *structural, `Generic`-derived evidence*, and seal construction so that evidence
+> cannot be forged. It is breaking for anyone who hand-writes an `InCtor` or
+> `WireCtor`. The JSON wire format is unchanged, and `keiki-codec-json` 0.9.0.0 is
+> a bounds-only co-release — its `src` diff is empty.
+>
+> **1. Sealed construction (`345b37c`, breaking).** `InCtor` and `WireCtor`
+> construction *and record update* now sit behind read-only patterns; the real
+> constructors (`MkInCtor` / `MkWireCtor`) take a strict capability whose
+> constructor lives in an unexposed module. The strict match is load-bearing and
+> upstream comments say never to make it lazy: a consumer who cannot name the
+> capability type can still apply the exported hook to bottom, and the match
+> forces it first. Public callers get three routes — `unavailableInCtor` /
+> `unavailableWireCtor` (explicitly no evidence), `renameInCtor` / `renameWireCtor`
+> (relabel while preserving evidence), and the trusted `Via` / TH producers.
+> `mkInCtor`, `mkInCtor0`, `mkWireCtor`, `mkWireCtor0` are **deprecated** and now
+> delegate to the `unavailable*` forms.
+>
+> **2. Structural schemas and head classification (`2eeb428`, `fc6d240`).**
+> `WireSchema` / `InCtorSchema` carry an abstract constructor path plus an ordered
+> field/slot spine. Three proof-safe observers: `classifyWireHeads`,
+> `classifyInputHeads`, `classifyInputWireHeads`, each returning
+> `…StructurallyEqual` / `…Different` / `…Unwitnessed`. New producers
+> `mkInCtorRecordVia` / `mkWireCtorRecordVia` cover direct-record constructors,
+> and `mkWireCtor0Via` replaces `mkWireCtor0` — **nullary TH wires now match via
+> `Generic co` instead of `Eq co`, so a quotienting custom `Eq` no longer changes
+> `wcMatch`.**
+>
+> **3. Composition substitutes on typed alignment, not equal names (`ae2cd2b`,
+> `1ca857f`).** `ComposeAlignmentWarning` gains `StructurallyDifferentInputWire`
+> and `UnwitnessedInputWireAlignment`. Both fire on pairs whose *names already
+> match* — name equality is now only the candidate filter, and structure decides.
+> `1ca857f` removed the `unsafeCoerce` from schema alignment in favour of a typed
+> `Either` prefix spine with lockstep GADT refinement.
+>
+> **4. Symbolic identity and the opt-in inversion checker (`cedbbc1`, `95ad1f3`,
+> `de5fa58`, `d110fae`).** New `checkInversionAmbiguitySymDetailed` /
+> `checkInversionAmbiguitySym` with `InversionAnalysisDetail`,
+> `InversionProofVerdict`, `InversionSolverStatus`, `InversionTranslationIssue`,
+> `InversionCandidate`. Verdicts join to warnings by source vertex **and both edge
+> indices**, and fail closed on missing/duplicate/reordered details. Separately the
+> *default* `inversionAmbiguityWarnings` stayed pure but now classifies heads
+> structurally and suppresses a same-mode warning when exact integral
+> register/literal conjuncts prove disjointness — **so a recompile can change the
+> warning set**, and `tvwDetail` text changed.
+>
+> **Pages:** added `explanation/what-replay-proves.mdx` (ported from the new
+> upstream foundations doc — it owns the invertible-vs-derived distinction and the
+> "where trust bottoms out" argument, which no existing page covered). Updated
+> `reference/core.mdx`, `reference/generics.mdx`, `reference/generics-th.mdx`,
+> `reference/composition.mdx`, `reference/profunctor.mdx`, `reference/symbolic.mdx`,
+> `reference/validate.mdx`, `walkthrough/core-and-builder/05-output-and-predicate.mdx`,
+> `walkthrough/derivations/03-via-builders-and-sum-walk.mdx`,
+> `walkthrough/composition/08-existential-wrapper-and-profunctor.mdx`,
+> `how-to/derive-aggregate-constructors.mdx`, `explanation/single-valuedness-and-soundness.mdx`,
+> `faq.mdx` (three new entries), `index.mdx`. Nothing retired.
+>
+> **Fixed while in the file (pre-existing, out of range):**
+> `walkthrough/composition/08-existential-wrapper-and-profunctor.mdx` transcribed
+> `contraInCtor` / `mapWireCtor` without their `#lmapped` / `#rmapped` name
+> stamping. Verified against `9ee8de0` — the stamping predates this range, so the
+> snippet was already wrong. Corrected and flagged on the page.
+>
+> **Deliberately not documented:** `Keiki.Internal.WireSchema` and
+> `Keiki.Internal.ConstructorEvidence` beyond what the public surface needs — they
+> are `other-modules`, deliberately unexposed, and documenting their internals
+> would invite exactly the forgery the seal prevents. The `*ForTesting` exports
+> (`inputWireSpineRelationsForTesting`, `inCtorSchemaPrefixRelationForTesting`,
+> `wireSchemaPrefixRelationForTesting`) and `wireHeadsMayAliasForDefault` are named
+> as test/future-default hooks and are not documented as user API. The four new
+> improvement-requests and `docs/research/full-symbolic-replay-inversion-model.md`
+> describe unshipped follow-up work — notably gating the opt-in checker in consumer
+> CI — and are recorded here rather than documented.
+
+> **Note (prior range).** The `6807aac..9ee8de0` range (38 commits) folds in **four**
 > releases — 0.5.0.0, 0.6.0.0, 0.7.0.0, and 0.8.0.0 — along four threads. Three of
 > the four carry breaking changes, and two of those are *semantic* fixes that change
 > the answer an existing program gets rather than only its type.
@@ -350,6 +427,13 @@ chore(release): 0.8.0.0
 
 ## Previous pointers
 
+- `9ee8de0fece845bf12dda861604b77856782d90b` (`9ee8de0`), 2026-08-02, `keiki 0.8.0.0`
+  — the baseline before the sealed-evidence round. The `9ee8de0..9714d37` range (40
+  commits) landed 0.9.0.0: sealed `InCtor` / `WireCtor` construction behind a hidden
+  capability, structural `Generic`-derived constructor schemas replacing name-based
+  identity in composition and symbolic replay, and the opt-in
+  `checkInversionAmbiguitySym` analysis. Breaking for hand-written constructors; JSON
+  wire format unchanged.
 - `6807aac817fe53bbcc1b11b9e1a1b226bae14413` (`6807aac`), 2026-07-28, `keiki 0.4.0.0`
   — the baseline before the four-release Natural / verification / attribution /
   readable-rendering round. The `6807aac..9ee8de0` range (38 commits) landed
@@ -377,10 +461,12 @@ chore(release): 0.8.0.0
 1. Resolve the source with mori and inspect committed drift:
    ```text
    KEIKI=$(mori registry show shinzui/keiki --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIKI" log --oneline 9ee8de0..HEAD
-   git -C "$KEIKI" diff --stat 9ee8de0..HEAD
+   git -C "$KEIKI" log --oneline 9714d37..HEAD
+   git -C "$KEIKI" diff --stat 9714d37..HEAD
    ```
-2. Read changed source, tests, changelogs, and release notes. Treat historical
-   design notes as context only when they disagree with shipped modules.
+2. Read changed source, tests, changelogs, and release notes. `docs/foundations/`
+   is the highest-value prose here — it states trust boundaries the source only
+   implies. Treat historical design notes as context only when they disagree with
+   shipped modules.
 3. Update affected pages, replace the reviewed SHA above, and move the prior
    pointer into the traceability list.

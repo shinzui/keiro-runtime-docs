@@ -28,19 +28,27 @@ mkInCtorVia
      ( KnownSymbol name
      , Generic ci
      , GHasCtor name (Rep ci) d
+     , GWireCtorPath name (Rep ci)
      , Generic d
      , GRecord (Rep d) ifs
+     , GInCtorFieldSchema (Rep d) ifs
      , AssembleRegFile ifs
      , KnownSlotNames ifs
      )
   => InCtor ci ifs
-mkInCtorVia = InCtor
-  { icName  = symbolVal (Proxy @name)
-  , icMatch = \ci -> case gMatchCtor @name (from ci) of
-      Just d  -> Just (gToRegFile (from d))
-      Nothing -> Nothing
-  , icBuild = \rf -> to (gBuildCtor @name (to (gFromRegFile rf) :: d))
-  }
+mkInCtorVia =
+  trustedInCtorInternal
+    constructorEvidence
+    (symbolVal (Proxy @name))
+    ( trustedInCtorSchema
+        (gWireCtorPath @name @(Rep ci))
+        (gInCtorFieldSchema @(Rep d))
+    )
+    ( \ci -> case gMatchCtor @name (from ci) of
+        Just d -> Just (gToRegFile (from d))
+        Nothing -> Nothing
+    )
+    (\rf -> to (gBuildCtor @name (to (gFromRegFile rf) :: d)))
 ```
 
 Read the constraint stack top to bottom — it is the whole derivation in miniature:
@@ -52,8 +60,17 @@ sum `ci`'s representation. This is the *sum walk*, covered below. Its functional
 uniquely.
 </Step>
 <Step>
+`GWireCtorPath name (Rep ci)` *(keiki 0.9.0.0)* records **where** in the representation that
+constructor sits, as an abstract path. This is evidence, not machinery: nothing in the match/build
+round-trip uses it.
+</Step>
+<Step>
 `Generic d` + `GRecord (Rep d) ifs` is chapter 02's *record walk* on the resolved payload, producing the
 slot list `ifs`.
+</Step>
+<Step>
+`GInCtorFieldSchema (Rep d) ifs` *(keiki 0.9.0.0)* is the evidence twin of that record walk — the
+typed slot spine, as data.
 </Step>
 <Step>
 `AssembleRegFile ifs` + `KnownSlotNames ifs` are the runtime obligations on the slot list `RegFile`
@@ -66,6 +83,20 @@ The body shows the two walks composed. `icMatch` runs `gMatchCtor @name (from ci
 `RegFile`. `icBuild` runs the inverse: `gFromRegFile rf` rebuilds the payload record, `to` lifts it back
 to `d`, `gBuildCtor @name` wraps it in the right sum arm, and the outer `to` lifts that to `ci`.
 
+<Callout type="info">
+  **What changed in 0.9.0.0.** This function used to end in an ordinary `InCtor { ... }` record
+  literal. It now calls `trustedInCtorInternal`, passing `constructorEvidence` — a value whose
+  constructor lives in an unexposed module — followed by the schema built from the two new
+  constraints. `trustedInCtorInternal` matches that capability **strictly**, which is load-bearing:
+  the function is exported so the producer modules can reach it, and a consumer who cannot name the
+  hidden type can still apply it to bottom. The strict match forces that bottom before any
+  constructor is produced.
+
+  The match and build lambdas are byte-for-byte what they always were. All that is new is the
+  evidence riding alongside them — and the fact that only functions inside the library can supply
+  it.
+</Callout>
+
 `mkWireCtorVia` is the exact event-side twin, swapping `GRecord` for `GTuple` and `RegFile` for the
 nested-pair tuple:
 
@@ -76,17 +107,25 @@ mkWireCtorVia
      ( KnownSymbol name
      , Generic co
      , GHasCtor name (Rep co) d
+     , GWireCtorPath name (Rep co)
      , Generic d
      , GTuple (Rep d) fs
+     , GWireFieldSchema (Rep d) fs
      )
   => WireCtor co fs
-mkWireCtorVia = WireCtor
-  { wcName  = symbolVal (Proxy @name)
-  , wcMatch = \co -> case gMatchCtor @name (from co) of
-      Just d  -> Just (gToTuple (from d))
-      Nothing -> Nothing
-  , wcBuild = \fs -> to (gBuildCtor @name (to (gFromTuple fs) :: d))
-  }
+mkWireCtorVia =
+  trustedWireCtorInternal
+    constructorEvidence
+    (symbolVal (Proxy @name))
+    ( trustedWireSchema
+        (gWireCtorPath @name @(Rep co))
+        (gWireFieldSchema @(Rep d))
+    )
+    ( \co -> case gMatchCtor @name (from co) of
+        Just d -> Just (gToTuple (from d))
+        Nothing -> Nothing
+    )
+    (\fs -> to (gBuildCtor @name (to (gFromTuple fs) :: d)))
 ```
 
 These two functions are what the chapter 04 splices ultimately call — `deriveAggregateCtors` emits

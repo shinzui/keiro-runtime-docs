@@ -1,0 +1,190 @@
+---
+title: "Remediate mixed-case queue names"
+description: "Find and repair pgmq.meta rows whose queue names are not lowercase, before upgrading to the stricter parser."
+---
+
+You have a deployed database that may hold queue names containing uppercase
+letters. From `0.5.0.0`, `parseQueueName` accepts only `[a-z0-9_]{1,47}` and the
+Hasql queue decoder re-validates names read back from the database, so a single
+mixed-case row in `pgmq.meta` makes the typed `listQueues` fail to decode. This
+guide finds those rows and repairs them without losing routing or notification
+configuration.
+
+<Callout type="warn">
+  Run this against every deployed database **before** upgrading the packages.
+  The aliasing hazards it repairs are properties of the data, not of the
+  decoder — they are live on `0.4.0.1` today.
+</Callout>
+
+## Goal
+
+`pgmq.meta` contains only lowercase queue names, with every topic binding and
+notification throttle preserved under the canonical name.
+
+## Why this is required
+
+pgmq's SQL holds three views of a queue name that agree only for lowercase
+input:
+
+1. **Physical table names are lowercased.** `pgmq.format_table_name` returns
+   `lower(prefix || '_' || queue_name)`.
+2. **Metadata stores the caller's original casing.** `pgmq.create` inserts the
+   raw name into `pgmq.meta`.
+3. **The notification trigger extracts the lowercased name.** It fires on the
+   physical table and derives the queue name from `TG_TABLE_NAME`.
+
+So `create('MyQueue')` followed by `create('myqueue')` yields **one** physical
+table (`q_myqueue`) with **two** `pgmq.meta` rows. Messages sent through either
+name interleave in the one table, and `drop_queue` on either name destroys the
+other's messages while the other's meta row lives on pointing at nothing.
+Separately, `enable_notify_insert('MyQueue')` inserts a throttle row keyed
+`'MyQueue'` that the trigger — looking up `'myqueue'` — never matches, and
+`pgmq.acquire_queue_lock` hashes the raw name, so the two casings do not even
+serialize against each other while mutating the same table.
+
+Rejection was chosen over silent normalization: normalizing would re-introduce
+aliasing against pre-existing mixed-case metadata, and would make
+`queueNameToText` disagree with what the caller wrote.
+
+<Callout type="info">
+  This does **not** break `pgmq-config` reconciliation. Since the reconciler
+  snapshots existing queues through `listQueuesUnvalidated`, which decodes the
+  name column as plain `Text` and never refines it, a nonconforming row is
+  simply a queue the reconciler does not manage — `ensureQueues` creates what it
+  declared and leaves the row alone. What fails is the typed `listQueues` and
+  the `Pgmq` effect's `listQueues`.
+</Callout>
+
+## Steps
+
+1. **Detect the rows, and record their context first.**
+
+   ```sql
+   SELECT m.queue_name,
+          lower(m.queue_name) AS canonical_name,
+          EXISTS (
+            SELECT 1 FROM pgmq.meta lower_meta
+            WHERE lower_meta.queue_name = lower(m.queue_name)
+          ) AS has_lowercase_twin,
+          (SELECT count(*) FROM pgmq.topic_bindings b
+           WHERE b.queue_name = m.queue_name) AS binding_count,
+          (SELECT throttle_interval_ms FROM pgmq.notify_insert_throttle n
+           WHERE n.queue_name = m.queue_name) AS throttle_interval_ms
+   FROM pgmq.meta m
+   WHERE m.queue_name <> lower(m.queue_name);
+   ```
+
+2. **Back up** the returned metadata and the complete child rows from
+   `pgmq.topic_bindings` and `pgmq.notify_insert_throttle` before changing
+   anything.
+
+   <Callout type="warn">
+     Do not update or delete `pgmq.meta` rows by hand. Both foreign keys onto
+     `pgmq.meta (queue_name)` lack `ON UPDATE` and carry `ON DELETE CASCADE`, so
+     a naive `UPDATE ... SET queue_name = lower(queue_name)` fails while children
+     reference the row, and a naive `DELETE` silently cascades away every topic
+     binding and notification setting.
+   </Callout>
+
+3. **Run the remediation.** It creates or reuses the canonical parent first,
+   repoints the children, and only then deletes the mixed-case row. One
+   transaction per `DO` block, and safe to rerun.
+
+   ```sql
+   DO $remediate$
+   DECLARE
+     bad RECORD;
+     twin_exists BOOLEAN;
+   BEGIN
+     FOR bad IN
+       SELECT m.queue_name AS mixed_name, lower(m.queue_name) AS canonical_name
+       FROM pgmq.meta m
+       WHERE m.queue_name <> lower(m.queue_name)
+     LOOP
+       -- Serialize against concurrent create/drop of either casing (the advisory
+       -- lock hashes the raw name, so both are needed) and against a concurrent
+       -- remediation.
+       PERFORM pgmq.acquire_queue_lock(bad.mixed_name);
+       PERFORM pgmq.acquire_queue_lock(bad.canonical_name);
+       PERFORM 1 FROM pgmq.meta
+         WHERE queue_name IN (bad.mixed_name, bad.canonical_name)
+         FOR UPDATE;
+
+       twin_exists := EXISTS (
+         SELECT 1 FROM pgmq.meta WHERE queue_name = bad.canonical_name
+       );
+
+       IF NOT twin_exists THEN
+         -- Rename in place: create the canonical parent (preserving metadata),
+         -- so the children can be repointed under it.
+         INSERT INTO pgmq.meta (queue_name, is_partitioned, is_unlogged, created_at)
+         SELECT bad.canonical_name, m.is_partitioned, m.is_unlogged, m.created_at
+         FROM pgmq.meta m WHERE m.queue_name = bad.mixed_name;
+       ELSE
+         -- The two rows already alias one physical table; the canonical parent
+         -- exists. A mixed-case binding whose pattern the canonical queue already
+         -- has is the same binding — drop it rather than collide with the
+         -- (pattern, queue_name) unique constraint. Keep an existing canonical
+         -- throttle configuration in preference to the mixed-case one.
+         DELETE FROM pgmq.topic_bindings b
+         WHERE b.queue_name = bad.mixed_name
+           AND EXISTS (
+             SELECT 1 FROM pgmq.topic_bindings t
+             WHERE t.queue_name = bad.canonical_name AND t.pattern = b.pattern
+           );
+         DELETE FROM pgmq.notify_insert_throttle
+         WHERE queue_name = bad.mixed_name
+           AND EXISTS (
+             SELECT 1 FROM pgmq.notify_insert_throttle
+             WHERE queue_name = bad.canonical_name
+           );
+       END IF;
+
+       -- Repoint the surviving children. UPDATE preserves bound_at on bindings
+       -- and last_notified_at on the throttle row; the trigger on the physical
+       -- table (already installed under the lowercased table name) starts
+       -- matching the throttle row the moment it carries the canonical name.
+       UPDATE pgmq.topic_bindings SET queue_name = bad.canonical_name
+       WHERE queue_name = bad.mixed_name;
+       UPDATE pgmq.notify_insert_throttle SET queue_name = bad.canonical_name
+       WHERE queue_name = bad.mixed_name;
+
+       -- The mixed-case row has no children left; the CASCADE has nothing to eat.
+       DELETE FROM pgmq.meta WHERE queue_name = bad.mixed_name;
+     END LOOP;
+   END
+   $remediate$;
+   ```
+
+No physical objects move. The queue table, archive table, and notification
+trigger were created under the lowercased physical name all along; the
+remediation only makes the metadata agree with them.
+
+## Verify it worked
+
+Re-run the detection query from step 1. It must return **no rows**. Running the
+`DO` block a second time is then a no-op — its loop body never executes.
+
+Confirm the preserved configuration by comparing your step-2 backup against:
+
+```sql
+SELECT queue_name, pattern, bound_at FROM pgmq.topic_bindings ORDER BY queue_name, pattern;
+SELECT queue_name, throttle_interval_ms FROM pgmq.notify_insert_throttle ORDER BY queue_name;
+```
+
+Every binding and throttle should appear under the canonical lowercase name,
+with `bound_at` unchanged.
+
+## If you cannot remediate before upgrading
+
+Stay on `0.4.0.1`. Reverting the stricter parser is not the safe path — the
+aliasing is real on the older version too, it is simply undetected there.
+
+## Related
+
+- [Core types](/docs/pgmq/reference/core-types) — the `parseQueueName` contract
+  and `UnvalidatedQueue`.
+- [Install or migrate the schema](/docs/pgmq/how-to/install-or-migrate-schema) —
+  where this check belongs in an upgrade.
+- [Configure queues at startup](/docs/pgmq/how-to/configure-queues-at-startup) —
+  the reconciler that tolerates foreign names.

@@ -24,6 +24,41 @@ The component identity is `pgmq`, with no component dependencies. Its manifest c
 | --- | --- |
 | `pgmq/0001-install-v1.11.0` | exact vendored PGMQ 1.11 schema baseline |
 | `pgmq/0002-schema-management-comment` | non-destructive native-runner handoff canary |
+| `pgmq/0003-notify-crash-safety-and-locking` | three deliberate divergences from upstream PGMQ 1.11.0 |
+
+<Callout type="warn">
+  `0003-notify-crash-safety-and-locking` is committed for the unreleased
+  `0.5.0.0`. On the published `0.4.0.1` the manifest has two migrations, and all
+  three defects below are live.
+</Callout>
+
+### What `0003` changes
+
+It re-creates three functions with their original signatures, so the file is a
+drop-in replacement:
+
+1. **`pgmq.notify_queue_listeners()` fails open when its throttle row is
+   missing.** `pgmq.notify_insert_throttle` is `UNLOGGED`, so crash recovery
+   truncates it; the trigger's `UPDATE` then matched zero rows and the
+   `updated_count > 0` gate suppressed `PG_NOTIFY` **forever**, silently starving
+   every listener until an application restart re-enabled notify. Sends succeeded
+   and messages accumulated the whole time. Losing the throttle interval in a
+   crash is acceptable; losing deliveries is not. Until the next reconcile
+   restores the configured interval, the queue notifies unthrottled.
+
+2. **`pgmq.enable_notify_insert()` takes the per-queue advisory lock and
+   coalesces a `NULL` throttle to 250 ms.** Without the lock, two replicas
+   reconciling the same queue at startup both pass the function's internal
+   `DROP TRIGGER IF EXISTS`, and the loser then fails with SQLSTATE `42710`
+   (`duplicate_object`), taking down that replica's entire startup reconcile —
+   measured at roughly a 28% collision rate. `pgmq.create` and
+   `pgmq.create_partitioned` already took that lock.
+
+3. **`pgmq.create_partitioned()` is re-entrant.** The advisory lock serialized
+   concurrent creators, but the second one still called `partman.create_parent`
+   on a parent the first had just registered, and pg_partman rejects an
+   already-managed parent. Both `create_parent` calls are now guarded by a
+   `part_config` probe. Idempotence was the missing property, not locking.
 
 The package exports no standalone runner and no `migrate`, `upgrade`, `validate`, `getMigrations`,
 or `version` functions. The application owns the final plan, connection policy, and CLI or
@@ -77,10 +112,10 @@ keeps its exact checksum and state-evidence requirements.
 
 History import acquires no cooperating `hasql-migration` source lock, so quiesce every predecessor
 writer. It validates evidence and atomically records target ledger plus audit rows without executing
-target DDL. After import, native `up` reports `0001` already applied and applies only the `0002`
-canary.
+target DDL. After import, native `up` reports `0001` already applied and applies the remaining
+migrations — the `0002` canary, and `0003` once you are on `0.5.0.0`.
 
-Fresh databases skip import and apply both native migrations. After schema installation,
+Fresh databases skip import and apply every native migration. After schema installation,
 `pgmq-config` owns queue provisioning; it is not part of component migration.
 
 See [Install or migrate the schema](/docs/pgmq/how-to/install-or-migrate-schema) and

@@ -65,6 +65,34 @@ Durations are decimal digits plus `s`, `m`, or `h`. The fire time must use a dec
 dispatch IDs are runtime-owned. Saga categories are non-empty camelCase without `-`, `:`, whitespace,
 control characters, or `$all`; generated category constants are used with `entityStream`.
 
+<Callout type="warn">
+  **keiro-dsl 0.11.0.0 refuses four spellings the grammar accepted but no runtime implements.** Each
+  warns on released languages below 4 and **errors from language 4 on**. The spelling that matches
+  the runtime stays accepted and silent in every case.
+
+  | Code | Refused spelling | Why |
+  | --- | --- | --- |
+  | `DispatchOnAppendedUnsupported` | `on-appended` anything other than `AckOk`, on both process and router dispatch rows | a successful append is always acked |
+  | `TimerNotMineUnsupported` | `not-mine Fired` | the timer worker marks a timer `Fired` only when the fire action returns an appended event id |
+  | `DecodeBodyPostureUnsupported` | `intake … body lenient` | generated codecs decode a body strictly |
+  | `IntakeBindHeaderUnknown` | `bind … from header "x"` naming a header outside keiro's canonical envelope set | the Kafka inbox reads a fixed header set and cannot be remapped |
+
+  `DiagnosticCode` gains all four; exhaustive matches must be extended.
+</Callout>
+
+<Callout type="warn">
+  **A process `dispatch-id` line is now checked as strictly as a router's.** It must read exactly:
+
+  ```text
+  dispatch-id strategy=uuidv5 from=(name, correlationId, sourceEventId, emitIndex)
+  ```
+
+  — the tuple `Keiro.ProcessManager` actually derives from. Previously *any* strategy identifier and
+  *any* tuple parsed and were then discarded, so a spec could claim a derivation it did not get.
+  Routers keep their own `(name, key, sourceEventId, targetStreamName, occurrence)`. A process spec
+  that wrote anything else is now a **parse error**.
+</Callout>
+
 Dispatch outcomes are `AckOk`, `Retry`, or `deadLetter "reason"`. Node-level `rejected` and `poison`
 are each `halt`, `deadLetter`, or `skip`; rejection-class failures include `CommandAmbiguous` for an
 ordinary dispatch. Timer outcomes are `Fired` or `Retry`, but `on-ambiguous Fired` is invalid.
@@ -212,10 +240,38 @@ a database crash and produce `WqUnloggedDurability`. Partition settings are non-
 `pg_partman`, and apply only when creating a queue; reconciliation does not migrate an existing
 queue. FIFO adds its GIN index. A DLQ remains standard.
 
-Payload field types include the queue codec surface (`text`, `int`, `bool`) with explicit wire name
-and optional `required`. The captured physical/DLQ/table trio is re-derived from the logical name.
+Payload field types include the queue codec surface (`text`, `int`, `bool`) with explicit wire name.
+The captured physical/DLQ/table trio is re-derived from the logical name.
 All four disposition rows are mandatory; store failure retries, decode failure dead-letters, and
 `dlq = on` requires a positive retry ceiling.
+
+<Callout type="warn">
+  **Breaking in keiro-dsl 0.11.0.0: every workqueue payload field is required.** The `required`
+  marker is still *accepted* but selects nothing, and `WqField` loses its `wqfRequired` field. The
+  removed `WqFieldOptionalUnsupported` diagnostic went with the model it described: generated
+  decoders read every field with `o .:`, so an "optional" payload field never existed.
+
+  The consequence for evolution is the important part — **adding a payload field is now classified
+  breaking however it is spelled.** A job already queued under the old shape does not contain the
+  new field, which the previous "a new optional field is additive" classification denied. See
+  [Version a job payload](/docs/keiro/how-to/version-a-job-payload).
+</Callout>
+
+<Callout type="info">
+  **Three previously descriptive-only surfaces are now checked against the references they name**
+  *(0.11.0.0)*:
+
+  - a timer's `decode unknown-status` must be a status the timer table stores — `Scheduled`,
+    `Firing`, `Fired`, `Cancelled`, or `Dead` (`TimerDecodeStatusUnknown`);
+  - a timer's `dead-letter` reason must not be blank, since it is the text an operator-written
+    worker passes to `Keiro.Timer.deadLetterTimer` (`TimerDeadLetterTextInvalid`);
+  - a pgmq `dedup key` must be a generated selector of its source read model, reported with the
+    existing `DispatchReadModelFieldUnknown`, and a pgmq `fanout body` must be spellable as a
+    Haskell value identifier (`PgmqFanoutFunctionInvalid`).
+
+  Emit `source`, `key`, and map discriminant names remain the **one** documented descriptive-only
+  surface, because no typed source namespace exists to resolve them against.
+</Callout>
 
 ```keiro-dsl
 dispatch reservation_work_dispatch {

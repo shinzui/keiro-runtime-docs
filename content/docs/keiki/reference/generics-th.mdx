@@ -10,8 +10,18 @@ declarations a hand-written aggregate would otherwise spell out by hand. Each sp
 
 Every splice is a thin code-generator over the [`Keiki.Generics`](/docs/keiki/reference/generics)
 builders: it reifies a sum type's constructors with `reify`, dispatches on each constructor's payload
-shape, and emits the matching `mkInCtorVia` / `mkInCtor0` / `mkWireCtorVia` / `mkWireCtor0` call plus
+shape, and emits the matching `mkInCtorVia` / `mkWireCtorVia` / `mkWireCtor0Via` call plus
 its signature. The exercising tests live at `test/Keiki/Generics/THSpec.hs`.
+
+<Callout type="info">
+  **The splices are a trusted producer (keiki 0.9.0.0).** Everything they emit carries structural
+  constructor evidence, so TH-derived boundaries compose without the
+  `UnwitnessedInputWireAlignment` diagnostic. They no longer emit the deprecated `mkInCtor0` or
+  `mkWireCtor0` — a nullary command constructor now goes through `mkInCtorVia` (which infers the
+  empty slot list) and a nullary event through `mkWireCtor0Via`.
+
+  If you derive with TH, this release needs no source change from you.
+</Callout>
 
 <Callout type="info">
 Both the command and event splices read the constructor list of the named sum type via `reify` and
@@ -56,7 +66,8 @@ For a **record-payload** constructor, three declarations:
 <Step>
 For a **singleton** (no-field) constructor, only two declarations:
 
-- `inCtor<Short>` — defined via [`mkInCtor0`](/docs/keiki/reference/generics).
+- `inCtor<Short>` — defined via [`mkInCtorVia`](/docs/keiki/reference/generics), whose inferred slot
+  list for a payload-free constructor is `'[]`.
 - `is<Short>` — via `matchInCtor`.
 
 The `inp<Short>` projection is omitted because `Index '[]` is uninhabited — a payload-free command
@@ -133,8 +144,14 @@ For a **record-payload** event constructor:
 <Step>
 For a **singleton** event constructor:
 
-- Just `wire<Short>` — defined via [`mkWireCtor0`](/docs/keiki/reference/generics), because its field
-  tuple is `()`. No `<Short>TermFields` record is emitted (there are no fields to key).
+- Just `wire<Short>` — defined via [`mkWireCtor0Via`](/docs/keiki/reference/generics), because its
+  field tuple is `()`. No `<Short>TermFields` record is emitted (there are no fields to key).
+
+  <Callout type="warn">
+    **Breaking in keiki 0.9.0.0.** This was `mkWireCtor0`. Matching is now structural `Generic`
+    matching, so it requires **`Generic co` instead of `Eq co`** — and a quotienting custom `Eq`
+    instance no longer changes `wcMatch` behavior. `solveOutput` still requires `Eq co`.
+  </Callout>
 </Step>
 </Steps>
 

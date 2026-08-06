@@ -181,22 +181,48 @@ map on `co`) through every position the parameter occupies. The two that *introd
 ```haskell
 -- keiki/src/Keiki/Profunctor.hs
 contraInCtor :: (ci' -> ci) -> InCtor ci ifs -> InCtor ci' ifs
-contraInCtor f InCtor { icName = n, icMatch = m } = InCtor
-  { icName  = n
-  , icMatch = m . f
-  , icBuild = poisonedIcBuild n
-  }
+contraInCtor f InCtor {icName = n, icMatch = m} =
+  unavailableInCtor
+    (n <> "#lmapped")
+    (m . f)
+    (poisonedIcBuild n)
 ```
 
 ```haskell
 -- keiki/src/Keiki/Profunctor.hs
 mapWireCtor :: (co -> co') -> WireCtor co fs -> WireCtor co' fs
-mapWireCtor g WireCtor { wcName = n, wcBuild = b } = WireCtor
-  { wcName  = n
-  , wcMatch = \_co' -> Nothing
-  , wcBuild = g . b
-  }
+mapWireCtor g WireCtor {wcName = n, wcBuild = b} =
+  unavailableWireCtor
+    (n <> "#rmapped")
+    (\_co' -> Nothing)
+    (g . b)
 ```
+
+Two things to read here.
+
+The **name stamping** — `n <> "#lmapped"`, `n <> "#rmapped"` — is what chapter 09's
+`PoisonedCompositionError` and `checkComposeAlignment`'s `PoisonedNameInComposition` detect. A
+rewritten boundary announces itself in its own name, so an unchecked name substitution cannot
+silently cross it.
+
+<Callout type="info">
+  **Changed in keiki 0.9.0.0.** Both rewriters used to end in a record literal. Now that `InCtor`
+  and `WireCtor` construction is sealed, they call **`unavailableInCtor` / `unavailableWireCtor`** —
+  the explicit no-evidence constructors. That is the honest classification: a contramapped
+  constructor is genuinely not the one the `Generic` instance described, so it must not carry that
+  instance's structural evidence.
+
+  The practical consequence is that a rewritten boundary is now rejected by
+  [composition's typed alignment](/docs/keiki/reference/composition) as
+  `UnwitnessedInputWireAlignment`, one step *earlier* than the poison check would have caught it.
+  Same advice as before — keep lossy maps at the edge of the pipeline — with an earlier and clearer
+  diagnostic.
+</Callout>
+
+<Callout type="warn">
+  These two snippets previously appeared here without the `#lmapped` / `#rmapped` suffixes, which
+  was wrong before 0.9.0.0 as well. They are transcribed from the current source above.
+</Callout>
 
 `contraInCtor` precomposes `icMatch` with `f` (so the forward match still works on the new alphabet)
 but replaces `icBuild` with `poisonedIcBuild` — a function that errors with a message pointing back at

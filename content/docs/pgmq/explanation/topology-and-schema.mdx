@@ -44,15 +44,44 @@ ensureQueues :: [QueueConfig] -> Session ()
 ensureQueuesReport :: [QueueConfig] -> Session [ReconcileAction]
 ```
 
-## Additive reconciliation
+## Reconciliation: create, report, and one mutation
 
-`pgmq-config` reads existing queues, topic bindings, and notification throttle
-state before mutating anything. It creates missing objects and reports skipped
-objects. It does not remove queues, disable notify, remove old topic bindings,
-or change an existing queue's kind.
+`pgmq-config` snapshots existing queues, topic bindings, notification throttles,
+and FIFO indexes with four read-only queries before mutating anything. It then
+creates missing objects and reports skipped ones. It does not remove queues,
+disable notify, remove old topic bindings, or change an existing queue's kind.
+
+The one exception is the notification throttle interval. If a declared interval
+differs from the stored one, the row is updated in place and reported as
+`UpdatedNotifyThrottle`. The asymmetry is worth stating, because a queue's type
+is also a "declared value disagrees with stored value" case and is *not*
+repaired:
+
+- The throttle interval has a **non-destructive in-place update** in pgmq's own
+  API — `pgmq.update_notify_insert` rewrites one column of one row. Nothing is
+  lost. Meanwhile a declared interval the reconciler silently ignores is a
+  straightforward lie: the whole point of putting the value in the config is
+  that changing it changes behavior.
+- A queue's type has **no such update**. Converting between standard, unlogged,
+  and partitioned means dropping the queue and recreating it, which destroys
+  every message it holds. A process that runs automatically at startup,
+  potentially on several replicas at once, must never do that — the failure mode
+  is silent, unrecoverable data loss triggered by a one-word config edit. So the
+  drift is surfaced as `DetectedQueueTypeDrift`, with both the declared and
+  observed shapes, and a human decides.
+
+The general rule: **reconcile automatically only where the repair is
+non-destructive and the API supports it in place; otherwise report and stop.**
 
 This makes it safe to call on every boot, but it also means destructive topology
 changes should be modeled as explicit migrations or operator actions.
+
+<Callout type="info">
+  `UpdatedNotifyThrottle` and `DetectedQueueTypeDrift` are committed for the
+  unreleased `0.5.0.0`. On `0.4.0.1` a changed throttle interval is silently
+  ignored and reported as `SkippedNotify` — the clearest
+  documentation-versus-behavior gap the 2026-08 upstream review found.
+</Callout>
 
 ## FIFO and topics are opt-in
 

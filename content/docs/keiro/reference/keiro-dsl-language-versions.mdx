@@ -89,7 +89,7 @@ The registry is **append-only**. Four contracts are released:
     "1": { type: "syntax-profile/1 · runtime-semantics/1", description: "compatibility-only. The language frozen when versioning landed. No predecessor." },
     "2": { type: "syntax-profile/2 · runtime-semantics/1", description: "compatibility-only. Adds nominal bindings, Integer scalars, typed aggregate expressions, and explicit transition implementation ownership." },
     "3": { type: "syntax-profile/2 · runtime-semantics/2", description: "compatibility-only. Same syntax as 2; adds the enforced TypeID-v7 generated-ID domain and exact nominal equality." },
-    "4": { type: "syntax-profile/2 · runtime-semantics/3", description: "STABLE. Same syntax as 2 and 3; adds contract-field TypeID admission and strict spec-surface validation." },
+    "4": { type: "syntax-profile/3 · runtime-semantics/3", description: "STABLE. Adds field alias syntax to 2's grammar; adds contract-field TypeID admission and strict spec-surface validation." },
   }}
 />
 
@@ -116,9 +116,10 @@ predecessor relation. Existing version parsers and their rejection fixtures are 
 ### Syntax profiles
 
 A syntax profile is an **exact named set of grammar capabilities**, not a numeric
-minimum-version rule. That distinction matters: versions 2, 3, and 4 all deliberately select
+minimum-version rule. That distinction matters: versions 2 and 3 both deliberately select
 `keiro-dsl/syntax-profile/2`, so adding a future version cannot inherit syntax by accident of
-numeric ordering.
+numeric ordering. A version that *does* add grammar gets a new profile — which is what language 4
+did.
 
 ```haskell
 data LanguageFeature
@@ -126,6 +127,7 @@ data LanguageFeature
     | IntegerScalarSyntax
     | TypedAggregateExpressionSyntax
     | ExplicitTransitionImplementationSyntax
+    | FieldAliasSyntax
     deriving stock (Eq, Ord, Show)
 
 syntaxProfileIdentifier :: SyntaxProfile -> Text
@@ -135,10 +137,61 @@ languageVersionsSupportingFeature :: LanguageFeature -> [LanguageVersion]
 languageSupportsFeature :: LanguageVersion -> LanguageFeature -> Bool
 ```
 
-`keiro-dsl/syntax-profile/1` is empty; `keiro-dsl/syntax-profile/2` carries all four features. Keeping
-these gates beside the registry is what stops the parser growing an independent list of textual
-spellings — a version-2 feature gate arises from its grammar production, not from a raw source
+| Profile | Features |
+| --- | --- |
+| `keiro-dsl/syntax-profile/1` | *(empty)* |
+| `keiro-dsl/syntax-profile/2` | `NominalBindingSyntax`, `IntegerScalarSyntax`, `TypedAggregateExpressionSyntax`, `ExplicitTransitionImplementationSyntax` |
+| `keiro-dsl/syntax-profile/3` | all of profile 2, plus `FieldAliasSyntax` |
+
+Profiles are monotone: profile 3 is literally `Set.insert FieldAliasSyntax (profileFeatures
+profileV2)`. Keeping these gates beside the registry is what stops the parser growing an independent
+list of textual spellings — a feature gate arises from its grammar production, not from a raw source
 substring.
+
+### Field aliases (`FieldAliasSyntax`, language 4)
+
+A direct aggregate or integration-contract field may declare independent Haskell-selector and
+wire-key aliases:
+
+```text
+<field-name> [haskell <selector>] [as "<wire-key>"] [: <type>]
+```
+
+Generated records use the **selector**; codecs and goldens use the **wire key**; `fields(Command)`
+preserves both. The two are independent — you can rename one without touching the other, which is
+what makes this usable for brownfield adoption where the stored key and the idiomatic Haskell name
+disagree.
+
+```haskell
+data AggregateField = AggregateField
+  { aggregateFieldName :: !Name
+  , aggregateFieldSelector :: !(Maybe Name)
+  , aggregateFieldWireKey :: !(Maybe Text)
+  , aggregateFieldType :: !(Maybe TypeExpr)
+  , aggregateFieldLoc :: !Loc
+  }
+
+data ContractField = ContractField
+  { cfName :: !Name
+  , cfSelector :: !(Maybe Name)
+  , cfWireKey :: !(Maybe Text)
+  , cfType :: !ContractType
+  , cfLoc :: !Loc
+  }
+```
+
+<Callout type="warn">
+  **Breaking in keiro-dsl 0.11.0.0.** `AggregateField` gained `aggregateFieldSelector` and
+  `aggregateFieldWireKey`; `ContractField` gained `cfSelector`, `cfWireKey`, and `cfLoc` (all in
+  `Keiro.Dsl.Grammar`). Code that constructs these records positionally or matches them exhaustively
+  must be updated. `Nothing` selector and wire-key values reproduce the pre-alias behavior exactly.
+
+  New diagnostics: `FieldWireKeyCollision`, `FieldWireKeyInvalid`, and the cross-revision
+  `EvtFieldWireKeyChanged`. `FieldWireKeyInvalid` also refuses a wire key with leading or trailing
+  whitespace or a control character, naming the offending codepoint — so a spec that shipped
+  `as "family "` now fails `check`. Aliases stay exempt from a declared `wire … fields=camelCase`
+  convention, since preserving a brownfield key is what they are for.
+</Callout>
 
 ### Runtime capability profiles
 

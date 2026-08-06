@@ -125,6 +125,43 @@ Short answers to the questions people ask most about keiki. Each links to the pa
     real stored data rather than by judgement.
   </Accordion>
 
+  <Accordion title="Does a literal in an event output prove the stored field has that value?">
+    **No.** `TLit`, `TOpaqueLit`, `TReg`, and `TInpCtorField` are *invertible* positions: replay keeps
+    them at their **observed** value rather than re-evaluating the output expression. So an output
+    `TLit 3` does not prove the stored field is `3`, and a `TReg #balance` does not prove the stored
+    audit value matches the current replay register — rechecking the latter would make old events
+    depend on whichever register snapshot replay started from.
+
+    Only derived positions — `TArith`, `TApp1`, `TApp2`, `TFieldProj` — are recomputed and compared,
+    and those *do* reject a tampered value. If a stored field must be provably derived, express it as
+    a derived term. See [What replay proves](/docs/keiki/explanation/what-replay-proves).
+  </Accordion>
+
+  <Accordion title="I upgraded to keiki 0.9 and my WireCtor record no longer compiles.">
+    `InCtor` and `WireCtor` construction and record update are **sealed** in 0.9.0.0 — the module
+    exports a read-only pattern plus field selectors, so you can match and project but not build.
+
+    Replace an intentional manual record with `unavailableWireCtor name match build` (or
+    `unavailableInCtor`), which states "no structural evidence" explicitly. If the constructor is an
+    ordinary `Generic` one, prefer `mkWireCtorVia` / `mkInCtorVia` — or `mkInCtorRecordVia` when the
+    fields are declared directly with record syntax — so it carries trusted evidence. When you only
+    wanted to change the diagnostic name, use `renameWireCtor` / `renameInCtor`, which preserve both
+    behavior and evidence. TH-derived constructors need no change. See
+    [Core](/docs/keiki/reference/core#constructing-a-sealed-inctor).
+  </Accordion>
+
+  <Accordion title="Why is composition suddenly reporting UnwitnessedInputWireAlignment?">
+    Because in 0.9.0.0 sequential composition substitutes only through **typed input-to-wire
+    alignment**, not `icName == wcName` string equality. A boundary constructor without structural
+    evidence can no longer authorize the substitution, so it is reported rather than assumed.
+
+    Two common causes: the constructor was built with a deprecated or manual producer (`mkWireCtor`,
+    `unavailableWireCtor`), or the boundary was rewritten by a lossy profunctor map (`lmapCi`,
+    `rmapCo`, `dimapTransducer`), which deliberately drops evidence. Fix the first by using a `Via`
+    or TH producer; fix the second by moving the lossy map to the edge of the pipeline. See
+    [Composition](/docs/keiki/reference/composition#checked-alignment).
+  </Accordion>
+
   <Accordion title="Can I guard on a field of a type keiki knows nothing about?">
     Yes, with a **typed field projection** (keiki 0.4.0.0) — as long as the *field* type is in the
     curated symbolic registry, even when the owner type is not. Define one tag type and one coherent

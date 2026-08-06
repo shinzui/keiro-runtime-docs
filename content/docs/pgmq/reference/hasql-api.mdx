@@ -42,7 +42,21 @@ data EnableNotifyInsert = EnableNotifyInsert
   }
 ```
 
-`Nothing` uses pgmq's default throttle interval of 250 ms.
+`Nothing` means pgmq's default throttle interval of 250 ms.
+
+<Callout type="warn">
+  On the released `0.4.0.1`, `throttleIntervalMs = Nothing` does **not** work: it
+  fails with SQLSTATE 23502 on every call, because a column `DEFAULT` does not
+  apply to an explicitly supplied `NULL`. Since queue reconciliation is not one
+  transaction, this fails application startup repeatedly and permanently for any
+  config using the default throttle — including `pgmq-config`'s
+  `withNotifyInsert Nothing`. Pass an explicit `Just 250` until you are on
+  `0.5.0.0`, whose statement supplies the value with a SQL `coalesce($2, 250)`.
+</Callout>
+
+Insert notifications arrive on the channel `notifyChannelName` returns —
+`pgmq.q_<lowercased queue name>.INSERT`. See
+[Core types](/docs/pgmq/reference/core-types#notification-values).
 
 ## Sending messages
 
@@ -106,23 +120,54 @@ data ReadMessage = ReadMessage
   }
 ```
 
-At this commit the statement implementation uses pgmq's three-argument
-`read(queue, vt, qty)` form, so the Haskell `conditional` field is not applied
-by `readMessage`. Use a narrower statement if you need JSONB conditional
-filtering.
-
 `archiveMessage` moves a message to pgmq's archive table. `deleteMessage`
 removes it. `pop` atomically reads and deletes messages, which is useful for
 work that does not need a separate processing window.
 
+<Callout type="warn">
+  **A `Nothing` count did not mean "one" on `0.4.0.1`.** The `Maybe` parameter
+  was encoded as a nullable bind, so `Nothing` reached PostgreSQL as SQL `NULL`;
+  a plpgsql parameter `DEFAULT` applies only to an *omitted* argument, and `NULL`
+  in a `LIMIT` clause means `LIMIT ALL`. Concretely, on the released version:
+
+  - `pop` with `qty = Nothing` deletes and returns **every visible message in the
+    queue**. Because `pop` deletes, there is no visibility timeout to recover
+    them.
+  - `readMessage` and `readWithPoll` with `batchSize = Nothing` lease the
+    **entire queue**, hiding every message from other consumers for the
+    visibility timeout.
+
+  Both are fixed in the unreleased `0.5.0.0` to read or pop one message, as
+  documented. Until you are on it, pass an explicit count.
+</Callout>
+
+<Callout type="info">
+  Also committed for `0.5.0.0`: `ReadMessage.conditional` now filters. The field
+  existed and was documented, but was never encoded, so on `0.4.0.1` a `Just`
+  filter is silently ignored and every visible message is returned.
+  `readWithPoll`'s conditional already worked.
+</Callout>
+
 ## Visibility timeout changes
 
 ```haskell
-changeVisibilityTimeout :: VisibilityTimeoutQuery -> Session Message
+changeVisibilityTimeout :: VisibilityTimeoutQuery -> Session (Maybe Message)
 batchChangeVisibilityTimeout :: BatchVisibilityTimeoutQuery -> Session (Vector Message)
-setVisibilityTimeoutAt :: VisibilityTimeoutAtQuery -> Session Message
+setVisibilityTimeoutAt :: VisibilityTimeoutAtQuery -> Session (Maybe Message)
 batchSetVisibilityTimeoutAt :: BatchVisibilityTimeoutAtQuery -> Session (Vector Message)
 ```
+
+<Callout type="warn">
+  **Breaking in the unreleased `0.5.0.0`:** the two single-message forms return
+  `Maybe Message` rather than `Message`, at the statement, session, and effect
+  layers. `pgmq.set_vt` is `RETURNS SETOF` and yields zero rows when the target
+  message no longer exists — already deleted, archived, or popped. Decoding that
+  with a single-row decoder raised an `UnexpectedRowCountStatementError`, the
+  same error shape a genuine infrastructure failure has, so a caller extending a
+  lease could not distinguish a lost race from a broken database. Callers that
+  used the result must now handle `Nothing`; callers that discarded it compile
+  unchanged. The batch variants are unaffected.
+</Callout>
 
 Offset-based updates make the message visible at now plus `visibilityTimeoutOffset` seconds:
 
@@ -182,11 +227,24 @@ one `TopicSendResult` per delivered queue/message pair.
 
 ```haskell
 listQueues :: Session [Queue]
+listQueuesUnvalidated :: Session [UnvalidatedQueue]
+listFifoIndexQueueNames :: Session [Text]
 queueMetrics :: QueueName -> Session QueueMetrics
 allQueueMetrics :: Session [QueueMetrics]
 listNotifyInsertThrottles :: Session [NotifyInsertThrottle]
 updateNotifyInsert :: UpdateNotifyInsert -> Session ()
 ```
+
+<Callout type="info">
+  `listQueuesUnvalidated` and `listFifoIndexQueueNames` are committed for the
+  unreleased `0.5.0.0`. `listQueues` re-validates every name it reads back, so it
+  fails on a database holding queues this client would reject;
+  `listQueuesUnvalidated` returns
+  [`UnvalidatedQueue`](/docs/pgmq/reference/core-types#reading-queues-this-client-would-reject)
+  rows instead, which is what lets `pgmq-config` reconcile alongside foreign
+  queues. `listFifoIndexQueueNames` reports which queues already carry the FIFO
+  headers index, so the reconciler can skip creating one.
+</Callout>
 
 ```haskell
 data QueueMetrics = QueueMetrics

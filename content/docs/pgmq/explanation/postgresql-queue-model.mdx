@@ -77,3 +77,22 @@ what another reader can get now.
 a wake-up signal for workers that would otherwise poll. It is not a separate
 delivery channel: workers still read messages from the queue table and should
 handle missed notifications by polling or rechecking queue state.
+
+Notifications arrive on `pgmq.q_<lowercased queue name>.INSERT`, which
+`notifyChannelName` returns. Do not assemble the channel name by hand.
+
+The poll fallback is not a nicety. Throttling means a notification is
+deliberately suppressed when one fired recently, so a worker that treats
+notifications as the sole trigger will sit idle on messages that are already
+visible. Two further conditions make a notification simply not arrive:
+
+- **`LISTEN` is per-connection.** A pooled connection that is recycled between
+  `LISTEN` and the insert never sees the notification.
+- **The throttle table is `UNLOGGED`.** Crash recovery truncates
+  `pgmq.notify_insert_throttle`. Before pgmq-hs migration `0003`, the trigger
+  then matched zero rows and suppressed every notification *permanently* — sends
+  succeeded and messages accumulated while listeners starved, until an
+  application restart re-enabled notify. Migration `0003` makes the trigger fail
+  open: with the throttle row absent it notifies unthrottled until the next
+  reconcile restores the configured interval. Losing the throttle in a crash is
+  acceptable; losing deliveries silently is not.

@@ -30,11 +30,18 @@ writes nothing for an invalid spec.
 
 | Family | Representative diagnostics | Corrective move |
 |---|---|---|
-| names and syntax | `IdentHaskellKeyword`, `IdentNotConstructorSafe`, `VertexCtorCollision`, duplicate-name codes | Rename to an ASCII, Haskell-safe, collision-free identifier; remove shadowed singleton/row declarations |
-| aggregate/evolution | `RegisterInitialOutOfScope`, `WriteTargetNotRegister`, `StatusMapNotTotal`, `EvtVersionMissingUpcaster`, `DuplicateUpcasterSource`, `UpcasterChainGap`, `ClockSampled` | Align declared types/references, complete or explicitly partialize the map, add contiguous upcasters with one owner per source version, inject time |
+| names and syntax | `IdentUnsafeNormalization`, `GeneratedOccurrenceCollision`, `GeneratedOccurrenceReserved`, `VertexCtorCollision`, `FieldWireKeyCollision`, `FieldWireKeyInvalid`, duplicate-name codes | Rename to an ASCII, Haskell-safe, collision-free identifier; remove shadowed singleton/row declarations |
+| aggregate/evolution | `RegisterInitialOutOfScope`, `WriteTargetNotRegister`, `StatusMapNotTotal`, `EvtVersionMissingUpcaster`, `UpcasterChainGap`, `ClockSampled` | Align declared types/references, complete or explicitly partialize the map, add contiguous upcasters with one owner per source version, inject time |
 | event retirement / replay-only | `EventRetirementInProgress`, `DeprecatedEventStillEmitted`, `ReplayOnlyEmitsNothing` | Keep a live emitter while `retiring`; take the event off the *live* write path before marking it `deprecated`; give every `replay-only` transition an `emit` |
 | read model | `RmShapeHashDrift`, `RmStrongInlineOnly`, `RmScopeWithoutStrong`, `RmInlineFeedUnreferenced` | Capture the printed shape, bump version for a real shape change, align consistency/feed/scope/projection ownership |
-| process/router | `SagaCategoryIllegal`, `ProcessFieldBindingUnresolved`, `RouterBindingUnscoped`, `PolicyContradiction`, `AmbiguousMarkedBenign` | Use a valid category, resolve typed bindings, align node/dispatch policy, route ambiguity to retry/dead-letter evidence |
+| process/router | `SagaCategoryIllegal`, `ProcessFieldBindingUnresolved`, `RouterBindingUnscoped`, `RouterReadModelUnverified`, `PolicyContradiction`, `AmbiguousMarkedBenign`, `ProcessBenignInversion`, `RouterBenignInversion` | Use a valid category, resolve typed bindings, align node/dispatch policy, route ambiguity to retry/dead-letter evidence |
+
+<Callout type="warn">
+  **`RouterReadModelUnverified` used to be unreachable.** It existed as a declared but never-emitted
+  `DiagnosticCode` constructor; as of 0.11.0.0 it carries real semantics and fires when a router's
+  resolved read model cannot be verified. A consumer that matched the constructor as dead code — or
+  a `--deny` list that named it expecting a no-op — now sees live diagnostics.
+</Callout>
 | inbox/outbox | `DispositionIncomplete`, disposition inversion codes, `TopicAffinityMismatch`, `EmitSkipMissing` | Complete unique outcomes, preserve retry/poison semantics, align contract topic, add `_ => skip` |
 | workqueue/dispatch | queue divergence/group/provision codes, `WqDispositionIncomplete`, dispatch reference codes | Copy the derived queue trio, align FIFO/group/provision, complete policy, resolve read-model columns and queue fields |
 | workflow/operation | duplicate label/patch codes, `WorkflowContinueAsNewNotTerminal`, `AwaitSignalMismatch`, `OperationUnresolvedRef` | Stabilize labels/patch IDs, put continuation last/top-level, align signal value and target references |
@@ -103,7 +110,42 @@ rather than errors.
 keiro-dsl check service.keiro
 ```
 
-The exit code is sufficient for CI. Use `/dev/stdin` for pipelines, for example:
+The exit code is sufficient for a pass/fail gate — but warnings exit 0, so this alone does not gate
+them. Add a warning policy explicitly:
+
+```bash
+# Pin the language floor and fail on every warning.
+keiro-dsl check service.keiro --min-language 4 --deny-warnings
+
+# Or fail on selected codes only (repeatable and comma-separated).
+keiro-dsl check service.keiro --deny RouterBenignInversion,ProcessBenignInversion
+```
+
+<Callout type="warn">
+  **If you already had a `--deny-warnings` job, re-read it against keiro-dsl 0.11.0.0.** Two changes
+  bite:
+
+  - An invocation that also passed `--coverage-report` used to print coverage warnings and **exit
+    0**. Coverage findings are now part of the warning policy, so the same command may start failing
+    — correctly.
+  - `--deny CODE` now **refuses a code `check` cannot emit** rather than silently accepting it. A
+    list naming a `diff`-only code (`EvtFieldWireKeyChanged`, `WorkflowShapeChanged`), a coverage
+    code without `--coverage-report`, or `CoverageOpaqueGateExceeded` at all, now fails loudly. It
+    was never gating on those.
+
+  Also add `--deny RouterBenignInversion` if you relied on `--deny ProcessBenignInversion` catching
+  router duplicate-disposition notices; they are a separate code now.
+</Callout>
+
+<Callout type="info">
+  **Which skeletons pass `--deny-warnings` as generated?** Only `keiro-dsl new intake`, which stopped
+  spelling the unenforced `required cross-check body` flags on its bind row (it used to warn
+  `IntakeBindFlagUnenforced` out of the box). The router and process skeletons keep their idiomatic
+  benign-inversion spellings, so they gate CI with a selective `--deny` list rather than
+  `--deny-warnings`.
+</Callout>
+
+Use `/dev/stdin` for pipelines, for example:
 
 ```bash
 keiro-dsl new router | keiro-dsl check /dev/stdin

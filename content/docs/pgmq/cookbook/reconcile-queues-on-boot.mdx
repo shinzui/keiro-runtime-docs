@@ -4,6 +4,7 @@ description: "Declare queues with pgmq-config and log the reconciliation report.
 ---
 
 ```haskell
+import Data.Foldable (traverse_)
 import Data.Function ((&))
 import Hasql.Pool qualified as Pool
 import Pgmq.Config
@@ -29,5 +30,42 @@ bootQueues pool = do
     Right actions -> traverse_ print actions
 ```
 
-The second run should mostly report skipped objects, except FIFO index creation
-is applied whenever requested because pgmq's index function is idempotent.
+The second run should report skipped objects throughout — including
+`SkippedFifoIndex`, because the reconciler snapshots which queues already carry
+the FIFO headers index rather than reissuing the create.
+
+## Do not just log the report
+
+Two constructors mean something went wrong that reconciliation will not fix, so
+treat them separately from the skipped noise:
+
+```haskell
+bootQueues :: Pool.Pool -> IO ()
+bootQueues pool = do
+  result <- Pool.use pool (ensureQueuesReport desiredQueues)
+  case result of
+    Left err -> print err
+    Right actions -> do
+      traverse_ print actions
+      case [d | d@(DetectedQueueTypeDrift {}) <- actions] of
+        [] -> pure ()
+        drifts ->
+          fail $ "queue type drift needs an operator decision: " <> show drifts
+```
+
+`DetectedQueueTypeDrift` carries the queue, the declared type, and the observed
+type. Nothing was mutated and nothing will be — converting a queue between
+standard, unlogged, and partitioned means dropping and recreating it, destroying
+every message it holds. Failing the boot is usually right: the alternative is a
+service running against a queue shape it did not ask for.
+
+`UpdatedNotifyThrottle` is the one case where reconciliation changed existing
+state. It is expected after a deliberate config edit and should be surprising
+otherwise, so log it at a level you actually read.
+
+<Callout type="info">
+  Both constructors, and the `SkippedFifoIndex` behaviour above, are committed
+  for the unreleased `0.5.0.0`. On `0.4.0.1` the FIFO index create is reissued
+  on every boot, a mismatched queue type reports `SkippedQueue`, and a changed
+  throttle interval is silently ignored.
+</Callout>
