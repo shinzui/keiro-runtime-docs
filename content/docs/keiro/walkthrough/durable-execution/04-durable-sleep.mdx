@@ -100,8 +100,17 @@ The same transaction stores the timer's first `fire_at` in `keiro_workflows.wake
 when the insert won**. `scheduleTimerOnceTx` returns `Bool` for exactly this: the arm that created the
 row owns both `fire_at` and the wake hint, and every replay arm leaves both alone. Otherwise a replay
 that re-entered a *due* or already-fired sleep would push `wake_after` forward and postpone its own
-discovery. Resume discovery filters out rows whose `wake_after` is still in the future, so a sleeping
-workflow is not re-invoked on every pass before the timer is due.
+discovery.
+
+Since Keiro 0.12.0.0 the hint carries more weight than "skip this row for now". Under
+[exact discovery](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery#findunfinishedworkflowids-exact-instance-discovery)
+a `suspended` instance is discovered **only** when `wake_after` is set and due, so for a sleeping
+workflow the hint is the entire reason it is ever looked at again. A sleeping workflow is not
+re-invoked on any pass before its timer is due, and it is invisible rather than merely filtered.
+
+The fire arm is correspondingly careful: `workflowSleepFireAction` clears `wake_after` **only when
+its journal append is fresh**, so a stale re-fire cannot erase the hint a later sleep's first arm
+just wrote.
 
 Notice the reuse of the `TimerRequest` fields: `processManagerName` carries the workflow **name** and
 `correlationId` carries the workflow **id**, so the fire action can reconstruct the workflow identity

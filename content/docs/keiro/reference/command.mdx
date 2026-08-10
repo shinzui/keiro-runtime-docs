@@ -234,6 +234,42 @@ runCommandWithSqlEvents ::
   Eff es (Either CommandError (CommandResult (EventStream phi rs s ci co), Maybe a))
 ```
 
+## `runCommandWithSqlEventsControlled` — a callback that may roll back
+
+*New in Keiro 0.12.0.0.* Same shape, except the callback may **condemn the whole append transaction**
+and still return a typed result:
+
+```haskell
+data SqlTransactionDecision a
+  = CommitSqlTransaction !a
+  | RollbackSqlTransaction !a
+
+data SqlCommandOutcome target a
+  = SqlCommandNoOp !(CommandResult target)
+  | SqlCommandCommitted !(CommandResult target) !a
+  | SqlCommandRolledBack !a
+
+runCommandWithSqlEventsControlled ::
+  forall phi rs s ci co a es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es,
+   KirokuStoreResource :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  RunCommandOptions ->
+  ValidatedEventStream phi rs s ci co ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  ([(co, RecordedEvent)] -> AppendResult -> Tx.Transaction (SqlTransactionDecision a)) ->
+  Eff es (Either CommandError (SqlCommandOutcome (EventStream phi rs s ci co) a))
+```
+
+A rolled-back attempt runs **no** replay verification and **no** snapshot write, and its outcome
+carries no `CommandResult` — neither its event append nor its SQL effects exist.
+
+This boundary exists for [catalog-derived projection
+fencing](/docs/keiro/reference/projection-catalog#fenced-command-and-async-paths): discovering that a
+rebuild group is fenced *after* the append SQL has already taken its locks must not be able to leave
+the event committed alongside a partial projection write. The callback discovers the fence, returns
+`RollbackSqlTransaction`, and nothing survives.
+
 See [Run a command in a transaction](/docs/keiro/how-to/run-a-command-in-a-transaction) for the
 transactional pattern and [Configure concurrency retries](/docs/keiro/how-to/configure-concurrency-retries)
 for tuning `retryLimit`/`pageSize`.

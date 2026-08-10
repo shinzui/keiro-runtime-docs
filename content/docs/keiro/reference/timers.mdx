@@ -237,6 +237,59 @@ count in `keiro.timer.requeued`. Requeued timers retain their original due time 
 eligible on a later claim; there is no retry backoff. Choose `ttl` above the longest legitimate fire
 duration, because a still-running action that crosses the timeout can be fired again.
 
+## Draining a backlog
+
+*New in Keiro 0.12.0.0.* `runTimerWorker` claims **one** timer per call, so a backlog of `K` due
+timers drains at one per poll tick and the last one waits `K` ticks. The batched siblings process up
+to a limit in a single pass and return how many they handled:
+
+```haskell
+drainDueTimers ::
+  (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics ->
+  UTCTime ->
+  Int ->                                    -- ^ maximum timers to process in this pass
+  (TimerRow -> Eff es (Maybe EventId)) ->
+  Eff es Int
+
+drainDueTimersWith ::
+  (IOE :> es, Store :> es) =>
+  Maybe KeiroMetrics ->
+  TimerWorkerOptions ->
+  UTCTime ->
+  Int ->
+  (TimerRow -> Eff es (Maybe EventId)) ->
+  Eff es Int
+```
+
+`drainDueTimers` is `drainDueTimersWith defaultTimerWorkerOptions`. Per-timer semantics are
+identical to `runTimerWorkerWith` — the same claim, the same attempt ceiling, the same requeue
+preamble, which runs **once** for the pass rather than once per timer.
+
+The loop stops early when nothing is due, so an idle pass costs exactly what `runTimerWorkerWith`
+costs. It also stops when the `fire` action returns `Nothing` for every remaining row, because such a
+timer stays `Firing` and is no longer claimable — the drain cannot spin. A `limit` of zero or less
+processes nothing but still runs the preamble.
+
+<Callout type="info">
+  `now` is read once by the caller and used for every claim in the batch, so a drain fires exactly
+  the timers that were due at the instant the pass began — not a moving target.
+</Callout>
+
+For workflow sleeps specifically, use
+[`drainWorkflowSleepTimers`](/docs/keiro/reference/durable-workflows#durable-sleep), which routes
+sleep rows to the sleep fire action and everything else to the fallback you supply.
+
+## `lookupTimer`
+
+```haskell
+lookupTimer :: (Store :> es) => TimerId -> Eff es (Maybe TimerRow)
+```
+
+Reads one timer row by id. Exposed so an operator surface — notably
+[`keiro-ops timer`](/docs/keiro/reference/keiro-ops-cli#timer--durable-timers) — can inspect a timer
+without reproducing the query.
+
 ## Recovery operations
 
 A timer left in `Firing` by a crash is not directly claimable. The default worker first moves rows

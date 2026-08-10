@@ -156,10 +156,22 @@ on the next drive. A `Suspended` or `Cancelled` child propagates nothing — it 
 SELECT child_id, child_name FROM keiro_workflow_children WHERE status = 'running'
 ```
 
-A freshly-spawned child has a `running` link row but **no step rows yet**, so
-`findUnfinishedWorkflowIds` ([chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery))
-would not find it. `findRunningChildIds` is the second discovery source the resume worker unions in, so
-a zero-step child is still driven to its first run — covered next.
+A freshly-spawned child has a `running` link row but **no step rows yet**. Historically that made it
+invisible to `findUnfinishedWorkflowIds`, and `findRunningChildIds` was a second discovery source the
+resume worker unioned in.
+
+<Callout type="info">
+  **Since Keiro 0.12.0.0 the resume worker no longer unions this query.** `spawnChild` upserts the
+  child's *instance* row as `running` inside the spawn step's transaction, so a zero-step child is
+  already discovered by
+  [chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery)'s single
+  query. `findRunningChildIds` remains exported for operator inspection — it is no longer load-bearing
+  for discovery.
+</Callout>
+
+That change is not a simplification for its own sake: under
+[exact discovery](/docs/keiro/reference/durable-workflows#discovery-is-exact) the instance row is the
+complete wake ledger, so a second source that could disagree with it would be a liability.
 
 <Cards>
   <Card title="← 05 — Awakeables" href="/docs/keiro/walkthrough/durable-execution/05-awakeables" />

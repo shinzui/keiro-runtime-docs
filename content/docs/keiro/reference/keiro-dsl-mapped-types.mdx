@@ -268,10 +268,106 @@ never overwrites a hole and reports granular newly-required holes instead.
   name will not compile. Re-scaffold, then repoint the imports.
 </Callout>
 
+## Mapped consumer surfaces
+
+*New in Keiro 0.12.0.0, language 5 (`MappedConsumerSurfaceSyntax`).* Before this, a mapped
+declaration's blast radius was inferred by hand. `Keiro.Dsl.SemanticImpact` now derives it from the
+**resolved type graph**, so both the roots and the transitive declaration edges are checked facts
+rather than a reconstruction from raw source.
+
+### Who consumes a mapped declaration
+
+```haskell
+data MappedConsumer
+    = AggregateConsumer Name
+    | WorkqueueConsumer Name
+    | ReadModelQueryConsumer Name MappedQueryPosition
+    | DerivedProjectionConsumer DerivedMappedConsumer
+
+data MappedQueryPosition = MappedQueryInput | MappedQueryResult
+```
+
+Each consumer is reached through one of seven **root kinds**:
+
+| Root kind | Surface |
+|---|---|
+| `MappedCommandFieldRoot` | a command field |
+| `MappedEventFieldRoot` | an event field |
+| `MappedRegisterRoot` | an aggregate register — the one snapshots cache |
+| `MappedWorkqueueFieldRoot` | a persisted workqueue payload field |
+| `MappedReadModelQueryInputRoot` | a `query input` position |
+| `MappedReadModelQueryResultRoot` | a `query result` position |
+| `MappedProjectionEventRoot` | an aggregate-derived projection |
+
+### Consequences do not collapse into one severity
+
+```haskell
+data MappedConsequence
+    = MappedConsumerBuild MappedConsumer
+    | MappedPrivateEventHistory Name
+    | MappedSnapshotHydration Name
+    | MappedWorkqueueHistory Name
+    | MappedQueryApi Name MappedQueryPosition
+    | MappedProjectionHandlerReview DerivedMappedConsumer
+    | MappedProjectionRebuild DerivedMappedConsumer Name
+```
+
+This is the point of the feature. Changing a mapped declaration can mean *recompile your code*, or
+*upcast persisted event history*, or *drain a queue*, or *rebuild a projection* — and those have
+completely different adoption costs. Collapsing them into one "breaking" verdict is what made the old
+reports unusable.
+
+<Callout type="info">
+  Adoption guidance separates them accordingly: event upcasting, queue drains or transitional codecs,
+  query-caller recompilation, projection review/rebuild, snapshot hydration, and application-owned SQL
+  migration are each a distinct decision.
+</Callout>
+
+<Callout type="warn">
+  **Public contracts and heterogeneous `category`/`all` projection sources remain explicit unsupported
+  boundaries**, reported as `UnsupportedProjectionSource` rather than silently inferred as consumers.
+  A derived consumer is only claimed where the graph can prove it.
+</Callout>
+
+### Semantic locality
+
+Regeneration is now **semantically local**. An aggregate harness follows only checked command,
+private-event, register, workqueue, read-model-query, and aggregate-derived-projection reachability.
+Declaration-wide laws move to one context-owned `StructuralConformance` module, so an unrelated
+declaration elsewhere in the workspace no longer perturbs a harness.
+
+### `BehaviorSourceMap`
+
+One generated context module resolves frozen behavior keys to an **exact current file, line, and
+column**. Aggregate behavior contracts and fresh create-once witness comments no longer embed
+volatile line numbers; source movement changes the map while failures and
+[`behavior-obligations`](/docs/keiro/reference/keiro-dsl-cli#behavior-obligations) still report the
+current exact position.
+
+Three diagnostics guard it: `BehaviorSourceAnchorMissing`, `BehaviorSourceAnchorInexact`, and
+`BehaviorSourceAnchorCollision`. `WorkspaceSourceIndexInvalid` reports a workspace whose composed
+source index cannot be trusted.
+
+<Callout type="warn">
+  **Breaking in Keiro 0.12.0.0 — regenerate once.** Each mapped service must be regenerated, its
+  generated Cabal fragment reconciled with the new context `StructuralConformance` and
+  `BehaviorSourceMap` modules, the runtime package recompiled, and its generated service conformance
+  target run. Scaffold ledgers gain an additive `semantic-impact` baseline.
+
+  This changes **generated layout and evidence only**. Wire, fold, snapshot, and behavior-key
+  identities are unchanged.
+</Callout>
+
+`MappedReadModelLoweringPending` reports a mapped read-model query position whose lowering is not yet
+available, and `ReadModelQueryInputChanged` / `ReadModelQueryResultChanged` are the `diff` codes for
+the two query positions.
+
 ## Related
 
 - [keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) — `--explain-bindings`, coverage gates, and
   `--codec-comparison`.
+- [Projection catalog](/docs/keiro/reference/projection-catalog) — the runtime the language-5 catalog
+  nodes lower to.
 - [Service workspaces](/docs/keiro/reference/keiro-dsl-workspaces) — sharing mapped declarations across
   several `.keiro` files.
 - [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) — the hand-owned-hole workflow.

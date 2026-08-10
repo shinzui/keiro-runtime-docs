@@ -29,23 +29,31 @@ resume-worker analogue of the `fire` action `runTimerWorker` takes:
 ## `resumeWorkflowsOnce`: one discover-and-reinvoke pass
 
 ```haskell
-resumeWorkflowsOnce opts registry = do
+resumeWorkflowsOnceUpTo limit opts registry = do
   pending <- countPendingAwakeables                       -- EP-44 gauge sample, once per pass
   recordWorkflowAwakeablesPending mMetrics (fromIntegral pending)
-  now <- getCurrentTime
-  unfinished <- findUnfinishedWorkflowIds now             -- non-terminal keiro_workflows rows due now
-  runningChildren <- findRunningChildIds                  -- freshly-spawned, zero-step children
-  let pairs = nub (unfinished <> runningChildren)
-      seed = emptyResumeSummary { discovered = length pairs }
-  owner <- UUIDv4.nextRandom
-  foldM (advance owner) seed pairs
+  now <- liftIO getCurrentTime
+  pairs <- take (max 0 limit) <$> findUnfinishedWorkflowIds now
+  let seed = emptyResumeSummary {discovered = length pairs}
+  owner <- UUID.toText <$> liftIO UUIDv4.nextRandom
+  deltas <- advanceAll owner pairs
 ```
 
-Discovery **unions two sources**: the due instance query from
-[chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery), and the
-running-children query from [chapter 06](/docs/keiro/walkthrough/durable-execution/06-child-workflows)
-— so a child with a link row but no step rows yet is still driven. `nub` collapses a child that appears
-in both. The comment names the discovery boundary that gives this surface zero upstream dependency:
+`resumeWorkflowsOnce` is `resumeWorkflowsOnceUpTo maxBound`; the bound exists so an operator surface
+can run a *capped* pass.
+
+Discovery is now a **single** query. Since Keiro 0.12.0.0 it is
+[exact](/docs/keiro/reference/durable-workflows#discovery-is-exact): an instance is returned only when
+its row says it has progress to make. The union with `findRunningChildIds` is gone — `spawnChild`
+upserts the child's instance row as `running` inside the spawn step's transaction, so a zero-step
+child is already visible here without a second source. (Migration `0011` backfilled the running
+children that predate the instance table.)
+
+`advanceAll` replaces the old `foldM`: it advances up to `maxConcurrentAdvances` candidates at a time
+and combines per-candidate deltas through `ResumeSummary`'s `Monoid`, so the pass total does not
+depend on the order candidates finish in.
+
+The comment names the discovery boundary that gives this surface zero upstream dependency:
 
 > Discovery is the `findUnfinishedWorkflowIds` index query only — **no kiroku `wf:` prefix
 > subscription** is used or needed.

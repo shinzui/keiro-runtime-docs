@@ -265,8 +265,16 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 | `keiro.timer.attempts` | Histogram | `{attempt}` | `recordTimerAttempts` | Timer worker, per claimed timer — the post-claim attempt count. |
 | `keiro.timer.stuck` | Gauge | `{timer}` | `recordTimerStuck` | Timer worker, once per pass — timers stranded in `firing`. |
 | `keiro.timer.requeued` | Counter | `{timer}` | `recordTimerRequeued` | Timer worker — stale `firing` rows moved back to `scheduled`. |
-| `keiro.projection.lag` | Gauge | `{event}` | `recordProjectionLag` | `recordProjectionLag` (application-driven) — events between the log head and a projection's checkpoint. |
+| `keiro.projection.global_position_distance` | Gauge | `{position}` | `recordProjectionGlobalPositionDistance` | Global position distance between the captured store position and a projection's slowest durable member checkpoint. |
+| `keiro.projection.lag` | Gauge | `{position}` | `recordProjectionLag` | **Deprecated** compatibility alias for the gauge above, with the same position-unit value. See [the rename](#keiroprojectionlag-is-deprecated). |
 | `keiro.projection.wait.timeouts` | Counter | `{timeout}` | `recordProjectionWaitTimeouts` | Read-model `waitFor` — calls that timed out before the projection caught up. |
+| `keiro.projection.rebuild.starts` | Counter | `{run}` | `recordProjectionRebuildStarts` | Catalog projection rebuild runs started. |
+| `keiro.projection.rebuild.resumes` | Counter | `{run}` | `recordProjectionRebuildResumes` | Catalog projection rebuild invocations resumed. |
+| `keiro.projection.rebuild.pages` | Counter | `{page}` | `recordProjectionRebuildPages` | Catalog replay chunks committed. |
+| `keiro.projection.rebuild.events` | Counter | `{event}` | `recordProjectionRebuildEvents` | History events committed through catalog replay chunks. |
+| `keiro.projection.rebuild.failures` | Counter | `{failure}` | `recordProjectionRebuildFailures` | Catalog replay decode, invariant, or verification failures. |
+| `keiro.projection.rebuild.promotions` | Counter | `{run}` | `recordProjectionRebuildPromotions` | Catalog rebuild groups promoted after completion proof. |
+| `keiro.projection.rebuild.page.duration` | Histogram | `ms` | `recordProjectionRebuildPageDuration` | Elapsed time to read and commit one replay chunk. |
 | `keiro.command.conflicts` | Counter | `{conflict}` | `recordCommandConflicts` | Command runners — optimistic-concurrency conflicts observed. |
 | `keiro.command.retries` | Counter | `{retry}` | `recordCommandRetries` | Command runners — retry attempts started after a conflict. |
 | `keiro.command.duplicates` | Counter | `{event}` | `recordCommandDuplicates` | Command runners — appends rejected as duplicate deterministic event ids. |
@@ -283,14 +291,46 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 | `keiro.dispatch.duplicates` | Counter | `{command}` | `recordDispatchDuplicate` | Process-manager/router workers — deterministic command ids skipped as duplicates. |
 | `keiro.dispatch.poison` | Counter | `{message}` | `recordDispatchPoison` | Process-manager/router workers — messages classified as poison by the decode seam. |
 
+### `keiro.projection.lag` is deprecated
+
+`keiro.projection.lag` never counted events, but its name and its old `{event}` unit both claimed it
+did. The value is the arithmetic difference between the captured store cursor and a projection's
+slowest durable member checkpoint — a distance between two **positions**.
+
+That distinction matters because a global cursor may be sparse. For a filtered, category,
+hard-deleted, or sharded history, the positions between the checkpoint and the head are not all
+events the projection would have processed, so reading the gauge as a backlog count overstates it,
+sometimes wildly.
+
+| | Preferred | Deprecated alias |
+|---|---|---|
+| Instrument | `keiro.projection.global_position_distance` | `keiro.projection.lag` |
+| Unit | `{position}` | `{position}` (was `{event}`) |
+| Recorder | `recordProjectionGlobalPositionDistance` | `recordProjectionLag` |
+
+Both are recorded from the same inventory snapshot and carry the same value, so migrating a dashboard
+is a rename with no re-scaling. The alias is a **one-series compatibility shim, not permission to
+retain the event-count interpretation.**
+
+<Callout type="info">
+  A true relevant-event lag needs a compatible frontier and definition exported by the library that
+  owns the history. Until one exists, report this as a position distance.
+</Callout>
+
+<Callout type="warn">
+  `KeiroMetrics` gained eight fields in 0.12.0.0 — `projectionGlobalPositionDistance` and the seven
+  `projectionRebuild*` instruments. Code that constructs that record **directly** must initialize
+  them; code that builds it with `newKeiroMetrics` is unaffected.
+</Callout>
+
 The worker entry points thread the handle for you: the [timer worker](/docs/keiro/reference/timers#runtimerworker)
 records the backlog, stuck, fire-lag, and attempts instruments inside each pass; the
 [outbox](/docs/keiro/reference/outbox) publisher records publish outcome counters while
 `outboxMaintenancePass`/`sampleOutboxBacklog` record reclaim and backlog gauges; the
 [inbox](/docs/keiro/reference/inbox) helpers record per-message result counters while
 `sampleInboxBacklog` records the backlog gauge; and the projection path exposes
-[`recordProjectionLag`](/docs/keiro/reference/projection#projection-lag) for the application to
-call on its drain loop. Command runners use `RunCommandOptions.metrics` for conflicts, retries,
+[`recordProjectionGlobalPositionDistance`](/docs/keiro/reference/projection#projection-lag) for the
+application to call on its drain loop. Command runners use `RunCommandOptions.metrics` for conflicts, retries,
 duplicates, snapshot lookup, strict encode/write failures, and both divergence counters. Workflow
 runners use `WorkflowRunOptions.metrics` for their nine workflow instruments and for advisory
 post-journal snapshot write failures. See

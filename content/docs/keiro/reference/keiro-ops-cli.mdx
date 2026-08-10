@@ -1,0 +1,203 @@
+---
+title: "keiro-ops CLI"
+description: "Reference for the keiro-ops operational console: the command tree, global options, the two-phase preview/force contract, schema-drift gating, exit codes, and the AppHooks embedding surface."
+---
+
+`keiro-ops` is a standalone database-only console **and** an embeddable command library for operating
+a Keiro deployment. *New in Keiro 0.12.0.0.*
+
+Every command is a thin adapter over an exported operation from the library that owns the affected
+state. A command never reproduces a supported mutation with ad hoc SQL and never touches another
+library's private tables — when an operator primitive is missing, it is added and tested in the owning
+library first.
+
+## Invocation
+
+```console
+keiro-ops [GLOBAL OPTIONS] <domain> <command> [ARGS]
+```
+
+<TypeTable
+  type={{
+    "--database-url URL": { type: "Maybe Text", default: "environment", description: "PostgreSQL URI or keyword/value string. Falls back to KEIRO_OPS_DATABASE_URL, then DATABASE_URL, then the libpq PG* variables." },
+    "--json": { type: "flag", default: "human table", description: "Emit machine-readable JSON. JSON and the human table are alternative renderings of the same structured handler result, so scripts never depend on terminal formatting." },
+    "--force": { type: "flag", default: "off", description: "Apply a mutating command after its preview. Without it, a destructive command previews and exits unsuccessfully." },
+    "--allow-schema-drift": { type: "flag", default: "off", description: "Allow a mutating command despite a failed schema agreement check. Required in addition to --force." },
+  }}
+/>
+
+## Safety rails
+
+### Two-phase destructive commands
+
+Every destructive command has two phases, and there is no way to skip the first:
+
+1. **Without `--force`** it performs only the supported read or preview path, renders the rows or
+   objects that *would* be affected, prints the exact force-enabled re-invocation, and **exits
+   unsuccessfully without mutating anything.**
+2. **With `--force`** it calls the supported mutation and reports the actual outcome — including
+   idempotent no-ops and already-terminal states.
+
+```console
+$ keiro-ops wf cancel orderFulfillment ord-42
+… renders what would be cancelled …
+preview only; re-run with --force: keiro-ops wf cancel orderFulfillment ord-42 --force
+$ echo $?
+1
+```
+
+<Callout type="info">
+  The preview exit status is **1**, deliberately. A preview that has not been applied is not a
+  success, so a script that forgets `--force` fails its step rather than silently continuing as if
+  the mutation happened.
+</Callout>
+
+### Schema verification
+
+Before opening the operational environment, the executable verifies the live Keiro schema with
+`Keiro.Migrations.SchemaCheck.verifyExpectedSchema`.
+
+| Command kind | On drift |
+|---|---|
+| Read-only | continues, after rendering drift warnings |
+| Mutating | **refuses** by default; requires `--allow-schema-drift` *in addition to* `--force` |
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `1` | operational failure, or a preview that was not applied |
+| `2` | usage error (unknown command, bad arguments) |
+
+## The command tree
+
+Nine domains are always present and database-only. Two more appear **only** when the embedding binary
+mounts the corresponding hook.
+
+### `wf` — durable workflows
+
+| Command | Purpose |
+|---|---|
+| `list` | list instances with stable keyset paging |
+| `show` | show an instance, its children, and its awakeables |
+| `steps` | show the derived step index for one generation |
+| `journal` | decode one workflow journal generation in order |
+| `awakeable show \| signal \| cancel` | inspect, signal, or cancel an awakeable |
+| `cancel` | preview or cancel a workflow at its next durable boundary |
+| `resurrect` | preview or resurrect a terminally failed workflow |
+| `lease release` | preview or forcibly release an instance lease |
+| `gc run-once` | preview or run one bounded garbage-collection pass |
+| `resume-once` | preview or run one bounded application-registry resume pass *(requires the `workflowResume` hook)* |
+
+These wrap the [operator lifecycle APIs](/docs/keiro/reference/durable-workflows#operator-lifecycle-apis)
+and inherit the runtime's race and append-only behaviour. In particular, linked-child cancellation
+wakes the parent with the typed cancellation result — which is exactly why the CLI delegates instead
+of reproducing that transaction.
+
+### `timer` — durable timers
+
+`stuck`, `requeue`, `cancel`, `dead-letter`, `list`, and `drain-once` *(requires the `timerFire`
+hook)*.
+
+### `outbox` — transactional outbox
+
+`backlog`, `list`, `show`, `requeue-stuck`, `gc-sent`, `maintenance-pass`, and `dead-letters list`.
+
+### `inbox` — integration-event inbox
+
+`backlog`, `list`, `show`, `gc`, and `mark-failed`.
+
+### `pgmq` — Keiro PGMQ queues
+
+`dlq`, `read`, `redrive`, `archive`, and `purge`.
+
+### `projection` — projection state
+
+`position` and `prune-dedup`.
+
+`projection position --subscription NAME` preserves durable consumer-group member rows and reports
+the captured store cursor. The derived subtraction is labelled
+**`global_position_distance`** — never event lag, backlog, or "events behind". See
+[the deprecation note](/docs/keiro/reference/telemetry#keiroprojectionlag-is-deprecated).
+
+### `shard` — sharded-subscription ownership
+
+`status` and `relinquish`.
+
+### `snapshot` — advisory snapshots
+
+`show`, `delete`, and `truncation-preflight`.
+
+### `stream` — Kiroku streams
+
+`show`, `soft-delete`, `undelete`, `hard-delete`, `truncate-before set | clear`, `causation`, and
+`subscriptions`.
+
+`stream show` takes `--from VERSION` (exclusive cursor, default `0`) and `--limit N` (default `100`).
+`truncate-before set` runs a snapshot preflight before offering to write the reversible visibility
+marker.
+
+`stream subscriptions` is read-only and database-only. It calls Kiroku's
+`subscriptionCheckpointInventory` and preserves every member row: a subscription-wide checkpoint is
+the **minimum across matching members**, and member zero does not tell you whether the subscription is
+grouped.
+
+### `replay-audit` — *(hook-gated)*
+
+Audits candidate-code replay against configured targets. Present only when the embedding binary
+supplies an `OpsAuditConfig`. See [Replay audit](/docs/keiro/reference/replay-audit).
+
+### `rebuild` — projection catalog *(hook-gated)*
+
+`list`, `preview`, `start`, `status`, `resume`, and `abandon`.
+
+Present only when the embedding binary mounts a
+[`ProjectionCatalogOperations`](/docs/keiro/reference/projection-catalog#operator-adapter). Because
+that adapter derives everything from one `ValidatedProjectionCatalog`, these commands **cannot** be
+given replacement targets, sources, handlers, subscriptions, or dedup lists.
+
+## Embedding
+
+The standalone binary exposes only database-only commands. Commands that need application code are
+mounted through explicit hooks — the CLI never invents a database representation of an
+application-owned value.
+
+```haskell
+data AppHooks = AppHooks
+  { workflowResume    :: Maybe ResumeHook
+  , timerFire         :: Maybe TimerFire
+  , replayAudit       :: Maybe OpsAuditConfig
+  , projectionCatalog :: Maybe ProjectionCatalogOperations
+  }
+
+emptyAppHooks :: AppHooks
+
+main          :: IO ()
+mainWithHooks :: AppHooks -> IO ()
+
+opsCommandTree   :: AppHooks -> ParserInfo OpsInvocation
+runOpsInvocation :: AppHooks -> OpsInvocation -> IO ExitCode
+```
+
+An embedding binary is usually four lines:
+
+```haskell
+module Main (main) where
+
+import Keiro.Ops qualified as Ops
+
+main :: IO ()
+main = Ops.mainWithHooks Ops.emptyAppHooks { Ops.projectionCatalog = Just myCatalogOps }
+```
+
+`opsCommandTree` and `runOpsInvocation` are exposed separately so a future TUI or web console can
+reuse the handlers. Reusing them does **not** grant permission to bypass the library boundary: a
+console still calls the owning library's exported operations.
+
+<Cards>
+  <Card title="Operate a deployment with keiro-ops" href="/docs/keiro/how-to/operate-a-deployment-with-keiro-ops" />
+  <Card title="Durable workflows" href="/docs/keiro/reference/durable-workflows" />
+  <Card title="Projection catalog" href="/docs/keiro/reference/projection-catalog" />
+  <Card title="Migrations and schema" href="/docs/keiro/reference/migrations-and-schema" />
+</Cards>

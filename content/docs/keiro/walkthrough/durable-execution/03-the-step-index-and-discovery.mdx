@@ -111,17 +111,44 @@ The lease and attempt fields are operational state for the resume worker. `claim
 `next_attempt_at` to an exponential backoff. `releaseInstance owner progressed ...` clears the lease;
 when `progressed` is true it also resets attempts and errors.
 
-## `findUnfinishedWorkflowIds`: due instance discovery
+## `findUnfinishedWorkflowIds`: exact instance discovery
 
-The query the resume worker is built on is now simple lifecycle discovery:
+The query the resume worker is built on returns an instance only when its row says it has progress to
+make:
 
 ```sql
 SELECT workflow_id, workflow_name
-FROM keiro_workflows
-WHERE status NOT IN ('completed', 'cancelled', 'failed')
-  AND (wake_after IS NULL OR wake_after <= $1)
+FROM keiro.keiro_workflows
+WHERE status = 'running'
+   OR (status = 'suspended' AND wake_after IS NOT NULL AND wake_after <= $1)
 ORDER BY workflow_name, workflow_id
 ```
+
+Read the two arms carefully, because the shape is deliberate.
+
+Until Keiro 0.12.0.0 this was a *negative* predicate — `status NOT IN ('completed','cancelled',
+'failed') AND (wake_after IS NULL OR wake_after <= $1)` — which returned every parked workflow on
+every pass. Each one was claimed, replayed, found still suspended, and re-suspended. Idle cost scaled
+with the number of parked workflows.
+
+Now a `suspended` instance with no due hint is **invisible**. A workflow waiting on an awakeable, a
+child, or a future-dated sleep costs the resume worker nothing until something happens to it.
+
+<Callout type="info">
+  **Both arms are stated positively for a reason.** That is the only form from which PostgreSQL can
+  prove partial-index applicability — the planner never consults the table's `CHECK` constraint to
+  discover that `status NOT IN (…)` implies `status IN ('running','suspended')`. Stated this way the
+  query plans as an index scan on `keiro_workflows_active_idx`, which migration `0021` widened to
+  `(status, wake_after)` so the second arm can be served too.
+</Callout>
+
+<Callout type="warn">
+  The cost of exactness is that the instance row becomes the **complete wake ledger**. Every
+  wake-source lifecycle transition must leave the owning instance discoverable in the same
+  transaction — a source that transitions its own row without doing so strands its workflow forever.
+  The old broad poll hid that bug; this query cannot. See
+  [Write a custom wake source](/docs/keiro/how-to/write-a-custom-wake-source).
+</Callout>
 
 The explicit timestamp makes `wake_after` a self-expiring skip, and the hint has exactly one writer
 and one clearer:

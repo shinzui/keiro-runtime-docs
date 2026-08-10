@@ -382,5 +382,59 @@ Short answers to the questions people ask most about keiro. Each links to the pa
 
     Event wire bytes and canonical nominal identities are unchanged throughout. See [place generated
     modules](/docs/keiro/how-to/place-generated-modules-and-wire-cabal).
+
+    **Keiro 0.12** adds one more: every mapped service needs a single regeneration to pick up the new
+    context `StructuralConformance` and `BehaviorSourceMap` modules, and its generated Cabal fragment
+    must be reconciled with them. Generated layout and evidence change; wire, fold, snapshot, and
+    behavior-key identities do not.
+  </Accordion>
+
+  <Accordion title="After upgrading to 0.12, one of my workflows never resumes. What happened?">
+    Almost certainly a **custom wake source** that transitions its own durable row without leaving the
+    owning instance discoverable.
+
+    Since 0.12, [discovery is
+    exact](/docs/keiro/reference/durable-workflows#discovery-is-exact): a `suspended` instance with no
+    due `wake_after` is deliberately invisible to the resume worker. That is what makes parked
+    workflows free — but it means the `keiro_workflows` row is now the complete wake ledger. Every
+    wake-source lifecycle transition must write that row in the **same transaction** that performs it.
+
+    Delivering through `appendJournalEntry` satisfies this automatically. A transition that does *not*
+    append — a cancellation, an abandonment, an expiry — must flip the instance row itself. Check with:
+
+    ```sql
+    SELECT status, wake_after FROM keiro.keiro_workflows
+    WHERE workflow_name = $1 AND workflow_id = $2;
+    ```
+
+    `suspended` with a `NULL` hint, while your own row says the wait is resolved, is the signature.
+    See [Write a custom wake source](/docs/keiro/how-to/write-a-custom-wake-source).
+  </Accordion>
+
+  <Accordion title="Did the 0.12 deterministic-id change move any of my ids?">
+    **Not if your identities are ASCII** — which covers every deployment we know of.
+
+    Deterministic ids are now hashed from the UTF-8 bytes of their seed rather than each character's
+    codepoint truncated to eight bits. For a pure-ASCII seed the UTF-8 bytes *are* the codepoint
+    values, so every id is byte-identical. There is no migration and no operator action.
+
+    Only **non-ASCII** seeds derive new ids, and they move off a genuine collision: the old encoding
+    gave two different seeds the same id whenever their characters agreed modulo 256, which could wedge
+    a workflow journal until the resume worker marked it failed. In-flight consequences are bounded —
+    a journal still replays, a sleep may arm one duplicate timer that collapses idempotently, and a
+    retried process-manager emission may emit one duplicate command. See [deterministic
+    ids](/docs/keiro/reference/durable-workflows#deterministic-ids-hash-utf-8-seed-bytes).
+  </Accordion>
+
+  <Accordion title="Should I switch my dashboards off keiro.projection.lag?">
+    **Yes** — rename them to `keiro.projection.global_position_distance`. Both gauges are recorded
+    from the same snapshot with the same value, so it is a rename with no re-scaling.
+
+    The old name claimed something false. The value is the difference between the captured store
+    cursor and a projection's slowest durable member checkpoint — a distance between two **positions**,
+    not a count of events. A global cursor can be sparse for a filtered, category, hard-deleted, or
+    sharded history, so reading it as a backlog count overstates it, sometimes wildly. Its unit changed
+    from `{event}` to `{position}` to stop implying otherwise. See [the deprecation
+    note](/docs/keiro/reference/telemetry#keiroprojectionlag-is-deprecated).
   </Accordion>
 </Accordions>

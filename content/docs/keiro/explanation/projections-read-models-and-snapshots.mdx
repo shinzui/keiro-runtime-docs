@@ -119,6 +119,35 @@ then return `AsyncFenced`. The rebuilder reads ordered events from the chosen lo
 `finishRebuild`. It never hydrates an aggregate or consults `keiro_snapshots`. This is an offline
 in-place workflow, not a shadow-table swap.
 
+### One table at a time is not always enough
+
+That lifecycle assumes the unit of rebuild is **one read model and one table**. Real read sides
+outgrow the assumption, and the failure is not subtle: several foreign-key-related tables must leave
+service, reset, replay, verify, and return **together**, or a query run between two of their rebuilds
+observes a state neither version ever produced.
+
+The pre-0.12 API also conflated identities with genuinely different cardinalities. `ReadModel q r`
+bundles a logical query contract with one table and one subscription name, while
+`InlineProjection`/`AsyncProjection` carry handlers and rebuild callers pass yet another list of
+projection names. Nothing compared the three, so an application could register one inventory, execute
+a second, and rebuild a third.
+
+The [projection catalog](/docs/keiro/reference/projection-catalog) separates four identities —
+**query model**, **target**, **rebuild group**, and **projection** — and makes the rebuild group the
+atomic lifecycle and writer-fence unit. Two consequences are worth internalising:
+
+- **Reset policy is independent from replay policy.** Whether a table is cleared before replay is a
+  different question from whether its handler is safe to replay. A brownfield table with history that
+  cannot be reconstructed is *preserved and reconciled*; a handler with an external side effect is
+  *live-only* and must never replay. The two axes cross, and collapsing them is what forces the
+  awkward workarounds.
+- **Ownership is exactly one projection per target.** Validation rejects an unowned target and a
+  multiply-owned one, because a table with two writers has no coherent rebuild.
+
+The single-read-model lifecycle above remains supported as an explicitly *unmanaged* bridge — wrapped
+in `UnmanagedReadModel` and friends so a reader can see which parts of a service the catalog does not
+govern.
+
 Continue with [Consistency and snapshots](/docs/keiro/explanation/consistency-and-snapshots), build
 the runtime path in [Your first read model](/docs/keiro/tutorials/your-first-read-model), or declare
 the table/registry/query facts with [Author a registered read model and

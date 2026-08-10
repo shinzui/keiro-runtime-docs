@@ -220,8 +220,15 @@ data KafkaDeliveryRef = KafkaDeliveryRef { topic :: !Text, partition :: !Int64, 
 Delete completed inbox rows older than `keepFor` from `now`; returns the number deleted.
 
 ```haskell
-garbageCollectCompleted :: (Store :> es) => NominalDiffTime -> UTCTime -> Eff es Int
+garbageCollectCompleted        :: (Store :> es) => NominalDiffTime -> UTCTime -> Eff es Int
+listCompletedInboxGcCandidates :: (Store :> es) => NominalDiffTime -> UTCTime -> Eff es [InboxRow]
 ```
+
+`listCompletedInboxGcCandidates` is the read-only operator **preview** for the same retention window:
+it lists the completed rows a pass would delete, oldest first, without deleting anything. It backs
+[`keiro-ops inbox gc`](/docs/keiro/reference/keiro-ops-cli#inbox--integration-event-inbox), so an
+operator surface never reproduces the eligibility query. A later `garbageCollectCompleted` re-evaluates
+eligibility, so the preview is informational rather than a reservation. *New in Keiro 0.12.0.0.*
 
 <Callout type="warn">
 The retention window **is** the duplicate-detection window: a redelivery arriving after GC has run

@@ -1,0 +1,135 @@
+---
+title: "Operate a deployment with keiro-ops"
+description: "Connect the keiro-ops console to a deployment, read its state safely, apply a mutation through the two-phase preview/force contract, and mount application hooks for the commands the standalone binary cannot offer."
+---
+
+You need to inspect or repair a running Keiro deployment — a stuck workflow, a stalled outbox, a
+projection that needs rebuilding — without writing ad hoc SQL against framework tables.
+[`keiro-ops`](/docs/keiro/reference/keiro-ops-cli) is the supported way. *New in Keiro 0.12.0.0.*
+
+<Callout type="info">
+  Assumes the deployment's schema is already migrated. If `keiro-ops` refuses at startup, run
+  [`keiro-migrate`](/docs/keiro/how-to/run-migrations) first.
+</Callout>
+
+## Goal
+
+A console session that can read any framework state, and can apply a mutation only after you have
+seen exactly what it would touch.
+
+## Steps
+
+1. **Point it at the database.** Precedence is `--database-url`, then `KEIRO_OPS_DATABASE_URL`, then
+   `DATABASE_URL`, then the libpq `PG*` variables.
+
+   ```console
+   export KEIRO_OPS_DATABASE_URL='host=/tmp port=5432 dbname=service user=service_ops'
+   keiro-ops wf list --json
+   ```
+
+   Use a role with the narrow privileges the operation needs. A read-only session does not need the
+   schema owner.
+
+2. **Read before you write.** Every domain has a read command, and reads never require `--force`:
+
+   ```console
+   keiro-ops wf show orderFulfillment ord-42
+   keiro-ops outbox backlog
+   keiro-ops timer stuck
+   keiro-ops stream subscriptions
+   ```
+
+3. **Preview the mutation.** Run the destructive command *without* `--force`. It renders the affected
+   rows, prints the exact re-invocation, and exits **1** without touching anything.
+
+   ```console
+   $ keiro-ops wf cancel orderFulfillment ord-42
+   … the instance, its children, and its awakeables …
+   preview only; re-run with --force: keiro-ops wf cancel orderFulfillment ord-42 --force
+   ```
+
+4. **Read the preview, then apply.** This is the decision the reference cannot make for you: the
+   preview is the last point at which a typo is free.
+
+   ```console
+   keiro-ops wf cancel orderFulfillment ord-42 --force
+   ```
+
+   The result reports the actual outcome, including idempotent no-ops and already-terminal states —
+   cancelling an already-completed workflow tells you so and preserves its history.
+
+## Handling schema drift
+
+`keiro-ops` verifies the live schema before opening the operational environment.
+
+- **Read-only commands** continue after printing drift warnings. Trust the reads, but treat the
+  warning as a deployment bug.
+- **Mutating commands refuse.** Overriding needs `--allow-schema-drift` *in addition to* `--force`.
+
+```console
+keiro-ops timer requeue --force --allow-schema-drift
+```
+
+<Callout type="warn">
+  Reach for `--allow-schema-drift` only when you have read the drift report and understand why the
+  live schema disagrees with the embedded expectation. The usual correct response is to finish the
+  interrupted migration instead.
+</Callout>
+
+## Scripting it
+
+`--json` renders the same structured result as the human table, so a script never parses terminal
+formatting:
+
+```console
+keiro-ops wf list --json | jq '.[] | select(.status == "failed") | .workflowId'
+```
+
+Exit codes are stable: `0` success, `1` operational failure **or an unapplied preview**, `2` usage
+error. A script that omits `--force` therefore fails its step rather than continuing as if the
+mutation had happened.
+
+## Mounting application hooks
+
+The standalone binary exposes only database-only commands. Four commands need application code and
+appear only when their hook is mounted:
+
+| Hook | Unlocks |
+|---|---|
+| `workflowResume` | `wf resume-once` |
+| `timerFire` | `timer drain-once` |
+| `replayAudit` | the `replay-audit` domain |
+| `projectionCatalog` | the `rebuild` domain |
+
+Build a small embedding binary in your service:
+
+```haskell
+module Main (main) where
+
+import Keiro.Ops qualified as Ops
+import Keiro.Projection.Catalog.Operations (projectionCatalogOperations)
+
+main :: IO ()
+main =
+  Ops.mainWithHooks
+    Ops.emptyAppHooks
+      { Ops.projectionCatalog = Just (projectionCatalogOperations myValidatedCatalog)
+      , Ops.workflowResume = Just myResumeHook
+      }
+```
+
+Ship that alongside your service image; it is the same command tree with more domains.
+
+## Verify it worked
+
+1. `keiro-ops --help` lists nine domains for the standalone binary, plus any you mounted.
+2. A destructive command without `--force` exits 1 and changes nothing — confirm with a read command
+   before and after.
+3. `keiro-ops wf list --json | jq length` matches `SELECT count(*) FROM keiro.keiro_workflows`.
+
+<Cards>
+  <Card title="keiro-ops CLI reference" href="/docs/keiro/reference/keiro-ops-cli" />
+  <Card title="Rebuild a read model" href="/docs/keiro/how-to/rebuild-a-read-model" />
+  <Card title="Resurrect a failed workflow" href="/docs/keiro/how-to/resurrect-a-failed-workflow" />
+  <Card title="Migrations and schema" href="/docs/keiro/reference/migrations-and-schema" />
+</Cards>

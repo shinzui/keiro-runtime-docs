@@ -106,13 +106,44 @@ writer fence, table truncation, and checkpoint reset.
 ## Projection lag
 
 ```haskell
-recordProjectionLag ::
+recordProjectionGlobalPositionDistance ::
+  Maybe KeiroMetrics -> AsyncProjection -> Eff es ()
+
+recordProjectionLag ::                    -- deprecated compatibility alias
   Maybe KeiroMetrics -> AsyncProjection -> Eff es ()
 ```
 
-Call this from the application-owned drain loop, normally after applying a batch. It records
-`keiro.projection.lag` as the non-negative `$all` head minus the projection subscription checkpoint;
-`Nothing` makes it a no-op.
+Call this from the application-owned drain loop, normally after applying a batch. It records the
+captured store position minus the projection's slowest durable member checkpoint; `Nothing` makes it
+a no-op.
+
+<Callout type="warn">
+  **Prefer `recordProjectionGlobalPositionDistance` since Keiro 0.12.0.0.** The value is a distance
+  between two **positions**, not a count of events — a global cursor can be sparse for a filtered,
+  category, hard-deleted, or sharded history. `recordProjectionLag` remains as a one-series
+  compatibility alias recording the same value to the deprecated `keiro.projection.lag` gauge, whose
+  unit changed from `{event}` to `{position}`. See
+  [the deprecation note](/docs/keiro/reference/telemetry#keiroprojectionlag-is-deprecated).
+</Callout>
+
+## Catalog-aware application
+
+*New in Keiro 0.12.0.0.* When a service declares a
+[projection catalog](/docs/keiro/reference/projection-catalog), use the catalog-aware entry points so
+inline and async application respect the rebuild-group writer fence:
+
+```haskell
+runCommandWithCatalogProjections :: … -> Eff es ProjectionCommandOutcome
+applyAsyncProjectionFromCatalog  :: … -> Eff es CatalogAsyncApplyOutcome
+```
+
+Both take the same sorted group locks and return typed **fenced** outcomes without committing the
+append, the dedup write, or any target write. The uncatalogued functions above remain supported for
+services that have not adopted a catalog.
+
+Dedup maintenance gains per-projection forms, `countAsyncProjectionDedupForBefore` and
+`pruneAsyncProjectionDedupForBefore`, which back
+[`keiro-ops projection prune-dedup`](/docs/keiro/reference/keiro-ops-cli#projection--projection-state).
 
 See [Make an async projection idempotent](/docs/keiro/how-to/make-an-async-projection-idempotent)
 for a complete outcome handler and

@@ -23,18 +23,46 @@ frameworkMigrationPlan
 connection is acquired. Applications with PGMQ or application-owned components build the larger
 plan with `migrationPlan` or `resolveMigrationPlan`.
 
-The authoritative order is `keiro-migrations/migrations/manifest`. Keiro now contains **twenty**
-component-local migrations. The first sixteen preserve the historical schema changes, `0017` is a
-non-destructive native-runner canary, `0018` creates the rejected-dispatch dead-letter table, and the
-two newest are:
+The authoritative order is `keiro-migrations/migrations/manifest`. Keiro now contains
+**twenty-three** component-local migrations. The first sixteen preserve the historical schema
+changes, `0017` is a non-destructive native-runner canary, `0018` creates the rejected-dispatch
+dead-letter table, and the five newest are:
 
 | Migration | Change | Effect on existing rows |
 |---|---|---|
 | `0019-keiro-snapshots-state-shape-hash.sql` | adds `keiro.keiro_snapshots.state_shape_hash TEXT NOT NULL DEFAULT ''` — the third [snapshot discriminator](/docs/keiro/reference/snapshot#compatibility-is-a-three-component-discriminator) component | no derived hash is ever empty, so every pre-migration row misses **once**, full-replays, and is re-persisted with a real hash |
 | `0020-keiro-workflow-children-failure-reason.sql` | adds `keiro.keiro_workflow_children.failure_reason TEXT NULL` | nothing is backfilled or rewritten; pre-migration failed links fall back to the child instance's `last_error` |
+| `0021-keiro-workflows-exact-discovery.sql` | replaces `keiro.keiro_workflows_active_idx` with `(status, wake_after) WHERE status IN ('running','suspended')`, then runs one `UPDATE … SET status = 'running' WHERE status = 'suspended'` | **not additive.** Every pre-existing suspended instance returns to the runnable pool once, costing one extra replay each. See [exact discovery](#0021-exact-discovery-is-not-additive) below |
+| `0022.sql` | creates `keiro.keiro_projection_rebuild_groups`; adds `keiro.keiro_read_models.rebuild_group_id TEXT NOT NULL` with a foreign key and index | backfilled: every pre-catalog read model becomes a deterministic singleton group `$legacy-read-model:<name>` with catalog fingerprint `$legacy-unmanaged`. A non-`live` legacy state stays fenced — `rebuilding` stays `rebuilding`; `paused`, `abandoned`, and unknown values become `failed` with the raw state in `failure_detail` |
+| `0023.sql` | creates `keiro.keiro_projection_rebuild_runs`, `…_rebuild_sources`, `…_rebuild_adapters`, `…_rebuild_verifications`, and `keiro_projection_rebuild_runs_group_idx` | new tables only; no existing row is read or rewritten |
 
-Both are additive `ADD COLUMN IF NOT EXISTS`. Budget one full replay per snapshot-bearing stream at
-the `0019` cutover; snapshots are advisory, so this is a performance event, not a correctness one.
+`0019` and `0020` are additive `ADD COLUMN IF NOT EXISTS`. Budget one full replay per
+snapshot-bearing stream at the `0019` cutover; snapshots are advisory, so this is a performance
+event, not a correctness one.
+
+### `0021`: exact discovery is not additive
+
+`0021` is the only migration in the set that rewrites live workflow state, and it is the schema half
+of [exact workflow discovery](/docs/keiro/reference/durable-workflows#discovery-is-exact).
+
+The index swap itself is transparent — the predicate is unchanged, so every other reader of the
+active set is unaffected; only the indexed columns grow to carry `wake_after`, which is what lets
+the `suspended`-with-a-due-hint arm plan as an index scan.
+
+The `UPDATE` is the part to plan for. A legacy `suspended` row predates the rule that every
+wake-lifecycle transition writes the instance row, so it may be parked on a promise that was already
+cancelled, or on a transition nothing will ever flip again. Returning every suspended instance to
+`running` once lets the next resume pass re-examine it and re-suspend it through the new
+arbitration, which is what makes the row's status trustworthy from then on.
+
+<Callout type="warn">
+  **Cost:** one extra replay per legacy suspended instance, once. A deployment parked on many
+  long-lived suspended workflows will see a single elevated resume pass after `0021` applies. It is
+  bounded and does not repeat.
+</Callout>
+
+Rolling back the *code* alone is safe: broad discovery is a superset of exact discovery, and the
+`(status, wake_after)` index serves the old predicate too.
 
 ## Standard CLI
 
@@ -211,13 +239,18 @@ read models, reporting tables, and integration state in explicitly owned applica
 | `keiro.keiro_workflow_children` | parent/child workflow links, incl. the terminal `failure_reason` | [Durable workflows](/docs/keiro/reference/durable-workflows#tables) |
 | `keiro.keiro_subscription_shards` | sharded worker lease ownership | [Subscription sharding](/docs/keiro/reference/subscription-sharding) |
 | `keiro.keiro_dead_letters` | rejected process-manager/router target dispatches | [Inspect a rejected dispatch](/docs/keiro/how-to/inspect-a-rejected-dispatch) |
+| `keiro.keiro_projection_rebuild_groups` | catalog rebuild-group lifecycle and writer fence | [Projection catalog](/docs/keiro/reference/projection-catalog#the-durable-tables) |
+| `keiro.keiro_projection_rebuild_runs` | one rebuild run: captured head, page size, failure and verification evidence | [Projection catalog](/docs/keiro/reference/projection-catalog#the-durable-tables) |
+| `keiro.keiro_projection_rebuild_sources` | per-source replay cursor and target position | [Projection catalog](/docs/keiro/reference/projection-catalog#the-durable-tables) |
+| `keiro.keiro_projection_rebuild_adapters` | per-adapter evaluation/apply counts and participation proof | [Projection catalog](/docs/keiro/reference/projection-catalog#the-durable-tables) |
+| `keiro.keiro_projection_rebuild_verifications` | application-owned verification outcomes gating promotion | [Projection catalog](/docs/keiro/reference/projection-catalog#the-durable-tables) |
 
 Application roles need `USAGE` on `kiroku` and `keiro` plus the narrow table/sequence privileges
 their runtime uses. Migration jobs should use a schema-owner role before application startup.
 
 ## Compatibility boundaries
 
-- Keiro package release: `0.3.0.0`.
+- Keiro package release: `0.12.0.0`.
 - Native migration family: pg-migrate `1.1`.
 - Component identities: `kiroku/*` then `keiro/*`.
 - Ledger: `pgmigrate` schema v1 by default.

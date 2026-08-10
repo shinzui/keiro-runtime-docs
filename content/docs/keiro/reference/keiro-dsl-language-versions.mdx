@@ -72,6 +72,7 @@ data LanguageDefinition = LanguageDefinition
     , definitionSyntaxProfile :: !SyntaxProfile
     , definitionRuntimeSemanticsProfile :: !RuntimeSemanticsProfile
     , definitionSupport :: !LanguageSupport
+    , definitionMaturity :: !LanguageMaturity
     }
     deriving stock (Eq, Show, Generic)
 
@@ -82,33 +83,57 @@ lookupLanguageDefinition :: LanguageVersion -> Maybe LanguageDefinition
 languageSupportForVersion :: LanguageVersion -> Maybe LanguageSupport
 ```
 
-The registry is **append-only**. Four contracts are released:
+<Callout type="warn">
+  **Breaking in Keiro 0.12.0.0.** `LanguageDefinition` gained a seventh field, `definitionMaturity`,
+  and `LanguageSupport` gained a third constructor. Positional construction breaks, and an exhaustive
+  `case` over `LanguageSupport` must add the new arm.
+</Callout>
+
+Five contracts are registered:
 
 <TypeTable
   type={{
-    "1": { type: "syntax-profile/1 · runtime-semantics/1", description: "compatibility-only. The language frozen when versioning landed. No predecessor." },
-    "2": { type: "syntax-profile/2 · runtime-semantics/1", description: "compatibility-only. Adds nominal bindings, Integer scalars, typed aggregate expressions, and explicit transition implementation ownership." },
-    "3": { type: "syntax-profile/2 · runtime-semantics/2", description: "compatibility-only. Same syntax as 2; adds the enforced TypeID-v7 generated-ID domain and exact nominal equality." },
-    "4": { type: "syntax-profile/3 · runtime-semantics/3", description: "STABLE. Adds field alias syntax to 2's grammar; adds contract-field TypeID admission and strict spec-surface validation." },
+    "1": { type: "syntax-profile/1 · runtime-semantics/1", description: "compatibility-only, published. The language frozen when versioning landed. No predecessor." },
+    "2": { type: "syntax-profile/2 · runtime-semantics/1", description: "compatibility-only, published. Adds nominal bindings, Integer scalars, typed aggregate expressions, and explicit transition implementation ownership." },
+    "3": { type: "syntax-profile/2 · runtime-semantics/2", description: "compatibility-only, published. Same syntax as 2; adds the enforced TypeID-v7 generated-ID domain and exact nominal equality." },
+    "4": { type: "syntax-profile/3 · runtime-semantics/3", description: "compatibility-only, published. Adds field alias syntax to 2's grammar; adds contract-field TypeID admission and strict spec-surface validation." },
+    "5": { type: "syntax-profile/4 · runtime-semantics/4", description: "STABLE. Adds the projection-catalog and mapped-consumer-surface grammar; adds the ProjectionCatalogRuntime capability." },
   }}
 />
 
+### Published contracts and the active candidate
+
+The registry is **append-only for published entries**. An entry also carries a *maturity*, which is a
+different fact from its support level:
+
+```haskell
+data LanguageSupport = CompatibilityOnly | Stable | Candidate
+    deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+languageSupportText :: LanguageSupport -> Text   -- "compatibility-only" | "stable" | "candidate"
+
+data LanguageMaturity = PublishedLanguage | CandidateLanguage
+    deriving stock (Eq, Ord, Show)
+```
+
+A **published** entry is immutable — its parse and runtime meaning are a compatibility contract
+forever. A **candidate** entry is accepted for development and authoring but may still be corrected
+in place until it is published, and it is excluded from the fallback that resolves an unsupported
+declared version.
+
 <Callout type="warn">
-  **Accepted and stable are different registry facts.** `supportedLanguageVersions` enumerates every
-  accepted contract; `currentStableLanguageVersion` selects the **one** entry marked `Stable` and
-  *fails* if the registry ever contains zero or several. Versions 1–3 and `LegacyUnversioned` remain
-  fully readable with their immutable released meaning — designating a new stable version changes the
-  authoring and primary-test baseline, never the behaviour of a predecessor.
+  **Accepted, stable, and published are three different registry facts.**
+  `supportedLanguageVersions` enumerates every *accepted* contract. `currentStableLanguageVersion`
+  selects the one entry marked `Stable` and *fails* if the registry ever contains zero or several.
+  Maturity is queried separately.
 
-  ```haskell
-  data LanguageSupport = CompatibilityOnly | Stable
-      deriving stock (Eq, Ord, Show, Enum, Bounded)
-
-  languageSupportText :: LanguageSupport -> Text   -- "compatibility-only" | "stable"
-  ```
-
-  Since Keiro 0.9.0.0, language 4 is stable and every `keiro-dsl new <kind>` skeleton starts there.
+  Versions 1–4 and `LegacyUnversioned` remain fully readable with their immutable released meaning —
+  designating a new stable version changes the authoring and primary-test baseline, never the
+  behaviour of a predecessor.
 </Callout>
+
+Language 5 is the stable contract as of Keiro 0.12.0.0, and every `keiro-dsl new <kind>` skeleton
+starts there. No language 6 contract is allocated.
 
 Once a version is released, new syntax or semantics must be registered under a **successor** with its
 predecessor relation. Existing version parsers and their rejection fixtures are never widened.
@@ -128,6 +153,8 @@ data LanguageFeature
     | TypedAggregateExpressionSyntax
     | ExplicitTransitionImplementationSyntax
     | FieldAliasSyntax
+    | ProjectionCatalogSyntax
+    | MappedConsumerSurfaceSyntax
     deriving stock (Eq, Ord, Show)
 
 syntaxProfileIdentifier :: SyntaxProfile -> Text
@@ -142,6 +169,7 @@ languageSupportsFeature :: LanguageVersion -> LanguageFeature -> Bool
 | `keiro-dsl/syntax-profile/1` | *(empty)* |
 | `keiro-dsl/syntax-profile/2` | `NominalBindingSyntax`, `IntegerScalarSyntax`, `TypedAggregateExpressionSyntax`, `ExplicitTransitionImplementationSyntax` |
 | `keiro-dsl/syntax-profile/3` | all of profile 2, plus `FieldAliasSyntax` |
+| `keiro-dsl/syntax-profile/4` | all of profile 3, plus `ProjectionCatalogSyntax` and `MappedConsumerSurfaceSyntax` |
 
 Profiles are monotone: profile 3 is literally `Set.insert FieldAliasSyntax (profileFeatures
 profileV2)`. Keeping these gates beside the registry is what stops the parser growing an independent
@@ -205,6 +233,7 @@ data RuntimeCapability
     | NominalEqualityV2
     | ContractIdDomainTypeIdV7
     | StrictSpecSurfaceValidation
+    | ProjectionCatalogRuntime
     deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 runtimeProfileIdentifier :: RuntimeSemanticsProfile -> Text
@@ -226,8 +255,17 @@ The subtle part is fold identity. Each capability **exhaustively** chooses `Just
     NominalEqualityV2: { type: "Just \"semantic-contract:keiro-dsl/runtime-semantics/2\"", description: "Exact nominal equality — shares the runtime-semantics-2 segment." },
     ContractIdDomainTypeIdV7: { type: "Nothing", description: "Contract-field ID admission is a boundary check; it contributes no aggregate fold segment." },
     StrictSpecSurfaceValidation: { type: "Nothing", description: "Check-time validation only; contributes no aggregate fold segment." },
+    ProjectionCatalogRuntime: { type: "Just \"semantic-contract:keiro-dsl/projection-catalog/1\"", description: "Typed projection catalogs — contributes its own fold segment, so adopting language 5 changes aggregate fold identity." },
   }}
 />
+
+<Callout type="warn">
+  `ProjectionCatalogRuntime` is the first capability since runtime-semantics 2 to contribute a fold
+  segment, and it contributes a **new** one — `semantic-contract:keiro-dsl/projection-catalog/1`. A
+  service that moves to language 5 therefore changes its aggregate fold identity, which is a snapshot
+  and replay concern, not just a grammar upgrade. Plan it with
+  [Evolution and replayability](/docs/keiro/explanation/evolution-and-replayability).
+</Callout>
 
 A profile's segments are the **deduplicated ascending union** of its capabilities' segments. So
 adding a capability is a compile-time obligation to decide whether it changes replay behaviour —

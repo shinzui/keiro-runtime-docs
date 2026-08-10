@@ -236,6 +236,9 @@ readmodel transfer_decisions {
 | scope | omitted = `entire-log`; `entire-log` or `category "name"`, only with `Strong` |
 | feed | `inline` or `subscription` |
 | subscription | omitted = `<context>-<node-with-hyphens>-sub` |
+| `query input` / `query result` | language 5 only (`MappedConsumerSurfaceSyntax`); both required together |
+| `group` | language 5 only (`ProjectionCatalogSyntax`); names a `rebuild-group` |
+| `targets` | required **iff** `group` is present; the `target` nodes this query observes |
 
 The registry name is `<context>-<node_name_with_hyphens>`. Shape is FNV-1a-64 over the table and
 ordered `name:type:req|null` column surface. `check` prints the expected fixture on drift; changing
@@ -248,3 +251,128 @@ projection. Query operations, routers, and dispatches resolve the node and its d
 Generated: `ReadModelTable`, `ReadModel`, `ReadModelHarness`. Hand-owned: `ReadModelHoles` for inline
 apply, async apply, and query behavior. SQL must interpolate the generated qualified-table constant,
 not depend on `search_path`.
+
+## The projection catalog
+
+*New in Keiro 0.12.0.0, language 5.* Three top-level nodes — `target`, `rebuild-group`, and
+`projection-owner` — separate the four identities a read side actually has. They lower to
+[`Keiro.Projection.Catalog`](/docs/keiro/reference/projection-catalog), which is where the runtime
+semantics are specified; this section covers the notation.
+
+```keiro-dsl
+target account_summary_table {
+  schema = "public"
+  table = "account_summary"
+  reset = clear
+}
+
+rebuild-group reporting {
+  targets = [ account_summary_table ]
+  order = [ account_summary_table ]
+}
+
+projection-owner account_summary_writer {
+  source = category "account"
+  feed = subscription
+  group = reporting
+  targets = [ account_summary_table ]
+  order = 10
+  subscription = "mapped-readmodel-account-summary"
+  dedup = "mapped-readmodel-account-summary-v1"
+  replay = explicit
+}
+
+readmodel account_summary {
+  columns {}
+  query input = AccountLookup
+  query result = Optional AccountSummary
+  version = 1
+  shape = "fnv1a:3c07a19c552c3547"
+  consistency = Eventual
+  feed = subscription
+  group = reporting
+  targets = [ account_summary_table ]
+}
+```
+
+<Callout type="info">
+  Under language 5 a `readmodel`'s own `table` and `schema` clauses become **optional** — the physical
+  location moves to the `target` nodes it observes. A language-5 `readmodel` that declares neither is
+  a pure query contract.
+</Callout>
+
+### `target`
+
+One physical PostgreSQL table, owned by exactly one catalog group.
+
+| Clause | Values/default |
+|---|---|
+| `schema` | required string |
+| `table` | required string |
+| `reset` | `clear` or `preserve` |
+| `depends-on` | optional list of `target` names; default `[]` |
+
+`reset = clear` empties the table before replay; `reset = preserve` retains brownfield rows for an
+application-owned reconciliation adapter. `depends-on` declares foreign-key ordering within the group.
+
+### `rebuild-group`
+
+One atomic lifecycle unit: its targets leave service, reset, replay, verify, and return together.
+
+| Clause | Values/default |
+|---|---|
+| `targets` | required list of `target` names |
+| `order` | required list — the deterministic preparation order |
+
+`order` must be a permutation of `targets` and must not contradict any `depends-on` edge.
+
+### `projection-owner`
+
+One ordered live/replay handler declaration.
+
+| Clause | Values/default |
+|---|---|
+| `source` | `aggregate <Name>`, `category "name"`, or `all` |
+| `feed` | `inline` or `subscription` |
+| `group` | required `rebuild-group` name |
+| `targets` | required list of `target` names it owns |
+| `order` | required integer — handler order within the group |
+| `subscription` | optional string; required for `feed = subscription` |
+| `dedup` | optional string; required for `feed = subscription` |
+| `replay` | `explicit`, or `live-only "<reason>"` |
+
+`replay = explicit` means the projection has an application-owned replay adapter. `live-only`
+records a deliberate reason a projection must not be replayed — an external side effect, typically.
+
+<Callout type="warn">
+  A `target` declared `reset = clear` cannot be owned by a `live-only` projection: the rebuild would
+  truncate a table nothing can refill. `check` rejects that pair as `CatalogClearTargetLiveOnly`.
+</Callout>
+
+### Catalog validation codes
+
+`check` adds twenty-one structural codes for the catalog:
+
+| Concern | Codes |
+|---|---|
+| Group shape | `CatalogGroupUnknown`, `CatalogGroupEmpty`, `CatalogGroupOrderMismatch` |
+| Target ownership | `CatalogTargetUnowned`, `CatalogTargetMultiplyOwned`, `CatalogPhysicalTargetDuplicate` |
+| Target dependencies | `CatalogTargetDependencyUnknown`, `CatalogTargetDependencyOutsideGroup`, `CatalogTargetDependencyCycle` |
+| Projection shape | `CatalogProjectionNoSource`, `CatalogProjectionNoTarget`, `CatalogProjectionTargetOutsideGroup` |
+| Sources | `CatalogSourceUnresolved`, `CatalogSourceOverlap` |
+| Feed identity | `CatalogAsyncIdentityMissing`, `CatalogAsyncQueryBindingMissing`, `CatalogInlineIdentityUnexpected`, `CatalogDuplicateHandlerOrder` |
+| Replay safety | `CatalogClearTargetLiveOnly` |
+| Query binding | `CatalogReadModelBindingMissing`, `CatalogReadModelTargetOutsideGroup` |
+
+### Catalog evolution codes
+
+`diff` adds thirteen codes that report how a catalog changed between two specs:
+
+`CatalogTargetAdded`, `CatalogTargetRemoved`, `CatalogTargetLocationChanged`,
+`CatalogTargetResetPolicyChanged`, `CatalogTargetDependencyChanged`, `CatalogGroupChanged`,
+`CatalogOwnerChanged`, `CatalogOwnerRemoved`, `CatalogHandlerOrderChanged`, `CatalogSourceChanged`,
+`CatalogFeedIdentityChanged`, `CatalogReplayPolicyChanged`, and `CatalogQueryBindingChanged`.
+
+Target-dependency changes and handler-order changes are reported as **distinct** codes, because they
+have different operational consequences: one changes the preparation order inside a rebuild, the
+other changes which handler writes first at runtime.

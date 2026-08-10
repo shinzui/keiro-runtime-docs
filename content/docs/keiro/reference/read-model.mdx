@@ -120,10 +120,33 @@ deadline records `keiro.projection.wait.timeouts` when a metrics handle is suppl
 The related position helpers are:
 
 ```haskell
-readSubscriptionPosition :: Text -> Eff es (Maybe GlobalPosition)
-storeHeadPosition        :: Eff es GlobalPosition
-categoryHeadPosition     :: Text -> Eff es GlobalPosition
+readSubscriptionPosition          :: Text -> Eff es (Maybe GlobalPosition)
+storeHeadPosition                 :: Eff es GlobalPosition
+categoryHeadPosition              :: Text -> Eff es GlobalPosition
+subscriptionPositionFromInventory :: SubscriptionName -> SubscriptionCheckpointInventory -> Maybe GlobalPosition
 ```
+
+*Changed in Keiro 0.12.0.0.* `readSubscriptionPosition` and `storeHeadPosition` now consume Kiroku
+0.4's public **one-statement checkpoint inventory** instead of querying the owned table or inferring
+the head from a visible event.
+
+`subscriptionPositionFromInventory` derives a subscription's durable floor from an inventory snapshot:
+it is the **minimum across all matching consumer-group members**, so a grouped subscription reports
+the position every member has passed. Member zero does not tell you whether a subscription is grouped,
+which is why the minimum — not member zero — is the answer.
+
+## Catalog rebuilds
+
+*New in Keiro 0.12.0.0.* The single-read-model lifecycle below remains as an explicitly **unmanaged**
+bridge. A service that declares a [projection catalog](/docs/keiro/reference/projection-catalog) uses
+the catalog's rebuild groups instead, which fence a whole set of foreign-key-related tables as one
+atomic unit and derive dedup and checkpoint resets from the catalog rather than from caller-supplied
+lists.
+
+`Keiro.ReadModel.Rebuild` exports both surfaces. See
+[Projection catalog](/docs/keiro/reference/projection-catalog#durable-rebuild-groups) for
+`registerProjectionCatalog`, `beginGroupRebuild`, `finishGroupRebuild`, the resumable history runner,
+and the durable tables behind them.
 
 ## Registry lifecycle
 

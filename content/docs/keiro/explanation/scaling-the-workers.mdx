@@ -88,6 +88,50 @@ Dead letters are durable operator evidence. `replaySubscriptionDeadLetters` re-r
 domain-specific handler and reports fresh, duplicate, failed, or missing outcomes. It deliberately
 does not delete or mark the source rows.
 
+## Worker loops isolate failures
+
+*Stated as a contract in Keiro 0.12.0.0.* Every Keiro background worker loop obeys three rules. They
+are worth knowing even if you never write one, because they are what makes a worker's **silence**
+meaningful.
+
+**Isolate per pass.** The loop catches `StoreError` and synchronous exceptions around each pass,
+reports them through a caller-supplied hook, sleeps, and continues. A transient error costs one tick,
+never the worker. Before this was a rule, `runWorkflowGcWorker` was a bare `forever` loop that the
+first transient database error ended until the process restarted.
+
+**Isolate per item.** Within a pass, one item's failure must not remove the others from that pass.
+This holds for expected-but-unusual outcomes too: a status guard that legitimately matches no row is
+an *answer*, not an error, and must be decoded as one — `Maybe`, not a single-row decoder. That
+distinction is exactly what the workflow crash-record race turned on.
+
+**Report finished work, not attempted work.** A pass summary counts what it *completed*. Where
+selected and completed can differ, both are reported and the gap is meaningful:
+`WorkflowGcSummary` carries `scanned` and `deleted` separately, and the loop logs when they diverge.
+A summary field must never be another field restated.
+
+Asynchronous exceptions are excluded from all three: cancellation and shutdown must propagate.
+
+<Callout type="warn">
+  **Convergence is what makes per-item isolation safe rather than lossy.** A worker may only swallow
+  an item's failure when that item remains selectable on the next pass — workflow GC deletes the
+  instance row that confers eligibility *last*, so a partially collected workflow is re-selected; a
+  resume candidate stays `running` and stays discovered. A worker that would silently **drop** work
+  instead of retrying it does not get to isolate; it must surface the failure.
+</Callout>
+
+Per-item isolation is deliberately not a general error swallow. A store error escaping the resume
+worker's terminal-marking path still aborts the pass (`resumeWorkflowsOnce` returns `Left`), because
+widening that would change which failures an operator sees. Extending isolation to a new call site is
+an explicit decision that owes the convergence argument above.
+
+The rule binds third-party code that runs Keiro's single-pass units. `resumeWorkflowsOnce`,
+`gcWorkflowsOnce`, `runTimerWorkerWith`, and `drainDueTimersWith` are the testable units; a caller
+supplying its own loop inherits these obligations. See
+[Write a custom wake source](/docs/keiro/how-to/write-a-custom-wake-source).
+
+The practical payoff: a persistent `scanned > deleted` gap is a stuck item. Before this contract it
+was invisible.
+
 ## How the two tools compose
 
 Push and sharding are orthogonal today. The shard worker's ownership reconcile loop uses a fixed

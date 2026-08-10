@@ -117,8 +117,43 @@ all journal their completions as ordinary `StepRecorded` events under reserved p
 
 A suspended workflow does not resume itself — its function is not running any more; it is a journal in
 a database. A background **resume worker** is what notices. Each pass it asks the `keiro_workflows`
-instance table for non-terminal, due workflows, claims each through an expiry-based lease, and
+instance table which workflows have progress to make, claims each through an expiry-based lease, and
 re-invokes it so it proceeds past a now-resolved wait or a crash.
+
+### What suspension costs
+
+The obvious way to build that worker is to poll everything unfinished and let each workflow decide
+whether it can proceed. That is what Keiro did until 0.12.0.0, and it has a quiet scaling problem:
+every parked workflow is claimed, replayed, found still suspended, and re-suspended **on every pass**.
+Idle cost scales with the number of parked workflows, so a system holding ten thousand workflows
+waiting on external callbacks pays for ten thousand replays per tick to learn nothing.
+
+Discovery is now **exact**: an instance is returned only when its status is `running`, or `suspended`
+with a due wake hint.
+
+<Callout type="info">
+  **Parked workflows are free.** A workflow waiting on an awakeable, a child, or a future-dated sleep
+  costs the resume worker nothing until something happens to it. You can hold very large numbers of
+  them.
+</Callout>
+
+The costs that remain are the ones that correspond to real work:
+
+- **Due sleeps** await a timer worker — so a deployment using durable sleep must actually run one.
+- **Crash retries** stay `running` and stay discovered; the `next_attempt_at` gate, not discovery,
+  paces their backoff.
+- **Journal replay** on each resumption, which under the default `snapshotPolicy = Never` means
+  replaying the generation's journal from the start. This is the cost that grows with a workflow's
+  step count, and it is what [snapshots](#snapshots-and-the-boundaries) and
+  [rotation](#evolving-a-running-workflow-rotation-and-versioning) exist to bound.
+
+Exactness is not free either, and the price is worth stating plainly: **the instance row becomes the
+complete wake ledger.** Every wake-source lifecycle transition must leave the owning instance
+discoverable in the same transaction that performs it. The built-in sources do this through the append
+path; a third-party source that transitions its own durable row without appending must write the
+instance row itself, or its workflow is parked forever. The old broad poll hid that entire class of
+bug by re-examining everything — which is exactly why it was expensive. See
+[Write a custom wake source](/docs/keiro/how-to/write-a-custom-wake-source).
 
 Because a workflow's *body* is application code while only its *journal* is in the database, the
 worker needs the application to supply a **registry**: a map from each `WorkflowName` to a function

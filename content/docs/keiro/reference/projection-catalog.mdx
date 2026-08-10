@@ -1,0 +1,463 @@
+---
+title: "Projection catalog"
+description: "Reference for Keiro.Projection.Catalog and Keiro.Projection.Catalog.Operations: the four catalog identities, validation diagnostics, derived views and fingerprints, durable rebuild groups, the resumable history runner, and the operator-neutral adapter."
+---
+
+`Keiro.Projection.Catalog` is a **pure typed inventory** of a service's read side. It separates four
+identities that Keiro's original API conflated, and validating it produces a
+`ValidatedProjectionCatalog` — the single value every downstream operation takes.
+
+`Keiro.ReadModel.Rebuild` turns that inventory into durable lifecycle state, and
+`Keiro.Projection.Catalog.Operations` wraps both in an operator-neutral adapter.
+
+## Why four identities
+
+`ReadModel q r` combines a logical query contract with one table and one subscription name.
+`InlineProjection`/`AsyncProjection` carry live SQL handlers, while rebuild callers supply yet another
+list of projection names. An application could therefore register one inventory, execute a second, and
+rebuild a third with nothing comparing them.
+
+Those values also conflate identities with genuinely different cardinalities:
+
+| Identity | What it is | Cardinality |
+|---|---|---|
+| **Query model** | a logical query contract a caller binds to | one query may observe several tables |
+| **Target** | one physical table | one projection transaction may write several |
+| **Rebuild group** | the atomic leave-service / reset / replay / verify / return unit | several FK-related targets move together |
+| **Projection** | an ordered owner of targets, with handlers | exactly one owner per target |
+
+Each has its own newtype and smart constructor:
+
+```haskell
+ProjectionId; TargetId; RebuildGroupId; SourceId; QueryModelId; SubscriptionId; DedupKeyId; ClaimSite
+
+mkProjectionId   :: Text -> Either CatalogIdentityError ProjectionId
+mkTargetId       :: Text -> Either CatalogIdentityError TargetId
+mkRebuildGroupId :: Text -> Either CatalogIdentityError RebuildGroupId
+mkSourceId       :: Text -> Either CatalogIdentityError SourceId
+mkQueryModelId   :: Text -> Either CatalogIdentityError QueryModelId
+mkSubscriptionId :: Text -> Either CatalogIdentityError SubscriptionId
+mkDedupKeyId     :: Text -> Either CatalogIdentityError DedupKeyId
+mkClaimSite      :: Text -> Either CatalogIdentityError ClaimSite
+```
+
+Each has a matching `…Text` accessor (`projectionIdText`, `targetIdText`, …). A `ClaimSite` is the
+declaration site an identity was claimed at; it is what lets a diagnostic point at **every** site
+involved rather than just the first.
+
+## Declarations
+
+```haskell
+data QualifiedTable = QualifiedTable
+  { schemaName :: Text, tableName :: Text }
+
+data TargetResetPolicy = ClearBeforeReplay | PreserveAndReconcile
+
+data TargetDeclaration = TargetDeclaration
+  { targetId :: TargetId, qualifiedTable :: QualifiedTable
+  , resetPolicy :: TargetResetPolicy, dependsOn :: [TargetId], claimSite :: ClaimSite
+  }
+
+data SourceScope = AllStreams | CategorySource CategoryName
+
+data SourceDeclaration = SourceDeclaration
+  { sourceId :: SourceId, sourceScope :: SourceScope
+  , codecFingerprint :: Text, claimSite :: ClaimSite
+  }
+
+data RebuildGroupDeclaration = RebuildGroupDeclaration
+  { rebuildGroupId :: RebuildGroupId, orderedTargets :: [TargetId]
+  , verificationHooks :: [RebuildVerification], claimSite :: ClaimSite
+  }
+
+data SubscriptionDeclaration = SubscriptionDeclaration
+  { subscriptionId :: SubscriptionId, subscriptionName :: Text
+  , subscriptionSource :: SourceId, claimSite :: ClaimSite
+  }
+
+data DedupKeyDeclaration = DedupKeyDeclaration
+  { dedupKeyId :: DedupKeyId, dedupName :: Text, claimSite :: ClaimSite }
+```
+
+<Callout type="info">
+  **Reset policy is independent from replay policy.** `ClearBeforeReplay` versus
+  `PreserveAndReconcile` describes how a *target* is prepared; whether a *handler* is replay-safe is a
+  separate axis. A table can be preserved even when its handler has a replay-safe reconciliation path,
+  and a clearable table can be owned by a live handler whose external effects must not be replayed.
+</Callout>
+
+`orderedTargets` lists targets in their declared deterministic preparation order. Validation rejects
+an empty list, duplicates, unknown targets, and any order inconsistent with `dependsOn`.
+
+A source's `codecFingerprint` is stable application metadata — normally a schema version plus the
+owning codec/fold identity. **Function closures are never included in catalog fingerprints.**
+
+### Projections and handlers
+
+```haskell
+data ProjectionReplayPolicy event
+  = Replayable (ReplayAdapter event)
+  | LiveOnly LiveOnlyReason
+
+data ProjectionHandler event
+  = InlineHandler (InlineProjection event) ClaimSite
+  | AsyncHandler AsyncProjection SubscriptionId DedupKeyId ClaimSite
+
+data ProjectionDefinition event = ProjectionDefinition
+  { projectionId :: ProjectionId, rebuildGroup :: RebuildGroupId
+  , ownedTargets :: NonEmpty TargetId
+  , replayPolicy :: ProjectionReplayPolicy event
+  , handlers :: NonEmpty (ProjectionHandler event)
+  , claimSite :: ClaimSite
+  }
+
+data ProjectionSet event = ProjectionSet
+  { projectionSource :: SourceId
+  , projectionDefinitions :: NonEmpty (ProjectionDefinition event)
+  , claimSite :: ClaimSite
+  }
+
+data SomeProjectionSet = forall event. SomeProjectionSet (ProjectionSet event)
+```
+
+One definition may carry several explicitly ordered handlers. That is **composed ownership**: the
+definition remains the single owner of all its targets.
+
+`ProjectionSet` is a typed handle the application retains. Passing that same value back to
+`typedInlineProjections` preserves the event type without `Typeable` casts.
+
+### Replay adapters
+
+```haskell
+newtype LiveOnlyReason    = LiveOnlyReason Text
+newtype ReplayDecodeError = ReplayDecodeError Text
+
+data ReplayDecodeResult event
+  = ReplayIrrelevant
+  | ReplayRelevant event
+  | ReplayDecodeFailure ReplayDecodeError
+
+data ReplayAdapter event = ReplayAdapter
+  { decodeForReplay :: RecordedEvent -> ReplayDecodeResult event
+  , applyForReplay  :: event -> RecordedEvent -> Tx.Transaction ()
+  }
+
+replayAdapterFromCodec :: Codec event -> (event -> RecordedEvent -> Tx.Transaction ()) -> ReplayAdapter event
+```
+
+`replayAdapterFromCodec` builds a **total** adapter from the same authoritative codec the event stream
+uses: event types outside the codec are `ReplayIrrelevant`, and owned event types that fail decoding
+become structured `ReplayDecodeFailure`s rather than exceptions.
+
+### The catalog
+
+```haskell
+data ProjectionCatalog = ProjectionCatalog
+  { sources        :: [SourceDeclaration]
+  , targets        :: [TargetDeclaration]
+  , rebuildGroups  :: [RebuildGroupDeclaration]
+  , subscriptions  :: [SubscriptionDeclaration]
+  , dedupKeys      :: [DedupKeyDeclaration]
+  , queryModels    :: [SomeQueryModelBinding]
+  , projectionSets :: [SomeProjectionSet]
+  }
+
+emptyProjectionCatalog :: ProjectionCatalog
+```
+
+## Validation
+
+```haskell
+data Validation err value = Failure err | Success value
+
+data CatalogDiagnostic = CatalogDiagnostic
+  { diagnosticCode :: CatalogDiagnosticCode, diagnosticIdentity :: Text
+  , diagnosticSites :: [ClaimSite], diagnosticMessage :: Text
+  }
+
+validateProjectionCatalog :: ProjectionCatalog -> Validation (NonEmpty CatalogDiagnostic) ValidatedProjectionCatalog
+useProjectionCatalog      :: ProjectionCatalog -> (ValidatedProjectionCatalog -> result) -> Validation (NonEmpty CatalogDiagnostic) result
+useProjectionCatalogM     :: Monad effect => ProjectionCatalog -> (ValidatedProjectionCatalog -> effect result) -> effect (Validation (NonEmpty CatalogDiagnostic) result)
+```
+
+Validation **accumulates** — it reports every diagnostic it can find, each carrying the full list of
+claim sites involved, rather than stopping at the first. `ValidatedProjectionCatalog` is opaque: the
+only way to obtain one is through validation, so every downstream operation is total by construction.
+
+`diagnosticCodeText` renders a code as its stable dotted string (`catalog.duplicate-projection-id`,
+`catalog.target-without-owner`, …).
+
+### `CatalogDiagnosticCode`
+
+`Eq`, `Ord`, `Show`, `Enum`, `Bounded`, `Generic` — so an exhaustive report can enumerate
+`[minBound .. maxBound]`.
+
+| Group | Codes |
+|---|---|
+| Duplicate identity | `DuplicateProjectionId`, `DuplicateTargetId`, `DuplicateQualifiedTable`, `DuplicateRebuildGroupId`, `DuplicateSourceId`, `DuplicateQueryModelId`, `DuplicateQueryModelRegistryName`, `DuplicateSubscriptionId`, `DuplicateSubscriptionName`, `DuplicateDedupKeyId`, `DuplicateDedupName`, `DuplicateGroupTarget` |
+| Dangling reference | `UnknownSourceReference`, `UnknownTargetReference`, `UnknownGroupReference`, `UnknownTargetDependency`, `UnknownSubscriptionReference`, `UnknownDedupKeyReference`, `UnknownQueryModelReference` |
+| Async handler binding | `AsyncHandlerSubscriptionMismatch`, `AsyncHandlerDedupMismatch` |
+| Ownership | `TargetWithoutOwner`, `TargetWithMultipleOwners`, `ProjectionCrossesRebuildGroups` |
+| Ordering | `TargetDependencyCycle`, `TargetOrderViolatesDependency`, `EmptyRebuildGroup`, `AmbiguousSourceOrdering` |
+| Group coherence | `QueryModelOutsideRebuildGroup`, `ClearTargetRequiresReplayableOwner`, `MixedResetGroupRequiresReplayAdapter` |
+| Verification | `DuplicateRebuildVerificationId`, `InvalidRebuildVerificationIdentity` |
+
+<Callout type="warn">
+  `ClearTargetRequiresReplayableOwner` is the one most likely to surprise. A target declared
+  `ClearBeforeReplay` is emptied before replay, so its owning projection **must** carry a
+  `Replayable` policy — otherwise the rebuild would truncate a table nothing can refill.
+</Callout>
+
+## Derived views
+
+```haskell
+catalogInventory        :: ValidatedProjectionCatalog -> CatalogInventory
+catalogFingerprint      :: ValidatedProjectionCatalog -> CatalogFingerprint
+renderCatalogInventory  :: ValidatedProjectionCatalog -> Text
+compareCatalogBaseline  :: CatalogInventory -> CatalogInventory -> [CatalogEvolution]
+catalogFingerprintText  :: CatalogFingerprint -> Text
+```
+
+`CatalogInventory` decomposes into `InventorySource`, `InventoryTarget`, `InventoryGroup`,
+`InventoryProjection`, `InventoryQueryModel`, `InventorySubscription`, `InventoryDedupKey`, and
+`InventoryHandler`. Rendering is **deterministic**, and the fingerprint is a SHA-256 over that
+rendering — which is why closures are excluded from every declaration that feeds it.
+
+### Evolution
+
+```haskell
+data CatalogEvolution
+  = SourceRemoved SourceId
+  | TargetRemoved TargetId
+  | RebuildGroupRemoved RebuildGroupId
+  | ProjectionRemoved ProjectionId
+  | QueryModelRemoved QueryModelId
+  | SubscriptionRemoved SubscriptionId
+  | DedupKeyRemoved DedupKeyId
+  | TargetOwnerChanged TargetId ProjectionId ProjectionId
+  | TargetGroupChanged TargetId RebuildGroupId RebuildGroupId
+```
+
+`compareCatalogBaseline` is a **separate gate** from validation: removing something from an inventory
+is not a validation error, it is a deployment decision that wants review.
+
+### Registration and replay metadata
+
+```haskell
+catalogRegistrations       :: ValidatedProjectionCatalog -> [CatalogRegistration]
+asyncProjectionRegistrations :: ValidatedProjectionCatalog -> [AsyncProjectionRegistration]
+typedInlineProjections     :: ValidatedProjectionCatalog -> ProjectionSet event -> [InlineProjection event]
+typedProjectionRebuildGroups :: ValidatedProjectionCatalog -> ProjectionSet event -> [RebuildGroupId]
+asyncProjectionRebuildGroup  :: ValidatedProjectionCatalog -> Text -> Maybe RebuildGroupId
+catalogReplayAdapters      :: ValidatedProjectionCatalog -> RebuildGroupId -> [CatalogReplayAdapter]
+catalogRebuildVerifications :: ValidatedProjectionCatalog -> RebuildGroupId -> [RebuildVerification]
+replayAdapterMetadata      :: ValidatedProjectionCatalog -> RebuildGroupId -> [ReplayAdapterMetadata]
+```
+
+A `CatalogReplayAdapter` is heterogeneous — it has erased its event type — and is inspected through
+`catalogReplayAdapterProjectionId`, `catalogReplayAdapterSourceId`, `catalogReplayAdapterGroupId`,
+`catalogReplayAdapterOrder`, and run with `runCatalogReplayAdapter`.
+
+## Verification hooks
+
+```haskell
+data RebuildVerification = RebuildVerification
+  { verificationId :: Text, verificationVersion :: Text
+  , verifyRebuild :: Tx.Transaction (Either Text ())
+  }
+```
+
+An application-owned, **read-only** proof run after replay and before promotion. Identity and version
+are durable parts of the catalog contract; the transaction closure is deliberately excluded from
+rendered inventory and from the fingerprint.
+
+## Durable rebuild groups
+
+In `Keiro.ReadModel.Rebuild`. A rebuild group is the durable lifecycle **and writer-fence** unit.
+
+```haskell
+data GroupLifecycleStatus = GroupLive | GroupRebuilding | GroupFailed | UnknownGroupStatus Text
+
+data RebuildRequest = RebuildRequest
+  { rebuildRunId :: RebuildRunId, requestedBy :: Text
+  , requestReason :: Text, replayFrom :: GlobalPosition
+  }
+
+data GroupPreparation = GroupPreparation
+  { clearTargets :: [QualifiedTable], preservedTargets :: [QualifiedTable]
+  , resetDedupNames :: [Text], resetSubscriptionNames :: [Text]
+  }
+
+data ProjectionWriteFence
+  = ProjectionWritesAllowed
+  | ProjectionWriteFenced RebuildGroupId RebuildRunId
+  | ProjectionWriteGroupUnregistered RebuildGroupId
+
+registerProjectionCatalog     :: (Store :> es) => ValidatedProjectionCatalog -> Eff es (Either CatalogRegistrationError [GroupRebuildMetadata])
+lookupProjectionRebuildGroup  :: (Store :> es) => RebuildGroupId -> Eff es (Maybe GroupRebuildMetadata)
+beginGroupRebuild             :: (Store :> es) => ValidatedProjectionCatalog -> RebuildGroupId -> RebuildRequest -> Eff es (Either RebuildStartError GroupRebuildHandle)
+finishGroupRebuild            :: (Store :> es) => GroupRebuildHandle -> GroupCompletionToken -> Eff es (Either GroupTransitionError GroupRebuildMetadata)
+abandonGroupRebuild           :: (Store :> es) => GroupRebuildHandle -> RebuildFailure -> Eff es (Either GroupTransitionError GroupRebuildMetadata)
+```
+
+`beginGroupRebuild` atomically fences the group, clears every declared `ClearBeforeReplay` table with
+one foreign-key-compatible `TRUNCATE`, preserves reconcile targets, and derives async dedup and
+checkpoint resets **from the catalog** — the caller supplies no lists.
+
+`GroupRebuildHandle` is opaque; read it with `groupRebuildHandleGroup`, `groupRebuildHandleRun`,
+`groupRebuildHandleFingerprint`, and `groupRebuildHandlePreparation`. `GroupCompletionToken` is what
+makes promotion unforgeable: `finishGroupRebuild` refuses a token that does not match its handle.
+
+### Errors
+
+```haskell
+data CatalogRegistrationError
+  = RegisteredGroupFingerprintDrift RebuildGroupId Text Text
+  | RegisteredQueryModelDrift Text Text
+  | RegisteredQueryModelNotLive Text
+
+data RebuildStartError
+  = RebuildGroupNotInCatalog RebuildGroupId
+  | RebuildGroupUnregistered RebuildGroupId
+  | RebuildCatalogFingerprintDrift RebuildGroupId Text Text
+  | RebuildGroupNotLive RebuildGroupId GroupLifecycleStatus (Maybe RebuildRunId)
+
+data GroupTransitionError
+  = RebuildHandleNoLongerActive RebuildGroupId RebuildRunId
+  | RebuildCompletionTokenMismatch RebuildGroupId RebuildRunId
+```
+
+### Fenced command and async paths
+
+`Keiro.Projection` gains catalog-aware entry points that respect the fence:
+
+```haskell
+runCommandWithCatalogProjections :: … -> Eff es ProjectionCommandOutcome
+applyAsyncProjectionFromCatalog  :: … -> Eff es CatalogAsyncApplyOutcome
+```
+
+Both take the same sorted group locks and return **typed fenced outcomes** without committing the
+append, the dedup write, or any target write. Existing single-read-model rebuild functions remain as
+an explicitly unmanaged bridge.
+
+## The history runner
+
+```haskell
+data RebuildOptions = RebuildOptions
+  { rebuildRequest :: RebuildRequest, replayPageSize :: Int32, rebuildMetrics :: Maybe KeiroMetrics }
+
+defaultRebuildOptions :: RebuildRequest -> RebuildOptions   -- page size 500, no metrics
+
+startCatalogRebuild   :: (IOE :> es, Store :> es) => ValidatedProjectionCatalog -> RebuildGroupId -> RebuildOptions -> Eff es (Either CatalogRebuildError RebuildRunReport)
+resumeCatalogRebuild  :: (IOE :> es, Store :> es) => ValidatedProjectionCatalog -> RebuildRunId -> RebuildOptions -> Eff es (Either CatalogRebuildError RebuildRunReport)
+inspectCatalogRebuild :: (Store :> es) => RebuildRunId -> Eff es (Either CatalogRebuildError RebuildRunReport)
+abandonCatalogRebuild :: (Store :> es) => ValidatedProjectionCatalog -> RebuildRunId -> … -> Eff es (Either CatalogRebuildError RebuildRunReport)
+```
+
+A rebuild captures an **immutable Kiroku head**, k-way merges category history in global order,
+commits target writes with per-source and per-adapter progress, and promotes atomically only after
+three proofs hold together: complete source exhaustion, adapter participation, and catalog
+verification.
+
+<Callout type="warn">
+  Resume accepts **only** an exact `keiro/projection-replay/v1` contract. A run whose contract
+  fingerprint no longer matches fails with `CatalogRebuildContractMismatch` rather than resuming
+  against changed semantics.
+</Callout>
+
+`abandonCatalogRebuild` records explicit failure evidence against **both** the durable run and its
+catalog group while retaining the writer fence.
+
+### Run reports
+
+```haskell
+data RebuildRunStatus = RebuildRunRunning | RebuildRunFailed | RebuildRunVerified | RebuildRunPromoted | UnknownRebuildRunStatus Text
+
+data RebuildRunReport = RebuildRunReport
+  { rebuildRunId :: RebuildRunId, rebuildGroupId :: RebuildGroupId
+  , catalogFingerprint :: Text, contractFingerprint :: Text, runnerFormatVersion :: Text
+  , capturedHead :: GlobalPosition, configuredPageSize :: Int32
+  , runStatus :: RebuildRunStatus, failureEvidence :: Maybe RebuildFailureEvidence
+  , sources :: [RebuildSourceProgress], adapters :: [RebuildAdapterProgress]
+  , verifications :: [RebuildVerificationProgress]
+  }
+
+data RebuildFailureEvidence = RebuildFailureEvidence
+  { failureCode :: Text, failureDetail :: Text, failureSourceId :: Maybe SourceId
+  , failureProjectionId :: Maybe Text, failurePosition :: Maybe GlobalPosition
+  }
+```
+
+`RebuildSourceProgress` carries `cursorPosition`, `targetPosition`, `exhaustedThrough`, and
+`eventCount`; `RebuildAdapterProgress` carries `adapterOrder`, `evaluationCount`, `applyCount`, and
+`completedThrough`; `RebuildVerificationProgress` carries each hook's `verificationStatus` and detail.
+
+`CatalogRebuildError` enumerates every refusal: `CatalogRebuildInvalidPageSize`,
+`CatalogRebuildRunAlreadyExists`, `CatalogRebuildRunNotFound`, `CatalogRebuildStartFailed`,
+`CatalogRebuildStartAfterCapturedHead`, `CatalogRebuildContractMismatch`,
+`CatalogRebuildGroupMissing`, `CatalogRebuildRunNotActive`, `CatalogRebuildDecodeFailed`,
+`CatalogRebuildVerificationFailed`, `CatalogRebuildInvariantFailed`,
+`CatalogRebuildPromotionFailed`, and `CatalogRebuildAbandonFailed`.
+
+Rebuild progress is instrumented — see the
+[`keiro.projection.rebuild.*` instruments](/docs/keiro/reference/telemetry#metrics-surface).
+
+## Operator adapter
+
+```haskell
+data ProjectionCatalogOperations
+
+projectionCatalogOperations :: ValidatedProjectionCatalog -> ProjectionCatalogOperations
+
+catalogInventoryReport       :: … -> CatalogInventoryReport
+previewGroupRebuild          :: … -> RebuildPreview
+previewRegisteredGroupRebuild :: … -> RegisteredRebuildPreview
+startGroupRebuild            :: … -> Either CatalogOpsError CatalogRunReport
+inspectGroupRebuild          :: … -> Either CatalogOpsError CatalogRunReport
+resumeGroupRebuild           :: … -> Either CatalogOpsError CatalogRunReport
+abandonGroupRebuild          :: … -> Either CatalogOpsError CatalogRunReport
+```
+
+Everything is derived from one `ValidatedProjectionCatalog`. **Callers cannot supply replacement
+targets, sources, handlers, subscriptions, or dedup lists** — that is what makes an operator surface
+unable to invent a rebuild the catalog never declared. This is the value mounted as
+[`keiro-ops rebuild`](/docs/keiro/reference/keiro-ops-cli#rebuild--projection-catalog-hook-gated).
+
+## The durable tables
+
+Created by [migrations `0022` and `0023`](/docs/keiro/reference/migrations-and-schema).
+
+| Table | Key | Purpose |
+|---|---|---|
+| `keiro.keiro_projection_rebuild_groups` | `group_id` | group lifecycle: `live` / `rebuilding` / `failed`, active run, request attribution, failure evidence |
+| `keiro.keiro_projection_rebuild_runs` | `run_id` | one run: captured head, page size, both fingerprints, runner format, failure and verification timestamps |
+| `keiro.keiro_projection_rebuild_sources` | `(run_id, source_id)` | per-source replay cursor, target position, exhaustion mark, event count |
+| `keiro.keiro_projection_rebuild_adapters` | `(run_id, source_id, projection_id)` | per-adapter order, evaluation/apply counts, completion mark |
+| `keiro.keiro_projection_rebuild_verifications` | `(run_id, verification_id)` | each hook's `pending` / `passed` / `failed` outcome |
+
+Check constraints enforce the invariants the types promise: a `live` group has no active run, a
+non-live one must have one; `cursor_position <= target_position`; `apply_count <= evaluation_count`; a
+`failed` run must carry both a code and a timestamp; a completed verification must carry a timestamp.
+
+## Unmanaged compatibility boundary
+
+Pre-catalog values are not silently adopted. They are wrapped **explicitly**, so a read of the code
+shows which parts of a service the catalog does not govern:
+
+```haskell
+UnmanagedInlineProjections; unmanagedInlineProjections; getUnmanagedInlineProjections
+UnmanagedAsyncProjection;   unmanagedAsyncProjection;   getUnmanagedAsyncProjection
+UnmanagedReadModel;         unmanagedReadModel;         getUnmanagedReadModel
+```
+
+Migration `0022` gives every pre-catalog read model a deterministic singleton group
+`$legacy-read-model:<name>` with fingerprint `$legacy-unmanaged`. The catalog registration path may
+later adopt a matching **live** singleton into an explicitly named catalog group.
+
+<Cards>
+  <Card title="Projections, read models, and snapshots" href="/docs/keiro/explanation/projections-read-models-and-snapshots" />
+  <Card title="Rebuild a read model" href="/docs/keiro/how-to/rebuild-a-read-model" />
+  <Card title="Projection" href="/docs/keiro/reference/projection" />
+  <Card title="Read model" href="/docs/keiro/reference/read-model" />
+  <Card title="keiro-ops CLI" href="/docs/keiro/reference/keiro-ops-cli" />
+</Cards>

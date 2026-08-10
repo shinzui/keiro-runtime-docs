@@ -13,15 +13,23 @@ own build, migration, and integration tests before upgrading.
 | Surface | Reviewed packages | Reviewed source |
 | --- | --- | --- |
 | keiki | `keiki 0.9.0.0`, `keiki-codec-json 0.9.0.0` | `9714d37` (`chore(release): 0.9.0.0`) |
-| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, and `keiro-migrations` at `0.11.0.0` | `fc935b7` (`docs(plans): author the keiro-ops operational CLI initiative`) |
+| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, `keiro-migrations`, and the new `keiro-ops` at `0.12.0.0` | `8d1cd74` (`docs: close parser span scaling plan`) |
 | Kiroku | `kiroku-store 0.3.1.0`, migrations `0.3.0.0`, CLI `0.2.0.0`, OTel `0.2.0.1`, metrics `0.1.0.1` | `3009dda7238f7d05b1d0c97b04ec5d4c55031304` |
 | Shibuya | `shibuya-core 0.8.0.1`, `shibuya-metrics 0.8.0.1` | `172df245f40a454af46dd7f4cde855eaa4414c5a` |
 | pgmq-hs | `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and `pgmq-migration` at `0.4.0.1` — **source reviewed ahead of the release**, see below | `5eca8d6515cc629d29b9a15b0bd3b2243048d7bc` |
 | pg-migrate | All six public packages at `1.1.0.0` | `f39d64e354818999667d345a1452f33eb4857fc1` |
 
 The Keiro package family requires **keiki `>=0.9 && <0.10`** (and `keiki-codec-json 0.9` where used),
-and every published package moves to `0.11.0.0` in lockstep. The exported `Keiro.version` constant
+and every published package moves to `0.12.0.0` in lockstep. The exported `Keiro.version` constant
 still reports a legacy value and must not be used as the package release source.
+
+<Callout type="warn">
+  **Keiro 0.12 requires `kiroku-store >=0.4 && <0.5`.** The Kiroku row above records the release the
+  *Kiroku pages* were last reviewed against, which is behind that floor — those pages are not yet
+  synced to 0.4. Kiroku 0.4 adds the durable subscription checkpoint inventory operation to the
+  exported `Store` effect, so an **exhaustive third-party interpreter must add the corresponding
+  arm.**
+</Callout>
 
 <Callout type="warn">
   **pgmq-hs is the one row where the docs run ahead of a release.** `0.5.0.0` is committed upstream
@@ -32,10 +40,17 @@ still reports a legacy value and must not be used as the package release source.
 </Callout>
 
 <Callout type="info">
-  **`keiro-dsl` language 4 is the sole stable authoring contract** as of Keiro 0.9.0.0. Languages 1–3
-  and unversioned sources remain readable as `compatibility-only` with their immutable released
-  meaning, and every `keiro-dsl new <kind>` skeleton starts at language 4. See [language
+  **`keiro-dsl` language 5 is the sole stable authoring contract** as of Keiro 0.12.0.0, and it is the
+  headline of that release. Languages 1–4 and unversioned sources remain readable as
+  `compatibility-only` with their immutable released meaning, and every `keiro-dsl new <kind>`
+  skeleton starts at language 5. See [language
   versions](/docs/keiro/reference/keiro-dsl-language-versions).
+
+  Language 5 adds the [projection-catalog
+  grammar](/docs/keiro/reference/keiro-dsl-domain-nodes#the-projection-catalog) and [mapped consumer
+  surfaces](/docs/keiro/reference/keiro-dsl-mapped-types#mapped-consumer-surfaces). Note that its
+  `ProjectionCatalogRuntime` capability contributes a **fold segment**, so adopting it changes
+  aggregate fold identity — plan it as a replay concern, not just a grammar upgrade.
 </Callout>
 
 ## Adapter compatibility
@@ -168,6 +183,44 @@ Treat every pre-1.0 minor line as potentially breaking.
 
   See the [keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) and [language
   versions](/docs/keiro/reference/keiro-dsl-language-versions).
+- **Keiro 0.12:** the largest runtime release since the 0.3 line. Requires
+  `kiroku-store >=0.4 && <0.5`.
+
+  **Migrations `0021`, `0022`, and `0023` all apply.** `0021` is the only one that rewrites live
+  state: it returns every pre-existing `suspended` workflow instance to `running` once, costing one
+  extra replay each. Budget a single elevated resume pass at the cutover. See
+  [migrations and schema](/docs/keiro/reference/migrations-and-schema#0021-exact-discovery-is-not-additive).
+
+  - **Workflow discovery is exact.** A `suspended` instance with no due `wake_after` is now invisible
+    to the resume worker, so idle cost no longer scales with parked workflows. The cost: a
+    **third-party wake source must write the owning instance row on every lifecycle transition**, or
+    it strands its workflow. See [write a custom wake
+    source](/docs/keiro/how-to/write-a-custom-wake-source).
+  - **A terminally failed workflow now stops at the next step boundary**, as a cancelled one already
+    did. Runs that relied on continuing past a concurrent `WorkflowFailed` marker now return `Failed`.
+  - **Breaking signatures:** `JournalAppendOutcome` gains `JournalRefusedTerminal`;
+    `markInstanceSuspended` is replaced by `markInstanceSuspendedAwaiting`; `recordCrashTx` returns
+    `Maybe Int32`; `cancelAwakeableTx` returns `Maybe (Text, Text)`; `gcWorkflowsOnce` and
+    `runWorkflowGcWorker` gain `Error StoreError :> es`; `ResumeLogEvent` gains
+    `ResumeCrashRecordSkipped`; `WorkflowResumeOptions` gains `maxConcurrentAdvances` (default 1);
+    `KeiroMetrics` gains eight instrument fields.
+  - **Deterministic ids hash UTF-8 seed bytes.** *For ASCII seeds every id is byte-identical* — no
+    migration, no operator action. Only non-ASCII seeds move, and they move off a collision that
+    could wedge a workflow journal. The derivation is now frozen. See [deterministic
+    ids](/docs/keiro/reference/durable-workflows#deterministic-ids-hash-utf-8-seed-bytes).
+  - **New: the typed [projection catalog](/docs/keiro/reference/projection-catalog)** —
+    `Keiro.Projection.Catalog` and `.Operations`, durable rebuild groups, and a resumable history
+    runner with promotion gated on source exhaustion, adapter participation, and verification.
+  - **New package: [`keiro-ops`](/docs/keiro/reference/keiro-ops-cli)** — an operational console and
+    embeddable command library, with a two-phase preview/`--force` contract on every destructive
+    command.
+  - **`keiro.projection.lag` is deprecated** in favour of
+    `keiro.projection.global_position_distance`; its unit changed from `{event}` to `{position}`
+    because it never counted events. Dashboards should rename. Seven `keiro.projection.rebuild.*`
+    instruments are new.
+  - **`keiro-dsl` language 5 is the new stable contract** — see the callout above; its
+    `ProjectionCatalogRuntime` capability changes aggregate fold identity, and every mapped service
+    needs one regeneration to pick up the `StructuralConformance` and `BehaviorSourceMap` modules.
 - **Keiro 0.3 line:** command, replay, worker, read-model, and workflow outcomes
   are typed more precisely; framework tables live in `keiro`; public event
   streams require replay validation. For `.keiro` specs, follow [migrate a spec
