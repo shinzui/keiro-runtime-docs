@@ -624,8 +624,10 @@ name is absent from the registry is surfaced as `unknownName`, never silently dr
 
 ```haskell
 data ResumeSummary = ResumeSummary
-  { discovered :: Int, resumed :: Int, completed :: Int, stillSuspended :: Int
-  , unknownName :: Int, failed :: Int, transientErrors :: Int, leaseSkipped :: Int
+  { discovered :: !Int, advanced :: !Int, resumed :: !Int, completed :: !Int
+  , stillSuspended :: !Int, unknownName :: !Int, failed :: !Int
+  , transientErrors :: !Int, leaseSkipped :: !Int, paced :: !Int, sleepDue :: !Int
+  , unregisteredNames :: !(Set Text)
   }
 
 data WorkflowResumeOptions = WorkflowResumeOptions
@@ -640,6 +642,32 @@ emptyResumeSummary          :: ResumeSummary
 
 `ResumeSummary` has `Semigroup` and `Monoid` instances that add fields, so per-candidate deltas combine
 into a pass summary that does not depend on the order candidates finish in.
+
+<Callout type="warn">
+  **Breaking in Keiro 0.12.0.0.** `ResumeSummary` gained `advanced`, `paced`, `sleepDue`, and
+  `unregisteredNames`. Direct record construction and exhaustive field handling must adopt the
+  expanded contract.
+
+  **Use `advanced`, not `discovered`, as a bounded drain's continuation signal.** `advanced` counts
+  candidates whose *durable* state moved this pass — a fresh journal append, a terminal failure
+  recorded at the crash ceiling, or an external wake observed to have flipped the row back to
+  running. A replay-only re-suspension is **not** an advance.
+
+  A drain-until-`discovered`-is-zero loop spins forever, because exact discovery legitimately returns
+  the same parked workflows every pass.
+</Callout>
+
+<TypeTable
+  type={{
+    advanced: { type: "Int", description: "Candidates whose durable state moved this pass. The honest continuation signal for a bounded drain." },
+    paced: { type: "Int", description: "Candidates whose crash-backoff gate (next_attempt_at) is still in the future." },
+    sleepDue: { type: "Int", description: "Candidates that re-suspended without durable movement while their instance row still carries an already-due wake hint. Only a timer-worker fire — or operator repair of a cancelled sleep timer — can move them, so a bounded drain must report them as blocked rather than spin." },
+    unregisteredNames: { type: "Set Text", description: "Deduplicated workflow names absent from the application registry. The counter unknownName reports how many candidates were skipped; this names them." },
+  }}
+/>
+
+`paced` retries, `unregisteredNames`, foreign leases, and transient errors all **stop and report
+honestly** instead of being mistaken for progress. See ADR-23 and ADR-25.
 
 <TypeTable
   type={{

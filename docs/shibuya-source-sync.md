@@ -28,10 +28,42 @@ source walkthroughs.
 ## Last reviewed commit
 
 ```text
-172df245f40a454af46dd7f4cde855eaa4414c5a  (172df24)
-2026-07-04T15:38:47-07:00
-chore(release): 0.8.0.1
+7158f3e1fa67b46eedebaf94f7f44ac43cf24e80  (7158f3e)
+2026-08-10T18:59:22-07:00
+docs(okf): register the improvement-requests bundle
 ```
+
+> **Current range.** The `172df24..7158f3e` range (**10 commits**, 43 files,
+> +2,777/−22) is the **0.9.0.0 release**: `shibuya-core` and `shibuya-metrics` move from `0.8.0.1`
+> to `0.9.0.0`.
+>
+> **The one user-facing change is application-defined dead-letter reasons.** `DeadLetterReason`
+> gains a fourth constructor, `ApplicationFailure !DeadLetterCode !Text`, for a syntactically valid
+> message permanently rejected by **application policy** — distinct from a poison pill, a decode
+> failure, or an exhausted retry budget. **Breaking for exhaustive matches.**
+>
+> `DeadLetterCode` is validated on construction by `mkDeadLetterCode`: non-empty, ≤128 ASCII
+> characters, at least two dot-separated segments, every segment matching `[a-z][a-z0-9_]*`. The
+> application owns the code's stability; the detail is transported **verbatim** to operators and must
+> not carry secrets, unrestricted backend errors, raw SQL, or full payloads. Telemetry exposes the
+> reason code, and total public projections (`deadLetterReasonCode`, `deadLetterReasonDetail`,
+> `renderDeadLetterReason`) let downstream packages stop duplicating the constructor renderer.
+>
+> Also in range: `docs/okf` capability and improvement-request bundles (upstream metadata, no
+> surface), and a benchmark for dead-letter reason operations.
+>
+> **Pages UPDATED:** `reference/adapters-handlers-and-ack.mdx` (the constructor plus a new
+> *Application-defined dead-letter reasons* section), `how-to/dead-letter-or-halt.mdx` (when to reach
+> for it, with a validated-code example), `tutorials/handler-decisions.mdx`.
+>
+> **Pages ADDED / RETIRED:** none.
+>
+> **Downstream:** every adapter took a core-major bump for this — see the kafka and pgmq adapter
+> pointers. Keiro 0.12's declarative router selection publishes five `keiro.router.selection.*`
+> codes through this surface.
+>
+> **Deliberately NOT documented:** IR-1 (a *request* for a public worker probe contract, not shipped
+> surface) and the OKF bundle registrations.
 
 EP-6 rechecked the complete Shibuya 0.8 documentation against this unchanged
 committed boundary and found no later behavioral drift. The source tree was
@@ -72,8 +104,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    SHIBUYA=$(mori registry show shinzui/shibuya --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$SHIBUYA" log --oneline 172df24..HEAD
-   git -C "$SHIBUYA" diff --stat 172df24..HEAD
+   git -C "$SHIBUYA" log --oneline 7158f3e..HEAD
+   git -C "$SHIBUYA" diff --stat 7158f3e..HEAD
    ```
 2. Inspect changed modules under `shibuya-core/`, `shibuya-metrics/`, and
    `shibuya-example/`, plus `README.md`, `CHANGELOG.md`, and
@@ -87,6 +119,7 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `172df245f40a454af46dd7f4cde855eaa4414c5a` (`172df24`, 2026-07-04, shibuya 0.8.0.1) — the baseline before the 0.9.0.0 review. The `7158f3e..7158f3e` range (10 commits) added application-defined dead-letter reasons: `DeadLetterReason.ApplicationFailure`, the validated `DeadLetterCode`, telemetry reason codes, and total public reason projections. Breaking for exhaustive matches. Updated `reference/adapters-handlers-and-ack.mdx`, `how-to/dead-letter-or-halt.mdx`, and `tutorials/handler-decisions.mdx`.
 - `f5c921f862d1b0d2b035801c3b7cfe339f0b5125 (f5c921f)` — pointer before the
   0.8.0.1 follow-up range covering the release migration guide, README refresh,
   runner allocation work, and docs alignment for the finalized 0.8 public API.

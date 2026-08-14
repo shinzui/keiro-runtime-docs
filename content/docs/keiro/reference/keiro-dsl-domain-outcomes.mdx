@@ -1,0 +1,282 @@
+---
+title: "Typed domain command outcomes"
+description: "The language-5 domain-outcomes declaration and outcome clauses, their validation rules, the generated DomainCommandHandler, and the runDomainCommand family that returns typed rejection and no-op decisions as successful results."
+---
+
+*(New in Keiro 0.12.0.0, language 5, ADR-29.)* A command that a handwritten aggregate deliberately
+declines is not an error. Before this contract, the only way to signal "you may not cancel a paid
+order" was a `CommandError`, which conflated a domain decision with a hydration failure or a store
+outage — and forced callers to parse text to tell them apart.
+
+Typed domain outcomes make the distinction structural. A matched command that selects an
+**output-free live edge** is classified by pure application policy as either a *rejection* or a
+*no-op*, and both come back as a `Right`. Only unmatched commands and infrastructure failures remain
+`CommandError`.
+
+<Callout type="info">
+  This is an **opt-in, additive** contract. An aggregate without a `domain-outcomes` declaration
+  keeps its existing command surface exactly, and the historical `runCommand` family is unchanged.
+</Callout>
+
+## The declaration
+
+An aggregate declares its two result types once, immediately after the aggregate name and before
+`regs`:
+
+```keiro-dsl
+enum ReservationRejection { AlreadyCancelled=already-cancelled CapacityUnavailable=capacity-unavailable }
+enum ReservationNoOp { DuplicateRequest=duplicate-request }
+
+aggregate Reservation
+  domain-outcomes rejection=ReservationRejection no-op=ReservationNoOp
+  regs
+    lastRequestId Text = "none"
+  states Eligible CancelledState
+```
+
+```haskell
+data DomainOutcomeTypes = DomainOutcomeTypes
+  { rejectionType :: !Name
+  , noOpType :: !Name
+  , outcomeTypesLoc :: !Loc
+  }
+  deriving stock (Eq, Show, Generic)
+```
+
+Both names must resolve to declared types; an unresolved one is `DomainOutcomeTypeUnresolved`.
+
+## The transition clause
+
+Once an aggregate declares `domain-outcomes`, **every live transition must carry exactly one
+`outcome` clause**:
+
+```keiro-dsl
+  Eligible -- Cancel -->
+    write lastRequestId := cmd.requestId
+    outcome accepted
+    emit Cancelled
+    goto CancelledState
+
+  CancelledState -- Cancel -->
+    guard cmd.requestId != reg.lastRequestId
+    outcome rejected ReservationRejection.AlreadyCancelled
+    goto CancelledState
+
+  CancelledState -- Cancel -->
+    guard cmd.requestId == reg.lastRequestId
+    outcome no-op ReservationNoOp.DuplicateRequest
+    goto CancelledState
+```
+
+```haskell
+data TransitionOutcome
+  = OutcomeAccepted !Loc
+  | OutcomeRejected !Expr !Loc
+  | OutcomeNoOp !Expr !Loc
+  deriving stock (Eq, Show, Generic)
+
+transitionOutcomeLoc :: TransitionOutcome -> Loc
+```
+
+Rejection and no-op reasons use the **same typed scalar expression language** as guards and register
+writes, so a reason can depend on the command and registers rather than being a constant.
+
+<Callout type="warn">
+  **`outcome` is a contextual keyword, never reserved.** The parser claims it only when one of
+  `accepted`, `rejected`, or `no-op` follows. A transition whose source vertex is literally named
+  `outcome` still parses, because its next token is `--`. This restores the 0.11.0.0 grammar that the
+  pre-release candidate had accidentally narrowed: published languages 1–4 accept `outcome` as an
+  ordinary identifier again, and so does language 5.
+</Callout>
+
+### Validation rules
+
+The rules exist to keep "silent" honest: a decision that rejects or no-ops must leave **no durable
+trace**.
+
+<TypeTable
+  type={{
+    DomainOutcomeDeclarationMissing: { type: "error", description: "A transition declares an outcome but the aggregate has no domain-outcomes declaration." },
+    DomainOutcomeDeclarationDuplicate: { type: "error", description: "The aggregate declares domain-outcomes more than once." },
+    DomainOutcomeTypeUnresolved: { type: "error", description: "A declared rejection or no-op type name does not resolve." },
+    DomainOutcomeClauseMissing: { type: "error", description: "A live transition is missing its required outcome clause." },
+    DomainOutcomeClauseDuplicate: { type: "error", description: "A transition declares outcome more than once." },
+    DomainOutcomeReasonTypeMismatch: { type: "error", description: "The reason expression's type is not the declared rejection or no-op type." },
+    DomainOutcomeAcceptedWithoutEvents: { type: "error", description: "An accepted transition emits no event. Acceptance must produce history." },
+    DomainOutcomeSilentEmits: { type: "error", description: "A rejected or no-op transition emits events." },
+    DomainOutcomeSilentWrites: { type: "error", description: "A rejected or no-op transition writes aggregate registers." },
+    DomainOutcomeSilentStateChange: { type: "error", description: "A rejected or no-op transition does not preserve its source state." },
+    DomainOutcomeReplayOnlyClause: { type: "error", description: "A replay-only transition declares a forward command outcome." },
+    DomainOutcomeTypesChanged: { type: "diff", description: "The declared outcome types changed between revisions." },
+    DomainTransitionOutcomeChanged: { type: "diff", description: "A transition's outcome classification changed between revisions." },
+  }}
+/>
+
+The last two are **diff** findings rather than check errors — they surface in
+[`keiro-dsl diff`](/docs/keiro/how-to/gate-spec-evolution-with-diff), not in `check`.
+
+<Callout type="warn">
+  A `replay-only` transition may never declare an outcome. Replay-only edges exist to invert stored
+  history, and history has no forward command decision to classify — see
+  [Tighten a guard with a replay-only twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin).
+</Callout>
+
+## The generated handler
+
+Scaffolding exports a `DomainCommandHandler` for the aggregate. It pairs the validated stream with
+pure classification policy, and it **does not select an edge** — Keiki has already selected exactly
+one live edge whose output word is empty by the time the classifier runs.
+
+```haskell
+data DomainCommandHandler phi rs s ci co rejection noOp = DomainCommandHandler
+  { eventStream :: !(ValidatedEventStream phi rs s ci co)
+  , classifySilent :: !(SilentCommandContext rs s ci -> SilentDomainDecision rejection noOp)
+  }
+  deriving stock (Generic)
+```
+
+`SilentCommandContext` and `SilentDomainDecision` live in `Keiro.Command.Domain` and are re-exported
+from `Keiro.Command`:
+
+```haskell
+data SilentCommandContext rs s ci = SilentCommandContext
+  { state :: !s
+  , registers :: !(RegFile rs)
+  , command :: !ci
+  , selectedEdge :: !(EdgeRef s)
+  }
+  deriving stock (Generic)
+
+data SilentDomainDecision rejection noOp
+  = SilentRejected !rejection
+  | SilentNoOp !noOp
+  deriving stock (Generic, Eq, Show)
+```
+
+<Callout type="warn">
+  `selectedEdge` is **local to this exact transducer construction**. It is a dispatch coordinate, not
+  an identifier — never persist it, never put it in an event, and never compare it across builds.
+</Callout>
+
+Generated code dispatches directly on Keiki's exact selected edge and evaluates **only the selected
+reason term**, so adding outcomes does not make command evaluation proportional to the number of
+transitions.
+
+## Decisions and outcomes
+
+```haskell
+data DomainDecision co rejection noOp
+  = DomainAccepted !(NonEmpty co)
+  | DomainRejected !rejection
+  | DomainNoOp !noOp
+  deriving stock (Generic, Eq, Show)
+
+data DomainCommandOutcome target co rejection noOp = DomainCommandOutcome
+  { decision :: !(DomainDecision co rejection noOp)
+  , result :: !(CommandResult target)
+  }
+  deriving stock (Generic, Eq, Show)
+
+forgetDomainDecision :: DomainCommandOutcome target co rejection noOp -> CommandResult target
+```
+
+`DomainAccepted` carries the **exact non-empty event batch** that was encoded and appended — not a
+count, and not a re-derivation. `forgetDomainDecision` collapses back to the historical
+`CommandResult` when a caller does not care which successful decision it got.
+
+## Running a domain command
+
+Four runners mirror the existing `runCommand` family one-for-one:
+
+```haskell
+runDomainCommand ::
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  RunCommandOptions ->
+  DomainCommandHandler phi rs s ci co rejection noOp ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  Eff es (Either CommandError (DomainCommandOutcome (EventStream phi rs s ci co) co rejection noOp))
+
+runDomainCommandWithSql ::
+  (…, KirokuStoreResource :> es, …) =>
+  RunCommandOptions ->
+  DomainCommandHandler phi rs s ci co rejection noOp ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  (AppendResult -> Tx.Transaction a) ->
+  Eff es (Either CommandError (DomainCommandOutcome (EventStream phi rs s ci co) co rejection noOp, Maybe a))
+
+runDomainCommandWithSqlEvents ::
+  (…, KirokuStoreResource :> es, …) =>
+  RunCommandOptions ->
+  DomainCommandHandler phi rs s ci co rejection noOp ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  ([(co, RecordedEvent)] -> AppendResult -> Tx.Transaction a) ->
+  Eff es (Either CommandError (DomainCommandOutcome (EventStream phi rs s ci co) co rejection noOp, Maybe a))
+
+runDomainCommandWithSqlEventsControlled ::
+  (…, KirokuStoreResource :> es, …) =>
+  RunCommandOptions ->
+  DomainCommandHandler phi rs s ci co rejection noOp ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  ([(co, RecordedEvent)] -> AppendResult -> Tx.Transaction (SqlTransactionDecision a)) ->
+  Eff es (Either CommandError (DomainSqlCommandOutcome (EventStream phi rs s ci co) co rejection noOp a))
+```
+
+Retry, atomicity, and duplicate-id behaviour are identical to the untyped runners.
+
+<Callout type="info">
+  **A selected silent decision performs no transaction callback.** There is nothing to write, so the
+  SQL runners simply do not invoke it.
+</Callout>
+
+```haskell
+data DomainSqlCommandOutcome target co rejection noOp a
+  = DomainSqlCommandSilent !(DomainCommandOutcome target co rejection noOp)
+  | DomainSqlCommandCommitted !(DomainCommandOutcome target co rejection noOp) !a
+  | DomainSqlCommandRolledBack !a
+  deriving stock (Generic, Eq, Show)
+```
+
+A rolled-back accepted append has **no** `DomainCommandOutcome`, because neither its append nor its
+SQL effects exist.
+
+## Workers and telemetry
+
+Subscription, router, and process-manager workers **acknowledge typed silent decisions normally** —
+a rejection is a successful outcome, not a delivery failure — and drop handled payloads through
+strict summaries.
+
+Telemetry uses one bounded, payload-free dimension:
+
+```haskell
+keiro_command_decision :: AttributeKey Text   -- "keiro.command.decision"
+
+data CommandDecisionClass = DecisionAccepted | DecisionRejected | DecisionNoOp
+  deriving stock (Generic, Eq, Show)
+
+recordCommandDecision :: (MonadIO m) => Maybe KeiroMetrics -> CommandDecisionClass -> m ()
+```
+
+| Instrument | Unit | Meaning |
+| --- | --- | --- |
+| `keiro.command.decisions` | `{decision}` | Successfully selected domain command decisions, partitioned by bounded decision class. |
+
+<Callout type="warn">
+  The complete attribute value set is `accepted`, `rejected`, and `no_op`. **Application rejection
+  payloads never belong on a metric** — they are unbounded cardinality, and the reason type is
+  precisely where they belong instead.
+</Callout>
+
+## Related
+
+- [ADR-29 rationale in the command cycle](/docs/keiro/explanation/the-command-cycle) — why a declined
+  command is a success.
+- [`Keiro.Command` reference](/docs/keiro/reference/command) — the untyped runners these mirror.
+- [keiro-dsl domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) — where the
+  declaration sits in aggregate syntax.
+- [keiro-dsl language versions](/docs/keiro/reference/keiro-dsl-language-versions) —
+  `DomainCommandOutcomeSyntax` and the fold-neutral `TypedDomainCommandOutcomes` capability.
+- [Telemetry reference](/docs/keiro/reference/telemetry) — the full instrument list.

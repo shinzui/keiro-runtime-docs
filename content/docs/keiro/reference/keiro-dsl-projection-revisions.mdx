@@ -1,0 +1,205 @@
+---
+title: "keiro-dsl projection revisions and external reads"
+description: "The language-5 projection-revision and external-read declarations: schema-versioned target contracts, promotion object renames, bounded all-row SQL contracts, and the create-once holes they generate."
+---
+
+*(New in Keiro 0.12.0.0, language 5, ADRs 34 and 36.)* Two top-level declarations extend the
+[projection catalog](/docs/keiro/reference/projection-catalog) with the pieces a **schema-changing**
+rebuild needs: a `projection-revision` names the application-owned schema contract for each target in
+a rebuild group, and an `external-read` publishes a bounded SQL surface that out-of-process readers
+can call without touching target tables.
+
+Neither declaration carries raw DDL. The DSL carries **stable identities**; the application owns the
+SQL behind them, and Keiro verifies the join.
+
+## `projection-revision`
+
+```keiro-dsl
+projection-revision reporting_v2 {
+  group = reporting
+  target order_summary {
+    schema-version = "v2"
+    provisioner = "reporting-v2-order-summary"
+    provisioner-version = 1
+    expected-shape = "order-summary-v2"
+    validator = "reporting-v2-order-summary-validator"
+    validator-version = 1
+    promotion index "order_summary_status_idx__v2" -> "order_summary_status_idx"
+  }
+  target order_totals {
+    schema-version = "v2"
+    provisioner = "reporting-v2-order-totals"
+    provisioner-version = 1
+    expected-shape = "order-totals-v2"
+    validator = "reporting-v2-order-totals-validator"
+    validator-version = 1
+    promotion constraint "order_totals_pkey__v2" -> "order_totals_pkey"
+  }
+}
+```
+
+```haskell
+data ProjectionRevisionNode = ProjectionRevisionNode
+  { prvName :: !Name
+  , prvGroup :: !Name
+  , prvTargets :: ![RevisionTargetNode]
+  , prvLoc :: !Loc
+  }
+  deriving stock (Eq, Show, Generic)
+
+data RevisionTargetNode = RevisionTargetNode
+  { prtTarget :: !Name
+  , prtSchemaVersion :: !Text
+  , prtProvisioner :: !Text
+  , prtProvisionerVersion :: !Int
+  , prtExpectedShape :: !Text
+  , prtValidator :: !Text
+  , prtValidatorVersion :: !Int
+  , prtPromotionObjects :: ![PromotionObjectNode]
+  }
+  deriving stock (Eq, Show, Generic)
+```
+
+A revision must cover **exactly** its group's target set — `CatalogRevisionTargetSetMismatch` if it
+names more or fewer, `CatalogRevisionNoTarget` if it names none, `CatalogRevisionDuplicateTarget` if
+it names one twice.
+
+### Promotion objects
+
+A generation's indexes, constraints, and owned sequences cannot share names with the live
+generation's, so they are created under generation-suffixed names and **renamed to their canonical
+names during promotion**.
+
+```haskell
+data PromotionObjectKindNode
+  = PromotionIndexNode
+  | PromotionConstraintNode
+  | PromotionOwnedSequenceNode
+  deriving stock (Eq, Ord, Show, Generic)
+
+data PromotionObjectNode = PromotionObjectNode
+  { rpoKind :: !PromotionObjectKindNode
+  , rpoGenerationName :: !Text
+  , rpoCanonicalName :: !Text
+  }
+  deriving stock (Eq, Show, Generic)
+```
+
+```text
+promotion index          "<generation name>" -> "<canonical name>"
+promotion constraint     "<generation name>" -> "<canonical name>"
+promotion owned-sequence "<generation name>" -> "<canonical name>"
+```
+
+Both names are validated (`CatalogRevisionPromotionNameInvalid`), and the ordered promotion names
+participate in canonical catalog and group-slice identity — so renaming one is a catalog change, not
+a cosmetic edit.
+
+### Generated holes
+
+A projection revision generates **create-once** typed application holes per target:
+
+| Hole | Responsibility |
+| --- | --- |
+| provisioner | Create the generation's physical schema inside the rebuild transaction. |
+| schema validator | Assert the created generation matches `expected-shape`. |
+| live handler | Apply events to the serving generation, parametric in the physical target. |
+| replay handler | Apply events during replay, parametric in the physical target. |
+| verification | Prove the converged generation is fit to promote. |
+
+Live and replay handlers are **physical-target-parametric**: one implementation serves both V1 and V2
+during convergence, because the target name is an argument rather than a constant.
+
+### Evolution findings
+
+<TypeTable
+  type={{
+    CatalogProjectionRevisionChanged: { type: "diff", description: "An existing revision's contents changed." },
+    CatalogProjectionRevisionRemoved: { type: "diff", description: "A revision was removed." },
+    CatalogTargetSchemaChanged: { type: "diff", description: "A target's schema contract changed." },
+    CatalogRevisionGroupUnknown: { type: "error", description: "The named rebuild group does not exist." },
+    CatalogRevisionTargetUnknown: { type: "error", description: "A named target does not exist." },
+    CatalogRevisionIdentityInvalid: { type: "error", description: "The revision identity is not a valid identifier." },
+  }}
+/>
+
+## `external-read`
+
+```keiro-dsl
+external-read order_totals_reader {
+  version = 1
+  query = order_totals_lookup
+  result-schema = "app_contract"
+  result-type = "order_totals_row_v1"
+  compatible-revisions = [ reporting_v1 reporting_v2 ]
+  surface-generation = 1
+}
+```
+
+```haskell
+data ExternalReadNode = ExternalReadNode
+  { erName :: !Name
+  , erVersion :: !Int
+  , erQueryModel :: !Name
+  , erResultSchema :: !Text
+  , erResultType :: !Text
+  , erCompatibleRevisions :: ![Name]
+  , erSurfaceGeneration :: !Int
+  , erLoc :: !Loc
+  }
+  deriving stock (Eq, Show, Generic)
+
+externalReadNodeIdentity :: ExternalReadNode -> Name   -- "<name>_v<version>"
+```
+
+<Callout type="info">
+  **The result *shape* is deliberately absent from the declaration.** Lowering obtains it from the
+  checked read-model binding, so the source and the runtime contract cannot drift. You declare the
+  SQL *type name*; Keiro derives what that type must contain.
+</Callout>
+
+Several contract versions coexist by design, which is why duplicate detection keys on contract **and
+version** together via `externalReadNodeIdentity`. `compatible-revisions` is what makes a reader
+survive a promotion: a contract whose list contains both `reporting_v1` and `reporting_v2` keeps
+answering across the cutover, and one that lists only `reporting_v1` starts failing the moment V2
+serves.
+
+Language 5 lowers these to versioned `AllRowsExternalRead` catalog contracts. All-row contracts are
+Keiro-backed; **keyed** contracts require a named, versioned private implementation the application
+owns.
+
+### Validation
+
+<TypeTable
+  type={{
+    CatalogExternalReadQueryUnknown: { type: "error", description: "The named query model does not exist." },
+    CatalogExternalReadIdentityInvalid: { type: "error", description: "The contract identity is not a valid identifier." },
+    CatalogExternalReadVersionInvalid: { type: "error", description: "The version is not positive." },
+    CatalogExternalReadTargetCardinalityInvalid: { type: "error", description: "An all-row contract must resolve to exactly one physical target." },
+    CatalogExternalReadCompatibilityInvalid: { type: "error", description: "The compatible-revisions list is empty or malformed." },
+    CatalogExternalReadRevisionUnknown: { type: "error", description: "A listed revision does not exist." },
+    CatalogExternalReadRevisionGroupMismatch: { type: "error", description: "A listed revision belongs to a different rebuild group than the query's target." },
+    CatalogExternalReadSurfaceGenerationInvalid: { type: "error", description: "The surface generation is not positive, or downgrades." },
+    CatalogExternalReadRetired: { type: "diff", description: "A published contract version disappeared from source." },
+    CatalogExternalReadVersionAdded: { type: "diff", description: "A new contract version was added — additive." },
+    CatalogExternalReadCompatibilityChanged: { type: "diff", description: "The compatible-revision set changed." },
+    CatalogExternalReadResultShapeChanged: { type: "diff", description: "The derived result shape changed — breaking for existing readers." },
+    CatalogExternalReadContractChanged: { type: "diff", description: "Any other contract change." },
+  }}
+/>
+
+The diff path distinguishes **retirement**, **version addition**, **compatibility change**, and
+**result-shape change** as separate findings rather than one undifferentiated "changed", because they
+carry very different operational risk — see
+[Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff).
+
+## Related
+
+- [Versioned projection rebuilds](/docs/keiro/reference/versioned-rebuilds) — the runtime lifecycle,
+  the SQL guard, and the promotion cutover these declarations drive.
+- [Projection catalog reference](/docs/keiro/reference/projection-catalog) — `target`,
+  `rebuild-group`, and `projection-owner`.
+- [keiro-dsl runtime nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) — the `readmodel` a
+  contract's `query` names.
+- [keiro-ops CLI](/docs/keiro/reference/keiro-ops-cli) — `rebuild versioned`, `rebuild external-read`,
+  and `rebuild retire-external-read`.

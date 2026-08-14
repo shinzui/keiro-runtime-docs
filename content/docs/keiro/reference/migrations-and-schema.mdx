@@ -24,9 +24,9 @@ connection is acquired. Applications with PGMQ or application-owned components b
 plan with `migrationPlan` or `resolveMigrationPlan`.
 
 The authoritative order is `keiro-migrations/migrations/manifest`. Keiro now contains
-**twenty-three** component-local migrations. The first sixteen preserve the historical schema
+**thirty** component-local migrations. The first sixteen preserve the historical schema
 changes, `0017` is a non-destructive native-runner canary, `0018` creates the rejected-dispatch
-dead-letter table, and the five newest are:
+dead-letter table, and the twelve newest are:
 
 | Migration | Change | Effect on existing rows |
 |---|---|---|
@@ -35,6 +35,13 @@ dead-letter table, and the five newest are:
 | `0021-keiro-workflows-exact-discovery.sql` | replaces `keiro.keiro_workflows_active_idx` with `(status, wake_after) WHERE status IN ('running','suspended')`, then runs one `UPDATE … SET status = 'running' WHERE status = 'suspended'` | **not additive.** Every pre-existing suspended instance returns to the runnable pool once, costing one extra replay each. See [exact discovery](#0021-exact-discovery-is-not-additive) below |
 | `0022.sql` | creates `keiro.keiro_projection_rebuild_groups`; adds `keiro.keiro_read_models.rebuild_group_id TEXT NOT NULL` with a foreign key and index | backfilled: every pre-catalog read model becomes a deterministic singleton group `$legacy-read-model:<name>` with catalog fingerprint `$legacy-unmanaged`. A non-`live` legacy state stays fenced — `rebuilding` stays `rebuilding`; `paused`, `abandoned`, and unknown values become `failed` with the raw state in `failure_detail` |
 | `0023.sql` | creates `keiro.keiro_projection_rebuild_runs`, `…_rebuild_sources`, `…_rebuild_adapters`, `…_rebuild_verifications`, and `keiro_projection_rebuild_runs_group_idx` | new tables only; no existing row is read or rewritten |
+| `0024.sql` | renames rebuild-group `catalog_fingerprint` to `slice_fingerprint`; records `group_slice_fingerprint` on every rebuild run | **a clean pre-0.12 cutover.** Complete or abandon active catalog rebuilds *before* upgrading; recover a stale group fingerprint through `keiro-ops rebuild adopt` |
+| `0025.sql` | creates `keiro.keiro_projection_revisions`, `…_projection_target_generations`, `…_projection_rebuild_run_targets`, `…_projection_rebuild_promotion_objects` — revisions, generations, serving epochs, run/cutover policy, relation and schema evidence, promotion-object mappings, replay-source progress, Kiroku retention handles | new tables only |
+| `0026.sql` | creates `keiro.keiro_projection_group_cursors`, the `keiro_read` schema, and the frozen owner-rights view `keiro_read.projection_group_status_v1` | new objects only; the schema verifier now also fingerprints ordered public-view column signatures |
+| `0027.sql` | creates `keiro.keiro_external_read_contracts` and `keiro.keiro_managed_read_objects` (each with a lookup index) plus the fixed `keiro_read.guard_external_read_v1` security-definer guard | new objects only; the guard revokes `PUBLIC` and raises `KR001`/`KR002`/`KR003` |
+| `0028.sql` | permits an implementation-backed compatibility wrapper to retain a zero-argument public signature while a breaking projection shape is promoted | policy only; keyed contracts still require a named, versioned private implementation, and all-row contracts remain Keiro-backed |
+| `0029.sql` | creates `keiro.keiro_projection_rebuild_dedup_stage` and its run/position index, plus the private database-clock deadline helpers `keiro_try_projection_cutover_fence_v1`, `keiro_try_projection_promotion_lock_v1`, and `keiro_try_projection_relation_locks_v1` | new objects only; adds bounded run-scoped async-dedup staging and persisted admission/preparation evidence |
+| `0030.sql` | makes the external-read guard lock the lifecycle row **before** re-reading mutable contract metadata under a matching shared lock | behaviour only. A reader queued behind promotion now receives a **retryable `KR001`** when its statement snapshot crosses the serving epoch, then reads the rebound generation from one committed authority |
 
 `0019` and `0020` are additive `ADD COLUMN IF NOT EXISTS`. Budget one full replay per
 snapshot-bearing stream at the `0019` cutover; snapshots are advisory, so this is a performance
@@ -63,6 +70,28 @@ arbitration, which is what makes the row's status trustworthy from then on.
 
 Rolling back the *code* alone is safe: broad discovery is a superset of exact discovery, and the
 `(status, wake_after)` index serves the old predicate too.
+
+### `0024`: quiesce catalog rebuilds before upgrading
+
+`0024` renames rebuild-group `catalog_fingerprint` to `slice_fingerprint` and starts recording
+`group_slice_fingerprint` on every rebuild run. It is a **clean pre-0.12 cutover**, not a
+compatibility shim.
+
+<Callout type="warn">
+  **Complete or abandon every active catalog rebuild before applying `0024`.** A run that is in
+  flight across the rename has no defined slice fingerprint, and the migration does not invent one.
+
+  If a group is left with a stale fingerprint, recover it through the library adoption API rather
+  than by hand:
+
+  ```console
+  keiro-ops rebuild adopt <GROUP>            # classify; shows stored vs current slice fingerprint
+  keiro-ops rebuild adopt <GROUP> --force    # reconcile transactionally
+  ```
+</Callout>
+
+This is the one upgrade step in the 0.11 → 0.12 range that has an operator prerequisite. Everything
+from `0025` on is additive object creation, and `0028` and `0030` change policy and locking only.
 
 ## Standard CLI
 
@@ -211,7 +240,7 @@ frameworkCoddSourceConfig
 ```
 
 The mapping combines seven historical Kiroku rows and sixteen historical Keiro rows. Strict import
-checks the shared Codd ledger, both checked-in manifests, exact payloads, and all 23 mappings before
+checks the shared Codd ledger, both checked-in manifests, exact payloads, and all 30 mappings before
 atomically recording native history. Target SQL does not run. After import, native `up` applies
 Kiroku `0008`, Keiro `0017`, and Keiro `0018` as the new suffix.
 
@@ -244,6 +273,33 @@ read models, reporting tables, and integration state in explicitly owned applica
 | `keiro.keiro_projection_rebuild_sources` | per-source replay cursor and target position | [Projection catalog](/docs/keiro/reference/projection-catalog#the-durable-tables) |
 | `keiro.keiro_projection_rebuild_adapters` | per-adapter evaluation/apply counts and participation proof | [Projection catalog](/docs/keiro/reference/projection-catalog#the-durable-tables) |
 | `keiro.keiro_projection_rebuild_verifications` | application-owned verification outcomes gating promotion | [Projection catalog](/docs/keiro/reference/projection-catalog#the-durable-tables) |
+| `keiro.keiro_projection_revisions` | declared schema revisions per rebuild group | [Versioned rebuilds](/docs/keiro/reference/versioned-rebuilds) |
+| `keiro.keiro_projection_target_generations` | physical target generations, serving epochs, and availability | [Versioned rebuilds](/docs/keiro/reference/versioned-rebuilds) |
+| `keiro.keiro_projection_rebuild_run_targets` | per-target run state, schema evidence, and admission/preparation evidence | [Versioned rebuilds](/docs/keiro/reference/versioned-rebuilds) |
+| `keiro.keiro_projection_rebuild_promotion_objects` | generation→canonical index, constraint, and owned-sequence renames | [Versioned rebuilds](/docs/keiro/reference/versioned-rebuilds) |
+| `keiro.keiro_projection_group_cursors` | derived cursor authority and position basis per group | [Versioned rebuilds](/docs/keiro/reference/versioned-rebuilds) |
+| `keiro.keiro_projection_rebuild_dedup_stage` | bounded run-scoped async-dedup staging | [Versioned rebuilds](/docs/keiro/reference/versioned-rebuilds) |
+| `keiro.keiro_external_read_contracts` | published external-read contract registry, state, and serving compatibility | [Versioned rebuilds](/docs/keiro/reference/versioned-rebuilds#the-guarded-external-read-surface) |
+| `keiro.keiro_managed_read_objects` | Keiro-owned objects in `keiro_read`, with ownership and definition hashes | [Versioned rebuilds](/docs/keiro/reference/versioned-rebuilds#the-guarded-external-read-surface) |
+
+That is **twenty-five** tables in the `keiro` schema.
+
+### The `keiro_read` schema
+
+*(New in Keiro 0.12.0.0, migration `0026`.)* A second, deliberately tiny schema holds the **versioned,
+owner-rights read contracts for out-of-process consumers**:
+
+| Object | Kind | Purpose |
+|---|---|---|
+| `keiro_read.projection_group_status_v1` | view | [Frozen projection-group status contract](/docs/keiro/reference/versioned-rebuilds#the-frozen-status-contract) |
+| `keiro_read.guard_external_read_v1(TEXT, INTEGER)` | security-definer function | [The external-read guard](/docs/keiro/reference/versioned-rebuilds#the-guarded-external-read-surface) |
+| `keiro_read.<contract>_v<n>(…)` | security-definer functions | One per published `external-read` contract version |
+
+<Callout type="warn">
+  **Grant schema `USAGE` and object `SELECT`/`EXECUTE` only.** Both migrations revoke `PUBLIC`
+  explicitly. An external reader must never receive access to a `keiro` table or to the private
+  binding views — the whole point of the schema is that the guard runs first.
+</Callout>
 
 Application roles need `USAGE` on `kiroku` and `keiro` plus the narrow table/sequence privileges
 their runtime uses. Migration jobs should use a schema-owner role before application startup.

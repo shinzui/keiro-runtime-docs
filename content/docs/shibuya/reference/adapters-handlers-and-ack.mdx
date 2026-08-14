@@ -41,6 +41,7 @@ data DeadLetterReason
   = PoisonPill Text
   | InvalidPayload Text
   | MaxRetriesExceeded
+  | ApplicationFailure DeadLetterCode Text
 
 data HaltReason
   = HaltOrderedStream Text
@@ -55,6 +56,37 @@ data AckDecision
 
 `AckRetry` carries an absolute delay duration, not a retry count. `AckDeadLetter` records why this
 message should leave normal processing. `AckHalt` stops processor execution.
+
+### Application-defined dead-letter reasons
+
+*(New in shibuya-core 0.9.0.0.)* `ApplicationFailure` carries a **syntactically valid message
+permanently rejected by application policy** — a distinct fact from a poison pill or an exhausted
+retry budget, and one only the application can name.
+
+```haskell
+newtype DeadLetterCode
+
+mkDeadLetterCode :: Text -> Either Text DeadLetterCode
+```
+
+A code is validated on construction and must:
+
+- be non-empty and at most **128** ASCII characters;
+- contain at least **two** dot-separated segments;
+- have every segment match `[a-z][a-z0-9_]*`.
+
+So `keiro.router.selection.empty` is valid and `Empty` is not. The application owns the code's
+stability — treat it as a published identifier that dashboards and runbooks key on.
+
+<Callout type="warn">
+  **Detail is transported verbatim to operators.** It must not contain secrets, unrestricted backend
+  errors, raw SQL, or full payloads. The code is the stable part; the detail is a human hint.
+</Callout>
+
+Telemetry exposes the reason code, so a dead-letter rate can be broken down by application cause
+without parsing free text. Keiro's
+[declarative router selection](/docs/keiro/reference/keiro-dsl-router-selection) is a consumer of
+this surface, publishing five `keiro.router.selection.*` codes.
 
 ## Mock adapter helpers
 

@@ -90,6 +90,11 @@ mounts the corresponding hook.
 | `gc run-once` | preview or run one bounded garbage-collection pass |
 | `resume-once` | preview or run one bounded application-registry resume pass *(requires the `workflowResume` hook)* |
 
+`wf resume-once` reports `advanced`, `paced`, and sorted `unregistered_names` in JSON, with
+corresponding human columns, so a blocked bounded drain is actionable rather than silent. It also
+reports `sleep_due` blockage — a drain that cannot progress because work is waiting on a timer looks
+different from one blocked on a foreign lease or an unregistered workflow name.
+
 These wrap the [operator lifecycle APIs](/docs/keiro/reference/durable-workflows#operator-lifecycle-apis)
 and inherit the runtime's race and append-only behaviour. In particular, linked-child cancellation
 wakes the parent with the typed cancellation result — which is exactly why the CLI delegates instead
@@ -117,9 +122,22 @@ hook)*.
 `position` and `prune-dedup`.
 
 `projection position --subscription NAME` preserves durable consumer-group member rows and reports
-the captured store cursor. The derived subtraction is labelled
-**`global_position_distance`** — never event lag, backlog, or "events behind". See
-[the deprecation note](/docs/keiro/reference/telemetry#keiroprojectionlag-is-deprecated).
+**both** heads:
+
+| Column | Meaning |
+|---|---|
+| `store_position` | Kiroku's authoritative append counter — capacity and audit reporting |
+| `visible_store_head` | the newest **reachable** event |
+| `global_position_distance` | derived from the **visible** head |
+
+<Callout type="warn">
+  The distance is computed from the visible head, not the append counter, and is labelled
+  **`global_position_distance`** — never event lag, backlog, or "events behind". After a workflow
+  garbage collection hard-deletes the newest journal events, the two heads legitimately differ; a
+  caught-up projection reports distance **zero** against the visible head and would have reported a
+  permanent phantom backlog against the append counter. See
+  [the deprecation note](/docs/keiro/reference/telemetry#keiroprojectionlag-is-deprecated).
+</Callout>
 
 ### `shard` — sharded-subscription ownership
 
@@ -141,7 +159,7 @@ marker.
 `stream subscriptions` is read-only and database-only. It calls Kiroku's
 `subscriptionCheckpointInventory` and preserves every member row: a subscription-wide checkpoint is
 the **minimum across matching members**, and member zero does not tell you whether the subscription is
-grouped.
+grouped. It reports both the authoritative `store_position` and the reachable `visible_store_head`.
 
 ### `replay-audit` — *(hook-gated)*
 
@@ -150,12 +168,64 @@ supplies an `OpsAuditConfig`. See [Replay audit](/docs/keiro/reference/replay-au
 
 ### `rebuild` — projection catalog *(hook-gated)*
 
-`list`, `preview`, `start`, `status`, `resume`, and `abandon`.
-
 Present only when the embedding binary mounts a
 [`ProjectionCatalogOperations`](/docs/keiro/reference/projection-catalog#operator-adapter). Because
 that adapter derives everything from one `ValidatedProjectionCatalog`, these commands **cannot** be
 given replacement targets, sources, handlers, subscriptions, or dedup lists.
+
+| Command | Phase | Purpose |
+|---|---|---|
+| `list` | read-only | list the mounted catalog's rebuild groups |
+| `preview GROUP` | read-only | preview one catalog group without mutation |
+| `start` | preview / `--force` | start one catalog rebuild |
+| `status RUN` | read-only | inspect one catalog rebuild run |
+| `resume RUN` | preview / `--force` | resume one catalog rebuild run |
+| `abandon RUN` | preview / `--force` | abandon one catalog rebuild run |
+| `adopt GROUP…` | preview / `--force` | adopt catalog slice changes for the named groups |
+| `versioned start \| status \| resume \| abandon` | mixed | operate schema-versioned online rebuilds |
+| `retired` | read-only | list retired target generations |
+| `drop-retired GENERATION` | preview / `--force` | drop one retired target generation |
+| `external-read CONTRACT VERSION` | read-only | inspect one managed external read contract |
+| `retire-external-read CONTRACT VERSION` | preview / `--force` | retire one managed external read contract |
+| `reproject-stream GROUP PROJECTION STREAM` | preview / `--force` | repair one stream-scoped projection |
+
+#### `rebuild adopt`
+
+Without `--force` it classifies every catalog group and shows the stored and current **slice**
+fingerprints. Adoption reconciles registrations transactionally, and its previews are truthful about
+what would actually change. This is the sanctioned recovery for a stale group fingerprint after the
+`0024` rename of `catalog_fingerprint` to `slice_fingerprint`.
+
+#### `rebuild versioned`
+
+Backed by `ProjectionCatalogOperations` and rendered as versioned JSON envelopes. See
+[Versioned projection rebuilds](/docs/keiro/reference/versioned-rebuilds) for the lifecycle these
+commands drive. `resume` advances **one durable phase** per invocation rather than looping, so an
+operator stays in control of a long convergence.
+
+#### `rebuild drop-retired`
+
+Refuses an active run, a still-compatible external read contract, and ordinary database dependencies.
+The preview names the blockers rather than cascading.
+
+#### `rebuild reproject-stream`
+
+Previews exact serving revision, target, dedup, stream-history, and work-admission facts, and
+executes only with `--force`.
+
+<Callout type="warn">
+  `--max-events` must be **positive** and defaults to **1000**. It is re-checked against locked
+  stream metadata *before* the group fence, so a limit that was valid at preview time cannot smuggle
+  a larger replay past the fence.
+</Callout>
+
+Human and **v2 JSON** outcomes report the admitted limit, cleared rows, replay and application
+counts, dedup inserted/existing counts, and verification. Typed refusals carry stable operator codes.
+
+#### `rebuild external-read`
+
+Renders the supported catalog report with contract state, surface generation, PostgreSQL dependents,
+and execute grants. Forced retirement goes through the library lifecycle API, never ad hoc `DROP`.
 
 ## Embedding
 
@@ -199,5 +269,6 @@ console still calls the owning library's exported operations.
   <Card title="Operate a deployment with keiro-ops" href="/docs/keiro/how-to/operate-a-deployment-with-keiro-ops" />
   <Card title="Durable workflows" href="/docs/keiro/reference/durable-workflows" />
   <Card title="Projection catalog" href="/docs/keiro/reference/projection-catalog" />
+  <Card title="Versioned rebuilds and external reads" href="/docs/keiro/reference/versioned-rebuilds" />
   <Card title="Migrations and schema" href="/docs/keiro/reference/migrations-and-schema" />
 </Cards>

@@ -25,12 +25,18 @@ reviewed by the documentation.
 ## Last reviewed commit
 
 ```text
-9714d37033c37595e3aaa3319ca0ca77466782e0  (9714d37)
-2026-08-04T20:35:48-07:00
-chore(release): 0.9.0.0
+04296a744a577ed10ee50259e954437d94798125  (04296a7)
+2026-08-08T14:31:34-07:00
+docs(okf): add the capabilities bundle
 ```
 
-> **Current range.** The `9ee8de0..9714d37` range (40 commits) is **one release,
+> **Current range.** The `9714d37..04296a7` range (**1 commit**) is
+> **doc-neutral**. `git diff --stat 9714d37..HEAD -- '*/src' 'src' '*.cabal' 'CHANGELOG.md'` is
+> **empty**: the only commit is `docs(okf): add the capabilities bundle`, upstream repository
+> metadata with no public surface. keiki remains at `0.9.0.0` / `keiki-codec-json 0.9.0.0`.
+> No page changed. Pointer bumped so the next round does not re-read this commit.
+
+> **Note (prior range).** The `9ee8de0..9714d37` range (40 commits) is **one release,
 > 0.9.0.0, with one theme**: replace *name-based* constructor identity with
 > *structural, `Generic`-derived evidence*, and seal construction so that evidence
 > cannot be forged. It is breaking for anyone who hand-writes an `InCtor` or
@@ -427,6 +433,7 @@ chore(release): 0.9.0.0
 
 ## Previous pointers
 
+- `9714d37033c37595e3aaa3319ca0ca77466782e0` (`9714d37`, 2026-08-04, keiki 0.9.0.0) — the baseline before the doc-neutral OKF round. The `9714d37..04296a7` range (1 commit) touched no source, cabal, or CHANGELOG — upstream repository metadata only. No page changed.
 - `9ee8de0fece845bf12dda861604b77856782d90b` (`9ee8de0`), 2026-08-02, `keiki 0.8.0.0`
   — the baseline before the sealed-evidence round. The `9ee8de0..9714d37` range (40
   commits) landed 0.9.0.0: sealed `InCtor` / `WireCtor` construction behind a hidden
@@ -461,8 +468,8 @@ chore(release): 0.9.0.0
 1. Resolve the source with mori and inspect committed drift:
    ```text
    KEIKI=$(mori registry show shinzui/keiki --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIKI" log --oneline 9714d37..HEAD
-   git -C "$KEIKI" diff --stat 9714d37..HEAD
+   git -C "$KEIKI" log --oneline 04296a7..HEAD
+   git -C "$KEIKI" diff --stat 04296a7..HEAD
    ```
 2. Read changed source, tests, changelogs, and release notes. `docs/foundations/`
    is the highest-value prose here — it states trust boundaries the source only

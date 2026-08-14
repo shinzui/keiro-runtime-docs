@@ -21,12 +21,68 @@ the pinned commit to `HEAD`, update the affected pages, then bump the pointer be
 ## Last reviewed commit
 
 ```
-3009dda7238f7d05b1d0c97b04ec5d4c55031304  (3009dda)
-2026-07-22T11:03:50-07:00
-chore(release): kiroku-store 0.3.1.0
+b9aecf3a0f50911388c62df0d250fe5096afbfa4  (b9aecf3)
+2026-08-13T15:48:38-07:00
+docs(plan): complete EP-73 release
 ```
 
-> **Current range.** The `58aff77..3009dda` range (3 commits, 5 files) is the
+> **Current range.** The `3009dda..b9aecf3` range (**51 commits**, 151 files,
+> +15,323/−996) lands **four releases** — `kiroku-store` `0.4`, `0.5`, `0.6`, and `0.7` — taking the
+> store from `0.3.1.0` to `0.7.0.0` and `kiroku-store-migrations` from `0.3.0.0` to `0.3.2.0`. Keiro
+> 0.12 requires this whole span (`kiroku-store >=0.7 && <0.8`).
+>
+> ⚠ The upstream worktree was **dirty (3 files)**; the committed tree only was reviewed.
+>
+> **The exported `Store` effect gains eight constructors across the four releases**, and every one
+> is breaking for an exhaustive custom or mock interpreter:
+>
+> | Release | Added to `Store` | Surface |
+> | --- | --- | --- |
+> | `0.4` | `GetSubscriptionCheckpointInventory` | `subscriptionCheckpointInventory`; public `SubscriptionCheckpoint` / `SubscriptionCheckpointInventory` records |
+> | `0.5` | `InitializeSubscriptionCheckpoint` | `initializeSubscriptionCheckpoint` + closed `MissingCheckpointPolicy` |
+> | `0.6` | `GetVisibleGlobalHeadPosition` | `visibleGlobalHeadPosition` |
+> | `0.7` | `AcquireHistoryRetentionLease`, `RenewHistoryRetentionLease`, `ReleaseHistoryRetentionLease`, `GetHistoryRetentionLeaseInventory`, `PruneHistoryRetentionLeases` | `Kiroku.Store.HistoryRetention` (+`.Types`) |
+>
+> **1. Missing-checkpoint policy (0.5).** `FromBeginning` (default) durably seeds zero,
+> `FromCurrentHead` atomically seeds the current `$all` position, `FailIfMissing` refuses startup
+> with `SubscriptionCheckpointMissing` **before handler delivery**. Existing rows always win and
+> concurrent initializers converge. Breaking: `SubscriptionConfigM` gains `missingCheckpointPolicy`;
+> `KirokuEvent` gains `KirokuEventSubscriptionCheckpointResolved` and `…Missing`.
+>
+> **2. Visible head (0.6).** `visibleGlobalHeadPosition` returns the greatest global position still
+> visible in `$all`, or zero, via a payload-free scalar query — no decode hook runs. **It can
+> regress** when the visible tail is hard-deleted, while the authoritative append frontier stays
+> monotonic. This is what Keiro's consistency waits and projection distance now measure from.
+>
+> **3. History-retention leases (0.7).** Validated, durable, **database-time-derived** leases for
+> stable long rebuilds, with owner-aware acquire/renew/release/inventory/prune shared by transaction
+> combinators and mockable wrappers. `lockStreamHistoryForReplayTx` + `readStreamForwardTx` read
+> exact ordered history under one transaction-scoped guard; append, link, lifecycle mutation, and
+> every supported hard delete serialize behind it. Supported hard delete now checks retention
+> **before** mutation and locks affected streams in ascending stream-ID order, **including streams
+> holding links to target-originated events**. Breaking: `StoreError` gains `HistoryRetentionActive`;
+> `KirokuEvent` gains retention acquisition/renewal/release/prune and hard-delete-conflict events.
+>
+> **4. Migrations 8 → 10.** `0009.sql` publishes the frozen owner-rights view
+> `kiroku.subscription_checkpoints_v1`; `0010.sql` creates
+> `kiroku.history_retention_coordinator`, `kiroku.history_retention_leases`,
+> `ix_history_retention_leases_unreleased_expiry`, and the
+> `kiroku.protect_replay_history_from_destruction` guard.
+>
+> **Pages UPDATED:** `reference/store-effect.mdx` (new visible-head, subscription-checkpoint, and
+> history-retention sections + the breaking-constructor table), `reference/schema-migrations.mdx`
+> (8 → 10 entries, versions), `explanation/subscriptions-and-consumer-groups.mdx` (the
+> missing-checkpoint policy).
+>
+> **Pages ADDED / RETIRED:** none — the new surface extends pages that already existed.
+>
+> **Deliberately NOT documented:** upstream `docs/plans/*` and `.seihou/` scaffolding commits
+> (intent, not surface); test-only and benchmark commits; the 3 dirty worktree files.
+>
+> **Known gap:** this pointer and `docs/shibuya-kiroku-adapter-source-sync.md` share a repository but
+> advance independently — both were reviewed this round.
+
+> **Note (prior range).** The `58aff77..3009dda` range (3 commits, 5 files) is the
 > **kiroku-store 0.3.1.0 point release**. One new API, one corrected metric
 > description, one upstream-README fix that this tree had already got right.
 >
@@ -102,6 +158,7 @@ chore(release): kiroku-store 0.3.1.0
 
 ### Previous pointers (for traceability)
 
+- `3009dda7238f7d05b1d0c97b04ec5d4c55031304` (`3009dda`, 2026-07-22, kiroku-store 0.3.1.0) — the baseline before the 0.4–0.7 review. The `3009dda..b9aecf3` range (51 commits) landed four releases: the durable subscription checkpoint inventory (0.4), the closed `MissingCheckpointPolicy` (0.5), the visible-head surface (0.6), and renewable history-retention leases with a stream replay guard (0.7). Eight new `Store` constructors, new `KirokuEvent`s, and `StoreError.HistoryRetentionActive` — all breaking for exhaustive interpreters. Migrations 8 → 10. Updated `reference/store-effect.mdx`, `reference/schema-migrations.mdx`, and `explanation/subscriptions-and-consumer-groups.mdx`. Nothing added or retired.
 - `58aff77b3a6d6093e3613753a0543aab62db9fac` (`58aff77`, 2026-07-14,
   `kiroku-store 0.3.0.1`) — the baseline before the 0.3.1.0 point release. The
   `58aff77..3009dda` range (3 commits) added `runKirokuStoreWith`, corrected the
@@ -135,8 +192,8 @@ chore(release): kiroku-store 0.3.1.0
 1. List what changed since the pointer:
    ```sh
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 3009dda..HEAD
-   git -C "$KIROKU" diff --stat 3009dda..HEAD
+   git -C "$KIROKU" log --oneline b9aecf3..HEAD
+   git -C "$KIROKU" diff --stat b9aecf3..HEAD
    ```
    Kiroku also keeps its own `docs/`, `CHANGELOG.md` files, and `docs/plans|masterplans`
    entries — the prose diff there is the fastest way to understand intent before touching

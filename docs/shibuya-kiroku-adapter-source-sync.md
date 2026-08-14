@@ -25,10 +25,32 @@ mapping, consumer groups, and handler exception behavior.
 ## Last reviewed commit
 
 ```text
-3009dda7238f7d05b1d0c97b04ec5d4c55031304  (3009dda)
-2026-07-22T11:03:50-07:00
-chore(release): kiroku-store 0.3.1.0
+b9aecf3a0f50911388c62df0d250fe5096afbfa4  (b9aecf3)
+2026-08-13T15:48:38-07:00
+docs(plan): complete EP-73 release
 ```
+
+> **Current range.** The `3009dda..b9aecf3` range (**51 commits** in the shared
+> kiroku repository, of which **4 files** touch `shibuya-kiroku-adapter`) takes the adapter from
+> `0.4.0.0` to `0.5.0.2`, alongside `kiroku-store` `0.3.1.0` → `0.7.0.0`.
+>
+> The adapter change is `4c05bab fix(observability): handle retention events in adapters`: Kiroku
+> 0.7 added committed history-retention acquisition, renewal, release, pruning, and
+> hard-delete-conflict events to `KirokuEvent`, and the adapter's observability handling now covers
+> them. Exhaustive `KirokuEvent` handlers elsewhere must do the same.
+>
+> **Pages UPDATED:** `integrations/shibuya-kiroku-adapter.mdx` (pairing now
+> `shibuya-kiroku-adapter 0.5.0.2`, `kiroku-store 0.7`, `shibuya-core 0.9`, with the retention-event
+> note), `integrations/shibuya-adapters.mdx`,
+> `getting-started/compatibility-and-upgrades.mdx`.
+>
+> **Pages ADDED / RETIRED:** none.
+>
+> ⚠ The upstream worktree was **dirty (3 files)**; the committed tree only was reviewed.
+>
+> **Note:** this pointer and `docs/kiroku-source-sync.md` share a repository and advance
+> independently. Both were reviewed and bumped this round; the store-side surface changes are
+> summarized in the kiroku pointer, not here.
 
 The `58aff77..3009dda` range (3 commits) is **doc-neutral for this page**:
 `git diff --stat 58aff77..3009dda -- shibuya-kiroku-adapter docs/user` is empty.
@@ -60,6 +82,7 @@ The source tree was clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `3009dda7238f7d05b1d0c97b04ec5d4c55031304` (`3009dda`, 2026-07-22, shibuya-kiroku-adapter 0.4.0.0) — the baseline before the Kiroku 0.7 review. The `3009dda..b9aecf3` range (51 shared-repo commits, 4 touching the adapter) took the adapter to `0.5.0.2` and taught its observability handling the new Kiroku history-retention events.
 - `58aff77b3a6d6093e3613753a0543aab62db9fac` (`58aff77`), 2026-07-14 — the
   baseline before the kiroku-store 0.3.1.0 point release. The `58aff77..3009dda`
   range (3 commits) left the adapter package and `docs/user/` untouched; bumped
@@ -72,8 +95,8 @@ The source tree was clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 3009dda..HEAD -- shibuya-kiroku-adapter docs/user
-   git -C "$KIROKU" diff --stat 3009dda..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" log --oneline b9aecf3..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" diff --stat b9aecf3..HEAD -- shibuya-kiroku-adapter docs/user
    ```
 2. Update `content/docs/integrations/shibuya-kiroku-adapter.mdx` and any Kiroku
    pages that repeat adapter-specific behavior.

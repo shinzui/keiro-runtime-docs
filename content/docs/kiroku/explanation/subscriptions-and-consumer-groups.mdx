@@ -105,6 +105,35 @@ let cfg = (defaultSubscriptionConfig (SubscriptionName "orders-projection")
 `InvalidConsumerGroup` on a bad pair. Checkpoints live in the `subscriptions` table keyed by
 `(subscription_name, consumer_group_member)`, so each member resumes independently.
 
+## What happens when a checkpoint is missing
+
+*(New in kiroku-store 0.5.0.0.)* A subscription starting with no row for its exact
+`(name, member)` key — a first deploy, a renamed subscription, a restored database — used to
+implicitly start from the beginning. That choice is now **explicit and durable**:
+
+```haskell
+data MissingCheckpointPolicy = FromBeginning | FromCurrentHead | FailIfMissing
+```
+
+| Policy | Behaviour |
+|---|---|
+| `FromBeginning` *(default)* | durably seeds zero, so the subscription replays all history |
+| `FromCurrentHead` | atomically seeds the current `$all` position, skipping all history |
+| `FailIfMissing` | refuses startup with `SubscriptionCheckpointMissing`, **before** any handler delivery |
+
+Existing rows always take precedence, and concurrent initializers converge on one value.
+
+<Callout type="warn">
+  **Breaking in 0.5.0.0.** `SubscriptionConfigM` gained `missingCheckpointPolicy`, defaulting to
+  `FromBeginning` in `defaultSubscriptionConfig`. An exhaustive record literal must choose a policy
+  or switch to the smart constructor.
+</Callout>
+
+The choice matters most for a projection that **clears its target before replaying**:
+`FromCurrentHead` there truncates the table and then skips the history that would refill it, leaving
+a permanently empty projection. Keiro refuses that combination outright — see
+[`checkpoint-on-missing`](/docs/keiro/reference/keiro-dsl-domain-nodes).
+
 ## Trade-offs
 
 Static partitioning is simple and gives strong per-stream ordering, but it does **not**

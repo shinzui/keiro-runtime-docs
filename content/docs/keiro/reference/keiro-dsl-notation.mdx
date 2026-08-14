@@ -5,13 +5,13 @@ description: "The .keiro file structure, shared declarations, ownership model, a
 
 A `.keiro` file is a typed service specification. It starts with one context, may choose module
 placement, declares shared types/rules, and then declares top-level nodes. The current grammar has
-twelve top-level node constructors; nested projections, snapshots, timers, and patches are
+**seventeen** top-level node constructors; nested projections, snapshots, timers, and patches are
 documented with their owners below.
 
 ## File structure
 
 ```keiro-dsl
-language keiro-dsl 4
+language keiro-dsl 5
 context hospital-capacity
 module Acme.Services
 layout collocated
@@ -27,7 +27,7 @@ rule lifeCriticalOverride : DivertStatus -> Bool
 The optional `language keiro-dsl <N>` preamble must be the **first significant clause** and must
 precede `context`. It selects a released parser and semantic contract before any body syntax is
 interpreted. A file without it is `legacy-unversioned` and means effective version 1; it is never
-silently rewritten. Language **4** is the sole stable contract — see
+silently rewritten. Language **5** is the sole stable contract — see
 [language versions](/docs/keiro/reference/keiro-dsl-language-versions) for the registry, the syntax
 profiles, and the source-selection diagnostics.
 
@@ -67,9 +67,14 @@ Changing an ID prefix or enum wire spelling is breaking evolution.
 | Grammar family | Nested clauses | Owning reference |
 |---|---|---|
 | `aggregate` | registers, states, commands, events, transitions, `wire`, `projection`, `snapshot` | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
-| `readmodel` | table/schema/columns, captured shape, consistency/scope/feed/subscription | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
+| `readmodel` | table/schema/columns, captured shape, `freshness` (languages 1–4: consistency/scope/feed/subscription), catalog `group`/`targets`/`backing` | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
+| `target` | physical schema/table, reset policy, `depends-on` | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
+| `rebuild-group` | atomic target set and deterministic preparation order | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
+| `projection-owner` | sources, `delivery`, group/targets/order, subscription and dedup identity, `checkpoint-on-missing`, replay policy | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
+| `projection-revision` | per-target schema version, provisioner/validator identities, promotion object renames | [Projection revisions and external reads](/docs/keiro/reference/keiro-dsl-projection-revisions) |
+| `external-read` | contract version, query model, result schema/type, compatible revisions, surface generation | [Projection revisions and external reads](/docs/keiro/reference/keiro-dsl-projection-revisions) |
 | `process` | handle/dispatch policy and one nested `timer` | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
-| `router` | stable resolver, target bindings, dispatch identity and worker policy | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `router` | stable resolver (or a language-5 [declarative selection](/docs/keiro/reference/keiro-dsl-router-selection)), target bindings, dispatch identity and worker policy | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
 | `contract` | topics and integration event schemas | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
 | `intake` | bindings, persistence, decode and seven-outcome disposition | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
 | `emit` | contract/topic map and deterministic ID holes | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
@@ -82,6 +87,10 @@ Changing an ID prefix or enum wire spelling is breaking evolution.
 `projection`, `snapshot`, and `timer` are not independent top-level nodes. A patch and
 `continueAsNew` are workflow body items. An operation is top-level but owns no persisted decode or
 identity surface of its own; it validates references to other nodes.
+
+The six catalog nodes — `target`, `rebuild-group`, `projection-owner`, `projection-revision`,
+`external-read`, and the `group`/`targets`/`backing` clauses on `readmodel` — are **language 5 only**
+(`ProjectionCatalogSyntax` and `ExternalReadContractSyntax`).
 
 ## Ownership and generated output
 

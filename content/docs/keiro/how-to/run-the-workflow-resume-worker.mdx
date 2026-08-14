@@ -57,6 +57,7 @@ Each pass returns a `ResumeSummary`. Log or meter it to see the worker's health:
 ```haskell
 data ResumeSummary = ResumeSummary
   { discovered     :: Int   -- unfinished workflows found this pass
+  , advanced       :: Int   -- candidates whose DURABLE state moved this pass
   , resumed        :: Int   -- re-invoked (name found in the registry)
   , completed      :: Int   -- re-invocations that reached Completed
   , stillSuspended :: Int   -- re-invocations still parked on a wait
@@ -64,14 +65,31 @@ data ResumeSummary = ResumeSummary
   , failed         :: Int   -- workflows marked terminally failed this pass
   , transientErrors :: Int  -- store errors while advancing individual workflows
   , leaseSkipped   :: Int   -- candidates held by another live worker lease
+  , paced          :: Int   -- candidates whose crash-backoff gate is still in the future
+  , sleepDue       :: Int   -- re-suspended with no movement, blocked on a due wake hint
+  , unregisteredNames :: Set Text  -- the names behind unknownName
   }
 ```
 
 A steady non-zero `unknownName` means a deployed-then-removed workflow still has live instances —
-re-add it to the registry. A `discovered` count that never drains to zero means some wake source is
-not resolving (a sleep timer no worker drains, an awakeable no one signals). A non-zero `leaseSkipped`
-is normal when multiple workers share the same backlog; it means another live owner currently holds
-that instance, or a running instance lost its lease mid-advance. Neither consumes a crash attempt.
+re-add it to the registry, and read `unregisteredNames` to see which. A `discovered` count that never
+drains to zero means some wake source is not resolving (a sleep timer no worker drains, an awakeable
+no one signals). A non-zero `leaseSkipped` is normal when multiple workers share the same backlog; it
+means another live owner currently holds that instance, or a running instance lost its lease
+mid-advance. Neither consumes a crash attempt.
+
+<Callout type="warn">
+  **Loop a bounded drain on `advanced`, never on `discovered`.** Exact workflow discovery returns
+  every workflow that *could* make progress, including ones parked on a wake nothing has delivered
+  yet — so `discovered` legitimately stays non-zero and a drain-until-zero loop spins forever.
+
+  `advanced` counts only durable movement: a fresh journal append, a terminal failure at the crash
+  ceiling, or an external wake observed mid-pass. A replay-only re-suspension is not an advance.
+
+  When `advanced` is `0` but `discovered` is not, read `sleepDue`, `paced`, `leaseSkipped`, and
+  `unregisteredNames` — one of them explains the block. `keiro-ops wf resume-once` reports the same
+  fields for exactly this reason.
+</Callout>
 
 Watch `failed` specifically: it counts instances that exhausted `maxAttempts` this pass and have now
 **left discovery**. Nothing will retry them until someone

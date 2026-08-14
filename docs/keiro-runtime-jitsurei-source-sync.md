@@ -49,10 +49,14 @@ chore(deps): drop now-unused direct shibuya-pgmq-adapter dep
 
 > ### ⚠ POINTER DELIBERATELY NOT ADVANCED — re-port outstanding
 >
-> **Surveyed 2026-07-30 against `HEAD` = `b9bcf3c` (2026-07-22, *fix(observability): honor OTLP trace
-> endpoint semantics*).** The pin *is* a proper ancestor of `HEAD`, so the range is trustworthy:
-> **19 commits, 272 files, +20250/−2981**. The worktree carried one dirty file (`.gitignore`) —
-> committed tree only, as usual.
+> **Re-surveyed 2026-08-14 against `HEAD` = `e3c800e` (2026-08-08, *chore(dev): use the shared
+> Redpanda cluster instead of starting one*).** The pin is still a proper ancestor, and the gap has
+> **widened**: **20 commits, 272 files, +20,278/−2,995**. The worktree still carries one dirty file
+> (`.gitignore`) — committed tree only, as usual. The extra commit beyond the previous survey is dev
+> tooling; every conclusion below still holds unchanged.
+>
+> **Previously surveyed 2026-07-30 against `HEAD` = `b9bcf3c` (2026-07-22, *fix(observability): honor
+> OTLP trace endpoint semantics*): 19 commits, 272 files, +20250/−2981.**
 >
 > The pointer is **not** bumped because this is not a fold-in, it is a **re-port of the whole
 > `content/docs/example-app/` tree** (34 pages, ~2950 lines, 20 of them line-by-line source tours).

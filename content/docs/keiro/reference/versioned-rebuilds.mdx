@@ -1,0 +1,207 @@
+---
+title: "Versioned projection rebuilds and external reads"
+description: "Online schema-versioned projection rebuilds: target generations, serving epochs, the bounded promotion cutover, the frozen keiro_read.projection_group_status_v1 contract, and the guarded external-read SQL surface."
+---
+
+*(New in Keiro 0.12.0.0, ADRs 34, 35, and 36.)* An ordinary
+[rebuild](/docs/keiro/reference/projection-catalog) replays events into the *same* physical tables,
+so a projection whose **schema** changes cannot use it — the new columns do not exist yet, and the
+old reader still needs the old shape.
+
+A **versioned rebuild** replays into a second, application-provisioned physical generation while V1
+keeps serving reads and writes, then promotes the verified generation under one bounded atomic
+cutover.
+
+These APIs live in `Keiro.ReadModel.Rebuild` (the `.Versioned`, `.Status`, and `.Stream` modules are
+internal and re-exported there). Author the contracts with
+[`projection-revision` and `external-read`](/docs/keiro/reference/keiro-dsl-projection-revisions).
+
+## The lifecycle
+
+```haskell
+data VersionedRebuildPhase
+  = VersionedReplayRunning
+  | VersionedCutoverPendingHead
+  | VersionedCutoverReplaying
+  | VersionedPromoted
+  | VersionedFailed
+  | VersionedAbandoned
+  | UnknownVersionedRebuildPhase !Text !Text
+  deriving stock (Eq, Ord, Show, Generic)
+```
+
+<Callout type="info">
+  `UnknownVersionedRebuildPhase` carries the raw text rather than failing to decode. An operator
+  console running against a newer database reports what it saw instead of crashing — the same
+  forward-compatibility rule the rest of the operator surface follows.
+</Callout>
+
+A generation moves through its own lifecycle, independent of the run:
+
+```haskell
+data VersionedGenerationLifecycle
+  = GenerationStaging
+  | GenerationServing
+  | GenerationRetired
+  | GenerationDropped
+  | UnknownGenerationLifecycle !Text
+  deriving stock (Eq, Ord, Show, Generic)
+
+data VersionedTargetMode = ApplicationProvisioned | RestrictedClone
+  deriving stock (Eq, Ord, Show, Generic)
+```
+
+`ApplicationProvisioned` uses the revision's provisioner hole. `RestrictedClone` asks Keiro for an
+exact-shape clone of the live target; unsupported PostgreSQL features return typed clone findings
+rather than producing a subtly different table.
+
+The resume contract is `keiro/versioned-rebuild/v3`.
+
+## The API
+
+```haskell
+beginVersionedRebuild      :: … -> VersionedRebuildRequest -> Eff es (Either VersionedRebuildError VersionedRebuildHandle)
+applyVersionedReplayEvent  :: … -> Eff es (Either VersionedRebuildError …)
+verifyVersionedCandidate   :: … -> Eff es (Either VersionedRebuildError …)
+resumeVersionedRebuild     :: … -> Eff es (Either VersionedRebuildError VersionedRebuildReport)
+inspectVersionedRebuild    :: … -> Eff es (Either VersionedRebuildError VersionedRebuildReport)
+abandonVersionedRebuild    :: … -> Eff es (Either VersionedRebuildError VersionedAbandonResult)
+
+listVersionedRetiredGenerations :: … -> Eff es …[VersionedRetiredGenerationPreview]
+previewVersionedRetiredDrop     :: … -> Eff es …VersionedRetiredGenerationPreview
+dropVersionedRetiredGeneration  :: … -> Eff es …VersionedRetiredDropResult
+```
+
+Every one has a `…Tx` counterpart that runs inside a caller-owned transaction.
+
+<Callout type="warn">
+  **Dropping a retired generation is dependency-aware and refuses rather than cascades.** The drop
+  refuses while a run is active, while a *compatible* external read contract still points at the
+  generation, and while ordinary database dependencies exist. Preview first — see
+  [`keiro-ops rebuild drop-retired`](/docs/keiro/reference/keiro-ops-cli).
+</Callout>
+
+### What the cutover guarantees
+
+- V1 stays **readable and writable** while V2 converges.
+- History is protected for the duration by a **renewable Kiroku retention lease** (`kiroku-store`
+  0.7), so garbage collection cannot delete events the replay still needs.
+- Async dedup rows and subscription checkpoints are reconciled as part of the run, using Kiroku's
+  **public checkpoint reset transaction** rather than private writes.
+- Every target in the group is promoted **under one bounded lock phase**, so a group never serves a
+  mixed V1/V2 set.
+- Replay adapter order is pinned in the resume contract, and cross-source replay preserves global
+  position order.
+
+## The frozen status contract
+
+`keiro_read.projection_group_status_v1` *(migration `0026`)* is a **frozen, owner-rights** view for
+out-of-process consumers. Grant schema `USAGE` and view `SELECT` only — never table access.
+
+```haskell
+data ProjectionGroupStatusV1 = ProjectionGroupStatusV1 { … }
+data ServingPositionBasis = …
+
+listProjectionGroupStatuses  :: (Store :> es) => Eff es [ProjectionGroupStatusV1]
+lookupProjectionGroupStatus  :: (Store :> es) => RebuildGroupId -> Eff es (Maybe ProjectionGroupStatusV1)
+```
+
+<TypeTable
+  type={{
+    group_id: { type: "TEXT", description: "Stable rebuild-group identifier and row key." },
+    lifecycle_phase: { type: "TEXT", description: "Diagnostic lifecycle phase. Readers must use reads_allowed for availability." },
+    reads_allowed: { type: "BOOLEAN", description: "Authoritative permission to serve reads from the current generation." },
+    writes_allowed: { type: "BOOLEAN", description: "Whether live projection writes may currently target the serving generation." },
+    serving_revision_id: { type: "TEXT NULL", description: "Served schema revision; NULL for legacy/offline groups without versioned generations." },
+    serving_epoch: { type: "BIGINT", description: "Monotonic cache-invalidation epoch for changes to the served generation." },
+    serving_position_basis: { type: "TEXT", description: "append, checkpoint, or unmanaged — determines how serving_applied_position is interpreted." },
+    serving_applied_position: { type: "BIGINT NULL", description: "Conservative floor across every registered checkpoint subscription/member. NULL until all subscriptions are present, and always NULL for append or unmanaged groups." },
+    active_run_id: { type: "TEXT NULL", description: "Active rebuild run, including a retained failed run; NULL when no rebuild is active." },
+    candidate_revision_id: { type: "TEXT NULL", description: "Versioned candidate revision for the active run." },
+    candidate_rebuild_position: { type: "BIGINT NULL", description: "Conservative floor of persisted source cursors for the active run." },
+    candidate_rebuild_head: { type: "BIGINT NULL", description: "The head captured when the run started." },
+    query_models: { type: "TEXT[]", description: "Query models served by this group, ordered by name; empty array when none." },
+    rebuild_started_at: { type: "TIMESTAMPTZ NULL", description: "When the active run started." },
+    last_promoted_at: { type: "TIMESTAMPTZ NULL", description: "When the group last completed a promotion." },
+    failed_at: { type: "TIMESTAMPTZ NULL", description: "When the group last failed." },
+    failure_code: { type: "TEXT NULL", description: "Stable failure code." },
+    failure_detail: { type: "TEXT NULL", description: "Human-readable failure detail." },
+  }}
+/>
+
+<Callout type="warn">
+  **`lifecycle_phase` is diagnostic; `reads_allowed` is authoritative.** A reader that gates on the
+  phase string will eventually gate on a phase it does not know. Gate on the boolean.
+
+  The view separates **serving** availability and progress from **active candidate** progress on
+  purpose: `serving_*` describes what readers get right now, `candidate_*` describes a rebuild that
+  has not been promoted yet. Conflating them is what makes a rebuild look like an outage.
+</Callout>
+
+## The guarded external-read surface
+
+*(Migration `0027`, tightened by `0030`.)* An out-of-process reader never touches target tables. It
+receives **execute-only** access to a versioned `SECURITY DEFINER` function in `keiro_read`, which
+calls the fixed guard `keiro_read.guard_external_read_v1(TEXT, INTEGER)` first.
+
+The guard takes a **shared lifecycle lock**, consumes persisted `reads_allowed` and serving
+compatibility, revokes `PUBLIC`, and raises one of three stable SQLSTATEs:
+
+<TypeTable
+  type={{
+    KR001: { type: "retryable", description: "\"projection is temporarily unavailable\" — reads_allowed is false, typically mid-promotion. The caller should retry." },
+    KR002: { type: "permanent", description: "\"external read contract is unknown or retired\" — the contract does not exist, is pending retirement, or its group is unavailable." },
+    KR003: { type: "permanent", description: "\"external read contract is incompatible with the serving revision\" — the serving revision is not in compatible-revisions, or the result shape no longer matches." },
+  }}
+/>
+
+<Callout type="info">
+  **Why `0030` exists.** The guard now locks the lifecycle row *before* re-reading mutable contract
+  metadata under a matching shared lock. A reader queued behind a promotion therefore gets a
+  **retryable `KR001`** when its statement snapshot straddles the serving epoch, and its next
+  statement validates and reads the rebound generation from one committed authority — rather than
+  seeing a torn mix of old and new metadata.
+</Callout>
+
+Migration `0028` additionally permits an implementation-backed compatibility wrapper to keep a
+zero-argument public signature while a breaking projection shape is promoted.
+
+### Reconciliation and retirement
+
+```haskell
+reconcileExternalReadContracts          :: (Store :> es) => ValidatedProjectionCatalog -> Eff es (Either ExternalReadReconciliationError ())
+reconcileExternalReadContractsTx        :: …
+reconcileExternalReadContractsForGroupsTx :: …
+previewExternalReadContractRetirement   :: … -> Eff es (Either ExternalReadRetirementError ExternalReadRetirementPreview)
+retireExternalReadContract              :: … -> Eff es (Either ExternalReadRetirementError …)
+```
+
+```haskell
+data ExternalReadRetirementPreview = ExternalReadRetirementPreview
+  { contractId :: !ExternalReadContractId
+  , contractVersion :: !ExternalReadContractVersion
+  , publicFunction :: !Text
+  , currentState :: !Text
+  , surfaceGeneration :: !Int
+  , dependentObjects :: ![Text]
+  , executeGrants :: ![Text]
+  }
+  deriving stock (Eq, Show, Generic)
+```
+
+Reconciliation refuses rather than guesses. Its error set names each hazard exactly —
+`ExternalReadImmutableSignatureConflict` (a published signature would change),
+`ExternalReadSurfaceDowngrade` (the surface generation went backwards),
+`ExternalReadRetiredContractCannotReactivate`, `ExternalReadUnmanagedObjectCollision` (a function
+Keiro does not own already occupies the name), and `ExternalReadManagedObjectOwnershipConflict`.
+
+## Related
+
+- [keiro-dsl projection revisions and external reads](/docs/keiro/reference/keiro-dsl-projection-revisions) —
+  how these contracts are declared.
+- [keiro-ops CLI](/docs/keiro/reference/keiro-ops-cli) — `rebuild versioned`, `rebuild retired`,
+  `rebuild drop-retired`, `rebuild external-read`, `rebuild reproject-stream`.
+- [Migrations and schema](/docs/keiro/reference/migrations-and-schema) — migrations `0025`–`0030`.
+- [Rebuild a read model](/docs/keiro/how-to/rebuild-a-read-model) — the non-versioned path.
+- [Projections, read models, and snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots) —
+  why the four identities are separate.

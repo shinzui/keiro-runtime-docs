@@ -29,6 +29,19 @@ data Store :: Effect where
   HardDeleteStream    :: StreamName -> Store m (Maybe StreamId)
   UndeleteStream      :: StreamName -> Store m (Maybe StreamId)
   SetStreamTruncateBefore :: StreamName -> StreamVersion -> Store m (Maybe StreamId)
+  GetVisibleGlobalHeadPosition :: Store m GlobalPosition
+  GetSubscriptionCheckpointInventory :: Store m SubscriptionCheckpointInventory
+  InitializeSubscriptionCheckpoint ::
+    SubscriptionName -> Int32 -> MissingCheckpointPolicy ->
+    Store m (Either SubscriptionCheckpointMissing CheckpointInitialization)
+  AcquireHistoryRetentionLease :: HistoryRetentionLeaseRequest -> Store m HistoryRetentionLease
+  RenewHistoryRetentionLease ::
+    HistoryRetentionLeaseHandle -> HistoryRetentionLeaseDuration ->
+    Store m (Either HistoryRetentionRenewalError HistoryRetentionLease)
+  ReleaseHistoryRetentionLease :: HistoryRetentionLeaseHandle -> Store m HistoryRetentionReleaseResult
+  GetHistoryRetentionLeaseInventory ::
+    HistoryRetentionInventoryQuery -> Store m (Vector HistoryRetentionLease)
+  PruneHistoryRetentionLeases :: UTCTime -> Store m HistoryRetentionPruneResult
   RunTransaction        :: Tx.Transaction a -> Store m a
   RunTransactionNoRetry :: Tx.Transaction a -> Store m a
 type instance DispatchOf Store = Dynamic
@@ -39,6 +52,121 @@ type instance DispatchOf Store = Dynamic
   pure in-memory interpreter in tests. The only *shipped* backend is `runStorePool` over
   `hasql-pool`.
 </Callout>
+
+<Callout type="warn">
+  **Breaking across kiroku-store 0.4 → 0.7.** The effect gained **eight** constructors in four
+  releases, and an exhaustive custom or mock interpreter must add an arm for each:
+
+  | Release | Added |
+  |---|---|
+  | `0.4` | `GetSubscriptionCheckpointInventory` |
+  | `0.5` | `InitializeSubscriptionCheckpoint` |
+  | `0.6` | `GetVisibleGlobalHeadPosition` |
+  | `0.7` | `AcquireHistoryRetentionLease`, `RenewHistoryRetentionLease`, `ReleaseHistoryRetentionLease`, `GetHistoryRetentionLeaseInventory`, `PruneHistoryRetentionLeases` |
+
+  `KirokuEvent` and `StoreError` also gained constructors — see the sections below.
+</Callout>
+
+## The visible head
+
+*(New in kiroku-store 0.6.0.0.)*
+
+```haskell
+visibleGlobalHeadPosition :: (Store :> es) => Eff es GlobalPosition
+```
+
+Returns the greatest global position still **visible** in `$all`, or zero when no event remains,
+through a payload-free scalar query. No event payload is read and the configured decode hook is not
+invoked.
+
+<Callout type="warn">
+  **The visible head can regress; the authoritative append frontier cannot.** Hard-deleting the
+  visible tail lowers this value, while the append counter stays monotonic. That is precisely why the
+  two are separate operations: use the append counter for capacity and audit reporting, and the
+  visible head for anything a reader must actually be able to reach — consistency waits and
+  projection distance among them.
+</Callout>
+
+## Subscription checkpoints
+
+*(New in kiroku-store 0.4.0.0 and 0.5.0.0.)*
+
+```haskell
+subscriptionCheckpointInventory :: (Store :> es) => Eff es SubscriptionCheckpointInventory
+
+initializeSubscriptionCheckpoint ::
+  (Store :> es) =>
+  SubscriptionName -> Int32 -> MissingCheckpointPolicy ->
+  Eff es (Either SubscriptionCheckpointMissing CheckpointInitialization)
+```
+
+`subscriptionCheckpointInventory` returns the captured global store position and every persisted,
+member-aware subscription checkpoint from **one prepared statement snapshot**, ordered by
+subscription name then consumer-group member, and remains available after a worker stops. The public
+`SubscriptionCheckpoint` and `SubscriptionCheckpointInventory` records expose the durable position,
+member, last upsert time, and captured store position without importing Hasql or querying
+Kiroku-owned tables.
+
+`initializeSubscriptionCheckpoint` resolves an **absent** exact `(name, member)` checkpoint through a
+closed policy:
+
+<TypeTable
+  type={{
+    FromBeginning: { type: "MissingCheckpointPolicy", default: "default", description: "Durably seeds zero, so the subscription replays all history." },
+    FromCurrentHead: { type: "MissingCheckpointPolicy", description: "Atomically seeds the current $all position, skipping all history." },
+    FailIfMissing: { type: "MissingCheckpointPolicy", description: "Refuses startup with SubscriptionCheckpointMissing before any handler delivery." },
+  }}
+/>
+
+Existing rows **always win**, and concurrent initializers converge on one value.
+
+<Callout type="warn">
+  **Breaking in kiroku-store 0.5.0.0.** `SubscriptionConfigM` gained `missingCheckpointPolicy`,
+  defaulting to `FromBeginning` in `defaultSubscriptionConfig`. Exhaustive record literals must
+  choose a policy or switch to the smart constructor. `KirokuEvent` gained
+  `KirokuEventSubscriptionCheckpointResolved` and `KirokuEventSubscriptionCheckpointMissing`.
+</Callout>
+
+Keiro surfaces this policy as the `checkpoint-on-missing` clause on a `projection-owner` — see
+[keiro-dsl domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes).
+
+## History retention leases
+
+*(New in kiroku-store 0.7.0.0.)* `Kiroku.Store.HistoryRetention` and
+`Kiroku.Store.HistoryRetention.Types` expose validated, durable, **database-time-derived** leases
+that protect history for the duration of a long rebuild.
+
+```haskell
+acquireHistoryRetentionLease :: (Store :> es) => HistoryRetentionLeaseRequest -> Eff es HistoryRetentionLease
+renewHistoryRetentionLease   :: (Store :> es) => HistoryRetentionLeaseHandle -> HistoryRetentionLeaseDuration -> Eff es (Either HistoryRetentionRenewalError HistoryRetentionLease)
+releaseHistoryRetentionLease :: (Store :> es) => HistoryRetentionLeaseHandle -> Eff es HistoryRetentionReleaseResult
+historyRetentionLeaseInventory :: (Store :> es) => HistoryRetentionInventoryQuery -> Eff es (Vector HistoryRetentionLease)
+pruneHistoryRetentionLeases  :: (Store :> es) => UTCTime -> Eff es HistoryRetentionPruneResult
+```
+
+Transaction combinators and mockable effect wrappers share the same owner-aware acquire, renew,
+release, bounded inventory, and terminal-row pruning semantics.
+
+```haskell
+lockStreamHistoryForReplayTx :: StreamName -> Tx.Transaction ()
+readStreamForwardTx          :: StreamName -> StreamVersion -> Int32 -> Tx.Transaction (Vector RecordedEvent)
+```
+
+`lockStreamHistoryForReplayTx` holds a transaction-scoped stream guard, and `readStreamForwardTx`
+reads exact ordered history in that same transaction. Append, link, lifecycle mutation, and every
+supported hard delete affecting the stream **serialize behind the guard**.
+
+<Callout type="warn">
+  **`StoreError` gained `HistoryRetentionActive`**, returned when a supported hard delete is refused
+  by an active lease. Supported hard delete now checks retention *before* mutation and locks every
+  affected stream in ascending stream-ID order — including streams that merely contain **links** to
+  target-originated events. `KirokuEvent` gained committed acquisition, renewal, release, pruning,
+  and hard-delete-conflict events.
+</Callout>
+
+This is the mechanism Keiro's
+[versioned projection rebuilds](/docs/keiro/reference/versioned-rebuilds) use to keep replay history
+alive across a long convergence. Kiroku migration `0010` supplies the lease table.
 
 ## Append
 

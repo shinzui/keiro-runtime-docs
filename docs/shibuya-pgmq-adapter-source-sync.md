@@ -36,10 +36,40 @@ guides.
 ## Last reviewed commit
 
 ```text
-85931b45702faecc035d89bb5cff381e8679f793  (85931b4)
-2026-07-14T07:53:25-07:00
-chore(release): 0.12.0.0
+fee9b3a8670e41baaa41388cfe9235aa03a5caf2  (fee9b3a)
+2026-08-10T14:28:12-07:00
+docs(plans): complete structured DLQ rollout
 ```
+
+> **Current range.** The `85931b4..fee9b3a` range (**13 commits**, 55 files,
+> +4,372/−130) lands **two releases**, `0.13.0.0` and `0.14.0.0`, taking the adapter from `0.12.0.0`.
+> The adapter's own public Haskell function and record signatures are **unchanged** in both.
+>
+> **`0.13.0.0` — the pgmq-hs 0.5 upgrade.** Requires the `pgmq-*` 0.5 family, up from 0.4.
+>
+> ⚠ **Operator prerequisite:** the re-exported `parseQueueName` now accepts only `[a-z0-9_]{1,47}`.
+> An existing database must be checked for **mixed-case `pgmq.meta` rows** and transactionally
+> remediated *before* rollout.
+>
+> Reliability also improves: a lease extension that races a delete/archive/pop is a successful no-op
+> instead of a row-count decoder error; transient retries inherit pgmq-effectful 0.5's broader
+> SQLSTATE classification (serialization, deadlock, lock-unavailable, shutdown/recovery, resource
+> exhaustion); schema installation inherits pgmq-migration 0.5's notification crash-safety migration.
+>
+> **`0.14.0.0` — structured dead-letter reasons.** Requires `shibuya-core ^>=0.9.0.0` for
+> `ApplicationFailure` and the total public reason projections. Every new DLQ payload keeps the
+> compatibility field `dead_letter_reason` and adds `dead_letter_reason_code` plus an
+> **always-present** `dead_letter_reason_detail` (JSON `null` when the reason carries no detail).
+> Application-owned codes and details are transported **verbatim** through Shibuya's projections; the
+> adapter no longer duplicates Shibuya's constructor renderer.
+>
+> **Pages UPDATED:** `integrations/shibuya-pgmq-adapter.mdx` (versions, the `parseQueueName`
+> prerequisite callout, 0.13 reliability notes, and a new *Structured reason fields* section),
+> `getting-started/compatibility-and-upgrades.mdx`, `getting-started/choosing-a-library.mdx`.
+>
+> **Pages ADDED / RETIRED:** none.
+>
+> **Deliberately NOT documented:** upstream `docs/plans/*`, `.seihou/`, and `agents/` scaffolding.
 
 The `99e997e..85931b4` review covers the pgmq-hs 0.4/pg-migrate dependency
 upgrade and the idle-shutdown fix: an empty poll reaches the stop gate, ends the
@@ -78,6 +108,7 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `85931b45702faecc035d89bb5cff381e8679f793` (`85931b4`, 2026-07-14, shibuya-pgmq-adapter 0.12.0.0) — the baseline before the 0.13/0.14 review. The `85931b4..fee9b3a` range (13 commits) moved the adapter to pgmq-hs 0.5 (narrowing `parseQueueName` to `[a-z0-9_]{1,47}`, which needs a mixed-case `pgmq.meta` remediation before rollout) and then to shibuya-core 0.9, adding `dead_letter_reason_code` and an always-present `dead_letter_reason_detail` to every DLQ payload. Public Haskell signatures unchanged.
 - `99e997e8a05f4a0deb92ddede4d419351f6da3d8` (`99e997e`), 2026-07-04 —
   0.11.0.0 baseline before the 0.12 dependency and idle-shutdown pass.
 - `71a7b82223449d84c395b64e480c9cfe4ff274f1 (71a7b82)`, 2026-06-14:
@@ -93,8 +124,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    ADAPTER=$(mori registry show shinzui/shibuya-pgmq-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$ADAPTER" log --oneline 85931b4..HEAD
-   git -C "$ADAPTER" diff --stat 85931b4..HEAD
+   git -C "$ADAPTER" log --oneline fee9b3a..HEAD
+   git -C "$ADAPTER" diff --stat fee9b3a..HEAD
    ```
    Also inspect `README.md`, `CHANGELOG.md`, `docs/user/`, and the source
    modules listed above. Because the adapter sits on `pgmq-hs`, check

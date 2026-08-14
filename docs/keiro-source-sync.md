@@ -15,36 +15,212 @@ the affected pages, then bump the pointer below.
   executable and embedded schema), `keiro-pgmq` (the typed background-job queue — `Keiro.PGMQ.*`),
   `keiro-dsl` (the typed-spec authoring toolchain + CLI — `Keiro.Dsl.*`; authoring-only, the code it
   scaffolds depends only on keiro/keiki),
+  `keiro-ops` (the operational console — library + standalone binary),
   `keiro-test-support` (test fixtures). The in-repository `jitsurei` package remains a legacy source
   anchor and is not current release evidence.
-- **Reviewed release:** the Keiro package family at `0.12.0.0` — the release being prepared from this
-  range. Note that **no version bump had landed at the pinned commit**: every `.cabal` still reads
-  `0.11.0.0` and the whole range sits under `## Unreleased`. The docs were written for 0.12.0.0 on
-  the author's confirmation that this is the release being cut.
-- **New package this round:** `keiro-ops` (the operational CLI — library + standalone binary).
+- **Reviewed release:** the Keiro package family at `0.12.0.0` — **cut and version-bumped at this
+  pointer**. Verified: `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, `keiro-migrations`, and
+  `keiro-ops` all read `version: 0.12.0.0`; `keiro-test-support` remains `0.1.0.0`. `Keiro.version`
+  derives from `Paths_keiro`, so it is authoritative again.
+- **Required peers:** `keiki >=0.9 && <0.10`, `kiroku-store >=0.7 && <0.8`,
+  `kiroku-store-migrations ^>=0.3.2.0`, `shibuya-core ^>=0.9.0.0`.
+- **Stable authoring contract:** `keiro-dsl` language **5** (`syntax-profile/4`,
+  `runtime-semantics/4`), the sole `Stable PublishedLanguage` registry entry.
 
 ## Last reviewed commit
 
 ```text
-8d1cd74ab966cf463462430846913d23612eb607  (8d1cd74a)
-2026-08-10T07:53:47-07:00
-docs: close parser span scaling plan
+93ada2d42995d559b645d0226af95aafff34d175  (93ada2d4)
+2026-08-14T11:36:03-07:00
+chore(release): 0.12.0.0
 ```
 
-> ### ⚠ Release-prep items this round surfaced but did not change
+> ### ✅ Both release-prep items from the prior round are now CLOSED in source
 >
-> These are **source** facts a release cut must reconcile; the docs already
-> describe the intended post-release state.
+> The previous note recorded two source facts the release cut still had to
+> reconcile. Verified resolved at this pointer:
 >
-> - `keiro-dsl`'s registry still marks language 5
->   `Candidate CandidateLanguage`, while language 4 remains the sole `Stable`
->   entry. The docs document language 5 as the stable contract, per the author's
->   statement that it is the release headline. Flipping it means language 4 must
->   simultaneously become `CompatibilityOnly` — `currentStableLanguageVersion`
->   `error`s unless **exactly one** entry is `Stable`.
-> - No package version was bumped anywhere in the range.
+> - `keiro-dsl`'s registry now reads
+>   `LanguageDefinition version5 (Just version4) LanguageBodyParserV2 profileV4 runtimeProfileV4 Stable PublishedLanguage`,
+>   and languages 1–4 are all `CompatibilityOnly PublishedLanguage`. Exactly one
+>   `Stable` entry, so `currentStableLanguageVersion` does not `error`
+>   (`d2b6e94f feat(dsl): publish stable language 5`).
+> - Every package `.cabal` reads `0.12.0.0` — `keiro`, `keiro-core`,
+>   `keiro-dsl`, `keiro-pgmq`, `keiro-migrations`, `keiro-ops`
+>   (`keiro-test-support` stays `0.1.0.0`), with inter-package bounds at
+>   `^>=0.12.0.0`. `Keiro.version` derives from `Paths_keiro` rather than a stale
+>   literal (`c3cd2bbb`, committed earlier in the range).
+>
+>   ⚠ **Sequencing worth remembering:** the version bump landed in the *final*
+>   commit, `93ada2d chore(release): 0.12.0.0`, not with the feature work. At
+>   `4a4f8a9` — one commit earlier — every `.cabal` still read `0.11.0.0` while
+>   the whole range sat under `## Unreleased`. This pointer is pinned at
+>   `93ada2d` precisely so the version claims in these docs rest on a committed
+>   tree rather than an uncommitted worktree.
+>
+> The docs written last round on the author's statement are therefore now backed
+> by shipped source rather than intent.
 
-> **Current range.** The `fc935b7..8d1cd74` range (**85 commits**) is the largest
+> **Current range.** The `8d1cd74..93ada2d` range (**176 commits**) is the
+> **release round**. `8d1cd74..4a4f8a9` is 402 files / +78,639/−3,238 of feature work; the final
+> commit `93ada2d` is the release cut itself. Together they turn the 0.12.0.0 the previous
+> round *described* into the 0.12.0.0 that actually ships. Everything the prior
+> note flagged as unreconciled is now source-backed (see the ✅ block above).
+>
+> **The scope checks.**
+>
+> - `git diff --name-status 8d1cd74..HEAD -- '*.sql'` is **NOT empty** — seven new
+>   migrations (`0024`–`0030`), taking Keiro from twenty-three to **thirty**
+>   component-local migrations and from seventeen to **twenty-five** tables in the
+>   `keiro` schema, plus an entirely new **`keiro_read` schema** (one frozen view,
+>   one fixed guard function, and one function per published external-read
+>   contract).
+> - Exposed-module diff: **five** newly exposed in `keiro` — `Keiro.DeterministicId`
+>   (promoted from `other-modules`), `Keiro.Projection.Catalog.Preimage`,
+>   `Keiro.ReadModel.External`, `Keiro.Router.Selection`,
+>   `Keiro.Workflow.Awakeable.Compatibility` — and **three** in `keiro-dsl`:
+>   `Keiro.Dsl.CoordinationImpact`, `Keiro.Dsl.ProjectionSupply`,
+>   `Keiro.Dsl.RouterSelection`.
+> - **Internal, documented only at their re-exported path** (do not regress this):
+>   `Keiro.Command.Domain` (via `Keiro.Command`) and
+>   `Keiro.ReadModel.Rebuild.{Status,Stream,Versioned}` (via `Keiro.ReadModel.Rebuild`),
+>   plus `Keiro.Workflow.Awakeable.Internal.Identity`.
+> - `git merge-base --is-ancestor 8d1cd74 HEAD` passes — no history rewrite.
+> - ⚠ The upstream worktree was **dirty (454 files)** during most of this review —
+>   that work has since landed as `93ada2d`, and the pointer is pinned there, so
+>   nothing uncommitted is documented. **Lesson for the next round:** read facts
+>   with `git show <sha>:<path>`, not from the working tree. Reading
+>   `keiro/keiro.cabal` directly during this round briefly showed `0.12.0.0` while
+>   the committed tree at `4a4f8a9` still said `0.11.0.0`.
+>
+> **1. keiro-dsl language 5 is published stable — the release headline.**
+> `Stable PublishedLanguage`; 1–4 demoted to `CompatibilityOnly`. Language 4 stays
+> byte-compatible, so an existing service may keep `--min-language 4`.
+> `LanguageFeature` 7 → **11** (`+ExternalReadContractSyntax`,
+> `DomainCommandOutcomeSyntax`, `DeclarativeRouterSelectionSyntax`,
+> `SeparatedProjectionQueryPolicySyntax`); `RuntimeCapability` 5 → **7**
+> (`+TypedDomainCommandOutcomes`, `+SeparatedProjectionQueryPolicy`, **both
+> fold-neutral** — `projection-catalog/1` remains the only new fold segment a
+> language-5 adoption introduces). `currentAuthoringLanguageVersion` is now
+> exported alongside `currentStableLanguageVersion`. `Node` gains
+> `NProjectionRevision` and `NExternalRead`: **17** top-level constructors.
+> **`DiagnosticCode` +81, none removed — 392 total.**
+>
+> **2. Typed domain command outcomes (ADR 0029).** Opt-in `domain-outcomes`
+> declaration plus a per-transition `outcome accepted | rejected e | no-op e`
+> clause; a declined command becomes a typed `Right`, not a `CommandError`.
+> `outcome` is **contextual, never reserved** — this also *restored* the 0.11.0.0
+> grammar that the candidate had accidentally narrowed for languages 1–4.
+> Runtime: `DomainCommandHandler`, `SilentDomainDecision`, `DomainDecision`,
+> four `runDomainCommand*` runners, one bounded telemetry dimension
+> (`keiro.command.decisions`, values `accepted`/`rejected`/`no_op`).
+> Breaking: `Aggregate` and `Transition` each gain two fields.
+>
+> **3. Delivery/freshness split — the breaking language-5 syntax change.**
+> `readmodel` drops `consistency`/`scope`/`feed`/`subscription` for a single
+> `freshness = immediate | wait-for-head <scope>`; `projection-owner` renames
+> `feed` → `delivery`. Both are **parse errors** in the wrong language, with
+> explicit messages. AST: `rmConsistency`/`rmScope`/`rmFeed`/`rmSubscription` →
+> `rmFreshness`/`rmSupply` (+`rmBackingTarget`), `poFeed` → `poDelivery`, with four
+> `legacyReadModel*` compatibility accessors. `diff` classifies the 4→5 migration:
+> weakening `Strong` → `immediate`, or narrowing waited scope, is a breaking
+> `QueryFreshnessChanged`; scope-preserving rewrites are equivalent.
+>
+> **4. Checkpoint lifecycle (ADR 0031).** `checkpoint-on-missing = from-beginning |
+> from-current-head | fail`, fingerprinted as catalog identity. Validation rejects
+> future-only initialization for a replayable owner that clears its target
+> (`CatalogCheckpointPolicyReplayUnsafe`).
+>
+> **5. Versioned rebuilds + external reads (ADRs 0032/0034/0035/0036).** Online
+> schema-changing rebuilds into application-provisioned generations, promoted under
+> one bounded atomic cutover, with history held by a **renewable Kiroku 0.7
+> retention lease**. New DSL nodes `projection-revision` and `external-read`. New
+> frozen SQL contracts: `keiro_read.projection_group_status_v1` (`0026`) and the
+> `keiro_read.guard_external_read_v1` security-definer guard (`0027`, tightened by
+> `0030`) raising **KR001 (retryable)** / **KR002** / **KR003**. `0024` renames
+> `catalog_fingerprint` → `slice_fingerprint` and is the **one migration with an
+> operator prerequisite**: quiesce active catalog rebuilds first, recover with
+> `keiro-ops rebuild adopt`.
+>
+> **6. Declarative router selection (ADR 0030).** `resolve declarative { … }` with a
+> bounded typed post-query contract. Exactly one admitted spelling each for `order`,
+> `dedupe`, `redelivery`, `partial`; `failure => ack` is refused by validation *and*
+> absent from `SelectionFailurePolicy`; `max-recipients` is required and positive.
+> Consumes Shibuya 0.9 `ApplicationFailure` dead-letter reasons.
+>
+> **7. Consistency waits target the reachable visible head (ADR 0033).** Strong and
+> `WaitForHead EntireVisibleLog` reads, and projection distance, now measure from
+> the newest **visible** event, so a caught-up query no longer times out after
+> workflow GC hard-deletes the newest journal events.
+>
+> **8. Honest resume progress.** `claimInstance` returns `ClaimOutcome` (not `Bool`);
+> `ResumeSummary` gains `advanced`, `paced`, `sleepDue`, `unregisteredNames`.
+> **Loop a bounded drain on `advanced`, not `discovered`** — exact discovery
+> legitimately returns parked workflows every pass.
+>
+> **9. keiro-ops grew a lot.** `rebuild` gains `adopt`, `versioned start|status|
+> resume|abandon`, `retired`, `drop-retired`, `external-read`,
+> `retire-external-read`, `reproject-stream` (`--max-events` positive, default
+> 1000, re-checked against locked stream metadata before the fence; v2 JSON).
+> `wf resume-once` reports `advanced`/`paced`/`sleep_due`/`unregistered_names`;
+> `projection position` and `stream subscriptions` report both `store_position` and
+> `visible_store_head`.
+>
+> **10. Removed API.** The Spec-only planning entry points in `Keiro.Dsl.ScaffoldRun`
+> (`planServiceScaffold*`, `planScaffold*`, `checkServiceDiagnostics`,
+> `pureRefusals`, `constraintPlan`). **Verified never documented here** — no doc
+> edit was needed. Generated `WorkflowRuntime` drops `awaitAwakeableId` for
+> `AwaitBinding` + `allocateDeclaredAwait`.
+>
+> **11. The release cut itself (`93ada2d`).** Pure release mechanics, no public API change:
+> six packages bumped `0.11.0.0` → `0.12.0.0` with inter-package bounds at `^>=0.12.0.0`, a
+> BSD-3-Clause `LICENSE` packaged with every source distribution (`license-file: LICENSE`), the
+> CHANGELOG `## Unreleased` section closed as `## 0.12.0.0 — 2026-08-14`, and 28 generated
+> conformance-provenance version strings refreshed. Verified: `git show 93ada2d --name-only` contains
+> nothing outside `.cabal`, `LICENSE`, `CHANGELOG.md`, `docs/`, and generated goldens.
+>
+> **Pages ADDED (4):** `reference/keiro-dsl-domain-outcomes.mdx`,
+> `reference/keiro-dsl-projection-revisions.mdx`,
+> `reference/keiro-dsl-router-selection.mdx`, `reference/versioned-rebuilds.mdx`.
+> All four wired into `reference/meta.json`, `reference/index.mdx` cards, and
+> inbound cross-links.
+>
+> **Pages UPDATED:** `reference/`{`keiro-dsl-language-versions`,
+> `keiro-dsl-domain-nodes` (largest share), `keiro-dsl-notation`, `keiro-dsl-cli`,
+> `keiro-ops-cli`, `migrations-and-schema`, `telemetry`, `durable-workflows`,
+> `index`, `meta.json`}; `explanation/the-keiro-dsl-toolchain`;
+> `how-to/`{`check-a-service-spec`, `gate-spec-evolution-with-diff`,
+> `author-a-read-model-and-router`, `run-the-workflow-resume-worker`};
+> `tutorials/author-a-service-with-keiro-dsl`;
+> `walkthrough/durable-execution/07-the-resume-worker`;
+> `getting-started/`{`compatibility-and-upgrades`, `choosing-a-library`}.
+>
+> **Pages RETIRED:** none.
+>
+> **Fixed while in the files (pre-existing, out of range):** the **8 broken
+> `#anchors` in `content/docs/keiki/`** that the prior note recorded as unreviewed
+> (`builder.mdx` ×2, `composition.mdx` ×1, `generics.mdx` ×5). All were the
+> em-dash/slash **double-hyphen** slug gotcha. A repo-wide github-slugger sweep now
+> reports **0 broken of 328** anchored links (cross-page and same-page).
+>
+> **Deliberately NOT documented:**
+> - The 454 dirty files in the upstream worktree — committed tree only.
+> - `keiro-dsl`'s generated `namedUuid` still truncates; explicitly out of scope
+>   upstream (carried forward from the prior round).
+> - Upstream `docs/plans/*`, `docs/masterplans/*`, and OKF/improvement-request
+>   commits — intent, not shipped surface.
+> - Perf commits (shared type graph, shared projection-supply analysis, buffered
+>   replay paging) — doc-neutral; generated bytes and diagnostics unchanged.
+> - The in-repo `jitsurei` package changes — legacy source anchor, **not**
+>   `content/docs/example-app/`, per `LIBRARIES.md`.
+>
+> **Known gap for the next round:** `content/docs/example-app/` remains unported.
+> `keiro-runtime-jitsurei` adopted `keiro-dsl` **inside this round's window**
+> (`.keiro` specs added by `d4558cc`), so its walkthroughs now describe a
+> hand-written architecture the app no longer has. That pointer is deliberately
+> **not** advanced; see `docs/keiro-runtime-jitsurei-source-sync.md`.
+
+> **Note (prior range).** The `fc935b7..8d1cd74` range (**85 commits**) is the largest
 > runtime round since the 0.3 line, and it **breaks the pattern of the previous
 > two rounds**: those collapsed to "almost entirely keiro-dsl, no SQL". This one
 > does not.
@@ -863,6 +1039,19 @@ docs: close parser span scaling plan
 
 ### Previous pointers (for traceability)
 
+- `8d1cd74ab966cf463462430846913d23612eb607` (`8d1cd74a`, 2026-08-10, Keiro 0.12.0.0 pre-cut) —
+  the baseline before the 0.12.0.0 **release** review. The `8d1cd74..93ada2d` range (176 commits)
+  cut the release the prior round had only described: language 5 published `Stable` with 1–4
+  demoted to `CompatibilityOnly`, every `.cabal` at `0.12.0.0`, and `Keiro.version` derived from
+  package metadata. It also landed typed domain command outcomes (ADR 0029), the breaking
+  delivery/freshness split, explicit checkpoint lifecycle (ADR 0031), online schema-versioned
+  rebuilds with guarded external reads (ADRs 0032/0034/0035/0036, migrations `0024`–`0030`, the new
+  `keiro_read` schema), declarative router selection (ADR 0030), visible-head consistency waits
+  (ADR 0033), and honest resume progress (`ClaimOutcome`, `ResumeSummary.advanced`). Migration count
+  23 → 30; `keiro` tables 17 → 25; `DiagnosticCode` +81 → 392. Added
+  `reference/keiro-dsl-domain-outcomes.mdx`, `reference/keiro-dsl-projection-revisions.mdx`,
+  `reference/keiro-dsl-router-selection.mdx`, and `reference/versioned-rebuilds.mdx`. Nothing
+  retired.
 - `fc935b790b3f9665d352f2b0de46bc3daeca9f2b` (`fc935b7`, 2026-08-05, Keiro 0.11.0.0) — the baseline
   before the 0.12.0.0 release review. The `fc935b7..8d1cd74` range (85 commits) is the largest
   runtime round since the 0.3 line: exact workflow discovery and the wake-ledger contract
@@ -982,21 +1171,21 @@ docs: close parser span scaling plan
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline 8d1cd74a..HEAD
-   git -C "$KEIRO" diff --stat 8d1cd74a..HEAD
+   git -C "$KEIRO" log --oneline 93ada2d4..HEAD
+   git -C "$KEIRO" diff --stat 93ada2d4..HEAD
 
    # Do these two FIRST — they are cheap and they SIZE the round either way.
    # They collapsed the f05102b and fc935b7 rounds to "keiro-dsl only, no SQL";
    # they blew the 8d1cd74 round wide open (3 migrations, 2 new exposed modules,
    # a new package). Do not assume the collapsing outcome.
-   git -C "$KEIRO" diff --name-status 8d1cd74a..HEAD -- '*.sql'
-   git -C "$KEIRO" diff --stat 8d1cd74a..HEAD -- keiro/src keiro-core/src keiro-pgmq/src
+   git -C "$KEIRO" diff --name-status 93ada2d4..HEAD -- '*.sql'
+   git -C "$KEIRO" diff --stat 93ada2d4..HEAD -- keiro/src keiro-core/src keiro-pgmq/src
 
    # And check the cabal files — a new package is invisible to the two above:
-   git -C "$KEIRO" diff 8d1cd74a..HEAD -- '*.cabal' | grep -E '^[-+].*(exposed-modules|other-modules|^\+name:)'
+   git -C "$KEIRO" diff 93ada2d4..HEAD -- '*.cabal' | grep -E '^[-+].*(exposed-modules|other-modules|^\+name:)'
    ```
    keiro's own `docs/adr/*` is now the fastest way to read a decision's *rationale and consequences*
-   (ADRs 0001–0028 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only
+   (ADRs 0001–0036 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only
    edges, the snapshot discriminator, gate placement, the four workflow lifecycle rules, Kafka
    consumer fatal observability, one schema authority with total bindings, reporting-first coverage
    with opt-in opacity gates, the two workspace ADRs, and — new in the 0.12 round — exact workflow

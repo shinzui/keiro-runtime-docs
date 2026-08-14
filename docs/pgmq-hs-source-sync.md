@@ -18,12 +18,34 @@ pgmq-hs source. This file records the exact review boundary.
 ## Last reviewed commit
 
 ```text
-5eca8d6515cc629d29b9a15b0bd3b2243048d7bc  (5eca8d6)
-2026-08-05T17:32:47-07:00
-docs(pgmq-config): state the real reconciliation contract
+9ee9a2f30fc461244ed7539fbfe2165d9f80df91  (9ee9a2f)
+2026-08-08T14:31:31-07:00
+docs(okf): add the capabilities bundle
 ```
 
-> **Current range.** The `b4cab75..5eca8d6` range (19 commits) lands masterplan 3
+> **Current range.** The `5eca8d6..9ee9a2f` range (**3 commits**, 29 files) **cuts
+> the 0.5.0.0 release**: `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and
+> `pgmq-migration` all move from `0.4.0.1` to `0.5.0.0`. `pgmq-bench` stays `0.1.0.0`.
+>
+> **This closes the one place where these docs ran *ahead* of a release.** The previous rounds
+> documented the 0.5 surface behind explicit version callouts because the work was committed but not
+> cut, and because most of it was correctness work whose defects were live on `0.4.0.1`. Those
+> callouts now describe a shipped release, so
+> `getting-started/compatibility-and-upgrades.mdx` no longer carries the "docs run ahead" warning.
+>
+> The only non-release commit is `fix(docs,pgmq-hasql): delete orphans in the mixed-case remediation
+> and serialize its spec` — a fix to the remediation procedure the pgmq pages already document — plus
+> the OKF capabilities bundle (upstream metadata).
+>
+> **Pages UPDATED:** `getting-started/compatibility-and-upgrades.mdx` (row moved to `0.5.0.0`; the
+> ahead-of-release callout replaced with a released note).
+>
+> **Pages ADDED / RETIRED:** none. The `content/docs/pgmq/` tree was already written for 0.5.
+>
+> **Downstream:** `shibuya-pgmq-adapter 0.13.0.0` is the adopting release; its `parseQueueName`
+> narrowing to `[a-z0-9_]{1,47}` is the operator-visible consequence.
+
+> **Note (prior range).** The `b4cab75..5eca8d6` range (19 commits) lands masterplan 3
 > (*harden the pgmq-hs family*) and masterplan 4 (*make the pgmq-config
 > reconciler truthful*) as **committed but unreleased** source. This is the
 > pointer's one unusual property and the thing to check first next round: all
@@ -118,6 +140,7 @@ docs(pgmq-config): state the real reconciliation contract
 
 ## Previous pointers
 
+- `5eca8d6515cc629d29b9a15b0bd3b2243048d7bc` (`5eca8d6`, 2026-08-05, pgmq-hs 0.4.0.1) — the baseline before the 0.5.0.0 release review. The `5eca8d6..9ee9a2f` range (3 commits) cut `0.5.0.0` across all five public packages, closing the one place these docs ran ahead of a release; the ahead-of-release callout in `getting-started/compatibility-and-upgrades.mdx` was replaced with a released note.
 - `b4cab751198b5012f025353610dfb4f3782c6eea` (`b4cab75`), 2026-07-23, `0.4.0.1` —
   the baseline before the hardening round. The `b4cab75..5eca8d6` range (19
   commits) landed masterplans 3 and 4 as committed-but-unreleased `0.5.0.0`
@@ -135,8 +158,8 @@ docs(pgmq-config): state the real reconciliation contract
 1. Resolve the source and inspect committed drift:
    ```text
    PGMQ=$(mori registry show shinzui/pgmq-hs --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$PGMQ" log --oneline 5eca8d6..HEAD
-   git -C "$PGMQ" diff --stat 5eca8d6..HEAD
+   git -C "$PGMQ" log --oneline 9ee9a2f..HEAD
+   git -C "$PGMQ" diff --stat 9ee9a2f..HEAD
    ```
 2. **Check the release status first.** `grep '^version' "$PGMQ"/*/*.cabal`. If
    they now read `0.5.0.0`, the main task is to remove the "unreleased"

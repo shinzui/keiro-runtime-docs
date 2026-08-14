@@ -9,10 +9,22 @@ archive table, topic routing tables, FIFO group indexes, and JSONB message
 payload. shibuya owns handler execution, runner policy, ack finalization,
 metrics, tracing, and shutdown.
 
-Current compatibility is `shibuya-pgmq-adapter 0.12.0.0`, the `pgmq-* 0.4`
-package family, and `shibuya-core 0.8.0.1`. The adapter's public constructor is
-unchanged from 0.11; the upgrade changes schema installation and fixes idle
-shutdown.
+Current compatibility is `shibuya-pgmq-adapter 0.14.0.0`, the `pgmq-* 0.5`
+package family, and `shibuya-core 0.9.0.0`. The adapter's public Haskell API is
+unchanged across 0.13 and 0.14; those releases change the `pgmq-hs` line and the
+DLQ payload shape respectively.
+
+<Callout type="warn">
+  **Upgrading past 0.13 needs a database check.** The re-exported `parseQueueName` now accepts only
+  `[a-z0-9_]{1,47}`. An existing database must be checked for **mixed-case `pgmq.meta` rows** and
+  transactionally remediated *before* rollout — see the pgmq-hs 0.5 upgrade notes on the
+  [pgmq landing page](/docs/pgmq).
+</Callout>
+
+0.13 also inherits pgmq-effectful 0.5's broader transient-retry SQLSTATE classification
+(serialization, deadlock, lock-unavailable, shutdown/recovery, and resource exhaustion), treats a
+message deleted/archived/popped during a lease-extension race as a successful no-op instead of a
+row-count decoder error, and picks up pgmq-migration 0.5's notification crash-safety migration.
 
 <Callout type="info">
   **Building a keiro app?** You usually do not wire this adapter directly.
@@ -172,6 +184,26 @@ through the adapter's topic-routing helper so bindings decide which queues see
 the dead-letter payload. With `includeMetadata = True`, the DLQ payload includes
 the original message id, original enqueue and read timestamps, read count,
 headers, payload, and the shibuya dead-letter reason.
+
+### Structured reason fields *(0.14.0.0)*
+
+Every new DLQ payload carries three reason fields instead of one:
+
+| Field | Meaning |
+|---|---|
+| `dead_letter_reason` | the existing rendered reason, retained for compatibility |
+| `dead_letter_reason_code` | the machine-queryable code |
+| `dead_letter_reason_detail` | always present; JSON `null` for reasons that carry no detail |
+
+Application-owned codes and details from
+[`ApplicationFailure`](/docs/shibuya/reference/adapters-handlers-and-ack) are transported
+**verbatim** through Shibuya's public reason projections — the adapter no longer duplicates
+Shibuya's constructor renderer, so a code you publish is the code an operator queries.
+
+<Callout type="info">
+  `dead_letter_reason` is unchanged, so an existing DLQ consumer keeps working. Move dashboards to
+  `dead_letter_reason_code`, which is bounded and stable, rather than parsing the rendered string.
+</Callout>
 
 Trace propagation is deliberate. The DLQ write uses the current consumer span as
 the outgoing trace context, while the original upstream `traceparent` and

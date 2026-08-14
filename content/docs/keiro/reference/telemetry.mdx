@@ -265,7 +265,7 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 | `keiro.timer.attempts` | Histogram | `{attempt}` | `recordTimerAttempts` | Timer worker, per claimed timer — the post-claim attempt count. |
 | `keiro.timer.stuck` | Gauge | `{timer}` | `recordTimerStuck` | Timer worker, once per pass — timers stranded in `firing`. |
 | `keiro.timer.requeued` | Counter | `{timer}` | `recordTimerRequeued` | Timer worker — stale `firing` rows moved back to `scheduled`. |
-| `keiro.projection.global_position_distance` | Gauge | `{position}` | `recordProjectionGlobalPositionDistance` | Global position distance between the captured store position and a projection's slowest durable member checkpoint. |
+| `keiro.projection.global_position_distance` | Gauge | `{position}` | `recordProjectionGlobalPositionDistance` | Global position distance between the newest **visible** event and a projection's slowest durable member checkpoint. |
 | `keiro.projection.lag` | Gauge | `{position}` | `recordProjectionLag` | **Deprecated** compatibility alias for the gauge above, with the same position-unit value. See [the rename](#keiroprojectionlag-is-deprecated). |
 | `keiro.projection.wait.timeouts` | Counter | `{timeout}` | `recordProjectionWaitTimeouts` | Read-model `waitFor` — calls that timed out before the projection caught up. |
 | `keiro.projection.rebuild.starts` | Counter | `{run}` | `recordProjectionRebuildStarts` | Catalog projection rebuild runs started. |
@@ -278,6 +278,14 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 | `keiro.command.conflicts` | Counter | `{conflict}` | `recordCommandConflicts` | Command runners — optimistic-concurrency conflicts observed. |
 | `keiro.command.retries` | Counter | `{retry}` | `recordCommandRetries` | Command runners — retry attempts started after a conflict. |
 | `keiro.command.duplicates` | Counter | `{event}` | `recordCommandDuplicates` | Command runners — appends rejected as duplicate deterministic event ids. |
+| `keiro.command.decisions` | Counter | `{decision}` | `recordCommandDecision` | Successfully selected domain command decisions, partitioned by bounded decision class. *(New in 0.12.0.0.)* |
+
+<Callout type="warn">
+  `keiro.command.decisions` carries exactly one attribute, `keiro.command.decision`, whose complete
+  value set is `accepted`, `rejected`, and `no_op`. Application rejection payloads are unbounded
+  cardinality and **never** belong on this metric — put them in the typed reason instead. See
+  [typed domain command outcomes](/docs/keiro/reference/keiro-dsl-domain-outcomes).
+</Callout>
 | `keiro.snapshot.read.hits` | Counter | `{read}` | `recordSnapshotReadHits` | Hydration — lookups that yielded a usable seed. |
 | `keiro.snapshot.read.misses` | Counter | `{read}` | `recordSnapshotReadMisses` | Hydration — lookups that fell back to full replay. |
 | `keiro.snapshot.decode.failures` | Counter | `{failure}` | `recordSnapshotDecodeFailures` | Hydration — compatible rows whose bytes failed to decode; also counted as a read miss. |
@@ -305,6 +313,7 @@ sometimes wildly.
 | | Preferred | Deprecated alias |
 |---|---|---|
 | Instrument | `keiro.projection.global_position_distance` | `keiro.projection.lag` |
+| Measured from | the newest **visible** event *(0.12.0.0)* | the same value |
 | Unit | `{position}` | `{position}` (was `{event}`) |
 | Recorder | `recordProjectionGlobalPositionDistance` | `recordProjectionLag` |
 

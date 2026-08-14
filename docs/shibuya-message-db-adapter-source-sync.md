@@ -28,14 +28,25 @@ consumer groups, and runnable examples.
 ## Last reviewed commit
 
 ```text
-43072558a58d9613cce46c3624157d6fc3e5b6b0  (4307255)
-2026-06-03
-build(nix): migrate flake to flake-parts dev shell on the haskell-nix-dev base flake
+fa7b958462a34b9ac12cf26995f93625d4fcd2ef  (fa7b958)
+2026-08-08T14:31:38-07:00
+docs(okf): add the capabilities bundle
 ```
+
+> **Current range.** The `4307255..fa7b958` range (**1 commit**) is
+> **doc-neutral**. `git diff --stat 4307255..HEAD -- '*/src' '*.cabal' 'CHANGELOG.md'` is **empty**:
+> the only commit is `docs(okf): add the capabilities bundle`, upstream repository metadata.
+> `shibuya-message-db-adapter` remains at `0.1.0.0`, still bounded to `shibuya-core ^>=0.5.0.0`.
+>
+> **The compatibility gap therefore widened rather than closed.** Shibuya core is now `0.9.0.0`, so
+> this adapter is two majors behind its stated bound and still cannot be combined with the current
+> core line. `integrations/shibuya-adapters.mdx` and
+> `getting-started/compatibility-and-upgrades.mdx` were updated to say `0.9` rather than `0.8`; the
+> adapter's own page needed no change. Pointer bumped so the next round does not re-read this commit.
 
 EP-6 and EP-7 rechecked the behavior at this unchanged committed boundary.
 `shibuya-message-db-adapter 0.1.0.0` remains bounded to
-`shibuya-core ^>=0.5.0.0`; it is not an installable member of the current 0.8
+`shibuya-core ^>=0.5.0.0`; it is not an installable member of the current 0.9
 adapter set. The user's modified upstream `mori.dhall` was excluded from review
 and left untouched.
 
@@ -59,13 +70,21 @@ DLQ, and partitioning behavior as future or stubbed. The integration page was
 therefore written from source modules and upstream `docs/user/`, which implement
 those behaviors.
 
+## Previous pointers (for traceability)
+
+- `43072558a58d9613cce46c3624157d6fc3e5b6b0` (`4307255`, 2026-06-03,
+  shibuya-message-db-adapter 0.1.0.0) — the baseline before the doc-neutral OKF round. The
+  `4307255..fa7b958` range (1 commit) touched no source — upstream metadata only. The adapter stays
+  at `0.1.0.0` bounded to `shibuya-core ^>=0.5.0.0`, so its gap against the 0.9 core line widened
+  rather than closed.
+
 ## Update procedure
 
 1. List what changed since the pointer:
    ```text
    MDB=$(mori registry show shinzui/shibuya-message-db-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$MDB" log --oneline 4307255..HEAD
-   git -C "$MDB" diff --stat 4307255..HEAD
+   git -C "$MDB" log --oneline fa7b958..HEAD
+   git -C "$MDB" diff --stat fa7b958..HEAD
    ```
 2. Inspect source modules, `docs/user/`, and
    `shibuya-message-db-adapter-jitsurei/app/`.

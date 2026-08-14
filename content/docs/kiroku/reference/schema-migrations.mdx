@@ -21,8 +21,21 @@ kirokuMigrationPlan
 PGMQ, or application schema should compose those components into one final plan rather than execute
 several partial plans against a shared ledger.
 
-The embedded manifest has eight entries. `0001` through `0007` preserve the exact historical SQL
-payloads; `0008-schema-management-comment` is the first native-only canary. The package's compile-time
+The embedded manifest has **ten** entries. `0001` through `0007` preserve the exact historical SQL
+payloads; `0008-schema-management-comment` is the first native-only canary. Two more landed in the
+0.4–0.7 line:
+
+| Migration | Change |
+|---|---|
+| `0009.sql` | publishes the frozen, owner-rights, structurally read-only view `kiroku.subscription_checkpoints_v1` (`subscription_name`, `consumer_group_member`, `checkpoint_position`, `checkpoint_updated_at`) |
+| `0010.sql` | creates `kiroku.history_retention_coordinator`, `kiroku.history_retention_leases`, the `ix_history_retention_leases_unreleased_expiry` index, and the `kiroku.protect_replay_history_from_destruction` guard |
+
+`0010` is what [Keiro's versioned rebuilds](/docs/keiro/reference/versioned-rebuilds) require: the
+lease it introduces is how a long replay keeps history alive, and its guard is what makes a
+conflicting hard delete fail with `HistoryRetentionActive` instead of silently destroying events a
+rebuild still needs.
+
+The package's compile-time
 embedding hook tracks manifest membership and payload changes so Cabal rebuilds the embedded plan.
 
 ## Standard CLI
@@ -78,8 +91,8 @@ native component directly; native commands do not discover or interpret Codd his
 
 ## Compatibility
 
-- `kiroku-store`: `0.3.0.1`
-- `kiroku-store-migrations`: `0.3.0.0`
+- `kiroku-store`: `0.7.0.0`
+- `kiroku-store-migrations`: `0.3.2.0`
 - migration runtime: pg-migrate `1.1`
 - component identity: `kiroku/*`
 - owned schema: `kiroku`

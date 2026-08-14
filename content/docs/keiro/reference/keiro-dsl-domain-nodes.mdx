@@ -58,6 +58,33 @@ A transition has one source/command, optional guard, zero or more writes/emits, 
 `goto`. Durable state changes must emit history; the generated harness applies Keiki replay-safety
 validation to the hand-filled transducer.
 
+<Callout type="info">
+  **Language 5 adds an optional `domain-outcomes` declaration** and a per-transition `outcome`
+  clause, which turn a deliberately declined command into a typed successful result instead of a
+  `CommandError`. Both are opt-in: an aggregate without the declaration is unchanged. See
+  [Typed domain command outcomes](/docs/keiro/reference/keiro-dsl-domain-outcomes).
+
+  ```haskell
+  data Aggregate = Aggregate
+    { …
+    , aggDomainOutcomeTypes :: !(Maybe DomainOutcomeTypes)
+    , aggDomainOutcomeDuplicateLocs :: ![Loc]
+    , …
+    }
+
+  data Transition = Transition
+    { …
+    , tOutcome :: !(Maybe TransitionOutcome)
+    , tOutcomeDuplicateLocs :: ![Loc]
+    , …
+    }
+  ```
+
+  Both records gained two fields in keiro-dsl 0.12.0.0 — **breaking for positional construction and
+  exhaustive record patterns.** The duplicate-location lists retain invalid syntax long enough for
+  semantic validation to emit stable located diagnostics.
+</Callout>
+
 ### Transition modes: `live` and `replay-only`
 
 A transition is **live** by default. A `replay-only` prefix on the transition line marks it as
@@ -181,8 +208,11 @@ projection transfer_decisions key=reservationId
   }
 ```
 
-`consistency=Strong|Eventual` is accepted as legacy syntax; a same-named first-class read model owns
-the actual mode. A total status map must name every emitted event exactly. Use
+`consistency=Strong|Eventual` is accepted as legacy syntax in **languages 1–4**; a same-named
+first-class read model owns the actual mode. Language 5 **refuses** the clause here —
+*"Language 5 aggregate projections do not declare consistency; put `freshness` on the referenced
+readmodel"* — because delivery and freshness are now separate facts owned by the projection owner and
+the read model respectively. A total status map must name every emitted event exactly. Use
 `status-map partial { … }` only when omitted events intentionally do not change projected status.
 Every included key must still name one declared event, without suffix matching or duplicates.
 
@@ -207,6 +237,9 @@ Custom snapshot predicates are hand-owned and intentionally absent from the nota
 
 ## Read model
 
+Language 5 **separates projection delivery from query freshness**, so the read-model policy clauses
+differ by language. Languages 1–4 keep their original spelling verbatim:
+
 ```keiro-dsl
 readmodel transfer_decisions {
   table = "transfer_decisions"
@@ -226,27 +259,110 @@ readmodel transfer_decisions {
 }
 ```
 
+Language 5 replaces all four clauses with one `freshness` clause, and derives delivery, subscription,
+and cursor identity from the validated `projection-owner`:
+
+```keiro-dsl
+readmodel transfer_decisions {
+  table = "transfer_decisions"
+  schema = "hospital_capacity"
+  columns {
+    reservation_id text required
+    hospital_id text required
+    status text required
+    decided_at timestamptz
+  }
+  version = 1
+  shape = "fnv1a:3717f6d9e3c44bd6"
+  freshness = wait-for-head category "reservation"
+}
+```
+
+<Callout type="warn">
+  **The two spellings never mix.** A language-5 source that writes `consistency`, `scope`, `feed`, or
+  `subscription` inside a `readmodel` fails at **parse** time with
+  *"Language 5 readmodel policy is `freshness = immediate | wait-for-head ...`; remove legacy
+  `<clause>` and derive delivery/subscription from its projection-owner"*. A language-1–4 source that
+  writes `freshness` fails with `LanguageFeatureRequiresVersion`.
+
+  A language-5 aggregate `projection` also may not declare `consistency` — put `freshness` on the
+  referenced `readmodel` instead.
+</Callout>
+
 ### Closed values and defaults
 
 | Clause | Values/default |
 |---|---|
 | column type | `text`, `int`, `bigint`, `bool`, `timestamptz`, `jsonb`, `numeric` |
 | nullability | omitted = nullable; `required` = not null |
-| consistency | `Strong` or `Eventual` |
-| scope | omitted = `entire-log`; `entire-log` or `category "name"`, only with `Strong` |
-| feed | `inline` or `subscription` |
-| subscription | omitted = `<context>-<node-with-hyphens>-sub` |
+| `freshness` | **language 5 only** (`SeparatedProjectionQueryPolicySyntax`); `immediate`, or `wait-for-head entire-log \| category "name"` |
+| consistency | **languages 1–4 only**; `Strong` or `Eventual` |
+| scope | **languages 1–4 only**; omitted = `entire-log`; `entire-log` or `category "name"`, only with `Strong` |
+| feed | **languages 1–4 only**; `inline` or `subscription` |
+| subscription | **languages 1–4 only**; omitted = `<context>-<node-with-hyphens>-sub` |
 | `query input` / `query result` | language 5 only (`MappedConsumerSurfaceSyntax`); both required together |
 | `group` | language 5 only (`ProjectionCatalogSyntax`); names a `rebuild-group` |
 | `targets` | required **iff** `group` is present; the `target` nodes this query observes |
+| `backing` | optional, only with `group`; required when `targets` has more than one member |
 
 The registry name is `<context>-<node_name_with_hyphens>`. Shape is FNV-1a-64 over the table and
 ordered `name:type:req|null` column surface. `check` prints the expected fixture on drift; changing
 the declared shape also requires a version bump.
 
-`Strong` requires `feed = subscription`; an inline-only model has no cursor for a strong read to
-await. `scope` is meaningful only for `Strong`. `feed = inline` must be owned by an aggregate
-projection. Query operations, routers, and dispatches resolve the node and its declared columns.
+In languages 1–4, `Strong` requires `feed = subscription` — an inline-only model has no cursor for a
+strong read to await — `scope` is meaningful only for `Strong`, and `feed = inline` must be owned by
+an aggregate projection. Query operations, routers, and dispatches resolve the node and its declared
+columns.
+
+Language 5 enforces the same safety property against the *owner* rather than the read model:
+`freshness = wait-for-head …` requires a validated owner with a compatible durable cursor.
+
+<TypeTable
+  type={{
+    CatalogQueryWaitWithoutCompatibleCursor: { type: "error", description: "A wait-for-head query has no owner cursor to await." },
+    CatalogQueryWaitWithAmbiguousCursor: { type: "error", description: "Several owner cursors could serve the wait; the choice is not determined." },
+    CatalogReadModelSupplierMissing: { type: "error", description: "No projection owner supplies this query model." },
+    CatalogReadModelMultipleSuppliers: { type: "error", description: "More than one owner claims to supply it." },
+    CatalogReadModelLegacyProjectionConflict: { type: "error", description: "A legacy aggregate projection clause conflicts with catalog supply." },
+    CatalogReadModelPhysicalOverride: { type: "error", description: "A catalog-bound read model declares its own table/schema." },
+    CatalogReadModelBackingRequired: { type: "error", description: "targets has more than one member and no backing is declared." },
+    CatalogReadModelBackingUnobserved: { type: "error", description: "backing names a target the read model does not observe." },
+  }}
+/>
+
+### The AST change
+
+```haskell
+data QueryFreshnessNode = FreshnessImmediate | FreshnessWaitForHead !RmScope
+  deriving stock (Eq, Show, Generic)
+
+data ReadModelSupply
+  = LegacyReadModelSupply
+      { legacyConsistency :: !Consistency
+      , legacyScope :: !(Maybe RmScope)
+      , legacyFeed :: !RmFeed
+      , legacySubscription :: !(Maybe Text)
+      }
+  | OwnerDerivedSupply
+  deriving stock (Eq, Show, Generic)
+```
+
+<Callout type="warn">
+  **Breaking in keiro-dsl 0.12.0.0.** `ReadModelNode` replaces `rmConsistency`, `rmScope`, `rmFeed`,
+  and `rmSubscription` with `rmFreshness :: QueryFreshnessNode` and `rmSupply :: ReadModelSupply`,
+  and adds `rmBackingTarget :: Maybe Name`. Four compatibility accessors recover the old values from
+  a languages-1–4 node, returning `Nothing` for an owner-derived one:
+
+  ```haskell
+  legacyReadModelConsistency  :: ReadModelNode -> Maybe Consistency
+  legacyReadModelScope        :: ReadModelNode -> Maybe RmScope
+  legacyReadModelFeed         :: ReadModelNode -> Maybe RmFeed
+  legacyReadModelSubscription :: ReadModelNode -> Maybe Text
+  ```
+
+  Released source-language behaviour is unchanged — this is an AST migration, not a semantic one.
+  Languages 1–4 remain byte-compatible.
+</Callout>
 
 Generated: `ReadModelTable`, `ReadModel`, `ReadModelHarness`. Hand-owned: `ReadModelHoles` for inline
 apply, async apply, and query behavior. SQL must interpolate the generated qualified-table constant,
@@ -273,12 +389,13 @@ rebuild-group reporting {
 
 projection-owner account_summary_writer {
   source = category "account"
-  feed = subscription
+  delivery = subscription
   group = reporting
   targets = [ account_summary_table ]
   order = 10
   subscription = "mapped-readmodel-account-summary"
   dedup = "mapped-readmodel-account-summary-v1"
+  checkpoint-on-missing = from-current-head
   replay = explicit
 }
 
@@ -288,8 +405,7 @@ readmodel account_summary {
   query result = Optional AccountSummary
   version = 1
   shape = "fnv1a:3c07a19c552c3547"
-  consistency = Eventual
-  feed = subscription
+  freshness = immediate
   group = reporting
   targets = [ account_summary_table ]
 }
@@ -332,17 +448,59 @@ One ordered live/replay handler declaration.
 
 | Clause | Values/default |
 |---|---|
-| `source` | `aggregate <Name>`, `category "name"`, or `all` |
-| `feed` | `inline` or `subscription` |
+| `source` | `aggregate <Name>`, `category "name"`, or `all`; one or more |
+| `delivery` | `inline` or `subscription` |
 | `group` | required `rebuild-group` name |
 | `targets` | required list of `target` names it owns |
 | `order` | required integer — handler order within the group |
-| `subscription` | optional string; required for `feed = subscription` |
-| `dedup` | optional string; required for `feed = subscription` |
+| `subscription` | optional string; required for `delivery = subscription` |
+| `dedup` | optional string; required for `delivery = subscription` |
+| `checkpoint-on-missing` | `from-beginning`, `from-current-head`, or `fail`; required for `delivery = subscription` |
 | `replay` | `explicit`, or `live-only "<reason>"` |
 
 `replay = explicit` means the projection has an application-owned replay adapter. `live-only`
 records a deliberate reason a projection must not be replayed — an external side effect, typically.
+
+<Callout type="warn">
+  **The clause is `delivery`, not `feed`.** A language-5 `projection-owner` that writes `feed` fails
+  at parse time with *"Language 5 projection owners use `delivery = inline | subscription`; replace
+  legacy `feed`"*. `poFeed :: RmFeed` became `poDelivery :: ProjectionDelivery` in the AST.
+</Callout>
+
+#### `checkpoint-on-missing` (ADR-31)
+
+*New in language 5.* What a subscription feed does when its exact durable checkpoint is **absent** —
+a first deploy, a renamed subscription, or a restored database — used to be implicit. Now it is
+declared, fingerprinted as catalog identity, and validated.
+
+```haskell
+data CheckpointOnMissingNode
+  = CheckpointFromBeginning
+  | CheckpointFromCurrentHead
+  | CheckpointFail
+  deriving stock (Eq, Show, Generic)
+```
+
+<TypeTable
+  type={{
+    "from-beginning": { type: "CheckpointFromBeginning", description: "Start at the beginning of the log. Safe for a replayable owner that clears its target." },
+    "from-current-head": { type: "CheckpointFromCurrentHead", description: "Start at the current head, skipping all history. Future-only initialization." },
+    fail: { type: "CheckpointFail", description: "Refuse to start. The operator must decide explicitly." },
+  }}
+/>
+
+<Callout type="warn">
+  **Validation rejects future-only initialization for a replayable owner that clears its target
+  before replay** — `CatalogCheckpointPolicyReplayUnsafe`. Truncating a table and then starting from
+  the head silently produces a permanently empty projection, which is precisely the failure this
+  policy makes impossible to write by accident.
+</Callout>
+
+The parser retains a **list** of values so validation can diagnose omission and duplication with
+exact locations; a validated subscription owner has exactly one. The related codes are
+`CatalogCheckpointPolicyMissing`, `CatalogCheckpointPolicyDuplicate`,
+`CatalogCheckpointPolicyUnexpected` (declared on an inline owner), `CatalogCheckpointPolicyReplayUnsafe`,
+and the diff finding `CatalogCheckpointPolicyChanged`.
 
 <Callout type="warn">
   A `target` declared `reset = clear` cannot be owned by a `live-only` projection: the rebuild would
@@ -351,28 +509,60 @@ records a deliberate reason a projection must not be replayed — an external si
 
 ### Catalog validation codes
 
-`check` adds twenty-one structural codes for the catalog:
+`check` has **fifty** structural codes for the catalog:
 
 | Concern | Codes |
 |---|---|
 | Group shape | `CatalogGroupUnknown`, `CatalogGroupEmpty`, `CatalogGroupOrderMismatch` |
-| Target ownership | `CatalogTargetUnowned`, `CatalogTargetMultiplyOwned`, `CatalogPhysicalTargetDuplicate` |
+| Target ownership | `CatalogTargetUnknown`, `CatalogTargetUnowned`, `CatalogTargetMultiplyOwned`, `CatalogPhysicalTargetDuplicate` |
 | Target dependencies | `CatalogTargetDependencyUnknown`, `CatalogTargetDependencyOutsideGroup`, `CatalogTargetDependencyCycle` |
 | Projection shape | `CatalogProjectionNoSource`, `CatalogProjectionNoTarget`, `CatalogProjectionTargetOutsideGroup` |
-| Sources | `CatalogSourceUnresolved`, `CatalogSourceOverlap` |
-| Feed identity | `CatalogAsyncIdentityMissing`, `CatalogAsyncQueryBindingMissing`, `CatalogInlineIdentityUnexpected`, `CatalogDuplicateHandlerOrder` |
+| Sources | `CatalogSourceUnresolved`, `CatalogSourceOverlap`, `CatalogAmbiguousSourceOrdering` |
+| Delivery identity | `CatalogAsyncIdentityMissing`, `CatalogAsyncQueryBindingMissing`, `CatalogInlineIdentityUnexpected`, `CatalogDuplicateHandlerOrder` |
+| Checkpoint policy | `CatalogCheckpointPolicyMissing`, `CatalogCheckpointPolicyDuplicate`, `CatalogCheckpointPolicyUnexpected`, `CatalogCheckpointPolicyReplayUnsafe` |
 | Replay safety | `CatalogClearTargetLiveOnly` |
-| Query binding | `CatalogReadModelBindingMissing`, `CatalogReadModelTargetOutsideGroup` |
+| Query binding | `CatalogReadModelBindingMissing`, `CatalogReadModelTargetOutsideGroup`, `CatalogReadModelPhysicalOverride`, `CatalogReadModelBackingRequired`, `CatalogReadModelBackingUnobserved` |
+| Query supply | `CatalogReadModelSupplierMissing`, `CatalogReadModelMultipleSuppliers`, `CatalogReadModelLegacyProjectionConflict` |
+| Freshness cursors | `CatalogQueryWaitWithoutCompatibleCursor`, `CatalogQueryWaitWithAmbiguousCursor` |
+| Projection revisions | `CatalogRevisionNoTarget`, `CatalogRevisionGroupUnknown`, `CatalogRevisionTargetUnknown`, `CatalogRevisionTargetSetMismatch`, `CatalogRevisionIdentityInvalid`, `CatalogRevisionDuplicateTarget`, `CatalogRevisionPromotionNameInvalid` |
+| External reads | `CatalogExternalReadIdentityInvalid`, `CatalogExternalReadVersionInvalid`, `CatalogExternalReadQueryUnknown`, `CatalogExternalReadTargetCardinalityInvalid`, `CatalogExternalReadCompatibilityInvalid`, `CatalogExternalReadRevisionUnknown`, `CatalogExternalReadRevisionGroupMismatch`, `CatalogExternalReadSurfaceGenerationInvalid` |
 
 ### Catalog evolution codes
 
-`diff` adds thirteen codes that report how a catalog changed between two specs:
+`diff` reports **twenty-four** codes for how a catalog changed between two specs:
 
-`CatalogTargetAdded`, `CatalogTargetRemoved`, `CatalogTargetLocationChanged`,
-`CatalogTargetResetPolicyChanged`, `CatalogTargetDependencyChanged`, `CatalogGroupChanged`,
-`CatalogOwnerChanged`, `CatalogOwnerRemoved`, `CatalogHandlerOrderChanged`, `CatalogSourceChanged`,
-`CatalogFeedIdentityChanged`, `CatalogReplayPolicyChanged`, and `CatalogQueryBindingChanged`.
+| Concern | Codes |
+|---|---|
+| Targets | `CatalogTargetAdded`, `CatalogTargetRemoved`, `CatalogTargetLocationChanged`, `CatalogTargetResetPolicyChanged`, `CatalogTargetDependencyChanged`, `CatalogTargetSchemaChanged` |
+| Groups and owners | `CatalogGroupChanged`, `CatalogOwnerChanged`, `CatalogOwnerRemoved`, `CatalogHandlerOrderChanged`, `CatalogSourceChanged`, `CatalogReplayPolicyChanged` |
+| Delivery and freshness | `CatalogFeedIdentityChanged`, `ProjectionDeliveryChanged`, `QueryFreshnessChanged`, `CatalogQueryBindingChanged`, `CatalogCheckpointPolicyChanged` |
+| Revisions | `CatalogProjectionRevisionChanged`, `CatalogProjectionRevisionRemoved` |
+| External reads | `CatalogExternalReadRetired`, `CatalogExternalReadVersionAdded`, `CatalogExternalReadCompatibilityChanged`, `CatalogExternalReadResultShapeChanged`, `CatalogExternalReadContractChanged` |
 
 Target-dependency changes and handler-order changes are reported as **distinct** codes, because they
 have different operational consequences: one changes the preparation order inside a rebuild, the
-other changes which handler writes first at runtime.
+other changes which handler writes first at runtime. The same reasoning splits the external-read
+family five ways — a retirement, a new version, a compatibility change, and a result-shape change
+carry very different risk for an out-of-process reader.
+
+<Callout type="info">
+  `QueryFreshnessChanged` is the code that makes the 4→5 migration honest. Weakening a legacy
+  `consistency = Strong` to `freshness = immediate`, or narrowing the waited head scope, is a
+  **breaking** finding. Scope-preserving rewrites are equivalent, and strengthenings are additive
+  `CompatibilityStrengthened` findings. See
+  [Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff).
+</Callout>
+
+### Beyond the catalog
+
+Language 5 also adds [typed domain outcomes](/docs/keiro/reference/keiro-dsl-domain-outcomes),
+[projection revisions and external reads](/docs/keiro/reference/keiro-dsl-projection-revisions), and
+[declarative router selection](/docs/keiro/reference/keiro-dsl-router-selection). Across the whole
+language, `DiagnosticCode` gained **81** constructors in Keiro 0.12.0.0 and lost none, for **392**
+total.
+
+<Callout type="warn">
+  **Breaking for exhaustive consumers.** `DiagnosticCode`, `LanguageFeature`, and `RuntimeCapability`
+  all gained constructors, and `BehaviorRequirement` gained `requirementDomainOutcome`. Any
+  non-wildcard `case` over these must be extended.
+</Callout>

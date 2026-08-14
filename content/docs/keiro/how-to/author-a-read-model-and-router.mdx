@@ -33,6 +33,59 @@ Use `Strong` only with `feed = subscription`; add `scope = category "name"` when
 follow a category head instead of the entire log. An inline feed must be owned by a same-named
 aggregate projection.
 
+<Callout type="warn">
+  **That spelling is languages 1–4.** The snippet above does not parse under language 5, which
+  separates *delivery* (where events come from) from *freshness* (what a query waits for). Since the
+  read model is subscription-fed, language 5 wants it **catalog-bound**: the physical table becomes a
+  `target`, the subscription and dedup identity move to a `projection-owner`, and the read model
+  keeps only its query policy.
+
+  ```keiro-dsl
+  target hospital_load_table {
+    schema = "hospital_transfer"
+    table = "hospital_load"
+    reset = clear
+  }
+
+  rebuild-group reporting {
+    targets = [ hospital_load_table ]
+    order = [ hospital_load_table ]
+  }
+
+  projection-owner hospital_load_writer {
+    source = category "hospitalLoad"
+    delivery = subscription
+    group = reporting
+    targets = [ hospital_load_table ]
+    order = 10
+    subscription = "transfer-routing-hospital-load-sub"
+    dedup = "transfer-routing-hospital-load-v1"
+    checkpoint-on-missing = from-beginning
+    replay = explicit
+  }
+
+  readmodel hospital_load {
+    columns {
+      hospital_id text required
+      region text required
+      available_beds int required
+    }
+    version = 1
+    shape = "fnv1a:977395d28f254ddb"
+    freshness = immediate
+    group = reporting
+    targets = [ hospital_load_table ]
+  }
+  ```
+
+  The captured `shape` is unchanged, because it hashes the table and ordered column surface — neither
+  of which moved. Use `freshness = wait-for-head category "hospitalLoad"` where you would previously
+  have written `consistency = Strong` with a category scope.
+
+  See [domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) for the full clause
+  tables and the migration diagnostics.
+</Callout>
+
 ## Declare the stable router and target
 
 ```keiro-dsl

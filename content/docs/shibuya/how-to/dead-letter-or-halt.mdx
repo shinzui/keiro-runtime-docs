@@ -17,6 +17,24 @@ case decodePayload raw of
 Use `PoisonPill` when the payload is syntactically valid but impossible for the domain to accept.
 Use `MaxRetriesExceeded` when your handler or adapter-side policy decides the retry budget is spent.
 
+Use `ApplicationFailure code detail` *(shibuya-core 0.9.0.0)* when your **domain policy** is the
+thing that rejected an otherwise valid message, and you want that cause to be queryable:
+
+```haskell
+rejectedCode :: DeadLetterCode
+rejectedCode = case mkDeadLetterCode "billing.invoice.account_closed" of
+  Right code -> code
+  Left err   -> error (Text.unpack err)   -- validate once, at startup
+
+pure (AckDeadLetter (ApplicationFailure rejectedCode "account closed before invoice settled"))
+```
+
+The code is a stable published identifier (at least two dot-separated `[a-z][a-z0-9_]*` segments,
+≤128 ASCII characters) and reaches telemetry, so you can chart dead letters **by domain cause**
+instead of grepping detail strings. Keep the detail free of secrets, raw backend errors, SQL, and
+full payloads — it is shown verbatim to operators. Prefer it over `PoisonPill` whenever the reason is
+a policy decision you would want on a dashboard.
+
 Use `AckHalt` when processing later messages could cause harm. Ordered streams are the clearest
 case: if message 42 cannot be applied, applying message 43 may corrupt a projection.
 

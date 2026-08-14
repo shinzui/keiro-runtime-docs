@@ -18,7 +18,7 @@ The **first significant clause** of a `.keiro` file may be a language declaratio
 precede `context`:
 
 ```text
-language keiro-dsl 4
+language keiro-dsl 5
 
 context Billing { … }
 ```
@@ -97,9 +97,16 @@ Five contracts are registered:
     "2": { type: "syntax-profile/2 · runtime-semantics/1", description: "compatibility-only, published. Adds nominal bindings, Integer scalars, typed aggregate expressions, and explicit transition implementation ownership." },
     "3": { type: "syntax-profile/2 · runtime-semantics/2", description: "compatibility-only, published. Same syntax as 2; adds the enforced TypeID-v7 generated-ID domain and exact nominal equality." },
     "4": { type: "syntax-profile/3 · runtime-semantics/3", description: "compatibility-only, published. Adds field alias syntax to 2's grammar; adds contract-field TypeID admission and strict spec-surface validation." },
-    "5": { type: "syntax-profile/4 · runtime-semantics/4", description: "STABLE. Adds the projection-catalog and mapped-consumer-surface grammar; adds the ProjectionCatalogRuntime capability." },
+    "5": { type: "syntax-profile/4 · runtime-semantics/4", description: "STABLE, published. Adds projection catalogs, external-read contracts, the mapped-consumer surface, typed domain outcomes, declarative router selection, and the separated delivery/freshness policy." },
   }}
 />
+
+<Callout type="info">
+  **Language 5 is published, not a candidate.** Its registry entry is
+  `Stable PublishedLanguage`, and languages 1–4 moved to `CompatibilityOnly` in the same commit.
+  `currentStableLanguageVersion` requires **exactly one** `Stable` entry and `error`s otherwise, so
+  those two facts always move together.
+</Callout>
 
 ### Published contracts and the active candidate
 
@@ -135,6 +142,18 @@ declared version.
 Language 5 is the stable contract as of Keiro 0.12.0.0, and every `keiro-dsl new <kind>` skeleton
 starts there. No language 6 contract is allocated.
 
+Two different selectors answer "which version should this source use?", and they differ only while a
+candidate is open:
+
+```haskell
+currentStableLanguageVersion :: LanguageVersion     -- the one Stable entry; errors on 0 or many
+currentAuthoringLanguageVersion :: LanguageVersion  -- the one Candidate entry, else the stable one
+```
+
+With no candidate registered, both return `5`. `currentAuthoringLanguageVersion` is what selects a
+new skeleton's preamble, so a future candidate becomes the authoring default without disturbing the
+published stable contract.
+
 Once a version is released, new syntax or semantics must be registered under a **successor** with its
 predecessor relation. Existing version parsers and their rejection fixtures are never widened.
 
@@ -154,7 +173,11 @@ data LanguageFeature
     | ExplicitTransitionImplementationSyntax
     | FieldAliasSyntax
     | ProjectionCatalogSyntax
+    | ExternalReadContractSyntax
     | MappedConsumerSurfaceSyntax
+    | DomainCommandOutcomeSyntax
+    | DeclarativeRouterSelectionSyntax
+    | SeparatedProjectionQueryPolicySyntax
     deriving stock (Eq, Ord, Show)
 
 syntaxProfileIdentifier :: SyntaxProfile -> Text
@@ -169,7 +192,7 @@ languageSupportsFeature :: LanguageVersion -> LanguageFeature -> Bool
 | `keiro-dsl/syntax-profile/1` | *(empty)* |
 | `keiro-dsl/syntax-profile/2` | `NominalBindingSyntax`, `IntegerScalarSyntax`, `TypedAggregateExpressionSyntax`, `ExplicitTransitionImplementationSyntax` |
 | `keiro-dsl/syntax-profile/3` | all of profile 2, plus `FieldAliasSyntax` |
-| `keiro-dsl/syntax-profile/4` | all of profile 3, plus `ProjectionCatalogSyntax` and `MappedConsumerSurfaceSyntax` |
+| `keiro-dsl/syntax-profile/4` | all of profile 3, plus `ProjectionCatalogSyntax`, `ExternalReadContractSyntax`, `MappedConsumerSurfaceSyntax`, `DomainCommandOutcomeSyntax`, `DeclarativeRouterSelectionSyntax`, and `SeparatedProjectionQueryPolicySyntax` |
 
 Profiles are monotone: profile 3 is literally `Set.insert FieldAliasSyntax (profileFeatures
 profileV2)`. Keeping these gates beside the registry is what stops the parser growing an independent
@@ -234,6 +257,8 @@ data RuntimeCapability
     | ContractIdDomainTypeIdV7
     | StrictSpecSurfaceValidation
     | ProjectionCatalogRuntime
+    | TypedDomainCommandOutcomes
+    | SeparatedProjectionQueryPolicy
     deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 runtimeProfileIdentifier :: RuntimeSemanticsProfile -> Text
@@ -256,8 +281,17 @@ The subtle part is fold identity. Each capability **exhaustively** chooses `Just
     ContractIdDomainTypeIdV7: { type: "Nothing", description: "Contract-field ID admission is a boundary check; it contributes no aggregate fold segment." },
     StrictSpecSurfaceValidation: { type: "Nothing", description: "Check-time validation only; contributes no aggregate fold segment." },
     ProjectionCatalogRuntime: { type: "Just \"semantic-contract:keiro-dsl/projection-catalog/1\"", description: "Typed projection catalogs — contributes its own fold segment, so adopting language 5 changes aggregate fold identity." },
+    TypedDomainCommandOutcomes: { type: "Nothing", description: "Typed rejection/no-op decisions classify an already-selected silent edge; the fold itself is unchanged." },
+    SeparatedProjectionQueryPolicy: { type: "Nothing", description: "Delivery and freshness are read-side query policy; they contribute no aggregate fold segment." },
   }}
 />
+
+<Callout type="info">
+  Both capabilities added in language 5 beyond `ProjectionCatalogRuntime` are deliberately
+  **fold-neutral**. `semantic-contract:keiro-dsl/projection-catalog/1` remains the *only* new
+  segment a language-5 adoption introduces, so the replay-identity cost of the upgrade is exactly
+  what it was when the catalog landed — no more.
+</Callout>
 
 <Callout type="warn">
   `ProjectionCatalogRuntime` is the first capability since runtime-semantics 2 to contribute a fold
@@ -351,7 +385,7 @@ keiro-dsl inspect FILE --format=json
 
 Reports source-language provenance for a single `.keiro` file or a workspace manifest: the declared
 version (or `legacy-unversioned`), the effective version, and each version's support lifecycle —
-language 4 as `stable`, 1–3 as `compatibility-only`. See
+language 5 as `stable`, 1–4 as `compatibility-only`. See
 [the CLI reference](/docs/keiro/reference/keiro-dsl-cli). Source-language rows also appear in
 scaffold and workspace records.
 
@@ -377,5 +411,11 @@ codemod. Ordinary validation, scaffolding, and diffing consume only lowered sema
 - [The keiro-dsl toolchain](/docs/keiro/explanation/the-keiro-dsl-toolchain) — where the language
   contract sits in the check → scaffold → diff pipeline.
 - [Notation](/docs/keiro/reference/keiro-dsl-notation) — the grammar the profiles gate.
+- [Typed domain outcomes](/docs/keiro/reference/keiro-dsl-domain-outcomes) —
+  `DomainCommandOutcomeSyntax` and `TypedDomainCommandOutcomes`.
+- [Projection revisions and external reads](/docs/keiro/reference/keiro-dsl-projection-revisions) —
+  `ExternalReadContractSyntax`.
+- [Declarative router selection](/docs/keiro/reference/keiro-dsl-router-selection) —
+  `DeclarativeRouterSelectionSyntax`.
 - [Workspaces](/docs/keiro/reference/keiro-dsl-workspaces) — how provenance survives composition.
 - [The CLI](/docs/keiro/reference/keiro-dsl-cli) — `inspect` and the rest of the commands.

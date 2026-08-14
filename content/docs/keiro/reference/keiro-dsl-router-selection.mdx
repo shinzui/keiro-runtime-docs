@@ -1,0 +1,209 @@
+---
+title: "Declarative router selection"
+description: "The language-5 resolve declarative block, its admitted policy values and expression subset, the checked selection contract, and the Keiro.Router.Selection runtime semantics for bounded fan-out."
+---
+
+*(New in Keiro 0.12.0.0, language 5, ADR-30.)* A [router](/docs/keiro/reference/router) turns one
+integration event into commands for many target aggregates. Until now the recipient set came from a
+hand-written `resolve read-model` or a `hole` — unbounded, unchecked, and invisible to `diff`.
+
+A **declarative selection** states the fan-out as a bounded typed post-query contract that
+`keiro-dsl check` verifies and generates. The recipient set is normalized by physical target stream
+before dispatch, command identity is stable across redelivery, and drift is reported with a version.
+
+## The block
+
+```keiro-dsl
+router HospitalTransferRouter
+  name "hospital-transfer-router"
+  input AcceptedHospitalTransferNeed : TransferRouteInput
+  key input.transferNeedId
+  resolve declarative {
+    identity = "hospital-transfer-selection"
+    version = 1
+    query = read-model hospital_load with input
+    where = row.region == input.region && row.availableBeds > 0
+    recipient = row.hospitalId
+    order = target-stream
+    dedupe = target-stream
+    max-recipients = 64
+    empty => ack
+    failure => retry
+    redelivery = stable-union
+    partial = retain-successes
+  }
+  target Hospital
+  projections []
+  dispatch-each RouteAcceptedTransferNeed {
+    transferNeedId=input.transferNeedId
+    hospitalId=row.hospitalId
+  }
+    on-appended AckOk ; on-duplicate AckOk ; on-failed Retry
+  dispatch-id strategy=uuidv5 from=(name, key, sourceEventId, targetStreamName, occurrence)
+  rejected => deadLetter
+  poison => halt
+```
+
+Clause order is fixed, and `max-recipients` is the only optional clause in the grammar — though
+validation then **requires** it (see below).
+
+```haskell
+data ResolveSource
+  = ResolveReadModel !Name
+  | ResolveHole
+  | ResolveDeclarative !RouterSelectionDecl
+  deriving stock (Eq, Show, Generic)
+```
+
+<Callout type="warn">
+  **Breaking in keiro-dsl 0.12.0.0.** `ResolveSource` gained `ResolveDeclarative`; exhaustive
+  consumers must add the arm. `InputDecl` also gained `inType` and `inLoc`, because a declarative
+  selection needs the router input's mapped type — a typed router input and declarative selection are
+  mutually required, and the parser rejects either one alone.
+</Callout>
+
+## Admitted policy values
+
+Four clauses accept exactly one spelling in this release. They exist as clauses so that a future
+policy can be added under a successor language without changing the grammar shape.
+
+<TypeTable
+  type={{
+    order: { type: "target-stream", description: "Sort recipients by physical target stream. RouterSelectionOrderUnsupported otherwise." },
+    dedupe: { type: "target-stream", description: "Collapse exact duplicates per target stream. RouterSelectionDedupeUnsupported otherwise." },
+    redelivery: { type: "stable-union", description: "Redelivery preserves stable-union command identity. RouterSelectionRedeliveryUnsupported otherwise." },
+    partial: { type: "retain-successes", description: "A partially failed dispatch retains its successes. RouterSelectionPartialDispatchUnsupported otherwise." },
+  }}
+/>
+
+The two disposition clauses are wider:
+
+| Clause | Admitted | Rejected |
+| --- | --- | --- |
+| `empty =>` | `ack`, `retry`, `deadLetter`, `halt` | — |
+| `failure =>` | `retry`, `deadLetter`, `halt` | **`ack`** — `RouterSelectionFailureAckForbidden` |
+
+<Callout type="warn">
+  **`failure => ack` is refused by design.** Acknowledging the source message after the selection
+  itself failed would silently drop the event: nothing was dispatched, and nothing would ever retry.
+  An empty *result* is a legitimate answer; a failed *evaluation* is not.
+</Callout>
+
+`max-recipients` is required and must be positive — `RouterSelectionRecipientLimitMissing` when
+absent, `RouterSelectionRecipientLimitInvalid` when zero. There is no default, because an unbounded
+fan-out is exactly the failure this contract exists to prevent.
+
+## The query and expression subset
+
+`query = read-model NAME with input` must name a `readmodel` that declares a typed
+`query input` / `query result` contract, and the input binding must be spelled `input`. The result
+must be a `List` of a structural row type.
+
+Expressions in `where` and `recipient` resolve against two roots — `input` (the router input) and
+`row` (one query result row):
+
+| Requirement | Diagnostic |
+| --- | --- |
+| `where` is `Bool` | `RouterSelectionPredicateNotBool` |
+| `recipient` is `Text` | `RouterSelectionRecipientNotText` |
+| the router `key` is `Text` | `RouterSelectionQueryInputBindingInvalid` |
+| result type is a list | `RouterSelectionQueryResultNotList` |
+| row type is structural | `RouterSelectionQueryRowNotStructural` |
+| field exists and is not optional | `RouterSelectionExpressionFieldUnknown`, `RouterSelectionExpressionFieldOptional` |
+
+Arithmetic operators, qualified enum literals, and nominal ID literals are **not admitted** —
+`RouterSelectionOperatorUnsupported`. The subset is deliberately small enough that the generated
+selection is total and cheap to reason about.
+
+## Runtime semantics
+
+`Keiro.Router.Selection` *(new exposed module)* is the closed runtime counterpart.
+
+```haskell
+data RouterSelectionContract = RouterSelectionContract
+  { identity :: !SelectionIdentity
+  , version :: !SelectionVersion
+  , fingerprint :: !SelectionFingerprint
+  , limit :: !RecipientLimit
+  , order :: !SelectionOrder
+  , dedupe :: !SelectionDedupe
+  , emptyPolicy :: !EmptySelectionPolicy
+  , failurePolicy :: !SelectionFailurePolicy
+  , redeliveryPolicy :: !RedeliveryPolicy
+  , partialPolicy :: !PartialDispatchPolicy
+  }
+  deriving stock (Generic, Eq, Show)
+```
+
+Each policy is its own closed type, and the four single-valued ones have exactly one constructor
+today — `OrderByTargetStream`, `DedupeByTargetStream`, `StableUnion`, `RetainSuccesses`:
+
+```haskell
+data EmptySelectionPolicy = EmptyAck | EmptyRetry | EmptyDeadLetter | EmptyHalt
+data SelectionFailurePolicy = FailureRetry | FailureDeadLetter | FailureHalt
+```
+
+`SelectionFailurePolicy` has **no** `FailureAck` constructor, so the refusal above is enforced by the
+type, not only by validation.
+
+### Normalization
+
+```haskell
+normalizeRecipients ::
+  (Eq targetCi) => RecipientLimit -> [PMCommand targetCi] -> Either RouterSelectionFailure [PMCommand targetCi]
+```
+
+Sort by physical target stream, collapse exact duplicates, reject unequal commands for one target,
+and apply the positive cap **after** deduplication. Two rows that resolve to the same target with the
+same command are one recipient; two rows that resolve to the same target with *different* commands
+are a `SelectionConflictingCommands` failure rather than an arbitrary winner.
+
+```haskell
+data RouterSelectionFailure
+  = SelectionQueryFailed !Text
+  | SelectionEvaluationFailed !Text
+  | SelectionConflictingCommands !StreamName
+  | SelectionRecipientOverflow !RecipientLimit !Natural
+  deriving stock (Generic, Eq, Show)
+```
+
+### Dead-letter reasons
+
+Failures render as Shibuya `ApplicationFailure` reasons with stable codes — this is the
+[application-defined dead-letter reason](/docs/integrations/shibuya-adapters) surface added in
+Shibuya 0.9.
+
+```haskell
+emptySelectionDeadLetterReason :: RouterSelectionContract -> DeadLetterReason
+selectionFailureDeadLetterReason :: RouterSelectionContract -> RouterSelectionFailure -> DeadLetterReason
+```
+
+<TypeTable
+  type={{
+    "keiro.router.selection.empty": { type: "DeadLetterCode", description: "The selection returned no recipients and empty => deadLetter." },
+    "keiro.router.selection.query_failed": { type: "DeadLetterCode", description: "The read-model query itself failed." },
+    "keiro.router.selection.evaluation_failed": { type: "DeadLetterCode", description: "Predicate or recipient evaluation failed." },
+    "keiro.router.selection.target_conflict": { type: "DeadLetterCode", description: "Two rows produced unequal commands for one target stream. The detail names the target, truncated to 128 characters." },
+    "keiro.router.selection.recipient_overflow": { type: "DeadLetterCode", description: "Post-deduplication recipients exceeded max-recipients." },
+  }}
+/>
+
+## Coordination drift
+
+`Keiro.Dsl.CoordinationImpact` *(new exposed module)* reports how a selection change affects
+coordination. `version` is an author-controlled semantic edition and `fingerprint` is a derived
+lowercase hexadecimal digest of the checked semantics, so changing the predicate without bumping the
+version is visible rather than silent.
+
+## Related
+
+- [Router reference](/docs/keiro/reference/router) — the surrounding node, dispatch, and poison
+  policy.
+- [Routers and content-based dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch) —
+  when fan-out belongs in a router at all.
+- [keiro-dsl runtime nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) — the `readmodel` typed
+  query contract this selection consumes.
+- [Event fan-out with routers](/docs/keiro/cookbook/event-fan-out-with-routers) — the composed
+  recipe.
+- [keiro-dsl language versions](/docs/keiro/reference/keiro-dsl-language-versions) —
+  `DeclarativeRouterSelectionSyntax`.

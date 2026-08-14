@@ -68,18 +68,38 @@ advance owner acc (widText, wnameText) =
       pure acc { unknownName = unknownName acc + 1 }
     Just (WorkflowDef runDef) -> do
       let wid = WorkflowId widText; name = WorkflowName wnameText
-      claimed <- claimInstance owner (leaseTtl opts) name wid
-      if not claimed
-        then pure acc { leaseSkipped = leaseSkipped acc + 1 }
-        else finally
+      claimInstance owner (leaseTtl opts) name wid >>= \case
+        ClaimLeaseHeld   -> pure acc { leaseSkipped = leaseSkipped acc + 1 }
+        ClaimUnavailable -> pure acc { leaseSkipped = leaseSkipped acc + 1 }
+        ClaimPaced       -> pure acc { paced = paced acc + 1 }
+        ClaimAcquired    -> finally
           (drive and classify the instance)
           (releaseInstance owner progressed name wid)
 ```
 
+<Callout type="warn">
+  **Breaking in Keiro 0.12.0.0.** `claimInstance` returns `ClaimOutcome`, not `Bool`:
+
+  ```haskell
+  claimInstance :: (IOE :> es, Store :> es) => Text -> NominalDiffTime -> WorkflowName -> WorkflowId -> Eff es ClaimOutcome
+
+  data ClaimOutcome
+    = ClaimAcquired     -- ^ This caller now holds the lease.
+    | ClaimLeaseHeld    -- ^ Another live lease exists; the instance is advancing elsewhere.
+    | ClaimPaced        -- ^ The crash-backoff gate (next_attempt_at) is still in the future.
+    | ClaimUnavailable  -- ^ The row is terminal or gone; it drops out of discovery by itself.
+    deriving stock (Generic, Eq, Show)
+  ```
+
+  The old `Bool` collapsed four distinct reasons into "not now", which is precisely what made a
+  bounded drain unable to tell *blocked* from *busy*.
+</Callout>
+
 Four things to notice. **(1)** A name absent from the registry is surfaced as `unknownName` and logged
 — never silently dropped — so a deploy that removed a workflow while instances were in flight is
-visible. **(2)** A live foreign lease skips only that instance and increments `leaseSkipped`; a dead
-worker's lease becomes claimable after `leaseTtl`. **(3)** A workflow that is some parent's child is
+visible. **(2)** A live foreign lease skips only that instance and increments `leaseSkipped`, while a
+paced instance increments `paced` instead; a dead worker's lease becomes claimable after `leaseTtl`.
+**(3)** A workflow that is some parent's child is
 driven through `runChildWorkflow` (so its result propagates to the parent on completion), everything
 else through bare `runWorkflowWith`. **(4)** Re-invocation threads `runOptions` (the snapshot and
 telemetry options), so a resumed run honours the same options as its first run, and the
@@ -147,10 +167,19 @@ projections (status, attempts, error, retry time, lease, the current generation'
 
 ```haskell
 data ResumeSummary = ResumeSummary
-  { discovered :: !Int, resumed :: !Int, completed :: !Int, stillSuspended :: !Int
-  , unknownName :: !Int, failed :: !Int, transientErrors :: !Int, leaseSkipped :: !Int
+  { discovered :: !Int, advanced :: !Int, resumed :: !Int, completed :: !Int
+  , stillSuspended :: !Int, unknownName :: !Int, failed :: !Int
+  , transientErrors :: !Int, leaseSkipped :: !Int, paced :: !Int, sleepDue :: !Int
+  , unregisteredNames :: !(Set Text)
   }
 ```
+
+`advanced` is the field a bounded drain must loop on — it counts candidates whose **durable** state
+moved, so a replay-only re-suspension does not read as progress. `sleepDue` is its counterpart: a
+candidate that re-suspended without movement while its instance row still carries an already-due wake
+hint. Exact discovery returns those every pass by design, and only a timer-worker fire can move them,
+so a drain reports them as **blocked** rather than spinning. `unregisteredNames` names what
+`unknownName` merely counts.
 
 The per-pass observability record. A steady non-zero `unknownName` means an unregistered workflow has
 live instances; a `discovered` that never drains to zero means some wake source is not resolving;

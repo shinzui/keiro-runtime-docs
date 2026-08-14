@@ -49,10 +49,34 @@ They exit 0 — you still have to act on them.
 | `RouterDecideSurfaceChanged` / `ProcessDecideSurfaceChanged` | fan-out changed | drain the subscription's redelivery window before deploying |
 | `ProcessTimerPayloadChanged` | a timer payload shape changed | deploy backward-compatible firers first |
 | `ContractSchemaVersionBumped` | a contract shape moved with its version | coordinate the producer/consumer rollout by hand |
+| `QueryFreshnessChanged` | a read model's query freshness weakened, or its waited head scope narrowed | confirm every caller tolerates the weaker guarantee before deploying |
+| `ProjectionDeliveryChanged` | a projection owner moved between `inline` and `subscription` | drain the old path; an inline→subscription move introduces a cursor that starts empty |
+| `CatalogCheckpointPolicyChanged` | a subscription's missing-checkpoint policy changed | re-read [`checkpoint-on-missing`](/docs/keiro/reference/keiro-dsl-domain-nodes) — this decides what a fresh deploy replays |
+| `CatalogExternalReadResultShapeChanged` | a published external-read contract's result shape moved | **breaking for out-of-process readers** — publish a new contract version instead |
+| `CatalogExternalReadCompatibilityChanged` | the compatible-revision set changed | verify readers survive the next promotion |
+| `CatalogExternalReadRetired` | a published contract version disappeared from source | confirm no consumer still calls it, then retire it deliberately with `keiro-ops` |
+| `DomainOutcomeTypesChanged` / `DomainTransitionOutcomeChanged` | an aggregate's typed outcome types or a transition's classification moved | callers matching on rejection/no-op reasons must be updated |
 
 `AggGuardTightened` is the one that prints working code: a paste-ready `replay-only` twin whose guard
 is the removed region `old ∧ ¬new`. See
 [Tighten a guard with a replay-only twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin).
+
+### The language 4 → 5 freshness migration
+
+`diff` classifies read-model query policy **across** the language boundary, which is what makes the
+upgrade auditable rather than a wall of noise:
+
+| Change | Verdict |
+|---|---|
+| `consistency = Strong` → `freshness = immediate` | breaking `QueryFreshnessChanged` |
+| `consistency = Strong` → `freshness = wait-for-head` with a **narrower** scope | breaking `QueryFreshnessChanged` |
+| `consistency = Strong scope = X` → `freshness = wait-for-head X` | equivalent — no finding |
+| `consistency = Eventual` → `freshness = wait-for-head …` | additive `CompatibilityStrengthened` |
+
+<Callout type="info">
+  Same-language diff classification is unchanged, and the spurious additive *"Strong scope widened"*
+  verdict that mixed-policy comparisons used to emit is gone.
+</Callout>
 
 ## Capture old payload shapes while both specs exist
 
