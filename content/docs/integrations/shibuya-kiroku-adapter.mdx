@@ -9,7 +9,7 @@ letters, durable checkpoints, filters, and consumer-group membership. shibuya
 owns processor supervision, handler execution, metrics, and coordinated
 shutdown.
 
-Current compatibility is `shibuya-kiroku-adapter 0.5.0.2`, `kiroku-store 0.7`, and
+Current compatibility is `shibuya-kiroku-adapter 0.5.1.1`, `kiroku-store 0.8`, and
 `shibuya-core 0.9`. The 0.7 line added history-retention events, which the adapter now handles.
 
 The adapter is intentionally thin. It builds a Kiroku `subscriptionAckStream`,
@@ -57,6 +57,15 @@ Direct `kirokuAdapter` users must wrap their handler with `guardKirokuHandler` (
 `guardKirokuHandlerWith` for an application-specific decision). An unguarded synchronous exception
 does not finalize the ack and can leave the Kiroku worker waiting. The consumer-group helper applies
 the default guard automatically.
+
+### Application-owned dead letters
+
+`ApplicationFailure code detail` maps to Kiroku's `DeadLetterOther`. The summary uses
+Shibuya's canonical `code: detail` rendering, while the stored `reason` JSONB retains
+`{"kind":"other","summary":…,"detail":{"code":…,"detail":…}}`.
+Query the application code with `reason->'detail'->>'code'`; do not parse the summary.
+`PoisonPill`, `InvalidPayload`, and `MaxRetriesExceeded` retain their existing encodings.
+The adapter does not match `StoreError`; adopting the 0.8 store adds no adapter retry logic.
 
 ## Ordering and Backpressure
 

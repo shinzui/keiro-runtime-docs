@@ -16,12 +16,12 @@ bites you.
 | `docs/shibuya-kiroku-adapter-source-sync.md` | `shinzui/kiroku` | `content/docs/integrations/shibuya-kiroku-adapter.mdx` | **Shares a repo with kiroku** — the adapter package lives inside it. This pointer and `kiroku-source-sync.md` advance independently; bumping one does not review the other. |
 | `docs/pgmq-hs-source-sync.md` | `shinzui/pgmq-hs` | `content/docs/pgmq/` | Note the name mismatch: repo `pgmq-hs`, docs tree `pgmq/`. |
 | `docs/pg-migrate-source-sync.md` | `shinzui/pg-migrate` | `content/docs/pg-migrate/` | Migration tooling; couples to keiro's `migrations-and-schema` and `deploy-ordering` pages. |
-| `docs/keiro-runtime-jitsurei-source-sync.md` | `shinzui/haskell-jitsurei` | `content/docs/example-app/` | The **standalone example app**, not the in-repo `keiro/jitsurei` package. |
+| `docs/keiro-runtime-jitsurei-source-sync.md` | `shinzui/keiro-runtime-jitsurei` | `content/docs/example-app/` | The **standalone example app**, not the in-repo `keiro/jitsurei` package. |
 
 ## Gotchas
 
 - **Two distinct "jitsurei".** `content/docs/example-app/` documents the standalone
-  `keiro-runtime-jitsurei` app (mori `shinzui/haskell-jitsurei`), pinned by its own pointer. The
+  `keiro-runtime-jitsurei` app (mori `shinzui/keiro-runtime-jitsurei`), pinned by its own pointer. The
   `jitsurei/` package *inside* the keiro repo is a legacy source anchor: a refactor there is **not**
   a reason to touch `example-app/` pages, and vice versa.
 - **Upstream prose diverges from upstream source.** In keiro especially, `docs/research/*` and

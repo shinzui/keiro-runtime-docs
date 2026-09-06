@@ -1,0 +1,48 @@
+---
+title: "Recover the 0010 checksum"
+description: "Choose the correct upgrade path for the corrected Kiroku retention migration."
+---
+
+You are upgrading to `kiroku-store-migrations 0.4.0.0`. The withdrawn 0.3.2.0/0.3.2.1
+payload of `0010` used an unqualified UUIDv7 function, and the corrected payload has a new checksum.
+
+## Goal
+
+Apply all eleven Kiroku migrations and obtain a clean `verify` without hiding unrelated drift.
+
+## Steps
+
+1. Run the new executable's `status` and `verify` against the intended database. If `0010`
+   is pending, run `up` normally: this includes PostgreSQL 17 upgrades blocked by the original
+   SQLSTATE `42883`. Fresh databases also need no fixup.
+2. If `0010` already applied with the withdrawn checksum, obtain the release's supplied
+   fixup from project `mori://shinzui/kiroku`, project-relative path
+   `kiroku-store-migrations/ledger-fixups/2026-08-16-rebaseline-0010-checksum.sql`
+   (artifact-level URI pending). Inspect it before running it. It changes only the
+   `kiroku/0010` ledger row with the exact withdrawn checksum, inside a transaction.
+   If the application uses a custom ledger schema, adjust its `to_regclass` lookup.
+3. Run that script once against the same database, then run:
+
+   ```console
+   kiroku-store-migrate up --database-url "$DATABASE_URL"
+   kiroku-store-migrate verify --database-url "$DATABASE_URL"
+   ```
+
+The fixup does not repair schema objects. Forward migration `0011` publishes
+`kiroku.uuidv7()` where needed and converges the retention lease ID default. Do not edit
+other ledger checksums or substitute the generic nontransactional `repair` command.
+
+## Verify it worked
+
+`verify` must be clean across all eleven entries. With the default ledger, this query
+must return one row with `ok = true` after migration:
+
+```sql
+SELECT encode(checksum, 'hex') =
+       'debc19187d79cd263be66c6c85cd789c1176e508d562a27390095aaa70f650c4' AS ok
+FROM pgmigrate.migrations
+WHERE component = 'kiroku' AND migration = '0010';
+```
+
+Any other checksum mismatch remains a separate blocker. See the
+[schema reference](/docs/kiroku/reference/schema-migrations).

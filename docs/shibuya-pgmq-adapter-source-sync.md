@@ -36,12 +36,15 @@ guides.
 ## Last reviewed commit
 
 ```text
-fee9b3a8670e41baaa41388cfe9235aa03a5caf2  (fee9b3a)
-2026-08-10T14:28:12-07:00
-docs(plans): complete structured DLQ rollout
+1d882238f22b107b81104d7112833d521fcdb5ea  (1d882238)
+2026-08-19T21:01:51-07:00
+docs(okf): file keiro-ui inspection improvement requests
 ```
 
-> **Current range.** The `85931b4..fee9b3a` range (**13 commits**, 55 files,
+> **Current range.** `fee9b3a8..1d882238` (**1 commits**). The only commit adds proposed inspection endpoints to upstream improvement requests. No adapter source, public API, queue behavior or integration page changed. Adapter remains 0.14.0.0; proposed endpoints are not documented as shipped.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+
+> **Note (prior range).** The `85931b4..fee9b3a` range (**13 commits**, 55 files,
 > +4,372/−130) lands **two releases**, `0.13.0.0` and `0.14.0.0`, taking the adapter from `0.12.0.0`.
 > The adapter's own public Haskell function and record signatures are **unchanged** in both.
 >
@@ -108,6 +111,8 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `fee9b3a8670e41baaa41388cfe9235aa03a5caf2` (`fee9b3a8`) — baseline before the `fee9b3a8..1d882238` review (1 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
+
 - `85931b45702faecc035d89bb5cff381e8679f793` (`85931b4`, 2026-07-14, shibuya-pgmq-adapter 0.12.0.0) — the baseline before the 0.13/0.14 review. The `85931b4..fee9b3a` range (13 commits) moved the adapter to pgmq-hs 0.5 (narrowing `parseQueueName` to `[a-z0-9_]{1,47}`, which needs a mixed-case `pgmq.meta` remediation before rollout) and then to shibuya-core 0.9, adding `dead_letter_reason_code` and an always-present `dead_letter_reason_detail` to every DLQ payload. Public Haskell signatures unchanged.
 - `99e997e8a05f4a0deb92ddede4d419351f6da3d8` (`99e997e`), 2026-07-04 —
   0.11.0.0 baseline before the 0.12 dependency and idle-shutdown pass.
@@ -124,8 +129,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    ADAPTER=$(mori registry show shinzui/shibuya-pgmq-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$ADAPTER" log --oneline fee9b3a..HEAD
-   git -C "$ADAPTER" diff --stat fee9b3a..HEAD
+   git -C "$ADAPTER" log --oneline 1d882238..HEAD
+   git -C "$ADAPTER" diff --stat 1d882238..HEAD
    ```
    Also inspect `README.md`, `CHANGELOG.md`, `docs/user/`, and the source
    modules listed above. Because the adapter sits on `pgmq-hs`, check

@@ -20,11 +20,11 @@ instances (as UUID text).
 ## `OutboxStatus`
 
 ```haskell
-data OutboxStatus = OutboxPending | OutboxPublishing | OutboxSent | OutboxFailed | OutboxDead
+data OutboxStatus = OutboxPending | OutboxPublishing | OutboxSent | OutboxRejected | OutboxFailed | OutboxDead
 ```
 
 `OutboxPending` (never attempted), `OutboxPublishing` (held by a worker between claim and mark),
-`OutboxSent` (acked; terminal), `OutboxFailed` (will retry after `next_attempt_at`), `OutboxDead`
+`OutboxSent` (acked; terminal), `OutboxRejected` (permanently refused; retained for audit), `OutboxFailed` (will retry after `next_attempt_at`), `OutboxDead`
 (terminal failure after `maxAttempts`, kept for inspection).
 
 <Callout type="info">
@@ -128,7 +128,8 @@ defaultPublishOptions :: OutboxPublishOptions
 mkOutboxPublishOptions :: OutboxPublishOptions -> Either OutboxPublishConfigError OutboxPublishOptions
 ```
 
-`published + retried + dead` equals the claimed rows that were accounted for by the pass. `retried`
+`published + rejected + retried + dead` counts rows durably finalized by the pass. It can be
+less than `claimed` when stale-worker recovery wins a race. `retried`
 also includes rows skipped after an earlier failure in the same ordered group; those skipped rows are
 returned to retryable state without consuming an attempt. `haltedOn` is populated only under
 `StopTheLine` and names the failed pivot row, which is already counted in `retried` or `dead`.
@@ -176,7 +177,7 @@ those in (`messageId` minted as a `messageIdPrefix`-prefixed TypeID). `mapEvent`
 ## `publishClaimedOutbox`
 
 ```haskell
-data PublishOutcome = PublishSucceeded | PublishFailed !Text
+data PublishOutcome = PublishSucceeded | PublishFailed !Text | PublishRejected !PublishRejection
 
 publishClaimedOutbox ::
   (IOE :> es, Store :> es) =>
@@ -194,7 +195,8 @@ Kafka](/docs/keiro/how-to/bridge-the-outbox-to-kafka).
 
 The trailing `Maybe KeiroMetrics` is the opt-in
 [metrics](/docs/keiro/reference/telemetry#metrics-surface) handle: per publish pass it records only
-the `keiro.outbox.published`, `keiro.outbox.retried`, and `keiro.outbox.deadlettered` counters. Pass
+the `keiro.outbox.published`, `keiro.outbox.rejected`, `keiro.outbox.retried`, and
+`keiro.outbox.deadlettered` counters, derived from committed conditional updates. Pass
 `Nothing` to disable them.
 
 For `StopTheLine`, the worker calls the publish function with singleton batches and halts after the
@@ -202,6 +204,37 @@ first failure. For the other policies, the publish function receives the whole c
 Kafka adapter can pipeline or batch broker sends. If the callback omits an outcome for a claimed row,
 keiro treats it as `PublishFailed "publisher returned no outcome"`; if the callback throws, every row
 in that callback is treated as failed.
+
+## Terminal rejection (Keiro 0.14+)
+
+Construct `PublishRejection` through `mkPublishRejection`; the type is abstract and its
+implementation module is private. Codes match `[a-z][a-z0-9._-]*` and contain 1–64 ASCII
+characters. Present detail must be non-empty and at most 1024 UTF-8 bytes. Invalid values
+are refused without normalization or truncation.
+
+```haskell
+mkPublishRejection :: Text -> Maybe Text -> Either PublishRejectionError PublishRejection
+
+data PublishRejectionError
+  = InvalidPublishRejectionCode !Text
+  | PublishRejectionDetailEmpty
+  | PublishRejectionDetailTooLong !Int
+```
+
+Read values with `publishRejectionCode` and `publishRejectionDetail`. `OutboxRow` adds
+`rejectedAt :: !(Maybe UTCTime)` and `rejection :: !(Maybe PublishRejection)`;
+`OutboxPublishSummary` adds `rejected :: !Int`. Direct record construction and exhaustive
+outcome/status matches must be updated.
+
+A rejection records terminal audit truth, clears `last_error`, schedules no retry, and
+releases per-key/per-source successors. `StopTheLine` continues after rejection and stops
+on `PublishFailed`. Rejected rows are excluded from claims, recovery, backlog and sent-row
+GC, so sent retention does not erase the refusal evidence.
+
+All outcome classes for a claimed batch finalize in one transaction, conditional on each
+row still being `publishing`. A callback can run again if finalization fails before commit;
+both transport delivery and refusal decisions must be idempotent by message identity.
+See [Handle terminal outbox rejection](/docs/keiro/how-to/handle-terminal-outbox-rejection).
 
 ## `outboxMaintenancePass` and `sampleOutboxBacklog`
 
@@ -251,15 +284,25 @@ countOutboxBacklog :: (Store :> es) => Eff es Int
 enqueueOutboxTx   :: OutboxMessage -> Tx.Transaction ()                                   -- INSERT … ON CONFLICT (source, message_id) DO NOTHING
 claimOutboxBatch  :: (Store :> es) => OrderingPolicy -> Int -> UTCTime -> Eff es [OutboxRow]
 requeueStuckOutbox :: (Store :> es) => Int -> NominalDiffTime -> UTCTime -> Eff es (Int, Int)
-markOutboxSent    :: (Store :> es) => OutboxId -> UTCTime -> Eff es ()
+markOutboxSent    :: (Store :> es) => OutboxId -> UTCTime -> Eff es Bool
 markOutboxSentBatch :: (Store :> es) => [OutboxId] -> UTCTime -> Eff es Int
-markOutboxFailedTx :: OutboxId -> Text -> Int -> NominalDiffTime -> UTCTime -> Tx.Transaction OutboxStatus
+markOutboxFailedTx :: OutboxId -> Text -> Int -> NominalDiffTime -> UTCTime -> Tx.Transaction (Maybe OutboxStatus)
 lookupOutbox      :: (Store :> es) => OutboxId -> Eff es (Maybe OutboxRow)
 listOutbox        :: (Store :> es) => Text -> Eff es [OutboxRow]
 garbageCollectSent :: (Store :> es) => NominalDiffTime -> UTCTime -> Eff es Int
 listStuckOutbox            :: (Store :> es) => NominalDiffTime -> UTCTime -> Eff es [OutboxRow]
 listSentOutboxGcCandidates :: (Store :> es) => NominalDiffTime -> UTCTime -> Eff es [OutboxRow]
 ```
+
+```haskell
+markOutboxSentBatchTx :: [OutboxId] -> UTCTime -> Tx.Transaction Int
+markOutboxRejectedTx :: OutboxId -> PublishRejection -> UTCTime -> Tx.Transaction Bool
+markOutboxSkippedTx :: OutboxId -> Text -> UTCTime -> Tx.Transaction Bool
+```
+
+`markOutboxRejectedTx` and `markOutboxSkippedTx` return whether the conditional update
+changed a row. `markOutboxFailedTx` now returns `Maybe OutboxStatus`: `Nothing` means a stale,
+missing, or terminal row was not changed. Include these counts only after the transaction commits.
 
 `listStuckOutbox` and `listSentOutboxGcCandidates` are the read-only operator **previews** for
 `requeueStuckOutbox` and `garbageCollectSent`: they list the rows a pass would consider or delete,
@@ -299,6 +342,9 @@ integrationEventToKafkaRecord :: IntegrationEvent -> KafkaProducerRecord
 `topic` is the envelope's `destination`; `key` and `headers` are UTF-8-encoded from the envelope.
 
 ## The `keiro_outbox` table
+
+The following is the original table/index shape; migration `0031` below updates rejection auditing
+and head-of-line predicates in the current `keiro` schema.
 
 ```sql
 CREATE TABLE IF NOT EXISTS keiro_outbox (
@@ -352,6 +398,50 @@ CREATE INDEX IF NOT EXISTS keiro_outbox_sent_gc_idx
 CREATE INDEX IF NOT EXISTS keiro_outbox_source_order_idx
   ON keiro_outbox (source, created_at, outbox_id)
   WHERE status NOT IN ('sent', 'dead');
+```
+
+Migration `0031` (Keiro 0.14+) applies this additional SQL:
+
+```sql
+-- add terminal outbox rejection outcome
+
+ALTER TABLE keiro.keiro_outbox
+  ADD COLUMN rejected_at TIMESTAMPTZ,
+  ADD COLUMN rejection_code TEXT,
+  ADD COLUMN rejection_detail TEXT,
+  ADD CONSTRAINT keiro_outbox_rejection_audit_check CHECK (
+    (
+      status = 'rejected'
+      AND rejected_at IS NOT NULL
+      AND rejection_code IS NOT NULL
+    )
+    OR
+    (
+      status <> 'rejected'
+      AND rejected_at IS NULL
+      AND rejection_code IS NULL
+      AND rejection_detail IS NULL
+    )
+  ),
+  ADD CONSTRAINT keiro_outbox_rejection_code_check CHECK (
+    rejection_code IS NULL
+    OR rejection_code ~ '^[a-z][a-z0-9._-]{0,63}$'
+  ),
+  ADD CONSTRAINT keiro_outbox_rejection_detail_check CHECK (
+    rejection_detail IS NULL
+    OR octet_length(rejection_detail) BETWEEN 1 AND 1024
+  );
+
+-- Rejected rows are terminal and must not remain in head-of-line indexes.
+DROP INDEX IF EXISTS keiro.keiro_outbox_head_of_line_idx;
+CREATE INDEX keiro_outbox_head_of_line_idx
+  ON keiro.keiro_outbox (source, message_key, created_at)
+  WHERE status NOT IN ('sent', 'dead', 'rejected') AND message_key IS NOT NULL;
+
+DROP INDEX IF EXISTS keiro.keiro_outbox_source_order_idx;
+CREATE INDEX keiro_outbox_source_order_idx
+  ON keiro.keiro_outbox (source, created_at, outbox_id)
+  WHERE status NOT IN ('sent', 'dead', 'rejected');
 ```
 
 The `UNIQUE (source, message_id)` constraint coalesces idempotent re-enqueues; the partial

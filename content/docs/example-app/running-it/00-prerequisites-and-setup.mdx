@@ -3,97 +3,58 @@ title: "00 — Prerequisites and setup"
 description: "From a clean checkout to a built workspace: the Nix dev shell, local infrastructure, databases, and migrations."
 ---
 
-This chapter takes you from a clean checkout of `keiro-runtime-jitsurei` to a built workspace with
-infrastructure running and databases migrated. All commands run from the **app repo root** and are
-real recipes in its `justfile` / `process-compose.yaml`.
+These commands target `mori://shinzui/keiro-runtime-jitsurei` at `e3c800e`. Resolve the app
+with `mori registry show shinzui/keiro-runtime-jitsurei --full`, then run commands from its root.
+The recipes are in project-relative `justfile` and `process-compose.yaml` (artifact-level URIs pending).
 
-<Steps>
+## Enter the shell and start dependencies
 
-<Step>
-### Enter the dev shell
-
-The repo ships a Nix flake (`flake.nix`) that provides GHC, Cabal, `psql`, `rpk` (Redpanda),
-`jaeger`, `process-compose`, and `just`. Enter it:
-
-```bash
+```console
 nix develop
+just dev-up
 ```
 
-Everything below assumes you are inside this shell (or that you prefix commands with
-`nix develop --command …`, as the app's `docs/observability.md` does).
-</Step>
+The compose stack starts Incident PostgreSQL on `55431`, Hospital PostgreSQL on `55432`, and
+Jaeger. Its Redpanda process **checks** an existing shared broker at `127.0.0.1:9092`; it no longer
+creates or shuts down a broker. On the configured host, `redpanda-up` starts that shared service;
+if needed, start Apple Container first with `container system start`. Other hosts must supply a
+reachable broker. The shared console is `http://redpanda.localhost`, not the retired `18080` port.
 
-<Step>
-### Start local infrastructure
+Compose creates the named dev databases and runs each service's migration command. `just dev-down`
+stops the app-managed processes and leaves the shared broker running.
 
-`process-compose.yaml` defines two Postgres instances (incident on port **55431**, hospital on
-**55432**), a Redpanda (Kafka) broker on **9092**, and a Jaeger instance. Start them:
+## Inspect and apply owned plans
 
-```bash
-just dev-up        # = process-compose up
+```console
+cd services/incident-command
+just migration-plan
+just migration-status
+just migration-up
+just migration-verify
+just migration-check
 ```
 
-The compose file initialises each Postgres data dir on first run and creates the dev databases as
-dependent steps. Stop everything later with `just dev-down`.
-</Step>
+Repeat in `services/hospital-capacity`. Incident composes `kiroku`, `keiro`, `incident-command`;
+Hospital composes `kiroku`, `keiro`, `pgmq`, `hospital-capacity`. Root `just migrate-all` delegates
+to both plans. Framework schemas belong to their components; application migrations own only
+`incident_command` or `hospital_capacity` data. There is no TypeID SQL bootstrap: IDs are parsed
+and rendered through `mmzk-typeid` and stored as canonical text.
 
-<Step>
-### Create the databases
+The app's supported cutover from the retired bootstrap is fresh **local** database recreation.
+`just reset-db --confirm` within a service drops its fixed development database. The scenario
+`--reset` also recreates both example Kafka topics; use it only when that data may be discarded.
 
-If you are not using the compose-managed create step, the root recipe creates both dev databases
-explicitly:
+## Build and check
 
-```bash
-just create-databases
-# createdb -h 127.0.0.1 -p 55431 incident_command_dev
-# createdb -h 127.0.0.1 -p 55432 hospital_capacity_dev
-```
-</Step>
-
-<Step>
-### Apply the migrations
-
-`just migrate-all` delegates to each service's own `just migrate`, which first installs the
-**typeid-hs** SQL functions (so `inc_…`, `hosp_…` ids work in the database) and then applies the
-service's seven SQL migrations — foundation, the Kiroku event store, read models, timers, workflows,
-outbox, and inbox:
-
-```bash
-just migrate-all
-# per service: typeid-hs SQL, then migrations/001_foundation.sql … 007_inbox.sql
-```
-
-<Callout type="info">
-  Each service's `just migrate` references a machine-local `typeid_sql_dir` path for the typeid-hs
-  SQL. If that path differs on your machine, point it at your local `typeid-hs/typeid-hs-sql`
-  checkout before running `migrate-all`.
-</Callout>
-</Step>
-
-<Step>
-### Create the Kafka topics
-
-```bash
+```console
 just kafka-topics
-# rpk topic create emergency.incident.events emergency.hospital.events --brokers 127.0.0.1:9092
-```
-</Step>
-
-<Step>
-### Build everything
-
-```bash
-just build-all     # cabal build all, in both services
+just build-all
+just test-all
+just dsl-check
+just contract-compatibility
+just scenario smoke
 ```
 
-A quick sanity check — the two smoke commands should each print a banner:
-
-```bash
-just scenario smoke   # runs incident-smoke and hospital-smoke
-```
-</Step>
-
-</Steps>
-
-With infrastructure up, databases migrated, topics created, and the workspace built, you are ready to
-[run the scenarios](/docs/example-app/running-it/01-running-the-scenarios).
+Hospital's `reservation-work setup` reconciles its named work/DLQ queues after the PGMQ base
+component exists. The scenario runs that step in order.
+Continue with [the scenarios](/docs/example-app/running-it/01-running-the-scenarios).

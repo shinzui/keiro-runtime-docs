@@ -78,7 +78,8 @@ of `wf`/`msg`/`inc`/`rsv`. A malformed id is a parse failure, not a silently-acc
 
 ## Idempotency keys are service-qualified
 
-The inbox and outbox dedupe on `idempotencyKey`, so the keys are deterministic per logical effect
+The contract carries a stable `idempotencyKey` per logical effect; the outbox coalesces by
+`(source, message_id)`, while the inbox uses its configured dedupe policy
 (from `docs/contracts/README.md`):
 
 ```text
@@ -102,3 +103,14 @@ README puts it: *"They are not Haskell domain events and are not implemented by 
 This is the [integration-events](/docs/keiro/explanation/integration-events) principle taken to its
 conclusion — the only contract that crosses the boundary is the bytes on the topic. The schema even
 pins the id shape: `"messageId": { "pattern": "^msg_[0-9a-hjkmnp-tv-z]{26}$" }`.
+
+## Generated compatibility evidence and transport headers
+
+Project `mori://shinzui/keiro-runtime-jitsurei` retains independent service contract types and also
+emits `Emergency.Generated.Contract` modules in each scaffold. Root `just contract-compatibility`
+checks the seven neutral fixtures. The project-relative schema/fixtures and service source paths
+above are under this project (artifact-level URIs pending).
+
+The serialized `traceParent` field remains part of the version-1 wire shape. Actual Kafka remote
+parentage comes from the live producer's W3C headers; the publisher removes conflicting stored
+headers before injection. See [trace continuity](/docs/example-app/cross-service/04-telemetry-and-trace-continuity).

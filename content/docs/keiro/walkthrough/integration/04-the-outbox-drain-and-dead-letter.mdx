@@ -12,7 +12,7 @@ claim](/docs/keiro/walkthrough/integration/03-the-outbox-enqueue-and-claim) firs
 
 ```haskell
 -- keiro/src/Keiro/Outbox.hs
-data PublishOutcome = PublishSucceeded | PublishFailed !Text
+data PublishOutcome = PublishSucceeded | PublishFailed !Text | PublishRejected !PublishRejection
   deriving stock (Generic, Eq, Show)
 
 publishClaimedOutbox ::
@@ -25,6 +25,7 @@ publishClaimedOutbox publish options mMetrics = do
   summary <- publishBatch rows
   -- Counters from the aggregated pass summary.
   recordOutboxPublished mMetrics (fromIntegral (summary ^. #published))
+  recordOutboxRejected mMetrics (fromIntegral (summary ^. #rejected))
   recordOutboxRetried mMetrics (fromIntegral (summary ^. #retried))
   recordOutboxDeadlettered mMetrics (fromIntegral (summary ^. #dead))
   pure summary
@@ -43,8 +44,8 @@ in keiro itself.
 It claims a batch under the active `OrderingPolicy`, hands the claimed rows to the publish callback,
 and marks outcomes in bulk where possible. The trailing `mMetrics :: Maybe KeiroMetrics` is the
 opt-in [metrics](/docs/keiro/reference/telemetry#metrics-surface) handle; after the publish pass it
-records the `published` / `retried` / `dead` counts from the aggregated summary as the
-`keiro.outbox.published`, `keiro.outbox.retried`, and `keiro.outbox.deadlettered` counters. Backlog
+records the `published` / `rejected` / `retried` / `dead` counts from the aggregated summary as the
+`keiro.outbox.published`, `keiro.outbox.rejected`, `keiro.outbox.retried`, and `keiro.outbox.deadlettered` counters. Backlog
 gauging and stale-row reclaiming moved to `outboxMaintenancePass`, so the publish hot path does not
 run an extra `COUNT(*)` or sweep on every call.
 
@@ -73,10 +74,12 @@ Then keiro groups the claimed rows according to the active ordering policy:
 - `BestEffort` treats every row independently.
 - `StopTheLine` is handled as singleton batches and halts after the first failed row.
 
-Within each ordered group, keiro marks the successful prefix sent with `markOutboxSentBatch`, marks
-the failed pivot retryable or dead with `markOutboxFailedTx`, and returns the suffix to retryable
-state without consuming attempts. That preserves per-key/per-source order while allowing a claimed
-batch to contain long contiguous runs for the same key.
+Within each ordered group, terminal successes and rejections precede any failed pivot.
+The pivot becomes retryable or dead, and skipped successors return to retryable state without
+consuming attempts. All sent, rejected, failed, and skipped marks now run in **one transaction**,
+conditional on the row still being `publishing`. The summary counts only committed changes and
+may total less than `claimed` if recovery wins a stale-worker race. A rejection also continues
+`StopTheLine`; it does not supply a failure pivot.
 
 <Callout type="warn">
 Publish is **at-least-once**: mark a row sent only *after* the broker acknowledges. A crash after the
@@ -87,32 +90,40 @@ stable `messageId`.
 
 ## `markOutboxFailedTx`: the dead-letter decision
 
+The implementation in project `mori://shinzui/keiro`, project-relative path
+`keiro/src/Keiro/Outbox/Schema.hs` (artifact-level URI pending), is:
+
 ```haskell
--- keiro/src/Keiro/Outbox/Schema.hs
-markOutboxFailedTx :: OutboxId -> Text -> Int -> NominalDiffTime -> UTCTime -> Tx.Transaction OutboxStatus
+markOutboxFailedTx ::
+  OutboxId ->
+  Text ->
+  Int ->
+  NominalDiffTime ->
+  UTCTime ->
+  Tx.Transaction (Maybe OutboxStatus)
 markOutboxFailedTx outboxId errMsg maxAttempts delay now = do
   currentAttempt <- Tx.statement (unOutboxId outboxId) readAttemptCountStmt
-  let attempt = fromMaybe 0 currentAttempt
-      shouldDie = attempt >= maxAttempts
-      nextStatus = if shouldDie then OutboxDead else OutboxFailed
-      nextAttempt = addUTCTime delay now
-  Tx.statement (unOutboxId outboxId, statusText nextStatus, errMsg, nextAttempt, now) markFailedStmt
-  pure nextStatus
+  case currentAttempt of
+    Nothing -> pure Nothing
+    Just attempt -> do
+      let shouldDie = attempt >= maxAttempts
+          nextStatus = if shouldDie then OutboxDead else OutboxFailed
+          nextAttempt = addUTCTime delay now
+      changed <-
+        Tx.statement
+          (unOutboxId outboxId, statusText nextStatus, errMsg, nextAttempt, now)
+          markFailedStmt
+      pure (nextStatus <$ guard changed)
 ```
 
-```sql
--- markSentStmt
-UPDATE keiro_outbox SET status = 'sent', published_at = $2, last_error = NULL, updated_at = $2 WHERE outbox_id = $1
--- markFailedStmt
-UPDATE keiro_outbox SET status = $2, last_error = $3, next_attempt_at = $4, updated_at = $5 WHERE outbox_id = $1
-```
+The attempt read selects only `publishing` rows. A missing/stale row returns `Nothing`;
+a conditional update that loses the race also returns `Nothing`. Otherwise the attempt ceiling
+chooses `OutboxDead` or `OutboxFailed`. The caller uses the committed `Maybe` values to count
+actual progress, alongside `markOutboxRejectedTx` and `markOutboxSkippedTx` Boolean results.
 
-`markOutboxFailedTx` reads the row's current `attempt_count`: `>= maxAttempts` → `OutboxDead`
-(terminal; the row stays in the table for operator inspection), otherwise `OutboxFailed` with
-`next_attempt_at = now + delay` (so the claim picks it up again after the backoff). It runs inside the
-caller's transaction so the "read count → write status" pair is atomic across concurrent workers. It
-returns the resulting `OutboxStatus` so the worker can update its counters. `markOutboxSent` is the
-success counterpart: `status = 'sent'`, `published_at`, cleared `last_error`.
+Rejection retains a bounded code/detail and timestamp without retrying. See
+[terminal rejection](/docs/keiro/reference/outbox) for validation
+and the at-least-once pre-commit boundary.
 
 ## Backoff: `BackoffSchedule`, `nextDelay`, `ExponentialBackoffOptions`
 
@@ -153,15 +164,15 @@ data OutboxPublishOptions = OutboxPublishOptions
   deriving stock (Generic)
 
 data OutboxPublishSummary = OutboxPublishSummary
-  { claimed :: !Int, published :: !Int, retried :: !Int, dead :: !Int, haltedOn :: !(Maybe OutboxId) }
+  { claimed :: !Int, published :: !Int, rejected :: !Int, retried :: !Int, dead :: !Int, haltedOn :: !(Maybe OutboxId) }
   deriving stock (Generic, Eq, Show)
 ```
 
 Under `StopTheLine`, keiro sends singleton batches, halts on the first `PublishFailed`, records the
 offending row in `haltedOn`, and marks the remaining claimed rows skipped without consuming attempts.
-Every other policy continues through the claimed batch. The summary's invariant is
-`published + retried + dead == claimed`; `haltedOn` is the failed pivot row already counted in
-`retried` or `dead`.
+Rejection continues `StopTheLine`. The sum `published + rejected + retried + dead` counts
+committed finalizations and may be less than `claimed` when recovery wins a race. `haltedOn`
+names the attempted failed pivot; its durable retry/dead count depends on the conditional update.
 
 A crash anywhere in this drain — after the claim flipped a row to `publishing` but before the mark —
 is recovered by the separately scheduled `outboxMaintenancePass` after `publishingTimeout`: the row

@@ -14,19 +14,22 @@ the pinned commit to `HEAD`, update the affected pages, then bump the pointer be
 - Relevant packages: `kiroku-store` (core store + subscription FSM), `shibuya-kiroku-adapter`
   (worker adapter); the source tree also carries the metrics, CLI, and OpenTelemetry packages
   documented below.
-- **Reviewed releases:** `kiroku-store 0.3.1.0`, migrations `0.3.0.0`,
-  `kiroku-otel 0.2.0.1`, `kiroku-cli 0.2.0.0`, `kiroku-metrics 0.1.0.1`, and
-  `shibuya-kiroku-adapter 0.4.0.0`.
+- **Reviewed releases:** `kiroku-store 0.8.0.0`, migrations `0.4.0.0`,
+  `kiroku-otel 0.2.0.7`, `kiroku-cli 0.2.0.6`, `kiroku-metrics 0.1.0.8`, and
+  `shibuya-kiroku-adapter 0.5.1.1`. Hackage and upstream release tags checked 2026-09-06.
 
 ## Last reviewed commit
 
-```
-b9aecf3a0f50911388c62df0d250fe5096afbfa4  (b9aecf3)
-2026-08-13T15:48:38-07:00
-docs(plan): complete EP-73 release
+```text
+7051b12342b3002659e39061b03bee2e37275099  (7051b123)
+2026-08-29T06:52:44-07:00
+docs(plans): address MasterPlan 11 pre-implementation review findings
 ```
 
-> **Current range.** The `3009dda..b9aecf3` range (**51 commits**, 151 files,
+> **Current range.** `b9aecf3a..7051b123` (**27 commits**). Reviewed Store 0.8.0.0, migrations 0.4.0.0 and companion point releases. TransientTransactionFailure classifies serialization/deadlock aborts as retryable; existing-row pre-locking still permits fresh-stream deadlocks. Corrected migration 0010 changes its checksum; forward 0011 converges the UUIDv7 function/default, taking the manifest from 10 to 11 entries without new tables. Added how-to/recover-the-0010-checksum.mdx; updated core/store/schema references, worker and adapter tours, FAQ and compatibility. The defensive Retrying driver arm is documented. Selective compaction, lock-order redesign, hardening plans and UI endpoints remain unshipped; build/test/profile/blueprint changes add no further runtime surface.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+
+> **Note (prior range).** The `3009dda..b9aecf3` range (**51 commits**, 151 files,
 > +15,323/−996) lands **four releases** — `kiroku-store` `0.4`, `0.5`, `0.6`, and `0.7` — taking the
 > store from `0.3.1.0` to `0.7.0.0` and `kiroku-store-migrations` from `0.3.0.0` to `0.3.2.0`. Keiro
 > 0.12 requires this whole span (`kiroku-store >=0.7 && <0.8`).
@@ -192,8 +195,8 @@ docs(plan): complete EP-73 release
 1. List what changed since the pointer:
    ```sh
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline b9aecf3..HEAD
-   git -C "$KIROKU" diff --stat b9aecf3..HEAD
+   git -C "$KIROKU" log --oneline 7051b123..HEAD
+   git -C "$KIROKU" diff --stat 7051b123..HEAD
    ```
    Kiroku also keeps its own `docs/`, `CHANGELOG.md` files, and `docs/plans|masterplans`
    entries — the prose diff there is the fastest way to understand intent before touching

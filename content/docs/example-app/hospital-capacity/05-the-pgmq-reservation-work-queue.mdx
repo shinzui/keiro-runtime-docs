@@ -3,138 +3,97 @@ title: "05 — The pgmq reservation work queue"
 description: "The keiro-pgmq background job that drains reservation work: the Job, JobCodec, RetryPolicy, DLQ, and the runJobOnce one-shot drain."
 ---
 
-This is the application's signature background-job example — and it is the **same** example the keiro
-pgmq pages already use. When Hospital Capacity accepts a transfer need, it does not turn it into a
-reservation synchronously; it enqueues a **`keiro-pgmq` job**, and a worker drains that job to run the
-`RequestTransferReservation` command. This chapter reads `Reservation/WorkQueue.hs` and the
-dispatcher that feeds it.
+Reservation work is a Hospital-local typed Keiro PGMQ job. Kafka carries public cross-service
+contracts; this queue supplies visibility leases, retry, and a real DLQ for local work.
 
-<Callout type="info">
-  **This exact code is the worked example on the keiro pgmq pages.** Read those for the framework
-  reference; this chapter shows it living inside a real service:
-  [pgmq jobs](/docs/keiro/reference/pgmq-jobs) ·
-  [background jobs with pgmq](/docs/keiro/explanation/background-jobs-with-pgmq) ·
-  [dead-letter and retry jobs](/docs/keiro/how-to/dead-letter-and-retry-jobs) ·
-  [scheduled job drain](/docs/keiro/cookbook/scheduled-job-drain) ·
-  [keiro with pgmq](/docs/integrations/keiro-with-pgmq) · [the pgmq library](/docs/pgmq).
-</Callout>
+## Generated policy, hand-owned payload
 
-## The Job
-
-A `keiro-pgmq` job bundles four things: a name, a queue reference, a codec, and a retry policy. The
-reservation-work job declares all four declaratively:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/hospital-capacity/src/HospitalCapacity/Reservation/WorkQueue.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/hospital-capacity/src/HospitalCapacity/Reservation/WorkQueue.hs
 reservationWorkJob :: Job ReservationWorkItem
 reservationWorkJob =
   Job
     { jobName = "reservation-work"
-    , jobQueue = queueRef "hospital_capacity.reservation_work"
+    , jobQueue = queueRef GeneratedQueue.queuePhysical
     , jobCodec = reservationWorkJobCodec
-    , jobPolicy =
-        RetryPolicy
-          { maxRetries = 3
-          , defaultRetryDelay = RetryDelay 5
-          , useDeadLetter = True
-          }
+    , jobPolicy = validatedReservationWorkRetryPolicy
     }
+
+validatedReservationWorkRetryPolicy :: RetryPolicy
+validatedReservationWorkRetryPolicy =
+  case
+    mkRetryPolicy
+      GeneratedPolicy.retryPolicy.maxRetries
+      GeneratedPolicy.retryPolicy.defaultRetryDelay
+      GeneratedPolicy.retryPolicy.useDeadLetter of
+    Right policy -> policy
+    Left err -> error ("invalid generated reservation-work retry policy: " <> show err)
 ```
 
-`queueRef` derives the **physical** queue name (`hospital_capacity_reservation_work`) and its
-dead-letter companion (`hospital_capacity_reservation_work_dlq`) from the dotted logical name — so
-the on-the-wire names are exactly the ones the service used before adopting the package. The policy is
-three deliveries, a 5-second retry delay, and a real DLQ.
+The generated queue name and policy configure `Job ReservationWorkItem`; the hand codec validates
+its message body. `reservation-work setup` reconciles the work and DLQ queues after the base PGMQ
+migration component has been applied.
 
-## The codec
+## One-shot processing
 
-The `JobCodec` is a literal pair of encode/decode functions over the item's JSON. A decode failure is
-rendered to `Text` so the package can route the offending payload to the DLQ on its own:
-
-```haskell
--- services/hospital-capacity/src/HospitalCapacity/Reservation/WorkQueue.hs
-reservationWorkJobCodec :: JobCodec ReservationWorkItem
-reservationWorkJobCodec =
-  JobCodec
-    { encodeJob = reservationWorkItemToValue
-    , decodeJob = first renderReservationWorkFailure . reservationWorkItemFromValue
-    }
-```
-
-The payload type, `ReservationWorkItem`, is the wire shape of one unit of reservation work — the
-reservation/hospital/command ids, the patient acuity and required bed type, the source message id,
-the expiration deadline, the divert status, and the life-critical override flag.
-
-## The one-shot drain
-
-The consumer is a **one-shot**: `runJobOnce 1` drains up to one message through the typed handler.
-The package owns decoding and dead-letter routing; the handler only ever sees a typed
-`ReservationWorkItem` and returns a `JobOutcome`:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/hospital-capacity/src/HospitalCapacity/Reservation/WorkQueue.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/hospital-capacity/src/HospitalCapacity/Reservation/WorkQueue.hs
+runReservationWorkConsumerOnceWithTelemetry :: Maybe Tracer -> HospitalCapacityStore -> Pool.Pool -> IO (Either PgmqRuntimeError Int)
 runReservationWorkConsumerOnceWithTelemetry tracer store pool =
   runPgmqIOWithTelemetry tracer pool $ do
-    ensureJobQueue reservationWorkJob
-    runJobOnce 1 reservationWorkJob (handleReservationWork tracer store)
+    ensureJobQueueWith GeneratedPolicy.queueProvision reservationWorkJob
+    runJobOnceWithContext
+      (GeneratedPolicy.jobTuningFor defaultJobTuning)
+      1
+      reservationWorkJob
+      (\_context -> handleReservationWork tracer store)
 
+handleReservationWork :: (IOE :> es) => Maybe Tracer -> HospitalCapacityStore -> ReservationWorkItem -> Eff es JobOutcome
 handleReservationWork tracer store item = do
   result <- liftIO (dispatchReservationWork tracer store item)
   pure $
     case result of
       Left failure -> reservationWorkFailureOutcome failure
       Right () -> Done
-```
 
-This is the keiro [scheduled-job-drain](/docs/keiro/cookbook/scheduled-job-drain) pattern: a bounded
-drain you can run on a schedule, rather than a long-lived consumer loop.
-
-## Store-failure → Retry, rejection → Dead
-
-The interesting part is how a domain outcome becomes a queue outcome. `dispatchReservationWork` turns
-the work item into a `RequestTransferReservation` command and runs it through the
-[reservation command processor](/docs/example-app/hospital-capacity/02-command-cycle-and-read-models);
-then the failure is **mapped to a `JobOutcome`**:
-
-```haskell
--- services/hospital-capacity/src/HospitalCapacity/Reservation/WorkQueue.hs
 reservationWorkFailureOutcome :: ReservationWorkFailure -> JobOutcome
 reservationWorkFailureOutcome = \case
-  ReservationWorkDecodeFailed err -> Dead err          -- bad data → dead-letter, don't retry
-  ReservationWorkStoreFailed _err -> Retry (RetryDelay 5)  -- transient infra → retry in 5s
-  ReservationWorkCommandRejected err -> Dead err        -- domain rejection → dead-letter
+  ReservationWorkDecodeFailed err ->
+    withDeadReason err (GeneratedPolicy.jobOutcomeFor "decodeFailure")
+  ReservationWorkStoreFailed _err ->
+    GeneratedPolicy.jobOutcomeFor "storeFailure"
+  ReservationWorkCommandRejected err ->
+    withDeadReason err (GeneratedPolicy.jobOutcomeFor "commandRejected")
 ```
 
-This is the crux of the example, and the rule the keiro
-[dead-letter-and-retry](/docs/keiro/how-to/dead-letter-and-retry-jobs) how-to teaches: a **store
-failure is transient**, so it `Retry`s; a **command rejection is deterministic** (replaying it will
-fail identically), so it goes `Dead` rather than burning all three attempts. The mapping draws
-directly on the [command cycle's](/docs/example-app/hospital-capacity/02-command-cycle-and-read-models)
-distinction between `CommandStoreFailed` and `CommandProcessorFailed`.
+This application uses `runJobOnceWithContext`, not the continuous Shibuya job processor. It reads
+and finalizes directly at the pinned runtime version. Generated policy maps decode, store, and
+command-rejection failures to job outcomes; retryable store failure and terminal bad work remain
+distinct. Malformed or exhausted messages go to `hospital_capacity_reservation_work_dlq`.
 
-## Enqueueing — and not duplicating
+## Redelivery boundary
 
-The producing side lives in `Integration/ReservationWorkDispatch.hs`. When an accepted transfer need
-arrives, it resolves candidate hospitals, builds a `ReservationWorkItem` for each, and enqueues the
-new ones — **skipping any reservation that is already decided or already pending**, by querying both
-the `transfer_decisions` read model and the live pgmq queue table:
+`dispatchReservationWork` first checks whether this reservation/source-message pair already
+applied, then runs the validated reservation command. Stable event IDs and the service's replay
+tests provide evidence that redelivery produces one reservation event.
 
-```sql
--- services/hospital-capacity/src/HospitalCapacity/Integration/ReservationWorkDispatch.hs
-SELECT EXISTS (SELECT 1 FROM transfer_decisions WHERE reservation_id = $1)
-    OR EXISTS (SELECT 1 FROM pgmq.q_hospital_capacity_reservation_work
-               WHERE message ->> 'reservation_id' = $1)
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/hospital-capacity/src/HospitalCapacity/Reservation/WorkQueue.hs`
+(artifact-level URI pending):
+
+```haskell
+reservationWorkAlreadyApplied :: HospitalCapacityStore -> ReservationWorkItem -> IO (Either StoreError Bool)
+reservationWorkAlreadyApplied store item =
+  runHospitalCapacityStore store $
+    runTransaction $
+      Tx.statement (item.reservationId, item.sourceMessageId) selectReservationWorkAppliedStmt
 ```
 
-So enqueue is idempotent at the application level even though `enqueue` itself is a plain send. The
-[outbox cookbook](/docs/keiro/cookbook/scheduled-job-drain) and the keiro
-[background-jobs explanation](/docs/keiro/explanation/background-jobs-with-pgmq) discuss why the
-queue's own delivery guarantees still need an application-level dedupe for *producing*.
+The one-shot path emits PGMQ publish/receive and domain-command evidence, but does not establish
+remote-parent extraction or a Shibuya job process span at this app's pinned dependency revision.
+See [trace continuity](/docs/example-app/cross-service/04-telemetry-and-trace-continuity).
 
-## A deliberate DLQ probe
-
-To make the dead-letter path demonstrable, the module can enqueue a deliberately invalid payload that
-bypasses the typed `enqueue` and lands a raw body on the physical queue; a subsequent consume routes
-it to the DLQ via the `maxRetries` + dead-letter policy. That is what
-`hospital-capacity-worker reservation-work enqueue-malformed` drives — useful when you want to *see*
-a message in `…_reservation_work_dlq`.
+Next: [wiring and CLI](/docs/example-app/hospital-capacity/06-wiring-and-the-cli).

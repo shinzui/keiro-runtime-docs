@@ -1,10 +1,10 @@
 ---
 title: "02 — Architecture and boundaries"
-description: "The two-service topology of keiro-runtime-jitsurei and why the services share no Haskell code — only versioned messages over Kafka plus an internal pgmq queue."
+description: "The two-service topology of keiro-runtime-jitsurei and why the services share no service runtime implementation — only versioned messages over Kafka plus an internal pgmq queue."
 ---
 
-`keiro-runtime-jitsurei` is deliberately built as **two independent services that share no Haskell
-code**. Each owns its own database, its own Kiroku event store, its own read models, its own
+`keiro-runtime-jitsurei` is deliberately built as **two independent services that share no service runtime
+implementation**. Each owns its own database, its own Kiroku event store, its own read models, its own
 outbox and inbox, and — crucially — its own copy of the message contracts. They coordinate **only**
 by exchanging versioned messages.
 
@@ -63,7 +63,7 @@ an oversight:
   `docs/contracts/schemas/integration-message.schema.json`, with golden fixtures under
   `docs/contracts/fixtures/`).
 - **Honest boundaries.** Sharing Haskell types makes it tempting to share *more* — a domain type, a
-  helper, an enum — and erode the boundary. With no shared code, the only contract is the message
+  helper, an enum — and erode the boundary. With separate service implementation, the only contract is the message
   on the wire.
 
 This mirrors the keiro guidance on [integration events](/docs/keiro/explanation/integration-events):
@@ -77,7 +77,7 @@ modules side by side.
 |---|---|---|
 | Database | own Postgres | own Postgres |
 | Event store (Kiroku) | own streams + events tables | own streams + events tables |
-| Read models | `incident_dashboard`, `field_resource_assignments`, `pending_transfer_needs`, `evacuation_zones`, `command_audit_history` | `hospital_readiness`, `transfer_decisions` |
+| Read models | `incident_dashboard`, `field_resource_assignments`, `pending_transfer_needs`, `evacuation_zones`, `command_audit_history`, capacity-change candidates | `hospital_readiness`, `transfer_decisions`, transfer candidates, accepted transfer needs |
 | Outbox / inbox | `keiro_outbox` / `keiro_inbox` | `keiro_outbox` / `keiro_inbox` |
 | Background queue | — | `hospital_capacity_reservation_work` (pgmq) |
 | Publishes to | `emergency.incident.events` | `emergency.hospital.events` |
@@ -85,5 +85,13 @@ modules side by side.
 
 Because each service owns its tables, the inbox/outbox tables are **never shared** between services
 — the producing service writes its outbox in its own transaction; the consuming service accepts
-into its own inbox exactly once. The [cross-service](/docs/example-app/cross-service) tour follows a
+into its own inbox with durable deduplication. The [cross-service](/docs/example-app/cross-service) tour follows a
 single message all the way across this topology.
+
+## Component ownership
+
+Project `mori://shinzui/keiro-runtime-jitsurei` composes one embedded migration plan per service.
+Kiroku owns `kiroku`, Keiro owns `keiro`, PGMQ owns `pgmq`, and the applications own
+`incident_command` and `hospital_capacity`. The project-relative contract schema and fixtures
+named above live under `docs/contracts/` (artifact-level URIs pending); they are also indexed by
+`mori://shinzui/keiro-runtime-jitsurei/docs/integration-contracts`.

@@ -182,7 +182,9 @@ all-or-nothing per call, read-your-own-writes on the same handle. It rejects `$a
 the single statement once with the same prepared event ids.
 
 `appendMultiStream` appends to several streams in one transaction, pre-locking streams in
-`stream_id` order so overlapping calls do not deadlock. An empty operation list returns `[]` without
+`stream_id` order for existing rows. Fresh streams are not pre-locked, so a concurrent
+single-stream append can still create a source/`$all` deadlock cycle. PostgreSQL rolls back one
+transaction; a repeated conflict after the store retry surfaces as `TransientTransactionFailure`. An empty operation list returns `[]` without
 a round trip. If any per-stream event list is empty, or any target stream name is invalid, the whole
 call is rejected before the transaction opens. The result list mirrors input order.
 
@@ -278,7 +280,8 @@ Run an explicit `hasql` transaction through the store's pool — for example to 
 update an inline projection table atomically. `RunTransaction` retries the body on serialization
 failure; `RunTransactionNoRetry` runs it exactly once. Connection and server failures are mapped to
 typed `StoreError` constructors where the store can recognise them. A duplicate event constraint
-becomes `DuplicateEvent (Just eventId)` when its detail is parseable. Other server failures preserve
+becomes `DuplicateEvent (Just eventId)` when its detail is parseable. PostgreSQL `40001` and `40P01` preserve their code/message as `TransientTransactionFailure`
+(retryable) since Kiroku 0.8. Other server failures preserve
 their SQLSTATE and message as `UnexpectedServerError`; they are not misclassified as a missing
 `<transaction>` stream.
 

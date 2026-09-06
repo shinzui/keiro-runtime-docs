@@ -4,7 +4,7 @@ description: "The language keiro-dsl N preamble, the released-language registry,
 ---
 
 Everything on this page lives in `Keiro.Dsl.LanguageVersion` *(new in Keiro 0.6.0.0; extended
-through 0.9.0.0)*. It answers one question: **which released contract is this `.keiro` file written
+through 0.15.0.0)*. It answers one question: **which released contract is this `.keiro` file written
 against?**
 
 Before Keiro 0.6.0.0 nothing in a `.keiro` source said which parser and semantic contract its author
@@ -56,8 +56,8 @@ field on it:
 
 ```haskell
 data ParsedSource = ParsedSource
-    { parsedSourceLanguage :: !SourceLanguage
-    , parsedSpec :: !Spec
+    { sourceLanguage :: !SourceLanguage
+    , spec :: !Spec
     }
     deriving stock (Eq, Show)
 ```
@@ -66,13 +66,13 @@ data ParsedSource = ParsedSource
 
 ```haskell
 data LanguageDefinition = LanguageDefinition
-    { definitionVersion :: !LanguageVersion
-    , definitionPredecessor :: !(Maybe LanguageVersion)
-    , definitionBodyParser :: !LanguageBodyParser
-    , definitionSyntaxProfile :: !SyntaxProfile
-    , definitionRuntimeSemanticsProfile :: !RuntimeSemanticsProfile
-    , definitionSupport :: !LanguageSupport
-    , definitionMaturity :: !LanguageMaturity
+    { version :: !LanguageVersion
+    , predecessor :: !(Maybe LanguageVersion)
+    , bodyParser :: !LanguageBodyParser
+    , syntaxProfile :: !SyntaxProfile
+    , runtimeSemanticsProfile :: !RuntimeSemanticsProfile
+    , support :: !LanguageSupport
+    , maturity :: !LanguageMaturity
     }
     deriving stock (Eq, Show, Generic)
 
@@ -84,7 +84,7 @@ languageSupportForVersion :: LanguageVersion -> Maybe LanguageSupport
 ```
 
 <Callout type="warn">
-  **Breaking in Keiro 0.12.0.0.** `LanguageDefinition` gained a seventh field, `definitionMaturity`,
+  **Breaking in Keiro 0.12.0.0.** `LanguageDefinition` gained a seventh field, `maturity`,
   and `LanguageSupport` gained a third constructor. Positional construction breaks, and an exhaustive
   `case` over `LanguageSupport` must add the new arm.
 </Callout>
@@ -194,10 +194,9 @@ languageSupportsFeature :: LanguageVersion -> LanguageFeature -> Bool
 | `keiro-dsl/syntax-profile/3` | all of profile 2, plus `FieldAliasSyntax` |
 | `keiro-dsl/syntax-profile/4` | all of profile 3, plus `ProjectionCatalogSyntax`, `ExternalReadContractSyntax`, `MappedConsumerSurfaceSyntax`, `DomainCommandOutcomeSyntax`, `DeclarativeRouterSelectionSyntax`, and `SeparatedProjectionQueryPolicySyntax` |
 
-Profiles are monotone: profile 3 is literally `Set.insert FieldAliasSyntax (profileFeatures
-profileV2)`. Keeping these gates beside the registry is what stops the parser growing an independent
-list of textual spellings — a feature gate arises from its grammar production, not from a raw source
-substring.
+Profiles are monotone: profile 3 adds `FieldAliasSyntax` to profile 2. `SyntaxProfile` is
+abstract; query it with `syntaxProfileIdentifier` and `syntaxProfileSupportsFeature`, and
+select released profiles through the language registry.
 
 ### Field aliases (`FieldAliasSyntax`, language 4)
 
@@ -215,25 +214,25 @@ disagree.
 
 ```haskell
 data AggregateField = AggregateField
-  { aggregateFieldName :: !Name
-  , aggregateFieldSelector :: !(Maybe Name)
-  , aggregateFieldWireKey :: !(Maybe Text)
-  , aggregateFieldType :: !(Maybe TypeExpr)
-  , aggregateFieldLoc :: !Loc
+  { name :: !Name
+  , selector :: !(Maybe Name)
+  , wireKey :: !(Maybe Text)
+  , valueType :: !(Maybe TypeExpr)
+  , loc :: !Loc
   }
 
 data ContractField = ContractField
-  { cfName :: !Name
-  , cfSelector :: !(Maybe Name)
-  , cfWireKey :: !(Maybe Text)
-  , cfType :: !ContractType
-  , cfLoc :: !Loc
+  { name :: !Name
+  , selector :: !(Maybe Name)
+  , wireKey :: !(Maybe Text)
+  , valueType :: !ContractType
+  , loc :: !Loc
   }
 ```
 
 <Callout type="warn">
-  **Breaking in keiro-dsl 0.11.0.0.** `AggregateField` gained `aggregateFieldSelector` and
-  `aggregateFieldWireKey`; `ContractField` gained `cfSelector`, `cfWireKey`, and `cfLoc` (all in
+  **Breaking in keiro-dsl 0.11.0.0.** `AggregateField` gained `selector` and
+  `wireKey`; `ContractField` gained `selector`, `wireKey`, and `loc` (all in
   `Keiro.Dsl.Grammar`). Code that constructs these records positionally or matches them exhaustively
   must be updated. `Nothing` selector and wire-key values reproduce the pre-alias behavior exactly.
 
@@ -307,13 +306,13 @@ there is no unknown-identifier fallback that mints fold identity by default, whi
 hazard that used to invalidate snapshots on a version registration that changed nothing.
 
 <Callout type="warn">
-  **Breaking in Keiro 0.8.0.0.** `LanguageDefinition` gained `definitionSyntaxProfile` and
+  **Breaking in Keiro 0.8.0.0.** `LanguageDefinition` gained `syntaxProfile` and
   `definitionRuntimeSemantics`, and is exported as `LanguageDefinition (..)` — so positional
-  construction and non-wildcard record patterns no longer compile. `definitionBodyParser` remains as
+  construction and non-wildcard record patterns no longer compile. `bodyParser` remains as
   a **compatibility projection** but no longer drives parser dispatch; dispatch reads
-  `definitionSyntaxProfile`. Likewise `definitionRuntimeSemantics` is a stable `Text` projection for
+  `syntaxProfile`. Likewise `definitionRuntimeSemantics` is a stable `Text` projection for
   serialized records and diagnostic text — runtime behaviour must query
-  `definitionRuntimeSemanticsProfile`.
+  `runtimeSemanticsProfile`.
 
   ```haskell
   definitionRuntimeSemantics :: LanguageDefinition -> Text
@@ -335,12 +334,12 @@ data SourceLanguageErrorCode
     deriving stock (Eq, Ord, Show)
 
 data SourceLanguageDiagnostic = SourceLanguageDiagnostic
-    { sourceLanguageErrorCode :: !SourceLanguageErrorCode
-    , sourceLanguageSource :: !FilePath
-    , sourceLanguageLoc :: !Loc
-    , sourceLanguageToken :: !(Maybe Text)
-    , sourceLanguageDeclaredVersion :: !(Maybe LanguageVersion)
-    , sourceLanguageSupportedVersions :: !(NonEmpty LanguageVersion)
+    { errorCode :: !SourceLanguageErrorCode
+    , source :: !FilePath
+    , loc :: !Loc
+    , token :: !(Maybe Text)
+    , declaredVersion :: !(Maybe LanguageVersion)
+    , supportedVersions :: !(NonEmpty LanguageVersion)
     }
     deriving stock (Eq, Show)
 

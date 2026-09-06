@@ -3,19 +3,22 @@ title: "02 — The workers"
 description: "The per-service worker subcommands — projections, timers, inbox, outbox, and reservation work — and the order the cross-service scenario runs them."
 ---
 
-The scenarios are driven by **bounded worker** invocations: each `…-worker` subcommand does one unit
-of work and exits, so they compose into a deterministic sequence (and, in production, into
-cron-style drains). This chapter is the operational reference for those subcommands. Read
-[scaling the workers](/docs/keiro/explanation/scaling-the-workers) for the framework view of why
-workers are separated from the write path.
+The scenario uses bounded one-shot workers. Kafka additionally supports continuous `run` mode,
+which handles termination through Shibuya's graceful application lifecycle. The commands below
+come from project `mori://shinzui/keiro-runtime-jitsurei`, project-relative
+`services/incident-command/src/IncidentCommand/WorkerCli.hs` and
+`services/hospital-capacity/src/HospitalCapacity/WorkerCli.hs` (artifact-level URIs pending).
 
 ## Incident Command worker
 
 ```text
 incident-command-worker projections once
 incident-command-worker projections rebuild
+incident-command-worker projections fence-test
+incident-command-worker read-models registration-test
 incident-command-worker timers once
 incident-command-worker inbox consume-hospital-kafka once
+incident-command-worker inbox consume-hospital-kafka run
 incident-command-worker outbox enqueue-transfer-need <triage-id>
 incident-command-worker outbox publish-dry-run once
 incident-command-worker outbox publish-kafka once
@@ -36,6 +39,7 @@ incident-command-worker outbox publish-kafka once
 ```text
 hospital-capacity-worker timers once
 hospital-capacity-worker inbox consume-incident-kafka once
+hospital-capacity-worker inbox consume-incident-kafka run
 hospital-capacity-worker routing-region register <hospital-id> <region>
 hospital-capacity-worker reservation-work setup
 hospital-capacity-worker reservation-work enqueue-latest
@@ -51,7 +55,7 @@ hospital-capacity-worker outbox publish-kafka once
 The **`reservation-work …`** subfamily is the operational surface of the
 [pgmq queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue): `setup` ensures
 the queue and its DLQ exist; `enqueue-latest` turns the latest accepted transfer need into a job;
-`consume once` drains one job (`runJobOnce`); `confirm-latest` signals the reservation workflow's
+`consume once` drains one job (`runJobOnceWithContext`); `confirm-latest` signals the reservation workflow's
 awakeable; `enqueue-malformed` is the deliberate DLQ probe.
 
 ## The order the cross-service scenario runs them

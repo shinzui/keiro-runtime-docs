@@ -9,12 +9,12 @@ reviewed by the documentation.
 - **Qualified name (mori):** `shinzui/keiki`; resolve it with
   `mori registry show shinzui/keiki --full`.
 - **Path at last sync:** `/Users/shinzui/Keikaku/bokuno/keiki`.
-- **Reviewed releases:** `keiki 0.9.0.0`, `keiki-codec-json 0.9.0.0`, and
-  `keiki-codec-json-test 0.9.0.0`.
+- **Reviewed releases:** `keiki 0.9.1.0`, `keiki-codec-json 0.9.1.0`, and
+  `keiki-codec-json-test 0.9.1.0`.
 - **Primary modules:** `Keiki.Core`, `Keiki.Builder`, `Keiki.Operators`,
   `Keiki.Acceptor`, `Keiki.Generics`, `Keiki.Generics.TH`, `Keiki.Composition`,
   `Keiki.Profunctor`, `Keiki.Symbolic`, `Keiki.ProjectionDomain`, `Keiki.Shape`,
-  `Keiki.Validate`, and the render and JSON-codec modules. **New this round (both
+  `Keiki.Validate`, and the render and JSON-codec modules. **Internal modules (both
   internal, neither exposed):** `Keiki.Internal.WireSchema` and
   `Keiki.Internal.ConstructorEvidence`.
 - **Upstream prose read this round:** `CHANGELOG.md` (both packages),
@@ -25,12 +25,15 @@ reviewed by the documentation.
 ## Last reviewed commit
 
 ```text
-04296a744a577ed10ee50259e954437d94798125  (04296a7)
-2026-08-08T14:31:34-07:00
-docs(okf): add the capabilities bundle
+97d8b07e87ceb2d9b6e6b2b8a60a7de84e15e2bb  (97d8b07e)
+2026-08-26T18:15:44-07:00
+docs(okf): bootstrap review profile
 ```
 
-> **Current range.** The `9714d37..04296a7` range (**1 commit**) is
+> **Current range.** `04296a74..97d8b07e` (**9 commits**). Keiki 0.9.1 adds the pure exact standard-Bool register-candidate disjointness proof; integral reasoning and public validation/replay signatures are unchanged. Updated validation, replay explanation, FAQ and shared compatibility. Codec co-releases change bounds only. Proof tests, plans and review profiles are doc-neutral; arbitrary enumerated carriers and opaque guards remain unsupported.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+
+> **Note (prior range).** The `9714d37..04296a7` range (**1 commit**) is
 > **doc-neutral**. `git diff --stat 9714d37..HEAD -- '*/src' 'src' '*.cabal' 'CHANGELOG.md'` is
 > **empty**: the only commit is `docs(okf): add the capabilities bundle`, upstream repository
 > metadata with no public surface. keiki remains at `0.9.0.0` / `keiki-codec-json 0.9.0.0`.
@@ -433,6 +436,8 @@ docs(okf): add the capabilities bundle
 
 ## Previous pointers
 
+- `04296a744a577ed10ee50259e954437d94798125` (`04296a74`) — baseline before the `04296a74..97d8b07e` review (9 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
+
 - `9714d37033c37595e3aaa3319ca0ca77466782e0` (`9714d37`, 2026-08-04, keiki 0.9.0.0) — the baseline before the doc-neutral OKF round. The `9714d37..04296a7` range (1 commit) touched no source, cabal, or CHANGELOG — upstream repository metadata only. No page changed.
 - `9ee8de0fece845bf12dda861604b77856782d90b` (`9ee8de0`), 2026-08-02, `keiki 0.8.0.0`
   — the baseline before the sealed-evidence round. The `9ee8de0..9714d37` range (40
@@ -468,8 +473,8 @@ docs(okf): add the capabilities bundle
 1. Resolve the source with mori and inspect committed drift:
    ```text
    KEIKI=$(mori registry show shinzui/keiki --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIKI" log --oneline 04296a7..HEAD
-   git -C "$KEIKI" diff --stat 04296a7..HEAD
+   git -C "$KEIKI" log --oneline 97d8b07e..HEAD
+   git -C "$KEIKI" diff --stat 97d8b07e..HEAD
    ```
 2. Read changed source, tests, changelogs, and release notes. `docs/foundations/`
    is the highest-value prose here — it states trust boundaries the source only

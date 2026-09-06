@@ -18,54 +18,56 @@ the affected pages, then bump the pointer below.
   `keiro-ops` (the operational console — library + standalone binary),
   `keiro-test-support` (test fixtures). The in-repository `jitsurei` package remains a legacy source
   anchor and is not current release evidence.
-- **Reviewed release:** the Keiro package family at `0.12.0.0` — **cut and version-bumped at this
-  pointer**. Verified: `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, `keiro-migrations`, and
-  `keiro-ops` all read `version: 0.12.0.0`; `keiro-test-support` remains `0.1.0.0`. `Keiro.version`
-  derives from `Paths_keiro`, so it is authoritative again.
-- **Required peers:** `keiki >=0.9 && <0.10`, `kiroku-store >=0.7 && <0.8`,
-  `kiroku-store-migrations ^>=0.3.2.0`, `shibuya-core ^>=0.9.0.0`.
+- **Reviewed release:** all seven published Keiro packages at `0.15.0.0`, including
+  `keiro-test-support`. Verified against Hackage preferred versions and upstream release tags
+  on 2026-09-06. `Keiro.version` derives from `Paths_keiro`.
+- **Required peers:** `keiki >=0.9 && <0.10`, `kiroku-store >=0.8 && <0.9`,
+  `kiroku-store-migrations ^>=0.4.0.0`, `shibuya-core ^>=0.9.0.0`.
 - **Stable authoring contract:** `keiro-dsl` language **5** (`syntax-profile/4`,
   `runtime-semantics/4`), the sole `Stable PublishedLanguage` registry entry.
 
 ## Last reviewed commit
 
 ```text
-93ada2d42995d559b645d0226af95aafff34d175  (93ada2d4)
-2026-08-14T11:36:03-07:00
-chore(release): 0.12.0.0
+de574cdcb0add3fefbb0fdd96d820258d15f8997  (de574cdc)
+2026-08-30T20:34:35-07:00
+chore(release): 0.15.0.0
 ```
 
-> ### ✅ Both release-prep items from the prior round are now CLOSED in source
+> **Current range.** `93ada2d4..de574cdc` (**46 commits**). Reviewed the 0.13/0.14/0.15 releases: Kiroku 0.8 typed transaction aborts and worker retry classification; terminal outbox rejection with bounded audit truth, conditional batch finalization, committed counters and migration 0031; concise DSL records and explicit idiomatic-v2 adoption with combined legacy flags, backups, unreadable-ledger refusal and restored checked-construction boundaries. Added how-to/handle-terminal-outbox-rejection.mdx and how-to/adopt-generated-haskell-v2.mdx. Updated reference, telemetry, ops, explanation, ordering/recovery guides, integration tours, FAQ and compatibility. Migration count is 31; keiro still owns 25 tables, with no new table in this range. Corrected the pre-existing markOutboxSent result in the reference to Bool. Test-support is now published in lockstep. Private generated-language internals, UI proposals, transition-family/guard classification and mapped-register plans are deliberately not documented as shipped.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+
+> ### Prior release boundary: the 0.12 release-prep items were closed
 >
 > The previous note recorded two source facts the release cut still had to
-> reconcile. Verified resolved at this pointer:
+> reconcile. They were verified at the prior `93ada2d4` pointer:
 >
 > - `keiro-dsl`'s registry now reads
 >   `LanguageDefinition version5 (Just version4) LanguageBodyParserV2 profileV4 runtimeProfileV4 Stable PublishedLanguage`,
 >   and languages 1–4 are all `CompatibilityOnly PublishedLanguage`. Exactly one
 >   `Stable` entry, so `currentStableLanguageVersion` does not `error`
 >   (`d2b6e94f feat(dsl): publish stable language 5`).
-> - Every package `.cabal` reads `0.12.0.0` — `keiro`, `keiro-core`,
+> - At that release, every package `.cabal` read `0.12.0.0` — `keiro`, `keiro-core`,
 >   `keiro-dsl`, `keiro-pgmq`, `keiro-migrations`, `keiro-ops`
 >   (`keiro-test-support` stays `0.1.0.0`), with inter-package bounds at
 >   `^>=0.12.0.0`. `Keiro.version` derives from `Paths_keiro` rather than a stale
->   literal (`c3cd2bbb`, committed earlier in the range).
+>   literal (`c3cd2bbb`, committed earlier in that range).
 >
 >   ⚠ **Sequencing worth remembering:** the version bump landed in the *final*
 >   commit, `93ada2d chore(release): 0.12.0.0`, not with the feature work. At
 >   `4a4f8a9` — one commit earlier — every `.cabal` still read `0.11.0.0` while
->   the whole range sat under `## Unreleased`. This pointer is pinned at
+>   the whole range sat under `## Unreleased`. The prior pointer was pinned at
 >   `93ada2d` precisely so the version claims in these docs rest on a committed
 >   tree rather than an uncommitted worktree.
 >
 > The docs written last round on the author's statement are therefore now backed
 > by shipped source rather than intent.
 
-> **Current range.** The `8d1cd74..93ada2d` range (**176 commits**) is the
+> **Note (prior range).** The `8d1cd74..93ada2d` range (**176 commits**) is the
 > **release round**. `8d1cd74..4a4f8a9` is 402 files / +78,639/−3,238 of feature work; the final
 > commit `93ada2d` is the release cut itself. Together they turn the 0.12.0.0 the previous
 > round *described* into the 0.12.0.0 that actually ships. Everything the prior
-> note flagged as unreconciled is now source-backed (see the ✅ block above).
+> note flagged as unreconciled is now source-backed (see the prior release boundary above).
 >
 > **The scope checks.**
 >
@@ -1171,18 +1173,18 @@ chore(release): 0.12.0.0
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline 93ada2d4..HEAD
-   git -C "$KEIRO" diff --stat 93ada2d4..HEAD
+   git -C "$KEIRO" log --oneline de574cdc..HEAD
+   git -C "$KEIRO" diff --stat de574cdc..HEAD
 
    # Do these two FIRST — they are cheap and they SIZE the round either way.
    # They collapsed the f05102b and fc935b7 rounds to "keiro-dsl only, no SQL";
    # they blew the 8d1cd74 round wide open (3 migrations, 2 new exposed modules,
    # a new package). Do not assume the collapsing outcome.
-   git -C "$KEIRO" diff --name-status 93ada2d4..HEAD -- '*.sql'
-   git -C "$KEIRO" diff --stat 93ada2d4..HEAD -- keiro/src keiro-core/src keiro-pgmq/src
+   git -C "$KEIRO" diff --name-status de574cdc..HEAD -- '*.sql'
+   git -C "$KEIRO" diff --stat de574cdc..HEAD -- keiro/src keiro-core/src keiro-pgmq/src
 
    # And check the cabal files — a new package is invisible to the two above:
-   git -C "$KEIRO" diff 93ada2d4..HEAD -- '*.cabal' | grep -E '^[-+].*(exposed-modules|other-modules|^\+name:)'
+   git -C "$KEIRO" diff de574cdc..HEAD -- '*.cabal' | grep -E '^[-+].*(exposed-modules|other-modules|^\+name:)'
    ```
    keiro's own `docs/adr/*` is now the fastest way to read a decision's *rationale and consequences*
    (ADRs 0001–0036 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only

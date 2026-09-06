@@ -8,6 +8,13 @@ not proof of success: the item may have completed, dead-lettered, been deliberat
 behind a retention boundary. Start from the durable row or journal, then use metrics to detect and
 alert on changes.
 
+
+Keiro 0.14 adds intentional terminal rejection: `PublishRejected` records bounded audit
+truth, releases ordered successors, and continues `StopTheLine`. It schedules no retry and
+survives sent-row GC. Pass summaries count committed conditional updates, so a stale-worker
+race can make completed counts smaller than `claimed`. See
+[Handle terminal outbox rejection](/docs/keiro/how-to/handle-terminal-outbox-rejection).
+
 ## Know the durable truth for each path
 
 | Path | Durable truth | Retry and default | Terminal or consumed outcome | Proof to inspect |
@@ -17,7 +24,7 @@ alert on changes.
 | Process-manager/router target dispatch | Target and manager event streams. With `RejectedDeadLetter`, one row per failed target in `keiro.keiro_dead_letters`. | Transient failures return `AckRetry`; the Kiroku retry policy bounds source redelivery. The default rejection policy is `RejectedHalt`. | `RejectedDeadLetter` consumes the source with a durable target-failure row. `RejectedSkip` consumes it with metric-only evidence. | `keiro.dispatch.failed`, `keiro.dispatch.deadlettered`, target stream state, and `keiro.keiro_dead_letters`. The counter combines dead-letter and skip; the table distinguishes them. |
 | Kiroku source subscription, including sharded members | Per-member checkpoint and the source event log. | `Retry` leaves the checkpoint before the event; retry exhaustion is bounded by the Kiroku `RetryPolicy`. | `DeadLetter` inserts `kiroku.dead_letters` and advances that member checkpoint atomically. | Query `kiroku.dead_letters`; alert on `keiro.subscription.deadlettered` through `kirokuEventBridge`. |
 | Inbox | `keiro.keiro_inbox`, keyed by `(source, dedupe_key)`. | Handler failure rolls back, records an attempt, and retries below the configured ceiling. | `completed` is success. At the ceiling, `failed` remains as the operator-visible poison record and the consumer may advance. | Query `status`, `attempt_count`, and `last_error`; alert on `keiro.inbox.failed`, `keiro.inbox.poisoned`, and `keiro.inbox.backlog`. |
-| Outbox | `keiro.keiro_outbox`. | Publish failures use configured backoff; the defaults are ten attempts and constant two-second delay. A separate maintenance pass reclaims stale `publishing` rows. | `sent` is success; `dead` is terminal failure retained for inspection. | Query `status`, `attempt_count`, `next_attempt_at`, and `last_error`; alert on `keiro.outbox.retried`, `deadlettered`, `reclaimed`, and `backlog`. |
+| Outbox | `keiro.keiro_outbox`. | Publish failures use configured backoff; the defaults are ten attempts and constant two-second delay. A separate maintenance pass reclaims stale `publishing` rows. | `sent` is acknowledged delivery; `rejected` is intentional permanent refusal; `dead` is retry exhaustion. Terminal evidence remains inspectable. | Query `status`, `attempt_count`, `next_attempt_at`, and `last_error`; alert on `keiro.outbox.retried`, `deadlettered`, `reclaimed`, and `backlog`. |
 | Durable timer, including workflow sleep | `keiro.keiro_timers`. | Default: requeue `Firing` after five minutes, no retry backoff, and **no attempt ceiling**. | `fired`, `cancelled`, and `dead` are terminal. `dead` occurs only under an explicit `maxAttempts`, `deadLetterTimer`, or operator policy. | Query `status`, `attempts`, `last_error`, and `fired_event_id`; alert on `keiro.timer.stuck` and `keiro.timer.requeued`. |
 
 ## Check policy before checking traffic

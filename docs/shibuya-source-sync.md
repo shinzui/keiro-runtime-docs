@@ -28,12 +28,15 @@ source walkthroughs.
 ## Last reviewed commit
 
 ```text
-7158f3e1fa67b46eedebaf94f7f44ac43cf24e80  (7158f3e)
-2026-08-10T18:59:22-07:00
-docs(okf): register the improvement-requests bundle
+bf2cff1e00334636f676bdb015d87fc8e539779c  (bf2cff1e)
+2026-08-19T20:59:57-07:00
+docs(okf): file keiro-ui inspection improvement requests
 ```
 
-> **Current range.** The `172df24..7158f3e` range (**10 commits**, 43 files,
+> **Current range.** `7158f3e1..bf2cff1e` (**1 commits**). The only commit proposes inspection/HTTP/WebSocket work in the OKF improvement requests. No worker source, API or runtime behavior changed; no Shibuya pages changed. Shared compatibility records the new SHA; public packages remain 0.9.0.0.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+
+> **Note (prior range).** The `172df24..7158f3e` range (**10 commits**, 43 files,
 > +2,777/−22) is the **0.9.0.0 release**: `shibuya-core` and `shibuya-metrics` move from `0.8.0.1`
 > to `0.9.0.0`.
 >
@@ -104,8 +107,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    SHIBUYA=$(mori registry show shinzui/shibuya --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$SHIBUYA" log --oneline 7158f3e..HEAD
-   git -C "$SHIBUYA" diff --stat 7158f3e..HEAD
+   git -C "$SHIBUYA" log --oneline bf2cff1e..HEAD
+   git -C "$SHIBUYA" diff --stat bf2cff1e..HEAD
    ```
 2. Inspect changed modules under `shibuya-core/`, `shibuya-metrics/`, and
    `shibuya-example/`, plus `README.md`, `CHANGELOG.md`, and
@@ -119,7 +122,9 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
-- `172df245f40a454af46dd7f4cde855eaa4414c5a` (`172df24`, 2026-07-04, shibuya 0.8.0.1) — the baseline before the 0.9.0.0 review. The `7158f3e..7158f3e` range (10 commits) added application-defined dead-letter reasons: `DeadLetterReason.ApplicationFailure`, the validated `DeadLetterCode`, telemetry reason codes, and total public reason projections. Breaking for exhaustive matches. Updated `reference/adapters-handlers-and-ack.mdx`, `how-to/dead-letter-or-halt.mdx`, and `tutorials/handler-decisions.mdx`.
+- `bf2cff1e00334636f676bdb015d87fc8e539779c` (`bf2cff1e`) — baseline before the `bf2cff1e..bf2cff1e` review (1 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
+
+- `172df245f40a454af46dd7f4cde855eaa4414c5a` (`172df24`, 2026-07-04, shibuya 0.8.0.1) — the baseline before the 0.9.0.0 review. The `bf2cff1e..bf2cff1e` range (10 commits) added application-defined dead-letter reasons: `DeadLetterReason.ApplicationFailure`, the validated `DeadLetterCode`, telemetry reason codes, and total public reason projections. Breaking for exhaustive matches. Updated `reference/adapters-handlers-and-ack.mdx`, `how-to/dead-letter-or-halt.mdx`, and `tutorials/handler-decisions.mdx`.
 - `f5c921f862d1b0d2b035801c3b7cfe339f0b5125 (f5c921f)` — pointer before the
   0.8.0.1 follow-up range covering the release migration guide, README refresh,
   runner allocation work, and docs alignment for the finalized 0.8 public API.

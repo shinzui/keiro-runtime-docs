@@ -8,10 +8,10 @@ the entire keiro runtime* together across two isolated microservices. Where the 
 explains each subsystem on its own — the command cycle, the read side, process managers, durable
 workflows, the outbox/inbox, pgmq background jobs — this section is a guided tour of an application
 that uses **all of them at once**, with real domain code, to move a single request end-to-end
-across a service boundary and stitch one OpenTelemetry trace across the whole path.
+across a service boundary and inspect application, Kafka, and queue telemetry.
 
 The application models **emergency-response coordination**. Two services own separate databases,
-event stores, and message contracts, and share no Haskell code:
+event stores, and message contracts, and share no service runtime implementation:
 
 - **Incident Command** — declare incidents, assign commanders, dispatch field resources, triage
   casualties, order evacuations, and escalate on a durable timer.
@@ -22,26 +22,13 @@ The two services communicate **only** through versioned message contracts publis
 topics (`emergency.incident.events`, `emergency.hospital.events`); Hospital Capacity additionally
 drains an *internal* `keiro-pgmq` work queue for reservation processing.
 
-<Callout type="warn">
-  **This tour is behind the application.** These pages were last cross-checked against
-  `keiro-runtime-jitsurei` at commit `04420ed` (2026-06-07). The application has since been
-  re-architected: both services were moved onto the validated runtime and the `keiro-dsl` toolchain
-  (so much of the code toured here now lives in generated `Generated.*` modules with hand-owned
-  `Holes` modules beside them), reservation work moved onto `keiro-pgmq` jobs, the services adopted
-  shibuya application lifecycles and service-owned `pg-migrate` plans, and OTLP endpoint handling was
-  corrected.
-
-  The gap has since **widened, not closed**: the range is now 20 commits and 272 files
-  (+20,278 / −2,995), adding documentation-grade runtime validation, explicit rebuild-checkpoint
-  provisioning, and proof of durable workflow completion. At the last measurement **24 of the 30
-  source files quoted in this section had already changed**; the true figure today is higher. Treat every
-  Haskell signature, module path, and `just`/CLI recipe below as **historical** until this tree is
-  re-ported — read it for the *architecture* it illustrates, which still holds, not as a
-  copy-paste-ready API. The current authority is the application source itself, and the per-subsystem
-  reference pages under [keiro](/docs/keiro) and [keiki](/docs/keiki), which *are* current.
-
-  Tracked in this repository's `docs/keiro-runtime-jitsurei-source-sync.md`, whose pointer is
-  deliberately **not** advanced while the re-port is outstanding.
+<Callout type="info">
+  **Reviewed at `e3c800e` (2026-08-08).** This tour is cross-checked against
+  `mori://shinzui/keiro-runtime-jitsurei`. The app uses validated streams, generated DSL facts,
+  service-owned migration plans, Shibuya application lifecycles, and typed PGMQ jobs.
+  Its committed dependency baseline remains Keiro 0.3, Keiki 0.2, Kiroku Store 0.3.0.1,
+  Shibuya/Kafka adapter 0.8.0.1, pgmq-hs 0.4, PGMQ adapter 0.12, and pg-migrate 1.1.
+  It has not adopted all later library APIs documented elsewhere on this site.
 </Callout>
 
 <Callout type="info">
@@ -76,10 +63,10 @@ flowchart LR
   HCapp -- "OTLP" --> J
 ```
 
-Each service publishes its private decisions onto a public Kafka topic via an **outbox**, and
-accepts the other service's messages exactly once via an **inbox**. A single W3C `traceparent`
-travels with every message — across Kafka and across the internal pgmq queue — so one trace in
-Jaeger spans both services.
+Each service publishes public messages via an outbox and deduplicates incoming delivery through
+an inbox. Kafka producer/consumer parentage is verified. The pinned one-shot PGMQ path has a
+separate trace-continuity limitation described in the
+[telemetry chapter](/docs/example-app/cross-service/04-telemetry-and-trace-continuity).
 
 ## Where to go next
 
@@ -90,12 +77,3 @@ Jaeger spans both services.
   <Card title="Cross-service integration" href="/docs/example-app/cross-service" description="How the two services actually talk: the end-to-end message flow, contracts, outbox/inbox, and trace continuity." />
   <Card title="Running it" href="/docs/example-app/running-it" description="Clone, build, migrate, and run the three packaged scenarios, then inspect the traces in Jaeger." />
 </Cards>
-
-<Callout type="info">
-  **Under active construction.** `keiro-runtime-jitsurei` is a living example: its
-  vertical-slice refactor is still in progress, so a few horizontal-composition modules
-  (`Store.hs`, `CommandCli.hs`) still bundle multiple aggregates. These docs are *ported and
-  cross-checked* against the application source at a pinned commit
-  (`04420ed`) — they are not generated from it — and call out work-in-progress areas where they
-  matter.
-</Callout>

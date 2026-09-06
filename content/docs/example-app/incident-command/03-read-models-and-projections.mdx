@@ -3,108 +3,85 @@ title: "03 — Read models and projections"
 description: "The dashboard, evacuation-zone, and audit read models, and the difference between inline and async projection."
 ---
 
-The write path appends events; the **read side** turns them into queryable tables. This chapter
-reads `Incident/Projection.hs` and names the other projections. Read the keiro
-[projections, read models &amp; snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots)
-explanation and the [projection](/docs/keiro/reference/projection) and
-[read model](/docs/keiro/reference/read-model) references alongside it.
+Incident Command registers six read models. Generated declarations supply identity, schema,
+version, shape, and consistency facts; hand-owned projection modules supply application queries
+and event-to-SQL updates. Inline delivery does not make a model's declared consistency `Strong`.
 
-## A projection and its read model are two halves
+## Read the generated contract first
 
-keiro splits the read side in two:
-
-- A **projection** consumes events and writes a SQL table.
-- A **read model** queries that table, with a declared consistency mode.
-
-The incident dashboard declares both. The read model names its table, its subscription, a version
-and shape hash, and `Strong` consistency:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/Incident_dashboard/Generated/ReadModel.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/incident-command/src/IncidentCommand/Incident/Projection.hs
+incidentDashboardReadModel :: ReadModel IncidentDashboardQueryInput IncidentDashboardQueryResult
+incidentDashboardReadModel =
+  ReadModel
+    { name = "incident-command-incident-dashboard"
+    , tableName = "incident_dashboard"
+    , schema = "incident_command"
+    , subscriptionName = "incident-command-dashboard-inline"
+    , version = 1
+    , shapeHash = "fnv1a:9d42f7941cb4eb1a"
+    , defaultConsistency = Eventual
+    , strongScope = EntireLog
+    , query = incidentDashboardQuery
+    }
+```
+
+The dashboard explicitly declares `Eventual`, names the `incident_command` schema, and carries a
+shape hash. `EntireLog` is the scope field, not a promise of strong query freshness. The hand-owned
+wrapper preserves those generated facts while substituting its typed query:
+
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/Incident/Projection.hs`
+(artifact-level URI pending):
+
+```haskell
 incidentDashboardReadModel :: ReadModel IncidentDashboardQuery (Maybe IncidentDashboard)
 incidentDashboardReadModel =
   ReadModel
-    { name = "incident-command-dashboard"
-    , tableName = "incident_dashboard"
-    , subscriptionName = "incident-command-dashboard-inline"
-    , version = 1
-    , shapeHash = "incident-command-dashboard-v1"
-    , defaultConsistency = Strong
+    { name = GeneratedDashboard.incidentDashboardReadModel.name
+    , tableName = GeneratedDashboard.incidentDashboardReadModel.tableName
+    , schema = GeneratedDashboard.incidentDashboardReadModel.schema
+    , subscriptionName = GeneratedDashboard.incidentDashboardReadModel.subscriptionName
+    , version = GeneratedDashboard.incidentDashboardReadModel.version
+    , shapeHash = GeneratedDashboard.incidentDashboardReadModel.shapeHash
+    , defaultConsistency = GeneratedDashboard.incidentDashboardReadModel.defaultConsistency
+    , strongScope = GeneratedDashboard.incidentDashboardReadModel.strongScope
     , query = \(IncidentDashboardQuery incidentId) ->
         Tx.statement (idText incidentId) selectIncidentDashboardStmt
     }
 ```
 
-## Inline vs async — the same apply function, two drivers
+## Delivery and registration
 
-The dashboard's *projection* is defined **once** as a pure `apply` function and then exposed in two
-ways. The inline projection is the one passed to `runCommandWithProjections` in
-[chapter 02](/docs/example-app/incident-command/02-the-command-cycle) — it runs in the command's
-transaction:
+The command entrypoint still passes `incidentDashboardProjection` as an inline projection.
+Its `applyIncidentEvent` updates dashboard/evacuation rows and command audit inside the append
+transaction. Separate async projection drivers can drain or rebuild the views from subscriptions;
+readers must not infer a global strong-consistency guarantee from the existence of the inline helper.
 
-```haskell
--- services/incident-command/src/IncidentCommand/Incident/Projection.hs
-incidentDashboardProjection :: InlineProjection IncidentEvent
-incidentDashboardProjection =
-  InlineProjection
-    { name = "incident-command-dashboard-inline"
-    , apply = applyIncidentEvent
-    }
-
-incidentDashboardAsyncProjection :: AsyncProjection
-incidentDashboardAsyncProjection =
-  asyncProjectionFromCodec
-    "incident-command-dashboard-async"
-    incidentDashboardReadModel.subscriptionName
-    incidentCodec
-    applyIncidentEvent
-```
-
-Both share `applyIncidentEvent`. The **inline** form keeps the dashboard perfectly consistent with
-the log (it commits or rolls back with the events); the **async** form lets a background projection
-worker rebuild or catch up the same table off a subscription — which is what
-`incident-command-worker projections once` / `projections rebuild` drive (see
-[chapter 07](/docs/example-app/incident-command/07-wiring-and-the-cli)). They share a
-`subscriptionName` so the async worker resumes exactly where the inline writes left off.
-
-## The apply function
-
-`applyIncidentEvent` pattern-matches each event and issues the SQL to keep `incident_dashboard`
-(and, for evacuation events, `evacuation_zones`) current — recording the event's
-`globalPosition` as `last_seen` for idempotent catch-up:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/Store.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/incident-command/src/IncidentCommand/Incident/Projection.hs
-applyIncidentEvent :: IncidentEvent -> RecordedEvent -> Tx.Transaction ()
-applyIncidentEvent event recorded =
-  case event of
-    IncidentDeclared payload -> do
-      Tx.statement ( idText payload.incidentId, severityText payload.severity, "open", False
-                   , globalPositionToInt (recorded ^. #globalPosition) ) insertIncidentDashboardStmt
-      insertAudit "incident" (idText payload.incidentId) payload.commandId recorded
-    EvacuationOrdered payload -> do
-      Tx.statement (idText payload.incidentId, globalPositionToInt (recorded ^. #globalPosition)) updateIncidentEvacuationOrderedStmt
-      Tx.statement ( idText payload.incidentId, primaryEvacuationZoneId, "ordered", True, False
-                   , globalPositionToInt (recorded ^. #globalPosition) ) upsertEvacuationZoneStmt
-      insertAudit "incident" (idText payload.incidentId) payload.commandId recorded
-    -- … one branch per event …
+registerIncidentCommandReadModels :: Store :> es => Eff es ()
+registerIncidentCommandReadModels =
+  mapM_ register
+    [ readModelRegistration incidentDashboardReadModel
+    , readModelRegistration evacuationZoneReadModel
+    , readModelRegistration fieldResourceAssignmentReadModel
+    , readModelRegistration pendingTransferNeedsReadModel
+    , readModelRegistration commandAuditReadModel
+    , readModelRegistration capacityIncidentCandidateReadModel
+    ]
+ where
+  register (modelName, modelVersion, modelShapeHash) =
+    void (registerReadModel modelName modelVersion modelShapeHash)
 ```
 
-Notice that **every** branch also calls `insertAudit` — so the command-audit read model
-(`CommandAudit/Projection.hs`, table `command_audit_history`) is fed from the same apply pass: every
-event records who/what/when, keyed by its `commandId`.
+The six views are dashboard, evacuation zones, resource assignments, transfer needs, command audit,
+and capacity-change candidates. Startup registers each stable name/version/shape and checks the
+registration. The worker's `projections once` and `projections rebuild` are the operational paths
+for async progress and reconstruction.
 
-## The read models in this service
-
-| Read model | Table | Defined in |
-|---|---|---|
-| Incident dashboard | `incident_dashboard` | `Incident/Projection.hs` |
-| Evacuation zones | `evacuation_zones` | `Incident/Projection.hs` |
-| Field-resource assignments | `field_resource_assignments` | `FieldResource/Projection.hs` |
-| Pending transfer needs | `pending_transfer_needs` | `Triage/Projection.hs` |
-| Command audit history | `command_audit_history` | `CommandAudit/Projection.hs` |
-
-`field_resource_assignments` is the table the [resource-dispatch router](/docs/example-app/incident-command/04-routers)
-queries to decide where to fan out, and `pending_transfer_needs` is what the
-[capacity-change router](/docs/example-app/incident-command/04-routers) groups by region — so read
-models here are not just for humans; routers query them to resolve their targets.
+See [projection reference](/docs/keiro/reference/projection), then continue to
+[routers](/docs/example-app/incident-command/04-routers).

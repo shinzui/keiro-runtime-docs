@@ -100,13 +100,14 @@ hits the conflict and does nothing.
 
 ## The row lifecycle
 
-A row moves through the five `OutboxStatus` states: `OutboxPending` (never attempted, the insert
+A row moves through the six `OutboxStatus` states: `OutboxPending` (never attempted, the insert
 default) → `OutboxPublishing` (held by a worker between claim and mark) → `OutboxSent` (terminal,
 broker acknowledged), or `OutboxFailed` (retryable after `next_attempt_at`) → `OutboxDead` (terminal
 after `maxAttempts`). The claim below moves `pending`/`failed` rows into `publishing`; the marks in
 [chapter 04](/docs/keiro/walkthrough/integration/04-the-outbox-drain-and-dead-letter) move them on to
-`sent`, `failed`, or `dead`. `lookupOutbox` and `listOutbox` are the test/inspection helpers that
-read rows back.
+`sent`, `rejected`, `failed`, or `dead`. `lookupOutbox` and `listOutbox` are the test/inspection helpers that
+read rows back. `OutboxRejected` is a terminal, intentional refusal retained with its timestamp
+and bounded code/detail; it releases ordered successors and is excluded from sent-row GC.
 
 ## `claimOutboxBatch`: the claim CTE
 
@@ -153,13 +154,13 @@ policyPredicate = \case
     WHERE earlier.source = r.source
       AND earlier.message_key = r.message_key
       AND (earlier.created_at, earlier.outbox_id) < (r.created_at, r.outbox_id)
-      AND earlier.status NOT IN ('sent', 'dead') ) )
+      AND earlier.status NOT IN ('sent', 'dead', 'rejected') ) )
 
 -- perSourcePredicate: skip a row if ANY earlier row in the same source is still non-terminal.
 NOT EXISTS ( SELECT 1 FROM keiro_outbox earlier
   WHERE earlier.source = r.source
     AND (earlier.created_at, earlier.outbox_id) < (r.created_at, r.outbox_id)
-    AND earlier.status NOT IN ('sent', 'dead') )
+    AND earlier.status NOT IN ('sent', 'dead', 'rejected') )
 ```
 
 The four `OrderingPolicy` constructors splice a different predicate into the claim:
@@ -181,7 +182,7 @@ same-key enqueues; concurrent inline transactions for the same key or source can
 order and are best-effort unless their caller serializes them.
 </Callout>
 
-Note both head-of-line predicates exclude only `('sent', 'dead')`, so **`publishing` counts as
+Note both head-of-line predicates exclude only `('sent', 'dead', 'rejected')`, so **`publishing` counts as
 non-terminal** — a row mid-publish blocks its key. That is intended while a worker is healthy, and
 stale rows are reclaimed before the next claim pass. For picking a policy, see [Choose an outbox
 ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
@@ -226,14 +227,14 @@ CREATE TABLE IF NOT EXISTS keiro_outbox (
 );
 CREATE INDEX IF NOT EXISTS keiro_outbox_pending_idx ON keiro_outbox (status, next_attempt_at, created_at);
 CREATE INDEX IF NOT EXISTS keiro_outbox_head_of_line_idx ON keiro_outbox (source, message_key, created_at)
-  WHERE status NOT IN ('sent', 'dead') AND message_key IS NOT NULL;
+  WHERE status NOT IN ('sent', 'dead', 'rejected') AND message_key IS NOT NULL;
 ```
 
 The `outbox_id UUID PRIMARY KEY` is the stable per-row id retries reuse; `UNIQUE (source,
 message_id)` is the dedupe the `ON CONFLICT` rides on. `status` defaults to `'pending'`,
 `attempt_count` to `0`, `next_attempt_at` to `now()`. `keiro_outbox_pending_idx` serves the claim's
 `status` / `next_attempt_at` / `created_at` lookups; the **partial**
-`keiro_outbox_head_of_line_idx … WHERE status NOT IN ('sent','dead') AND message_key IS NOT NULL`
+`keiro_outbox_head_of_line_idx … WHERE status NOT IN ('sent','dead','rejected') AND message_key IS NOT NULL`
 serves the head-of-line predicates' `NOT EXISTS` sub-queries. For the full column reference, see the
 [outbox reference](/docs/keiro/reference/outbox).
 

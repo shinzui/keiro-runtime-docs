@@ -3,73 +3,85 @@ title: "02 — Command cycle and read models"
 description: "The three Hospital Capacity command processors and the hospital-readiness and transfer-decisions read models."
 ---
 
-The write path and read side here are structurally identical to
-[Incident Command's chapters 02](/docs/example-app/incident-command/02-the-command-cycle) and
-[03](/docs/example-app/incident-command/03-read-models-and-projections) — the same
-`runCommandWithProjections` cycle and the same inline-projection pattern — so this chapter is
-deliberately short and points out only what differs. Read the keiro
-[command](/docs/keiro/reference/command) and [projection](/docs/keiro/reference/projection)
-references for the framework view.
+Hospital Capacity uses the same validated command boundary as Incident Command, with its own
+process-level `HospitalCapacityStore`. A typed command ID supplies deterministic event IDs, and
+the requested inline projections participate in the append transaction.
 
-## Three command processors, one shared runner
+## The command boundary
 
-Each aggregate has a thin processor that names its application span, attaches domain attributes, and
-delegates to the service-wide `runDurableCommand` in `Store.hs`. The Reservation processor is the
-one the [pgmq queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue) and the
-[reservation workflow](/docs/example-app/hospital-capacity/04-the-reservation-workflow) both call:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/hospital-capacity/src/HospitalCapacity/Store.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/hospital-capacity/src/HospitalCapacity/Reservation/CommandProcessor.hs
-runReservationCommandDurablyWithTelemetry :: ServiceTracer -> KirokuStore -> TransferReservationId -> ReservationCommand -> IO (Either CommandFailure CommandSuccess)
-runReservationCommandDurablyWithTelemetry tracer store reservationId command =
-  withApplicationSpan
-    tracer
-    "hospital-capacity.command processor reservation"
-    (reservationCommandAttributes reservationId command) $
-    runDurableCommand
-      tracer
-      store
-      reservationEventStream
-      (reservationStream reservationId)
-      command
-      [transferDecisionProjection]
+runDurableCommand
+  :: (BoolAlg phi (RegFile rs, ci), Eq co)
+  => ServiceTracer
+  -> HospitalCapacityStore
+  -> CommandId
+  -> ValidatedEventStream phi rs s ci co
+  -> Stream (EventStream phi rs s ci co)
+  -> ci
+  -> [InlineProjection co]
+  -> IO (Either CommandFailure CommandSuccess)
+runDurableCommand tracer store commandId eventStream targetStream command projections = do
+  result <-
+    runHospitalCapacityStore store $
+      runCommandWithProjections (commandOptionsWithId tracer commandId) eventStream targetStream command projections
+  pure $
+    case result of
+      Left storeError -> Left (CommandStoreFailed storeError)
+      Right (Left commandError) -> Left (CommandProcessorFailed commandError)
+      Right (Right commandResult) -> Right (toCommandSuccess commandResult)
 ```
 
-Just as in Incident Command, the failure type keeps infrastructure (`CommandStoreFailed`) and domain
-(`CommandProcessorFailed`) errors distinct — that distinction is exactly what the pgmq handler uses
-to choose between **retrying** and **dead-lettering** a job
-([chapter 05](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)).
+The outer store error and inner command error remain distinct in `CommandFailure`. The validated
+stream was checked before execution; callers do not pass an unchecked raw definition here.
 
-`Hospital/CommandProcessor.hs`, `Capacity/CommandProcessor.hs`, and
-`Reservation/CommandProcessor.hs` follow the same pattern, each passing its own EventStream, stream,
-and inline projection.
+## Four registered views
 
-## The two read models
-
-Hospital Capacity exposes two scenario-facing read models. Both declare `Strong` consistency, so a
-query reflects everything appended so far:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/hospital-capacity/src/HospitalCapacity/Store.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/hospital-capacity/src/HospitalCapacity/Hospital/Projection.hs
+registerHospitalCapacityReadModels :: Store :> es => Eff es ()
+registerHospitalCapacityReadModels =
+  mapM_ register
+    [ readModelRegistration hospitalReadinessReadModel
+    , readModelRegistration transferDecisionReadModel
+    , readModelRegistration transferCandidateReadModel
+    , readModelRegistration GeneratedAcceptedTransferNeeds.acceptedTransferNeedsReadModel
+    ]
+ where
+  register (modelName, modelVersion, modelShapeHash) =
+    void (registerReadModel modelName modelVersion modelShapeHash)
+```
+
+Hospital readiness, transfer decisions, transfer candidates, and accepted transfer needs are
+registered explicitly. The current generated contracts declare `Eventual`; inline updates do
+not change that declared consistency or turn a query view into aggregate authority.
+
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/hospital-capacity/src/HospitalCapacity/Hospital/Projection.hs`
+(artifact-level URI pending):
+
+```haskell
 hospitalReadinessReadModel :: ReadModel HospitalReadinessQuery (Maybe HospitalReadiness)
 hospitalReadinessReadModel =
   ReadModel
-    { name = "hospital-capacity-readiness"
-    , tableName = "hospital_readiness"
-    -- …
-    , defaultConsistency = Strong
-    -- …
+    { name = Generated.hospitalReadinessReadModel.name
+    , tableName = Generated.hospitalReadinessReadModel.tableName
+    , schema = Generated.hospitalReadinessReadModel.schema
+    , subscriptionName = Generated.hospitalReadinessReadModel.subscriptionName
+    , version = Generated.hospitalReadinessReadModel.version
+    , shapeHash = Generated.hospitalReadinessReadModel.shapeHash
+    , defaultConsistency = Generated.hospitalReadinessReadModel.defaultConsistency
+    , strongScope = Generated.hospitalReadinessReadModel.strongScope
+    , query = \(HospitalReadinessQuery hospitalId) ->
+        Tx.statement (idText hospitalId) selectHospitalReadinessStmt
     }
 ```
 
-| Read model | Table | Defined in | Fed from |
-|---|---|---|---|
-| Hospital readiness | `hospital_readiness` | `Hospital/Projection.hs`, `Capacity/Projection.hs` | hospital + capacity events |
-| Transfer decisions | `transfer_decisions` | `Reservation/Projection.hs` | reservation events |
+The wrapper preserves generated identity/schema/shape facts and supplies its hand-owned typed SQL
+query. Hospital, Capacity, and Reservation projections update application tables under
+`hospital_capacity`, and views remain rebuildable from durable input.
 
-`transfer_decisions` is more than a dashboard: the
-[reservation-work dispatcher](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
-queries it (together with the live pgmq queue) to decide whether a reservation has *already* been
-decided or is *already pending*, so it never enqueues duplicate work for the same reservation. As in
-Incident Command, the read side is not just for humans — the integration code queries it to stay
-idempotent.
+Continue with [surge orchestration](/docs/example-app/hospital-capacity/03-the-surge-process-manager).

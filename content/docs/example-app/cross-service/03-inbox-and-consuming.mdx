@@ -1,92 +1,122 @@
 ---
 title: "03 — Inbox and consuming"
-description: "Consume from Kafka, dedupe through the inbox, store the accepted message, and dispatch — exactly once."
+description: "Consume through a supervised Shibuya application, deduplicate accepted input, and retain poison before acknowledgement."
 ---
 
-The inbox is the mirror of the outbox: a deduplicating inbound buffer that accepts each external
-message **exactly once** into the service's own database before any local handler runs. This chapter
-reads Hospital Capacity's consumer and inbox. Read the keiro
-[inbox pattern](/docs/keiro/explanation/the-inbox-pattern) explanation and
-[inbox](/docs/keiro/reference/inbox) reference alongside.
+Kafka delivery is at least once. Each service deduplicates accepted integration messages in its
+own inbox transaction, and subsequent effects need replay-safe identity. Shibuya owns adapter
+finalization; handlers receive read-only messages and return `AckDecision`.
 
-## The Kafka consumer
+## One-shot application lifecycle
 
-`Integration/KafkaConsumer.hs` subscribes to `emergency.incident.events` through the
-**shibuya-kafka-adapter** and runs a Shibuya processor over the stream. The one-shot variant takes a
-single message (`Stream.take 1`) so a worker invocation drains one record and exits:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/Integration/KafkaConsumer.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/hospital-capacity/src/HospitalCapacity/Integration/KafkaConsumer.hs
-runConsumer store config = do
-  let consumerProperties =
-        brokersList (BrokerAddress <$> config.brokers)
-          <> KafkaConsumer.groupId (ConsumerGroupId config.groupId)
-          <> noAutoOffsetStore
-      subscription = KafkaConsumer.topics (TopicName <$> config.topics) <> offsetReset Earliest
-  runKafkaConsumer consumerProperties subscription $ do
-    Adapter{adapterName, source, shutdown} <- kafkaAdapter (defaultConfig (TopicName <$> config.topics))
-    let adapter = Adapter {adapterName, source = Stream.take 1 source, shutdown}
+runConsumerOnce
+  :: (IOE :> es, Error KafkaError :> es, Tracing :> es)
+  => Maybe Tracer
+  -> IncidentCommandStore
+  -> IncidentKafkaConsumerConfig
+  -> Eff es (Either IncidentKafkaConsumerError IncidentKafkaConsumeOnceResult)
+runConsumerOnce tracer store config = do
+  resultVar <- liftIO newEmptyMVar
+  state <- liftIO newKafkaAdapterState
+  runKafkaConsumer (consumerProperties state config) (subscription config) $ do
+    Adapter{adapterName, source, shutdown} <-
+      kafkaAdapterWith state (defaultConfig (TopicName <$> config.topics))
+    let finiteAdapter = Adapter{adapterName, source = Stream.take 1 source, shutdown}
         processorId = ProcessorId (Text.intercalate "," config.topics)
-    _processor <- runWithMetrics 1 processorId adapter (processOne store)
-    pure ()
+        appConfig =
+          defaultAppConfig
+            { ShibuyaApp.strategy = ShibuyaApp.StopAllOnFailure
+            , ShibuyaApp.inboxSize = config.inboxSize
+            }
+    appResult <- runApp appConfig [(processorId, mkProcessor finiteAdapter (processOneRecording resultVar tracer store config))]
+    case appResult of
+      Left err -> pure (Left (IncidentKafkaApplicationFailed err))
+      Right appHandle -> do
+        waitApp appHandle
+        _ <- stopAppGracefully defaultShutdownConfig appHandle
+        recorded <- liftIO (tryReadMVar resultVar)
+        case recorded of
+          Just (Left err) -> pure (Left (IncidentKafkaHandlerFailed err))
+          Just (Right result) -> pure (Right result)
+          Nothing -> do
+            metrics <- getAppMetrics appHandle
+            pure (Left (IncidentKafkaProcessorStopped (Text.pack (show metrics))))
 ```
 
-Each ingested envelope is handed to `acceptIncidentKafkaEnvelope`, and the result is turned into a
-Shibuya **ack decision** — the heart of at-least-once-plus-dedupe semantics:
+The finite adapter takes one message, while `runApp` starts a serial processor under
+`StopAllOnFailure`. The caller waits and gracefully stops it before the Kafka consumer scope
+closes. It reports handler/startup/stopped-without-result failures rather than assuming success.
+Hospital uses the same lifecycle for Incident messages.
+
+## Continuous lifecycle
+
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/Integration/KafkaConsumer.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/hospital-capacity/src/HospitalCapacity/Integration/KafkaConsumer.hs
-inboxResultAck :: Either HospitalInboxFailure AcceptedTransferNeed -> AckDecision
-inboxResultAck = \case
-  Right{} -> AckOk
-  Left HospitalInboxDuplicate -> AckOk                                   -- already processed → ack
-  Left HospitalInboxInProgress -> AckRetry (RetryDelay 5)
-  Left (HospitalInboxPreviouslyFailed reason) -> AckDeadLetter (PoisonPill …)
-  Left (HospitalInboxDedupeFailed err) -> AckDeadLetter (InvalidPayload err)
-  Left (HospitalInboxDecodeFailed err) -> AckDeadLetter (InvalidPayload (Text.pack (show err)))
-  Left (HospitalInboxStoreFailed _err) -> AckRetry (RetryDelay 5)
+runConsumerUntil
+  :: (IOE :> es, Error KafkaError :> es, Tracing :> es)
+  => Maybe Tracer
+  -> IncidentCommandStore
+  -> IncidentKafkaConsumerConfig
+  -> IO ()
+  -> Eff es (Either IncidentKafkaConsumerError Bool)
+runConsumerUntil tracer store config awaitStop = do
+  state <- liftIO newKafkaAdapterState
+  runKafkaConsumer (consumerProperties state config) (subscription config) $ do
+    adapter <- kafkaAdapterWith state (defaultConfig (TopicName <$> config.topics))
+    let processorId = ProcessorId (Text.intercalate "," config.topics)
+        appConfig =
+          defaultAppConfig
+            { ShibuyaApp.strategy = ShibuyaApp.StopAllOnFailure
+            , ShibuyaApp.inboxSize = config.inboxSize
+            }
+    appResult <- runApp appConfig [(processorId, mkProcessor adapter (processOne tracer store config))]
+    case appResult of
+      Left err -> pure (Left (IncidentKafkaApplicationFailed err))
+      Right appHandle -> do
+        liftIO awaitStop
+        Right <$> stopAppGracefully defaultShutdownConfig appHandle
 ```
 
-Note the key line: a **duplicate is `AckOk`** — re-delivering a message that was already accepted is a
-no-op success, not an error. A transient store failure retries; a malformed payload dead-letters.
+The stop action is connected to termination signals in the CLI path. One-shot and continuous
+modes share the adapter and handler, keeping offset/retry behavior consistent.
 
-## Decode the envelope into a contract message
+## Ack, retry, and durable poison
 
-`Integration/Inbox.hs` first turns the raw Kafka envelope into a keiro `IntegrationEvent` (via
-`integrationEventFromKafka`), then decodes the payload bytes into an
-[`IntegrationMessage`](/docs/example-app/cross-service/01-message-contracts), and rejects anything
-that is not the message type this consumer expects:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/Integration/KafkaConsumer.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/hospital-capacity/src/HospitalCapacity/Integration/Inbox.hs
-  (event, kafka) <- mapLeft KafkaEnvelopeDecodeFailed (integrationEventFromKafka inboundRecord)
-  message <- mapLeft ContractDecodeFailed (Aeson.eitherDecodeStrict event.payloadBytes)
-  case message.payload of
-    IncidentTransferNeedDeclared{} -> pure HospitalInboundMessage {event, kafka, message}
-    _ -> Left (UnexpectedIntegrationMessage (messageType message))
+inboxResultDisposition
+  :: Either IncidentInboxFailure IncidentHospitalInboxAccept
+  -> InboxDisposition
+inboxResultDisposition = \case
+  Right{} -> FinishWith (generatedAck GeneratedInbox.InboxAckOk)
+  Left IncidentInboxDuplicate -> FinishWith (generatedAck GeneratedInbox.InboxAckOk)
+  Left IncidentInboxInProgress -> FinishWith (generatedAck GeneratedInbox.InboxRetry)
+  Left (IncidentInboxPreviouslyFailed reason) ->
+    generatedPoison "previously_failed" ("previous inbox failure: " <> fromMaybe "unknown" reason)
+  Left (IncidentInboxDedupeFailed err) -> generatedPoison "dedupe_failed" err
+  Left (IncidentInboxDecodeFailed err) ->
+    generatedPoison (decodeFailureClass err) (Text.pack (show err))
+  Left (IncidentInboxStoreFailed _err) -> FinishWith (generatedAck GeneratedInbox.InboxRetry)
+  Left (IncidentInboxWorkflowSignalFailed _err) -> FinishWith (generatedAck GeneratedInbox.InboxRetry)
 ```
 
-## Dedupe + store in one transaction
+Accepted and duplicate input acknowledges. In-progress and store failures retry. Malformed or
+terminal poison is first upserted to the service's `inbound_kafka_failures` table; only after
+that durable write does the handler return `AckOk`. If poison storage is unavailable, it retries.
+The Kafka adapter has no DLQ producer, so `AckDeadLetter` would not by itself retain the payload.
 
-The accept runs through keiro's `runInboxTransaction` with a dedupe policy keyed on the integration
-message id, and the application's accept handler writes `accepted_transfer_needs` with an
-`ON CONFLICT (message_id) DO NOTHING` upsert — so even if the inbox layer and the table both see a
-replay, the row is written at most once:
+Hospital's inbox atomically deduplicates and stores accepted transfer needs; its router/work
+dispatch then uses local identities. Incident's response path looks up a pending awakeable by
+workflow owner before signalling it, and capacity snapshots feed its local router.
 
-```haskell
--- services/hospital-capacity/src/HospitalCapacity/Integration/Inbox.hs
-      Tx.statement (acceptedTransferNeedJson accepted) upsertAcceptedTransferNeedStmt
-      pure accepted
--- upsertAcceptedTransferNeedStmt: INSERT … ON CONFLICT (message_id) DO NOTHING
-```
-
-The keiro inbox returns an `InboxResult` (`InboxProcessed` / `InboxDuplicate` / `InboxInProgress` /
-`InboxPreviouslyFailed`) — exactly the cases `inboxResultAck` maps above. In Incident Command the
-symmetric path (`acceptHospitalKafkaEnvelope` in its `Store.hs`) additionally **signals the
-evacuation workflow's awakeable** when it accepts a hospital response, and feeds the
-[capacity-change router](/docs/example-app/incident-command/04-routers) when it accepts a capacity
-snapshot.
-
-Once a transfer need is in `accepted_transfer_needs`, the
-[transfer-need router / pgmq dispatcher](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue)
-picks it up — that is where the inbound message becomes local reservation work.
+Root `just kafka-integration` covers duplicate commits, retry seek, exceptions, buffered-offset
+fencing, poison retention/failure, graceful shutdown, and W3C parentage.
+Next: [trace continuity](/docs/example-app/cross-service/04-telemetry-and-trace-continuity).

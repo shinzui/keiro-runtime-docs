@@ -10,20 +10,22 @@ pgmq-hs source. This file records the exact review boundary.
 - **Path at last sync:**
   `/Users/shinzui/Keikaku/bokuno/libraries/pgmq-hs-project/pgmq-hs`.
 - **Reviewed releases:** `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`,
-  `pgmq-config`, and `pgmq-migration` at `0.4.0.1` — still the only *released*
-  line. The reviewed **source** is ahead of it; see the range note below.
+  `pgmq-config`, and `pgmq-migration` at `0.5.0.0`.
 - **Schema boundary:** the embedded component installs PGMQ 1.11.0 without
-  requiring the PostgreSQL extension, plus the `0003` divergence file (unreleased).
+  requiring the PostgreSQL extension, plus the released `0003` divergence file.
 
 ## Last reviewed commit
 
 ```text
-9ee9a2f30fc461244ed7539fbfe2165d9f80df91  (9ee9a2f)
-2026-08-08T14:31:31-07:00
-docs(okf): add the capabilities bundle
+590a46f3e499d8b129976ca15e76acb4c1d928c6  (590a46f3)
+2026-08-19T20:54:54-07:00
+docs(okf): add UI inspection improvement requests from keiro-ui
 ```
 
-> **Current range.** The `5eca8d6..9ee9a2f` range (**3 commits**, 29 files) **cuts
+> **Current range.** `9ee9a2f3..590a46f3` (**2 commits**). Both commits are doc-neutral OKF registration/check tooling and improvement requests. Non-destructive peek/archive/fetch, public JSON codecs, and a metrics/HTTP/WebSocket sister package are proposals, not shipped APIs. No pgmq pages changed; shared compatibility records the new SHA. The public cohort remains 0.5.0.0; this also corrects stale top-of-file release metadata from the prior range.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+
+> **Note (prior range).** The `5eca8d6..9ee9a2f` range (**3 commits**, 29 files) **cuts
 > the 0.5.0.0 release**: `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and
 > `pgmq-migration` all move from `0.4.0.1` to `0.5.0.0`. `pgmq-bench` stays `0.1.0.0`.
 >
@@ -140,6 +142,8 @@ docs(okf): add the capabilities bundle
 
 ## Previous pointers
 
+- `9ee9a2f30fc461244ed7539fbfe2165d9f80df91` (`9ee9a2f3`) — baseline before the `9ee9a2f3..590a46f3` review (2 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
+
 - `5eca8d6515cc629d29b9a15b0bd3b2243048d7bc` (`5eca8d6`, 2026-08-05, pgmq-hs 0.4.0.1) — the baseline before the 0.5.0.0 release review. The `5eca8d6..9ee9a2f` range (3 commits) cut `0.5.0.0` across all five public packages, closing the one place these docs ran ahead of a release; the ahead-of-release callout in `getting-started/compatibility-and-upgrades.mdx` was replaced with a released note.
 - `b4cab751198b5012f025353610dfb4f3782c6eea` (`b4cab75`), 2026-07-23, `0.4.0.1` —
   the baseline before the hardening round. The `b4cab75..5eca8d6` range (19
@@ -158,8 +162,8 @@ docs(okf): add the capabilities bundle
 1. Resolve the source and inspect committed drift:
    ```text
    PGMQ=$(mori registry show shinzui/pgmq-hs --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$PGMQ" log --oneline 9ee9a2f..HEAD
-   git -C "$PGMQ" diff --stat 9ee9a2f..HEAD
+   git -C "$PGMQ" log --oneline 590a46f3..HEAD
+   git -C "$PGMQ" diff --stat 590a46f3..HEAD
    ```
 2. **Check the release status first.** `grep '^version' "$PGMQ"/*/*.cabal`. If
    they now read `0.5.0.0`, the main task is to remove the "unreleased"

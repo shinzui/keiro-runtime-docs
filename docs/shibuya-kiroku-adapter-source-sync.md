@@ -25,12 +25,15 @@ mapping, consumer groups, and handler exception behavior.
 ## Last reviewed commit
 
 ```text
-b9aecf3a0f50911388c62df0d250fe5096afbfa4  (b9aecf3)
-2026-08-13T15:48:38-07:00
-docs(plan): complete EP-73 release
+7051b12342b3002659e39061b03bee2e37275099  (7051b123)
+2026-08-29T06:52:44-07:00
+docs(plans): address MasterPlan 11 pre-implementation review findings
 ```
 
-> **Current range.** The `3009dda..b9aecf3` range (**51 commits** in the shared
+> **Current range.** `b9aecf3a..7051b123` (**27 commits**). Reviewed the adapter independently within the shared Kiroku range. Adapter 0.5.1 maps Shibuya ApplicationFailure to DeadLetterOther with canonical code: detail summary and structured code/detail JSON; existing framework reasons keep their encoding. Adapter 0.5.1.1 requires Kiroku Store 0.8 without adding error-matching/retry logic. Updated the integration page, adapter walkthrough/how-to and shared compatibility. Other store/migration commits were reviewed for coupling but add no adapter API; proposed UI/compaction/hardening work remains unshipped.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+
+> **Note (prior range).** The `3009dda..b9aecf3` range (**51 commits** in the shared
 > kiroku repository, of which **4 files** touch `shibuya-kiroku-adapter`) takes the adapter from
 > `0.4.0.0` to `0.5.0.2`, alongside `kiroku-store` `0.3.1.0` → `0.7.0.0`.
 >
@@ -82,6 +85,8 @@ The source tree was clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `b9aecf3a0f50911388c62df0d250fe5096afbfa4` (`b9aecf3a`) — baseline before the `b9aecf3a..7051b123` review (27 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
+
 - `3009dda7238f7d05b1d0c97b04ec5d4c55031304` (`3009dda`, 2026-07-22, shibuya-kiroku-adapter 0.4.0.0) — the baseline before the Kiroku 0.7 review. The `3009dda..b9aecf3` range (51 shared-repo commits, 4 touching the adapter) took the adapter to `0.5.0.2` and taught its observability handling the new Kiroku history-retention events.
 - `58aff77b3a6d6093e3613753a0543aab62db9fac` (`58aff77`), 2026-07-14 — the
   baseline before the kiroku-store 0.3.1.0 point release. The `58aff77..3009dda`
@@ -95,8 +100,8 @@ The source tree was clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline b9aecf3..HEAD -- shibuya-kiroku-adapter docs/user
-   git -C "$KIROKU" diff --stat b9aecf3..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" log --oneline 7051b123..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" diff --stat 7051b123..HEAD -- shibuya-kiroku-adapter docs/user
    ```
 2. Update `content/docs/integrations/shibuya-kiroku-adapter.mdx` and any Kiroku
    pages that repeat adapter-specific behavior.

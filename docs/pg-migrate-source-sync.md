@@ -19,10 +19,13 @@ generated API documentation. This file pins the exact reviewed source.
 ## Last reviewed commit
 
 ```text
-f39d64e354818999667d345a1452f33eb4857fc1  (f39d64e)
-2026-07-13T13:57:39-07:00
-chore(release): 1.1.0.0
+8a528b67641608dd92b70369e3b61d587a8aa505  (8a528b67)
+2026-08-26T14:23:24-07:00
+chore(seihou): update nix-haskell-flake to 0.13.2 and exec-plan to 0.8.0
 ```
+
+> **Current range.** `f39d64e3..8a528b67` (**4 commits**). All four commits are doc-neutral: Seihou origin manifests, master-plan registration, exec-plan/ADR guidance and development module pins. Public packages remain 1.1.0.0. No runtime, migration, or API pages changed; shared compatibility records the new reviewed SHA.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
 
 The initial full-site review covers compile-time manifest embedding,
 `MigrationComponent` and `MigrationPlan` ownership, pure validation, the v1
@@ -44,6 +47,8 @@ pass; the source tree was clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `f39d64e354818999667d345a1452f33eb4857fc1` (`f39d64e3`) — baseline before the `f39d64e3..8a528b67` review (4 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
+
 - None; `f39d64e` is the first full reviewed boundary for this documentation
   tree.
 
@@ -52,8 +57,8 @@ pass; the source tree was clean at the reviewed SHA.
 1. Resolve the source with mori and inspect committed drift:
    ```text
    PG_MIGRATE=$(mori registry show shinzui/pg-migrate --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$PG_MIGRATE" log --oneline f39d64e..HEAD
-   git -C "$PG_MIGRATE" diff --stat f39d64e..HEAD
+   git -C "$PG_MIGRATE" log --oneline 8a528b67..HEAD
+   git -C "$PG_MIGRATE" diff --stat 8a528b67..HEAD
    ```
 2. Read changed public modules, tests, changelogs, and upstream docs. Recheck
    every affected versioned contract and predecessor adapter.

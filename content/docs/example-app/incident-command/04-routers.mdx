@@ -3,22 +3,16 @@ title: "04 — Routers"
 description: "Content-based fan-out: the resource-dispatch and capacity-change routers resolve targets from read-model state and emit commands."
 ---
 
-A **router** is keiro's stateless content-based dispatch: given one accepted event, it queries
-read-model state, resolves a set of target aggregates, and emits a command to each. Unlike a process
-manager it has **no memory** — it is a pure function from event to commands. Read the keiro
-[routers &amp; content-based dispatch](/docs/keiro/explanation/routers-and-content-based-dispatch)
-explanation, the [router](/docs/keiro/reference/router) reference, and the
-[event fan-out cookbook](/docs/keiro/cookbook/event-fan-out-with-routers) alongside this. Incident
-Command has two routers.
+Incident Command has two hand-owned routers. Generated Router/RouterHarness modules capture
+checked topology, while the application keeps its composite resource key and SQL target selection.
+A router stores no independent process state; it resolves target commands from accepted input.
 
-## The resource-dispatch router
+## Resource dispatch
 
-When a `ResourceDispatched` event lands, this router decides whether the dispatched resource should
-be assigned to the incident, by querying the `field_resource_assignments` read model and emitting an
-`AssignResource` command to the FieldResource aggregate:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/ResourceRouter.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/incident-command/src/IncidentCommand/ResourceRouter.hs
 resourceDispatchRouter
   :: (IOE :> es, Store :> es)
   => Router ResourceDispatchedData (HsPred FieldResourceRegs FieldResourceCommand)
@@ -35,7 +29,13 @@ resourceDispatchRouter =
               | assignmentTargetsIncident dispatched assignment ->
                   [ PMCommand
                       { target = fieldResourceCommandStream dispatched.resourceId
-                      , command = AssignResource AssignResourceData { … }
+                      , command =
+                          AssignResource
+                            AssignResourceData
+                              { resourceId = dispatched.resourceId
+                              , commandId = dispatched.commandId
+                              , incidentId = dispatched.incidentId
+                              }
                       }
                   ]
             _ -> []
@@ -44,27 +44,17 @@ resourceDispatchRouter =
     }
 ```
 
-The four fields are the whole router contract:
+The key combines incident and resource identity. The resolver reads the assignment view, checks
+that it targets the intended incident, and returns a typed `PMCommand` for FieldResource. A missing
+or unsuitable assignment produces no commands. The validated target stream and inline projection
+are supplied with the router, so dispatch uses the normal command boundary.
 
-- **`key`** — a dedupe/idempotency key for this routing decision (here `incidentId:resourceId`), so
-  re-running the router on the same source event is safe.
-- **`resolve`** — the content-based part: query a read model and return a list of `PMCommand`s, each
-  naming a `target` stream and a `command`. Returning `[]` means "nothing to do."
-- **`targetEventStream`** / **`targetProjections`** — the EventStream the emitted commands run
-  against, and the projections to run inline when they append.
+## Capacity changes
 
-`runRouterOnce` (wrapped here as `runResourceDispatchRouterOnce`) replays the source event and
-applies each resolved command through the normal command cycle.
-
-## The capacity-change router
-
-The second router closes the cross-service loop. When Incident Command's inbox accepts a
-**hospital capacity snapshot** from the other service, this router finds the local incidents in the
-snapshot's region that still have pending transfer needs and tells each to **reconsider its transfer
-plan**:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/CapacityChangeRouter.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/incident-command/src/IncidentCommand/CapacityChangeRouter.hs
 capacityChangeRouter
   :: (IOE :> es, Store :> es)
   => Router AcceptedHospitalCapacitySnapshot (HsPred IncidentRegs IncidentCommand)
@@ -77,27 +67,17 @@ capacityChangeRouter =
         result <- resolveCapacityIncidentCandidates snapshot
         case result of
           Left _ -> pure []
-          Right candidates -> pure (rights (capacityChangeCommandForCandidate snapshot <$> candidates))
+          Right candidates ->
+            pure (rights (capacityChangeCommandForCandidate snapshot <$> candidates))
     , targetEventStream = incidentEventStream
     , targetProjections = const [incidentDashboardProjection]
     }
 ```
 
-Its `resolve` has a content gate before it even queries — a snapshot only routes if the destination
-is **not in total divert** and has **free ICU beds**:
+The accepted hospital snapshot's message ID is the routing key. Candidate selection and command
+construction remain hand-owned; they are not replaced by a CLI dispatcher. The integration inbox
+supplies the accepted snapshot, and replay safety depends on deterministic target-command identity
+and the runtime's benign-duplicate checks.
 
-```haskell
--- services/incident-command/src/IncidentCommand/CapacityChangeRouter.hs
-capacitySnapshotCanRoute :: AcceptedHospitalCapacitySnapshot -> Bool
-capacitySnapshotCanRoute snapshot =
-  snapshot.divertStatus /= "total-divert" && snapshot.availableIcuBeds > 0
-```
-
-When it does route, it queries `pending_transfer_needs` grouped by region (a SQL `GROUP BY
-incident_id`) and emits one `ReconsiderTransferPlan` command per candidate incident. This is the
-mirror image of the resource router: same `Router` shape, different read model and target
-aggregate. Both demonstrate the keiro rule — *routers query read models to resolve targets; they
-never hold state of their own.*
-
-This router is driven from the inbox path; the [cross-service tour](/docs/example-app/cross-service)
-shows where the accepted snapshot comes from.
+See [router reference](/docs/keiro/reference/router), then
+[escalation and timers](/docs/example-app/incident-command/05-escalation-process-manager-and-timers).

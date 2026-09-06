@@ -1,0 +1,44 @@
+---
+title: "Handle terminal outbox rejection"
+description: "Distinguish permanent transport refusal from retryable failure and verify its durable audit record."
+---
+
+Use this guide with Keiro 0.14 or later when a transport can intentionally refuse a message.
+Apply migration `0031` before deploying the new publisher; existing rows gain nullable audit fields.
+
+## Goal
+
+Record a permanent refusal without retrying it or blocking ordered successors.
+
+## Steps
+
+1. Classify the transport result. Return `PublishSucceeded` only after acknowledgement.
+   Return `PublishFailed` for a failure that should follow retry policy. Use `PublishRejected`
+   only for a deliberate permanent refusal; do not guess that an ambiguous timeout means rejection.
+2. Choose a stable machine code, then validate it with `mkPublishRejection`. For example,
+   `mkPublishRejection "destination.invalid" (Just "Destination no longer exists")` returns
+   the value to wrap in `PublishRejected`. Handle the `Left` branch as a configuration/input
+   error. Codes are bounded lowercase ASCII; detail is optional and capped at 1024 UTF-8 bytes.
+3. Make both delivery and refusal decisions idempotent using the envelope's message identity.
+   The callback and PostgreSQL commit are separate: a pre-commit crash may invoke the callback again.
+4. Run a publish pass and inspect its committed `rejected` count. Rejection continues
+   `StopTheLine`; only `PublishFailed` halts that policy. Per-key and per-source successors
+   are released by a terminal rejection.
+
+## Verify it worked
+
+Inspect `keiro-ops outbox list --source <source> --status rejected` or query:
+
+```sql
+SELECT message_id, status, rejected_at, rejection_code, rejection_detail, last_error
+FROM keiro.keiro_outbox
+WHERE source = 'your-service' AND status = 'rejected'
+ORDER BY created_at, outbox_id;
+```
+
+Expect bounded code/detail, a rejection timestamp, and cleared `last_error`. A later pass
+must not reclaim the row, and eligible ordered successors should progress. The unlabelled
+`keiro.outbox.rejected` counter counts committed updates, so do not add free-form detail as labels.
+Rejected rows survive sent-row GC and remain available for audit.
+
+See the [outbox reference](/docs/keiro/reference/outbox) for conditional-update race semantics.

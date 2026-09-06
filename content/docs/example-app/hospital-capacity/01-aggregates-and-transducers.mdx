@@ -3,99 +3,56 @@ title: "01 — Aggregates and transducers"
 description: "The Hospital, Capacity, and Reservation aggregates as Keiki transducers, and the keiro EventStreams that wrap them."
 ---
 
-`hospital-capacity` has three aggregates — **Hospital**, **Capacity**, and **Reservation** — each a
-**Keiki transducer** paired with a keiro **EventStream**, exactly as in
-[Incident Command's chapter 01](/docs/example-app/incident-command/01-aggregates-and-transducers).
-Rather than repeat the mechanics, this chapter focuses on what is specific to this service. Read the
-keiro [event stream &amp; stream](/docs/keiro/reference/event-stream-and-stream) reference alongside.
+Hospital, Capacity, and Reservation are the durable aggregate boundaries. Surge and Supply
+transducers cover orchestration/supporting domain behavior. Keiki owns runtime state transitions;
+Keiro DSL owns checked service topology, generated facts, and harnesses.
 
-## Hospital — operational posture
+## Hospital runtime state
 
-The Hospital aggregate tracks a facility's capacity level, divert posture, and surge mode. Its key
-guard rejects a status report whose `activeRegionalDemand` is negative, and it can move into surge or
-supply-constrained states:
-
-```mermaid
-stateDiagram-v2
-    [*] --> HospitalUnreported
-    HospitalUnreported --> HospitalOperational : ReportHospitalStatus / HospitalStatusReported
-    HospitalOperational --> HospitalOperational : ReportHospitalStatus / HospitalStatusReported
-    HospitalOperational --> HospitalInSurge : ActivateSurge / HospitalSurgeActivated
-    HospitalOperational --> HospitalConstrained : NoteSupplyLevel / HospitalSupplyConstraintNoted
-    HospitalInSurge --> HospitalConstrained : NoteSupplyLevel / HospitalSupplyConstraintNoted
-    HospitalConstrained --> HospitalOperational : ReportHospitalStatus / HospitalStatusReported
-```
-
-`ActivateSurge` is the command the [surge process manager](/docs/example-app/hospital-capacity/03-the-surge-process-manager)
-emits.
-
-## Capacity — bed accounting
-
-The Capacity aggregate is the bed ledger. Its guards are arithmetic — a `ReportCapacity` is only
-accepted when staffed/available/reserved bed counts are non-negative, and an ICU bed can only be
-reserved while `availableIcuBeds > 0`:
-
-```mermaid
-stateDiagram-v2
-    [*] --> CapacityUnreported
-    CapacityUnreported --> CapacityOpen : ReportCapacity / CapacityReported
-    CapacityOpen --> CapacityOpen : ReportCapacity / CapacityReported
-    CapacityOpen --> CapacityReserved : ReserveIcuBed / IcuBedReserved
-    CapacityReserved --> CapacityReserved : ReserveIcuBed / IcuBedReserved
-    CapacityReserved --> CapacityOpen : ReleaseIcuReservation / IcuReservationReleased
-```
-
-## Reservation — the transfer lifecycle
-
-The Reservation aggregate is the heart of the cross-service story: it models one transfer
-reservation from request to admission. Its declaring guard is the domain's most interesting one — a
-`RequestTransferReservation` is rejected when the destination is in **total divert** *unless* the
-request carries a **life-critical override**:
-
-```mermaid
-stateDiagram-v2
-    [*] --> ReservationUnrequested
-    ReservationUnrequested --> ReservationHeld : RequestTransferReservation / TransferReservationCreated
-    ReservationHeld --> ReservationConfirmed : ConfirmReservation / TransferReservationConfirmed
-    ReservationHeld --> ReservationExpired : ExpireReservation / TransferReservationExpired
-    ReservationHeld --> ReservationReleased : ReleaseReservation / TransferReservationReleased
-    ReservationConfirmed --> ReservationAdmitted : AdmitPatient / PatientAdmitted
-    ReservationConfirmed --> ReservationReleased : ReleaseReservation / TransferReservationReleased
-    ReservationExpired --> [*]
-    ReservationAdmitted --> [*]
-    ReservationReleased --> [*]
-```
-
-The command that creates a reservation, `RequestTransferReservationData`, is exactly what the
-[pgmq work queue](/docs/example-app/hospital-capacity/05-the-pgmq-reservation-work-queue) decodes
-from a job and what the reservation workflow holds — so it is worth knowing its fields:
-`reservationId`, `hospitalId`, `commandId`, `patientAcuity`, `requiredBedType`, `sourceMessageId`,
-`expirationDeadline`, `divertStatus`, and `lifeCriticalOverride`.
-
-## The EventStream pattern
-
-Each aggregate's EventStream follows the same shape as Incident Command's — a hand-written `Codec`,
-a per-id stream name (`hospital-<id>`, `reservation-<id>`), `snapshotPolicy = Never`:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/hospital-capacity/src/HospitalCapacity/Hospital/Transducer.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/hospital-capacity/src/HospitalCapacity/Reservation/EventStream.hs
-reservationEventStream :: ReservationEventStream
-reservationEventStream =
-  EventStream
-    { transducer = reservationTransducer
-    , initialState = ReservationUnrequested
-    , initialRegisters = initialReservationRegs
-    , eventCodec = reservationCodec
-    , resolveStreamName = Stream.streamName
-    , snapshotPolicy = Never
-    , stateCodec = Nothing
-    }
-
-reservationStream :: TransferReservationId -> Stream ReservationEventStream
-reservationStream reservationId = stream ("reservation-" <> idText reservationId)
+type HospitalRegs =
+  '[ '("hospitalId", HospitalId)
+   , '("divertStatus", DivertStatus)
+   , '("surgeMode", Bool)
+   , '("capacityLevel", CapacityLevel)
+   , '("availableServiceLines", [ServiceLine])
+   , '("activeRegionalDemand", Int)
+   , '("supplyConstrained", Bool)
+   ]
 ```
 
-They live in `Hospital/EventStream.hs`, `Capacity/EventStream.hs`, and
-`Reservation/EventStream.hs`. The
-process-manager state streams (`Surge`, `Supply`) follow the same pattern in their own modules and
-are covered in [chapter 03](/docs/example-app/hospital-capacity/03-the-surge-process-manager).
+The runtime keeps service lines as a list, demand as a counter, and supply/divert state explicitly.
+These are hand-owned rules; the specification does not claim to lower every list operation or
+arithmetic update. Domain behavior remains authoritative in the runtime transducers and tests.
+
+## Validated streams and generated identity
+
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/hospital-capacity/src/HospitalCapacity/Hospital/EventStream.hs`
+(artifact-level URI pending):
+
+```haskell
+type HospitalEventStreamDef =
+  EventStream (HsPred HospitalRegs HospitalCommand) HospitalRegs HospitalVertex HospitalCommand HospitalEvent
+
+type HospitalEventStream =
+  ValidatedEventStream (HsPred HospitalRegs HospitalCommand) HospitalRegs HospitalVertex HospitalCommand HospitalEvent
+
+hospitalEventStream :: HospitalEventStream
+hospitalEventStream = mkEventStreamOrThrow "Hospital" hospitalEventStreamDef
+
+hospitalStream :: HospitalId -> Stream HospitalEventStreamDef
+hospitalStream hospitalId = Stream.entityStream Generated.hospitalCategory (idText hospitalId)
+```
+
+The raw definition still supplies codec and initial state, but durable runners receive its
+validated wrapper. `entityStream` combines a generated checked category with the application ID.
+Capacity and Reservation use the same raw/validated split with their own category and codecs.
+
+Generated modules live alongside create-once Hole modules; their types may differ from runtime
+representations. Changes must pass the DSL harness as well as application tests. The optional
+Hospital symbolic suite exercises SBV/z3 proofs separately from ordinary runtime execution.
+
+Next: [command cycle and read models](/docs/example-app/hospital-capacity/02-command-cycle-and-read-models).

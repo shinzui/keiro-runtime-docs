@@ -3,21 +3,17 @@ title: "02 — Outbox and publishing"
 description: "Enqueue-in-transaction then claim-and-publish: how a private event becomes an outbox row and reaches Kafka."
 ---
 
-The outbox pattern is how a service turns a private decision into a public message **without** a
-distributed transaction: the message is written to an outbox table in the *same* database
-transaction as the domain write, and a separate worker later claims and publishes it. Read the keiro
-[outbox pattern](/docs/keiro/explanation/the-outbox-pattern) explanation and
-[outbox](/docs/keiro/reference/outbox) reference alongside.
+The example's enqueue command reads an already-recorded private event and writes a stable
+integration outbox row. That enqueue is transactional, but it is **separate from the original
+domain append** in this on-demand example. The generic outbox primitive can also be composed into
+an application's append transaction.
 
-## From private event to outbox row
+## Private event to public envelope
 
-`Integration/Outbox.hs` maps a private `TransferNeedEmitted` event to a public `IntegrationEvent`. It
-builds the `IntegrationMessage` (the [contract](/docs/example-app/cross-service/01-message-contracts)),
-then wraps it as a keiro `IntegrationEvent` carrying the destination topic, a partition key, the
-serialized payload bytes, the source event linkage, and a **trace context**:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/Integration/Outbox.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/incident-command/src/IncidentCommand/Integration/Outbox.hs
 triageEventToOutboxEvent :: RecordedEvent -> TriageEvent -> Maybe IncidentIntegrationOutboxEvent
 triageEventToOutboxEvent recorded = \case
   TransferNeedEmitted transferNeed ->
@@ -26,95 +22,85 @@ triageEventToOutboxEvent recorded = \case
         publicEvent =
           IntegrationEvent
             { messageId = publicMessage.messageId
-            , source = incidentIntegrationSource          -- "incident-command"
-            , destination = incidentEventsTopic           -- "emergency.incident.events"
+            , source = incidentIntegrationSource
+            , destination = incidentEventsTopic
             , key = Just (Text.pack (show transferNeed.incidentId))
             , eventType = messageType publicMessage
             , schemaVersion = publicMessage.schemaVersion
             , contentType = ApplicationJson
+            , schemaReference = Nothing
             , sourceEventId = Just recorded.eventId
             , sourceGlobalPosition = Just recorded.globalPosition
             , payloadBytes = LazyByteString.toStrict (Aeson.encode publicMessage)
             , occurredAt = recorded.createdAt
-            , traceContext = Just TraceContext {traceparent = traceParent, tracestate = Nothing}
-            -- …
+            , causationId = EventId <$> recorded.causationId
+            , correlationId = EventId <$> recorded.correlationId
+            , -- No stored trace context: the live producer ("send") span is injected
+              -- into the Kafka headers at publish time (KafkaPublisher), the single
+              -- canonical source of the outgoing traceparent. Storing one here too
+              -- would emit a duplicate header the consumer's first-match lookup could
+              -- pick over the live one.
+              traceContext = Nothing
+            , attributes = Nothing
             }
-     in Just IncidentIntegrationOutboxEvent { outboxId = outboxIdForMessage publicMessage.messageId, event = publicEvent }
+     in Just IncidentIntegrationOutboxEvent {outboxId = outboxIdForMessage publicMessage.messageId, event = publicEvent}
   _ -> Nothing
 ```
 
-The `outboxId` is derived deterministically from the message id, so re-deriving the outbox row for
-the same message is idempotent.
+The public message and outbox IDs are stable, and source-event linkage is retained. Stored
+`traceContext` is deliberately `Nothing`: the publisher injects the live producer span into Kafka
+headers, avoiding a duplicate stored header that could override it. The payload's legacy
+`traceParent` field is not the transport-parent authority.
 
-## Enqueue in the same transaction
+## Enqueue the recorded event
 
-`Store.hs` enqueues that event with keiro's `enqueueIntegrationEventTx` **inside a transaction** —
-the same primitive a domain write uses, so in production the outbox row and the events commit or roll
-back together:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/Store.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/incident-command/src/IncidentCommand/Store.hs
+enqueueTransferNeedOutboxForTriage :: IncidentCommandStore -> TriageRecordId -> IO (Either IncidentOutboxEnqueueFailure IncidentOutboxEnqueueSuccess)
+enqueueTransferNeedOutboxForTriage store triageRecordId = do
+  sourceResult <- readLatestTransferNeed store triageRecordId
+  case sourceResult of
+    Left storeError -> pure (Left (IncidentOutboxStoreFailed storeError))
+    Right Nothing -> pure (Left (IncidentOutboxSourceEventMissing triageRecordId))
+    Right (Just (recorded, event)) ->
+      case triageEventToOutboxEvent recorded event of
+        Nothing -> pure (Left (IncidentOutboxSourceEventMissing triageRecordId))
         Just outboxEvent -> do
           result <-
-            runStoreIO store $
+            runIncidentCommandStore store $
               runTransaction $
                 enqueueIntegrationEventTx outboxEvent.outboxId outboxEvent.event
-          -- …
+          pure $
+            case result of
+              Left storeError -> Left (IncidentOutboxStoreFailed storeError)
+              Right () -> Right (toIncidentOutboxEnqueueSuccess outboxEvent)
 ```
 
-In this example the enqueue is driven on demand by
-`incident-command-worker outbox enqueue-transfer-need <triage-id>`, which reads the latest transfer
-need and writes its outbox row.
+A missing source event is reported explicitly. The `runTransaction` encloses the enqueue after
+the source lookup, so the code does not claim a distributed or append-plus-publish transaction.
+The worker's `outbox enqueue-transfer-need` command drives this path.
 
-## Claim and publish
+## Publish after claim
 
-A second step drains the outbox. `publishClaimedOutbox` claims pending rows and hands the claimed
-batch to a publish function; the service provides two — a **dry-run** that always succeeds (for
-deterministic span evidence) and a **real Kafka** publish:
-
-```haskell
--- services/incident-command/src/IncidentCommand/Store.hs
-runOutboxPublisherDryRunOnceWithTelemetry tracer store = do
-  metrics <- serviceMetricsFromGlobalProvider tracer
-  runStoreIO store $
-    publishClaimedOutbox
-      (\rows -> pure [(row ^. #outboxId, PublishSucceeded) | row <- rows])
-      (outboxPublishOptionsWithTelemetry tracer)
-      metrics
-
-runOutboxPublisherKafkaOnceWithTelemetry tracer store config = do
-  metrics <- serviceMetricsFromGlobalProvider tracer
-  runStoreIO store $
-    publishClaimedOutbox
-      (traverse (\row -> do
-        outcome <- liftIO (publishOutboxRowToKafka config row)
-        pure (row ^. #outboxId, outcome)))
-      (outboxPublishOptionsWithTelemetry tracer)
-      metrics
-```
-
-## The Kafka publish itself
-
-`Integration/KafkaPublisher.hs` turns a keiro `OutboxRow` into a Kafka record via keiro's
-`Keiro.Outbox.Kafka.outboxRowToKafkaRecord` (which carries the headers, including the trace-parent),
-produces it with `hw-kafka-client`, waits for the delivery report, and maps the result back to a
-`PublishOutcome`:
+From `mori://shinzui/keiro-runtime-jitsurei`, project-relative path `services/incident-command/src/IncidentCommand/Integration/KafkaPublisher.hs`
+(artifact-level URI pending):
 
 ```haskell
--- services/incident-command/src/IncidentCommand/Integration/KafkaPublisher.hs
 publishOutboxRowToKafka :: KafkaPublishConfig -> OutboxRow -> IO PublishOutcome
 publishOutboxRowToKafka config row = do
-  result <- publishKafkaProducerRecord config (KeiroKafka.outboxRowToKafkaRecord row)
+  let record = KeiroKafka.outboxRowToKafkaRecord row
+  headers <- liveTraceHeaders record.headers
+  result <- publishKafkaProducerRecord config record headers
   pure (kafkaPublishResultToOutcome (first (Text.pack . show) result))
-
-kafkaPublishResultToOutcome :: Either Text () -> PublishOutcome
-kafkaPublishResultToOutcome = \case
-  Left err -> PublishFailed err
-  Right () -> PublishSucceeded
 ```
 
-A `PublishFailed` leaves the row claimed-but-unpublished for the next pass; a `PublishSucceeded`
-marks it done. Hospital Capacity's outbox is identical in shape — its
-`enqueue-latest-reservation-response` and `enqueue-latest-capacity-snapshot` worker commands feed the
-same publisher for `emergency.hospital.events`. The consuming side is
-[next](/docs/example-app/cross-service/03-inbox-and-consuming).
+Keiro claims the batch, the publisher replaces trace headers from the live context and waits for
+Kafka's delivery result, then the outbox records success or retryable failure. A crash between
+broker acknowledgement and durable marking may redeliver the message. Hospital publishes response
+and capacity-snapshot messages through the symmetric path.
+
+This app is pinned to Keiro 0.3 and does not yet demonstrate the newer terminal-rejection API
+in the current [outbox reference](/docs/keiro/reference/outbox).
+Next: [inbox and consuming](/docs/example-app/cross-service/03-inbox-and-consuming).

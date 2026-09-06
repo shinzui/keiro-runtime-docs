@@ -6,6 +6,85 @@ description: "Commands, arguments, output, exit codes, scaffold protections, man
 Run `keiro-dsl` from an installed environment. In the Keiro source tree, use
 `cabal run keiro-dsl --` or put `keiro-dsl/bin` on `PATH`.
 
+## Haskell record API (Keiro DSL 0.15)
+
+Product records now use concise repeated labels with `DuplicateRecordFields`,
+`NoFieldSelectors`, and `OverloadedRecordDot`. Read supported fields with `value.name`
+rather than applying a former selector such as `aggName`. Publicly constructible records
+still support construction and constructor patterns. Abstract checked values remain abstract:
+record modernization does not grant constructors or allow record updates to bypass preflight.
+Twelve intentional single-field newtype unwrappers remain explicit functions.
+
+Serialized keys, canonical/rendered output, diagnostics, fingerprints, and `.keiro` language
+meaning stay unchanged. The renamed labels in this reference describe the 0.15 Haskell API;
+historical version notes identify when the underlying feature first appeared.
+
+Generated output has a separate `idiomatic-v2` edition. Existing pre-v2 ledgers require
+`--apply-generated-haskell-edition`; legacy sidecar/module moves also require
+`--apply-name-migrations` in the same run. Corrupt ledgers refuse before writes. Follow
+[Adopt generated Haskell v2](/docs/keiro/how-to/adopt-generated-haskell-v2) for backup,
+hand-owned-code remediation, rollback, and compilation checks.
+
+### Library-facing adoption API
+
+`Keiro.Dsl.ScaffoldRun` distinguishes missing and unreadable ledgers and exposes the
+remediation inventory. The definitions below are from project `mori://shinzui/keiro`,
+project-relative `keiro-dsl/src/Keiro/Dsl/ScaffoldRun.hs` (artifact-level URI pending).
+
+```haskell
+data LedgerRead a
+  = LedgerAbsent
+  | LedgerParsed !a
+  | LedgerReadUnreadable !FilePath
+  deriving stock (Eq, Show)
+
+data GeneratedHaskellEditionUse = GeneratedHaskellEditionUse
+  { path :: !FilePath,
+    line :: !Int,
+    current :: !Text,
+    replacement :: !Text,
+    form :: !HoleUseForm
+  }
+  deriving stock (Eq, Ord, Show)
+
+data HoleUseForm
+  = PrefixApplication
+  | QualifiedApplication
+  | RecordDotRenamed
+  | RecordFieldBinding
+  | OperatorOperand
+  deriving stock (Eq, Ord, Show)
+
+data GeneratedHaskellEditionImpact = GeneratedHaskellEditionImpact
+  { fromEdition :: !HaskellName.GeneratedHaskellNamingEdition,
+    generatedPaths :: ![FilePath],
+    sidecarPaths :: ![FilePath],
+    handOwnedUses :: ![GeneratedHaskellEditionUse]
+  }
+  deriving stock (Eq, Show)
+
+readRecord :: FilePath -> IO (LedgerRead ScaffoldRecord)
+preparedGeneratedHaskellEditionImpact :: PreparedGeneratedHaskellEditionMigration -> GeneratedHaskellEditionImpact
+preflightGeneratedHaskellEditionMigration :: FilePath -> Maybe HaskellName.GeneratedHaskellNamingEdition -> [(ModuleKind, FilePath)] -> [FilePath] -> IO (Either [Text] (Maybe PreparedGeneratedHaskellEditionMigration))
+applyPreparedGeneratedHaskellEditionMigration :: FilePath -> Maybe PreparedGeneratedHaskellEditionMigration -> IO ()
+```
+
+`Keiro.Dsl.WorkspaceScaffold.readWorkspaceRecord` likewise returns
+`IO (LedgerRead WorkspaceRecord)`. `PreparedGeneratedHaskellEditionMigration` and
+`PreparedSidecarMove` remain abstract; obtain them through successful preflight/planning and
+observe only supported public projections. A combined legacy migration can report
+`SidecarMovesAlreadyApplied` if a later gate refuses after sidecar renames; that accompanying
+note prevents a false claim that nothing was written. Resolve the refusal and rerun using the
+recorded backups.
+
+The new `Refusal` cases are `GeneratedHaskellEditionRequired !GeneratedHaskellEditionImpact`,
+`GeneratedHaskellEditionRefusal ![Text]`, and `LedgerUnreadable !FilePath`. They distinguish an
+unapproved edition switch, a failed migration preflight, and unreadable existing history.
+Programmatic callers can use `executeServiceScaffoldWithRuntimePackageAndMigrations` for the
+combined migration policy; normal scaffold entrypoints retain refusal-by-default behavior.
+
+The generated-language rewriter is in a private Cabal component, not an installed public module.
+
 ## Command summary
 
 ```text
@@ -220,7 +299,7 @@ Writes the append-only `keiro-dsl/check-report/1` schema for sources and workspa
 
 A workspace refused during composition now writes the report that a single spec has always written
 for the equivalent failure. Such a report serializes `"language": null`, because no service graph was
-composed — `reportLanguage` is `Maybe CheckReportLanguage`, and `workspaceRefusalReport` builds it. A
+composed — `language` is `Maybe CheckReportLanguage`, and `workspaceRefusalReport` builds it. A
 parse failure, or an unreadable or unparseable workspace manifest, still writes **no** report: those
 precede any coded diagnostic.
 
@@ -282,7 +361,7 @@ no-modules: emit orderPlaced, emit orderCancelled (validated and diff-classified
 ```
 
 <Callout type="info">
-  *(0.11.0.0.)* `WorkspaceScaffoldReport` gains `wsrInertNodes`, so a **workspace** scaffold now
+  *(0.11.0.0.)* `WorkspaceScaffoldReport` gains `inertNodes`, so a **workspace** scaffold now
   renders the same `no-modules:` line a single-spec report has always rendered.
   `Keiro.Dsl.ScaffoldRun` exports the shared `inertNodesOf` and `renderInertNodeSection`.
 

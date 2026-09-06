@@ -1,0 +1,59 @@
+---
+title: "Adopt generated Haskell idiomatic-v2"
+description: "Migrate an existing scaffold with explicit backups while preserving hand-owned code."
+---
+
+Keiro DSL 0.15 generates `idiomatic-v2`: concise record labels and no product selector
+functions. This changes Haskell source, while `.keiro` syntax, wire keys, SQL names,
+fingerprints, and runtime meaning remain unchanged.
+
+## Goal
+
+Regenerate the service at v2, compile hand-owned code, and preserve a complete rollback set.
+
+## Steps
+
+1. Run your ordinary scaffold command with its existing source/workspace, output directory,
+   runtime-package, layout, module-root, and golden arguments. A pre-v2 ledger refuses before
+   writes. A ledger with no edition row is `legacy-v1`; a corrupt ledger is an error, not a new tree.
+2. Review the affected Generated files, sidecars, and attributed Hole uses. Migrate hand-owned
+   reads first: positional patterns bridge renamed fields across editions; unchanged concise
+   fields can use record dot with `OverloadedRecordDot`. Keep supported newtype unwrappers.
+   The scanner is lexical and limited to recorded files; compilation remains authoritative.
+3. Repeat the exact command with `--apply-generated-haskell-edition`. For a legacy tree
+   also requiring sidecar/module-name migration, pass **both** apply flags in one run:
+
+   ```console
+   keiro-dsl scaffold path/to/service.keiro-workspace --out path/to/src      --apply-name-migrations --apply-generated-haskell-edition
+   ```
+
+   Sidecars move first, the ledger is reread, edition backups capture pre-move paths, and
+   generated module-name moves follow. Existing ledger-recorded Generated files plus the ledger
+   and Cabal fragment are backed up under
+   `.keiro-dsl-generated-haskell-migrations/<from>-to-idiomatic-v2/` in the output root.
+   Hole files are not rewritten or backed up. Conformance-package files written after the
+   ledger are outside this backup set.
+4. Reconcile the generated Cabal fragment: `GHC2024`, `DuplicateRecordFields`,
+   `NoFieldSelectors`, `OverloadedRecordDot`, and `OverloadedStrings`. Compile the whole
+   component, including Hole and conformance modules, then run behavior, codec, structural,
+   replay, and application tests. Do not restore product selectors with `FieldSelectors`.
+
+## Verify it worked
+
+The ledger records `idiomatic-v2`; an ordinary repeat scaffold is idempotent and the consumer
+build/tests pass. Wire, SQL, JSON, and runtime observations should remain unchanged.
+
+## Recover an interrupted or failed adoption
+
+A differing immutable backup is a hard refusal. Inspect it before retrying; a byte-identical
+backup can support continuation. `remediation-report.txt` is regenerated on apply and may stay
+in place during rollback and retry.
+
+To roll back, restore every backed-up relative path, including the ledger and Cabal fragment,
+as one set. For legacy migration, also remove the source-move destinations listed in the report
+and restore moved originals from `.keiro-dsl-name-migrations/legacy-v1-to-idiomatic-v1/`.
+Once the ledger records v2, ordinary scaffolding no longer treats later application edits as
+migration conflicts.
+
+See [scaffold CLI](/docs/keiro/reference/keiro-dsl-cli) and
+[scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes).

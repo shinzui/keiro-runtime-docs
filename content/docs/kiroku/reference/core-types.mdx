@@ -129,6 +129,19 @@ data ExpectedVersion
 See [Optimistic concurrency](/docs/kiroku/explanation/optimistic-concurrency) for the full
 mapping of constructor → failure.
 
+## Retrying aborted transactions
+
+Kiroku 0.8 maps serialization failures (`40001`) and deadlocks (`40P01`) to
+`TransientTransactionFailure !Text !Text`. Replace older matches on
+`UnexpectedServerError` for those codes and add an arm to exhaustive `StoreError` matches.
+The store already retries an append once before surfacing a repeated conflict. Retry the
+whole transaction with bounded backoff; do not repeat only its final statement or assume
+external side effects rolled back with PostgreSQL.
+
+Multi-stream pre-locking orders existing source rows, but fresh streams can still form a
+source/`$all` deadlock cycle with a concurrent single-stream append. This release classifies
+the failure correctly; it does not remove that cycle.
+
 ## `StoreError`
 
 The error type interpreters fail with (`runStoreIO` returns `Either StoreError`).
@@ -146,6 +159,7 @@ The error type interpreters fail with (`runStoreIO` returns `Either StoreError`)
 | `LinkSourceEventMissing !StreamName`                               | A link call referenced an event id that does not exist.                            |
 | `PoolAcquisitionTimeout`                                           | The pool timed out acquiring a connection; usually retryable.                      |
 | `ConnectionLost !Text`                                             | A network/session error tore down the connection mid-operation; usually retryable. |
+| `TransientTransactionFailure !Text !Text` | PostgreSQL `40001` or `40P01` (code, message); the transaction rolled back and may be retried. |
 | `UnexpectedServerError !Text !Text`                                | A PostgreSQL `SQLSTATE` outside the recognised set (code, message); investigate.   |
 | `ConnectionError !Text`                                            | Backward-compatible catch-all; prefer the specific constructors.                   |
 
