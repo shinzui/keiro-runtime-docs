@@ -1,0 +1,113 @@
+---
+title: "keiro-dsl Candidate Language 6"
+description: "The complete Candidate Language 6 syntax and runtime capability matrix, lifecycle, generated contracts, and evolution rules."
+---
+
+Language 6 is the one accepted **candidate** Keiro DSL contract. It selects
+`keiro-dsl/syntax-profile/5` and `keiro-dsl/runtime-semantics/5`, inherits every published Language
+5 feature, and adds exactly five syntax capabilities and two runtime capabilities.
+
+```keiro-dsl
+language keiro-dsl 6
+```
+
+<Callout type="warn">
+  Language 6 is `Candidate CandidateLanguage`, not a published compatibility contract. Its entry may
+  be corrected in place before publication. Use it deliberately, pin it explicitly in every member,
+  and review source changes before upgrading the toolchain.
+</Callout>
+
+## Complete capability matrix
+
+| Registry capability | Source surface | Checked/generated effect | Full reference |
+|---|---|---|---|
+| `DelegatedInboxSyntax` | `intake … idempotence delegated` | Removes local inbox-table ownership and makes the downstream atomic state transition own the durable receipt | [Runtime nodes: intake](/docs/keiro/reference/keiro-dsl-runtime-nodes#intake) |
+| `ProcessReactionSyntax` | `process … reactions version N`, multiple typed inputs, guarded arms, ordered follow-ups, process-level timer policy, reaction timers | Produces a checked declarative reaction, frozen fingerprint, target-keyed dispatch identity, typed reactive worker, deterministic timer/fired IDs, and evolution metadata | [Runtime nodes: process and timer](/docs/keiro/reference/keiro-dsl-runtime-nodes#process-and-timer) |
+| `WorkqueueFifoHeadsSyntax` | `workqueue … fifo-heads` | Exposes FIFO-head inspection while retaining required queue ordering/group constraints and generated queue policy | [Runtime nodes: workqueue](/docs/keiro/reference/keiro-dsl-runtime-nodes#workqueue-and-dispatch) |
+| `ContractDeclaredIdSyntax` | a contract field names a declared DSL `id` | Reuses the declared TypeID prefix and nominal generated Haskell type instead of an anonymous `typeid "prefix"` | [Runtime nodes: contract](/docs/keiro/reference/keiro-dsl-runtime-nodes#contract) |
+| `KeyedMapSyntax` | `Map[<DeclaredId>] <ValueType>` in mapped structural shapes | Gives map keys a declared nominal domain and carries that key type through resolution, codecs, bindings, diffs, and coverage | [Mapped types](/docs/keiro/reference/keiro-dsl-mapped-types#candidate-language-6-nominal-leaves-and-keyed-maps) |
+| `DelegatedInboxRuntime` | selected by Language 6 runtime semantics | Makes delegated inbox ownership an explicit runtime contract; contributes no aggregate fold segment | [Language runtime capabilities](/docs/keiro/reference/keiro-dsl-language-versions#runtime-capability-profiles) |
+| `StructuralNominalLeaves` | declared IDs/enums/nominals inside structural mapped records, lists, optionals, unions, and keyed maps | Admits nominal structural leaves and generates their typed codecs/conformance bindings; contributes no aggregate fold segment | [Mapped types](/docs/keiro/reference/keiro-dsl-mapped-types#candidate-language-6-nominal-leaves-and-keyed-maps) |
+
+No other syntax or runtime capability is Language 6-specific. Language 6 still includes all Language
+5 projection catalogs, external reads, mapped consumer surfaces, typed domain outcomes, declarative
+router selection, and separated delivery/freshness policy.
+
+## Process reactions and timers
+
+The reaction surface is the largest Language 6 addition. A process may declare multiple typed
+inputs and exactly one total `on` body for each, with `when`/`otherwise` arms and ordered `advance`,
+`dispatch`, `schedule`, `schedule … once`, and `cancel` actions. Timers have process-wide retry/dead
+letter policy, typed payloads, deterministic IDs, a typed fire command, and explicit outcomes.
+
+The reaction fingerprint and timer identities are separate contracts:
+
+- `processReactionFingerprintFrom` is SHA-256 over the frozen, UTF-8-length-framed
+  `reaction-v1` semantic surface.
+- Each timer ID and fired event ID is UUIDv5 in `namespaceURL` over the frozen UTF-8 bytes of two
+  length-prefixed fields: its declared prefix and the correlation ID.
+
+The exact included fields, validation failures, generated runtime surface, and diff classifications
+are listed in [Process and timer](/docs/keiro/reference/keiro-dsl-runtime-nodes#process-and-timer).
+
+## Tool behavior
+
+| Operation | Language 6 behavior |
+|---|---|
+| `parse` / `pretty` | accepts and canonically renders profile-5 syntax |
+| `check` | validates profile-5 grammar under runtime-semantics 5; `--min-language 6` can require it |
+| `inspect` | reports effective version `6`, support `candidate`, and runtime semantics 5 |
+| `new <kind>` | intentionally emits published stable Language 5 via `currentStableLanguageVersion`; change the preamble explicitly to opt in |
+| `scaffold` | records source/effective language, generates Language 6 surfaces, and preserves reaction metadata in the ledger |
+| `diff` | compares Language 6 persisted, identity, build, reaction, timer, and coordination surfaces with ordinary compatibility vectors |
+| workspace commands | require every member to select the same effective language version; mixing 5 and 6 is `WorkspaceLanguageVersionMismatch` |
+
+`currentAuthoringLanguageVersion` returns 6 for candidate-aware library tooling. It does not control
+the conservative `new` command. `currentStableLanguageVersion` remains 5.
+
+## Evolution and rollout
+
+Published Language 5 meaning is unchanged by registering Language 6. Moving a source to 6 does not
+itself add a fold-fingerprint segment: both new runtime capabilities are fold-neutral. Individual
+Language 6 declarations still own persisted and coordination surfaces:
+
+- reaction identity or unversioned fingerprint changes are breaking;
+- versioned reaction semantic changes, removed reactions, guard changes, arm reordering, and fan-out
+  changes are advisory with `drain-required`;
+- timer/fired-event prefix changes and removal of a possibly scheduled timer are breaking;
+- timer payload changes are advisory with `producer-last`;
+- delegated/local idempotence-mode changes participate in intake identity/evolution checks;
+- keyed-map and nominal-leaf shape changes flow through mapped-type wire, binding, snapshot, queue,
+  and consumer-build compatibility analysis.
+
+Use `diff --deny CODE` to gate selected advisory findings and preserve the rollout constraint in the
+machine-readable report.
+
+## Haskell registry API
+
+```haskell
+data LanguageFeature
+    = DelegatedInboxSyntax
+    | ProcessReactionSyntax
+    | WorkqueueFifoHeadsSyntax
+    | ContractDeclaredIdSyntax
+    | KeyedMapSyntax
+    -- plus the inherited Language 2–5 constructors
+
+data RuntimeCapability
+    = DelegatedInboxRuntime
+    | StructuralNominalLeaves
+    -- plus the inherited runtime-semantics 2–4 constructors
+```
+
+Query the selected profiles through `languageSupportsFeature` and
+`runtimeProfileHasCapability`; the profile constructors are private so callers cannot invent a
+partially enabled Language 6.
+
+## Related
+
+- [Language versions](/docs/keiro/reference/keiro-dsl-language-versions) — registry, maturity,
+  selectors, profiles, and source-selection diagnostics.
+- [Notation](/docs/keiro/reference/keiro-dsl-notation) — the full inherited grammar inventory.
+- [keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) — commands, flags, reports, and gates.
+- [Service workspaces](/docs/keiro/reference/keiro-dsl-workspaces) — whole-service version matching.

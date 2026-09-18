@@ -6,6 +6,9 @@ description: "Commands, arguments, output, exit codes, scaffold protections, man
 Run `keiro-dsl` from an installed environment. In the Keiro source tree, use
 `cabal run keiro-dsl --` or put `keiro-dsl/bin` on `PATH`.
 
+The [keiro-dsl coverage map](/docs/keiro/reference/keiro-dsl-coverage-map) links every command,
+language/node registry, and public Haskell module to its owning reference.
+
 ## Haskell record API (Keiro DSL 0.15)
 
 Product records now use concise repeated labels with `DuplicateRecordFields`,
@@ -97,12 +100,13 @@ keiro-dsl check <FILE> [--emit] [--explain-bindings] \
   [--min-language N] [--deny-warnings] [--deny CODE[,CODE...]]… [--report-out FILE] \
   [--coverage-report FILE [--fail-on-opaque]]
 keiro-dsl scaffold <FILE> --out DIR \
-  [--module-root PREFIX] [--collocate] [--force-generated-overwrite] [--goldens DIR] \
-  [--apply-name-migrations] \
+  [--module-root PREFIX] [--runtime-package PACKAGE] [--collocate] \
+  [--force-generated-overwrite] [--goldens DIR] \
+  [--apply-name-migrations] [--apply-generated-haskell-edition] \
   [--codec-comparison MAPPED-NAME --comparison-out FILE]
 keiro-dsl diff --since <git-ref> <FILE> \
   [--emit-goldens DIR] [--replay-impact-out FILE] \
-  [--gate SURFACE]… [--explain] [--report-out FILE] \
+  [--gate SURFACE]… [--deny CODE[,CODE...]]… [--explain] [--report-out FILE] \
   [--coverage-report FILE [--fail-on-opaque-increase]]
 ```
 
@@ -130,9 +134,10 @@ conformance suite.
 
 <Callout type="info">
   *(Keiro 0.9.0.0; language 5 since 0.12.0.0.)* Every skeleton begins with a
-  `language keiro-dsl 5` preamble. The starter version is **derived** from
-  `currentAuthoringLanguageVersion` rather than hard-coded, so a future stable or candidate
-  designation moves the skeletons with it.
+  `language keiro-dsl 5` preamble. The starter version is derived from
+  `currentStableLanguageVersion`, not `currentAuthoringLanguageVersion`. Candidate Language 6 is
+  accepted and available to candidate-aware authoring tools, but `new` keeps emitting the
+  published stable contract until that stable selector moves.
   See [language versions](/docs/keiro/reference/keiro-dsl-language-versions).
 </Callout>
 
@@ -171,6 +176,8 @@ keiro-dsl inspect service.keiro-workspace --format=json
 It answers three separate questions per source: what the file **declared** (a version, or
 `legacy-unversioned`), what version is therefore **effective**, and what that version's **support
 lifecycle** is — `stable` for language 5, `compatibility-only` for 1 through 4.
+Candidate Language 6 is reported as `candidate` with runtime semantics 5. See the
+[complete Language 6 matrix](/docs/keiro/reference/keiro-dsl-language-6).
 
 <Callout type="info">
   The declared/effective split is not pedantry. A workspace can hold a legacy-unversioned member and
@@ -422,6 +429,24 @@ Placement precedence is CLI flag, then spec clause, then default:
 keiro-dsl scaffold service.keiro --out src --module-root Acme --collocate
 ```
 
+### `--runtime-package PACKAGE`
+
+Names the Cabal package that compiles the generated service runtime. The name follows Cabal package
+grammar: one or more hyphen-separated, non-empty ASCII alphanumeric components, each containing at
+least one letter. A CLI value overrides a workspace manifest's `runtime-package` clause; a standalone
+`.keiro` source has no persisted manifest setting.
+
+When configured, scaffold adds one generated service-conformance facade and one runnable package
+under `keiro-dsl-conformance.<context>` for a standalone source or
+`keiro-dsl-conformance.workspace.<service>` for a workspace. The package depends on the named runtime
+package, imports the facade, compares the complete expected and actual conformance-fact maps, runs all
+node harness checks, and exits nonzero on a failed check, mismatched/missing/unexpected fact, or
+duplicate key. Without a runtime package, neither the facade nor this runnable package is planned.
+
+The generated conformance package has the same preflight discipline as the main scaffold: unsafe
+paths, case-folded collisions, missing generated banners, duplicate fact keys, and a mismatched or
+unreadable ledger refuse before its files are written.
+
 On success, stderr lists every module and disposition (`overwritten`, `created`, or
 `skipped: already present`), the firewall verdict, harness modules, and manifest path.
 
@@ -621,6 +646,13 @@ keiro-dsl diff --since origin/main --gate old-binary-read-new-events service.kei
 There is no flag to *remove* a surface from the gate. Accept a breaking verdict by changing the spec
 or by making the deploy decision outside the tool, not by loosening the gate.
 
+### `--deny CODE[,CODE...]`
+
+`diff` can turn selected advisory findings into a nonzero exit without changing their reported
+severity. The option is repeatable and accepts comma-separated stable `DiagnosticCode` spellings.
+It rejects unknown codes and codes not emitted by the cross-revision diff pipeline, so a CI rule
+cannot silently name a finding that this command will never produce.
+
 ### `--explain`
 
 Print, for every finding with an advisory or breaking surface, the containing paths, which direction
@@ -664,6 +696,11 @@ These exit 0 but carry an operational obligation:
 | `EventRetirementInProgress` | the safe retained shape is in place | keep the cleanup on the backlog |
 | `RouterDecideSurfaceChanged` | router resolve/dispatch changed | drain the subscription redelivery window |
 | `ProcessDecideSurfaceChanged` | process handle surface changed | drain the subscription redelivery window |
+| `ProcessReactionRemoved` | a Candidate Language 6 input reaction was removed | drain or pause the process subscription before deploy |
+| `ProcessReactionGuardChanged` | a reaction guard at an arm ordinal changed | drain so redelivery cannot select old and new branches |
+| `ProcessReactionArmsReordered` | reaction arm order changed | drain because branch choice and dispatch occurrences moved |
+| `ProcessReactionFanOutChanged` | an arm body or arm count changed | drain so redelivery cannot merge old and new target-keyed fan-out |
+| `ProcessReactionFingerprintChangedWithVersionBump` | fingerprint changed with the required version increase | coordinate drain and redelivery around the new fingerprint |
 | `ProcessTimerPayloadChanged` | an unversioned process-timer payload changed | deploy backward-compatible firers first |
 
 `AggGuardTightened` prints a **paste-ready** `replay-only` twin whose guard is the removed region

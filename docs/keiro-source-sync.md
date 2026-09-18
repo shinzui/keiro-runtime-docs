@@ -38,6 +38,12 @@ chore(release): 0.17.0.0
 > **Current range.** `de574cdc..11e0bba4` (**142 commits**). Reviewed Keiro 0.16/0.17: migration 0032 and guarded Dead-timer resume; replay-safe producer identity and conflict reporting; typed process reactions; delegated inbox idempotence; required job ordering, FIFO heads, partition validation and DLQ safeguards; candidate DSL Language 6; and pgmq-hs 0.6 compatibility. Added the timer-resume runbook and updated the reference, walkthroughs, integration guides and compatibility. Plans, tests, benchmarks, review bundles and temporary reverted work are explicitly classified in the ledger.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
+> **DSL completeness follow-up (2026-09-18).** A second-pass audit at the same upstream commit
+> enumerated all language/node/CLI/skeleton registries and mechanically matched all 60 public
+> `keiro-dsl` modules. It added dedicated Candidate Language 6 and coverage-map references and fixed
+> gaps in reaction identity, runtime capabilities, runtime-package scaffolding, workspace commands,
+> and stable skeleton selection. See the [coverage audit](keiro-dsl-coverage-audit-2026-09-18.md).
+
 > ### Prior release boundary: the 0.12 release-prep items were closed
 >
 > The previous note recorded two source facts the release cut still had to

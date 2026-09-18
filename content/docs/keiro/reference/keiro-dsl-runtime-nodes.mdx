@@ -6,6 +6,9 @@ description: "Process, timer, router, contract, intake, emit, publisher, workque
 This page owns every non-aggregate runtime node. References to aggregates, projections, read models,
 contracts, commands, queues, workflows, and fields are resolved by `check`.
 
+Stable Languages 1–5 and Candidate Language 6 share this page. Candidate-only clauses are labelled
+where they occur and summarized in the [complete Language 6 matrix](/docs/keiro/reference/keiro-dsl-language-6).
+
 <Callout type="warn">
   **Breaking in Keiro 0.9.0.0 — generated runtime surfaces close over `Text`.** Four places where
   generated code previously handed you a stringly-typed value now hand you a closed, generated type.
@@ -59,15 +62,101 @@ process IncidentReaction
   poison => halt
 ```
 
-Reaction inputs, guard coverage, arm totality, command mappings, targets, and follow-up order are
-checked. Scaffolding generates the input ADT, pure reaction, typed `ReactiveProcessManager`, worker,
-reaction version/fingerprint, and timer codecs; the create-once hole only decodes a `RecordedEvent`
-to a typed input. Reaction timers support `schedule`, insert-only `schedule-once`, and `cancel` and
-share the saga append transaction when accepted.
+### Reaction validation
 
-The target-keyed identity tuple is mandatory. Moving an existing manager name from the legacy body
-to reactions is an identity migration: drain its subscription before deploy. Reaction evolution
-advisories carry `drain-required`.
+The checked `Keiro.Dsl.ProcessReaction` phase makes the following invalid before scaffolding:
+
+- a duplicate input declaration, `on` block, or timer name;
+- an `on` block for an unknown input, or a declared input with no `on` block;
+- a non-Boolean guard, a guarded chain without a final `otherwise`, or an `otherwise` before the
+  final arm;
+- unknown saga/target aggregates, commands, fields, or structurally invalid mappings;
+- an incomplete timer payload, a schedule/cancel naming an unknown timer, a timer without the
+  process-level retry policy, or a retry policy with no timers; and
+- reuse of any timer-ID or fired-event-ID prefix within the process.
+
+An arm is `no-action` or an ordered `advance` plus follow-ups. Follow-ups are `dispatch`, `schedule`,
+insert-only `schedule … once`, or `cancel`. An `advance … accepted { … }` continuation is generated
+only when the saga transition is generated-owned; a hole-owned transition leaves an explicit
+accepted-event proof obligation and marks reaction verification `custom-unverified`.
+
+```keiro-dsl
+  on IncidentReported
+    advance RecordIncident { incidentId }
+    schedule escalation fireAt input.raisedAt + 5m { incidentId detail }
+    schedule reminder once fireAt input.raisedAt + 60m { incidentId }
+
+  on ResponderAcked
+    cancel reminder
+
+  timers max-attempts 5 dead-letter "incident timer exceeded ceiling"
+
+  timer escalation
+    id uuidv5 "incident-escalation-timer:" <> correlationId
+    payload { kind="escalation" incidentId:IncidentId detail:Text }
+    fire dispatch Incident@correlationId EscalateIncident { incidentId }
+      fired-event-id uuidv5 "incident-escalation-fired:" <> correlationId
+      on-ok Fired ; on-reject Fired ; on-ambiguous Retry ; on-error Retry ; not-mine Retry
+    decode unknown-status => Cancelled
+```
+
+Accepted scheduling and cancellation share the saga append transaction. Rearming `schedule`
+updates the due request; `schedule … once` is insert-only; `cancel` addresses the same deterministic
+timer identity. `max-attempts` is positive and the dead-letter text is operator guidance. Unknown
+timer status decodes to the declared posture.
+
+### Frozen reaction fingerprint
+
+`processReactionFingerprintFrom` is the lowercase SHA-256 hex digest of
+`canonicalReactionSurface`. The canonical surface starts with `reaction-v1` and length-frames every
+field by its UTF-8 byte length, so adjacent text and non-ASCII values cannot alias. It includes the
+reaction version, input names/types, ordered reactions, guard expressions, arm bodies, ordered
+follow-ups, the target-keyed source-event-occurrence identity-model tag, and timer identities,
+payloads, fire commands, and dispositions. Source locations and formatting are absent.
+
+The operator-only `timers max-attempts … dead-letter …` policy is deliberately outside this
+fingerprint. Its evolution has the separate `ProcessTimerCeilingChanged` advisory and does not claim
+to change reaction replay identity.
+
+### Timer and fired-event UUIDs
+
+Timer IDs and fired event IDs do **not** hash the reaction fingerprint. Generated code derives each
+one independently as:
+
+```text
+UUIDv5(namespaceURL,
+       utf8(byteLength(prefix) + ":" + prefix
+          + byteLength(correlationId) + ":" + correlationId))
+```
+
+The byte lengths are decimal UTF-8 lengths, not character counts. The concatenated text is passed
+through Keiro's frozen `identitySeedBytes` encoder. A timer uses its `id uuidv5 "<prefix>" <>
+correlationId` prefix; its fired command uses the separate `fired-event-id` prefix. This framing
+makes pairs such as (`"ab"`, `"c"`) and (`"a"`, `"bc"`) distinct, while UUIDv5 makes retries
+reproduce the same IDs. Prefix reuse is rejected because it would collapse two declared identity
+domains.
+
+### Generated runtime contract
+
+Scaffolding generates the closed input ADT, pure reaction function, typed
+`ReactiveProcessManager`, runtime worker, reaction version/fingerprint constants, timer request and
+payload codecs, deterministic timer fire functions, and a process harness. The only create-once
+reaction hole decodes `RecordedEvent` into the closed input type. Dispatch identity is fixed to
+`(name, correlationId, sourceEventId, targetStreamName, occurrence)`; follow-up order supplies the
+occurrence component.
+
+### Reaction evolution and rollout
+
+Moving an existing manager name from the legacy body to reactions changes the dispatch identity
+model and is breaking. A lower reaction version, a semantic fingerprint change without a version
+bump, removal of a scheduled timer, or a timer/fired-event prefix change is also breaking.
+
+With the required version bump, a fingerprint change is advisory. Removing a reaction, changing a
+guard, reordering arms, or changing arm count/fan-out is advisory too. Those five advisory codes
+carry the `drain-required` rollout constraint because redelivery through old and new binaries can
+choose or emit different work. Timer payload drift instead carries `producer-last`; a timer retry
+ceiling or window change is advisory without an invented drain constraint. See the exact code table
+in [`diff`](/docs/keiro/reference/keiro-dsl-cli#non-breaking-advisories).
 
 ### Legacy process body
 
@@ -184,8 +273,26 @@ contract emergency {
 ```
 
 Contract field types are `typeid "prefix"`, `text`, or `int`. Candidate Language 6 also lets a field
-name a declared `id`, reusing its TypeID prefix and nominal Haskell type instead of repeating an
-anonymous prefix. Topic aliases map to actual Kafka topics; events declare their topic affinity.
+name a declared `id`:
+
+```keiro-dsl
+id TemplateId prefix=template
+
+contract templates {
+  schemaVersion 1
+  discriminator messageType
+  topic templateEvents "templates.events"
+  event TemplateClaimed on templateEvents {
+    templateId: TemplateId
+    legacyTemplateId: typeid "template"
+  }
+}
+```
+
+The declared form reuses the ID's TypeID prefix and nominal Haskell type instead of repeating an
+anonymous prefix. It must resolve to an `id`; an enum, nominal scalar, mapped declaration, or unknown
+name is `ContractIdUnknown`. Changing the declared ID's prefix or its selected ID-domain contract is
+a public contract evolution finding. Topic aliases map to actual Kafka topics; events declare their topic affinity.
 Generated `Contract` modules own payload ADTs/codecs.
 
 ### Intake
@@ -220,6 +327,10 @@ Candidate Language 6 accepts `idempotence delegated` in place of inbox-table own
 generated runner uses the no-`Store` delegated APIs and requires the downstream atomic state
 transition to provide the durable receipt. It is not appropriate for silent commands, non-atomic
 side effects, or multi-command reactions, and it provides no inbox backlog or failed-row inspection.
+`persist = dedupe-only` is invalid with delegated idempotence because there is no Keiro inbox row to
+retain or trim (`DelegatedInboxDedupeOnlyPersistence`); omit `persist`. The generated module exports
+`inboxIdempotence = IdempotenceDelegated` and a typed `runInboxIntake` wrapper over
+`runInboxDelegated`.
 
 The directly scaffoldable dedupe policies are `PreferIntegrationMessageId`,
 `PreferSourceEventIdentity`, and `KafkaDeliveryIdentity`. A custom runtime key remains hand-owned.
@@ -274,9 +385,12 @@ workqueue reservation_work {
 }
 ```
 
-Ordering is `unordered` (default), `fifo-throughput`, `fifo-roundrobin`, or `fifo-heads`. FIFO
+Ordering is `unordered` (default), `fifo-throughput`, or `fifo-roundrobin`; Candidate Language 6
+adds `fifo-heads`. FIFO
 requires exactly one group key; unordered forbids it. `fifo-heads` lowers to the strict grouped-head
-reader and safely supports batches; the legacy FIFO strategies require batch size 1 at runtime.
+reader as generated `FifoHeads` policy and safely supports batches; the legacy FIFO strategies
+require batch size 1 at runtime. Declaring `fifo-heads` under Languages 1–5 is rejected at the
+language-feature boundary.
 `via raw` requires a `text` payload field. An opaque `via <name>` requires
 `fixture "input => output"`.
 

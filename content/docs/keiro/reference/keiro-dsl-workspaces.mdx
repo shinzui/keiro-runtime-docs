@@ -11,6 +11,10 @@ model owned by a third.
 
 A single `.keiro` file is unchanged and behaves as a **one-member workspace**.
 
+All members must select the same effective language version. A Candidate Language 6 workspace pins
+`language keiro-dsl 6` in every member; mixing 5 and 6 is `WorkspaceLanguageVersionMismatch`. See
+the [complete Language 6 matrix](/docs/keiro/reference/keiro-dsl-language-6).
+
 <Callout type="info">
   **Released in Keiro 0.5.0.0**, recorded as ADR-14 and ADR-15 with ADR-4 amended. This page
   previously documented workspaces as an unreleased preview; that caveat is retired.
@@ -21,6 +25,7 @@ A single `.keiro` file is unchanged and behaves as a **one-member workspace**.
 ```text
 # The demo-project service workspace.
 service demo-project
+runtime-package demo-project-runtime
 module Demo.Modules.Project
 layout collocated
 spec domain/project-artifact.keiro
@@ -34,6 +39,7 @@ insignificant, and clause keywords drive structure. The member `.keiro` grammar 
 <TypeTable
   type={{
     service: { type: "required", description: "The stable workspace identity, e.g. demo-project. Keys the scaffold record, so it outlives member renames." },
+    "runtime-package": { type: "optional", description: "The Cabal package that compiles the generated service runtime. Enables the generated service-conformance facade and runnable conformance package; scaffold --runtime-package overrides it." },
     module: { type: "optional", description: "The workspace's module-root authority. A member's own module clause may not contradict it." },
     layout: { type: "optional", description: "The workspace's placement authority (e.g. collocated). Same rule as module." },
     spec: { type: "one or more", description: "A manifest-relative member path ending in .keiro. Normalized to forward slashes with no ./ segments." },
@@ -100,7 +106,10 @@ Every command accepts a manifest in place of a `.keiro` path:
 | Command | On a manifest |
 |---|---|
 | `parse` | round-trips the manifest canonically (clauses in order, members codepoint-sorted) |
+| `pretty` | the same canonical manifest rendering as `parse` |
 | `check` | composes the whole service and validates it as one contract |
+| `inspect` | reports declared/effective language and lifecycle for every member |
+| `behavior-obligations` | inventories aggregate obligations over the merged service graph, with owning members |
 | `scaffold` | plans and executes a **whole-workspace** scaffold with workspace-keyed history |
 | `diff --since <rev>` | reconstructs the old member set from git and diffs whole-service |
 
@@ -108,6 +117,18 @@ Every command accepts a manifest in place of a `.keiro` path:
 whole-service view, `--explain-bindings` lists the service's binding obligations, and
 `--coverage-report` / `--fail-on-opaque` report on the merged mapped-type graph with the manifest as
 the report's subject. See [the CLI reference](/docs/keiro/reference/keiro-dsl-cli).
+
+### Runtime package precedence
+
+The optional `runtime-package PACKAGE` clause persists the Cabal identity that compiles generated
+runtime modules. `keiro-dsl scaffold --runtime-package PACKAGE` wins when both are present; otherwise
+scaffold uses the manifest value. The package name is not inferred from `service`: those identities
+may differ.
+
+An effective runtime package adds a context-level service-conformance facade and a runnable
+`keiro-dsl-conformance.workspace.<service>` package under the output root. Omitting both settings
+omits both artifacts. See [`--runtime-package`](/docs/keiro/reference/keiro-dsl-cli#--runtime-package-package)
+for validation, generated contents, and preflight behavior.
 
 ## Workspace-keyed scaffold history
 
