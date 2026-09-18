@@ -165,14 +165,60 @@ data IntegrationEventDraft = IntegrationEventDraft
   , causationId :: !(Maybe EventId), correlationId :: !(Maybe EventId)
   , traceContext :: !(Maybe TraceContext), attributes :: !(Maybe Value) }
 
-mintIntegrationEvent   :: (IOE :> es) => IntegrationProducer e -> IntegrationEventDraft -> Eff es IntegrationEvent
+freshIntegrationEvent  :: (IOE :> es) => IntegrationProducer e -> IntegrationEventDraft -> Eff es IntegrationEvent
 draftToEvent           :: Text -> Text -> IntegrationEventDraft -> IntegrationEvent
-enqueueProducerEventTx :: (IOE :> es) => IntegrationProducer e -> OutboxId -> IntegrationEventDraft -> Eff es (Tx.Transaction ())
+enqueueProducerEventTx ::
+  IntegrationProducer e -> RecordedEvent -> Word32 -> IntegrationEventDraft ->
+  Tx.Transaction ProducerEnqueueOutcome
 ```
 
 `IntegrationEventDraft` is `IntegrationEvent` minus `messageId` and `source`; the producer fills
-those in (`messageId` minted as a `messageIdPrefix`-prefixed TypeID). `mapEvent` returning
-`Nothing` skips an event without enqueuing a row.
+those in. `mapEvent` returning `Nothing` skips an event without enqueuing a row.
+
+For the canonical subscription path, `enqueueProducerEventTx` derives replay-stable identity from
+the producer source/name, the recorded source event ID, and the zero-based `emissionIndex`. The
+outbox ID is a deterministic UUIDv8 and the message ID has the opaque form
+`<messageIdPrefix>_v1_<sha256>`. Missing source provenance defaults from the `RecordedEvent`; pass
+index zero for today's single-draft mapper.
+
+```haskell
+data ProducerEventKey = ProducerEventKey
+  { sourceEventId :: EventId, emissionIndex :: Word32 }
+
+data ProducerIdentity = ProducerIdentity
+  { outboxId :: OutboxId, messageId :: Text, derivationVersion :: Word16 }
+
+data ProducerEnqueueOutcome
+  = ProducerInserted ProducerIdentity
+  | ProducerDuplicateIdentical ProducerIdentity
+  | ProducerIdentityConflict ProducerIdentity (NonEmpty ConflictField)
+
+data ConflictField
+  = IdentityField | RoutingField | SchemaField | PayloadField | OccurredAtField
+  | CausalField | TraceField | AttributesField | ProvenanceField
+```
+
+An identical replay is reported explicitly. Reusing an identity for different canonical envelope
+content reports only field classes—never payload or metadata values. Condemn the surrounding
+checkpoint transaction on `ProducerIdentityConflict`, then call
+`recordProducerEnqueueOutcome metrics outcome` once after the transaction runner returns so SQL
+serialization retries do not multiply `keiro.outbox.identity.conflict`.
+
+`deriveProducerIdentity`, `producerIdentityBytes`, `producerContentDigest`,
+`differingContentFields`, and `normalizeProducerEvent` expose the pure identity and comparison
+rules. Suppression is bounded by outbox retention, but the wire identity remains deterministic
+after a row is collected.
+
+`freshIntegrationEvent` remains for deliberately fresh, immediately persisted envelopes. The old
+name `mintIntegrationEvent` is a deprecated alias. It has no producer replay identity or provenance
+defaulting and must not be used as the canonical subscription retry path.
+
+<Callout type="warn">
+  Moving an existing producer from random TypeID/outbox IDs to deterministic producer identity is a
+  cutover even though it needs no schema migration. Drain its subscription and checkpoint before
+  deploying every writer that shares that producer identity, then resume. Otherwise one source
+  event can exist under both identity families.
+</Callout>
 
 ## `publishClaimedOutbox`
 

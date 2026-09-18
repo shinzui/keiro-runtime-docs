@@ -25,13 +25,13 @@ reviewed by the documentation.
 ## Last reviewed commit
 
 ```text
-97d8b07e87ceb2d9b6e6b2b8a60a7de84e15e2bb  (97d8b07e)
-2026-08-26T18:15:44-07:00
-docs(okf): bootstrap review profile
+79337c57967db09c6ef7e27d68d349fe25e4b92b  (79337c57)
+2026-09-07T19:45:47-07:00
+chore(mori): declare every package and its dependencies
 ```
 
-> **Current range.** `04296a74..97d8b07e` (**9 commits**). Keiki 0.9.1 adds the pure exact standard-Bool register-candidate disjointness proof; integral reasoning and public validation/replay signatures are unchanged. Updated validation, replay explanation, FAQ and shared compatibility. Codec co-releases change bounds only. Proof tests, plans and review profiles are doc-neutral; arbitrary enumerated carriers and opaque guards remain unsupported.
-> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+> **Current range.** `97d8b07e..79337c57` (**1 commit**). Mori package/dependency metadata only; no package source, release, API, or behavior changed. Compatibility records the reviewed SHA.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `9714d37..04296a7` range (**1 commit**) is
 > **doc-neutral**. `git diff --stat 9714d37..HEAD -- '*/src' 'src' '*.cabal' 'CHANGELOG.md'` is
@@ -436,6 +436,10 @@ docs(okf): bootstrap review profile
 
 ## Previous pointers
 
+- `97d8b07e87ceb2d9b6e6b2b8a60a7de84e15e2bb` (`97d8b07e`) — baseline before the
+  `97d8b07e..79337c57` review (1 commit). The range changed only Mori registry
+  metadata, so no product page changed; see the [2026-09-17 ledger](source-sync-2026-09-17.md).
+
 - `04296a744a577ed10ee50259e954437d94798125` (`04296a74`) — baseline before the `04296a74..97d8b07e` review (9 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
 
 - `9714d37033c37595e3aaa3319ca0ca77466782e0` (`9714d37`, 2026-08-04, keiki 0.9.0.0) — the baseline before the doc-neutral OKF round. The `9714d37..04296a7` range (1 commit) touched no source, cabal, or CHANGELOG — upstream repository metadata only. No page changed.
@@ -473,8 +477,8 @@ docs(okf): bootstrap review profile
 1. Resolve the source with mori and inspect committed drift:
    ```text
    KEIKI=$(mori registry show shinzui/keiki --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIKI" log --oneline 97d8b07e..HEAD
-   git -C "$KEIKI" diff --stat 97d8b07e..HEAD
+   git -C "$KEIKI" log --oneline 79337c57..HEAD
+   git -C "$KEIKI" diff --stat 79337c57..HEAD
    ```
 2. Read changed source, tests, changelogs, and release notes. `docs/foundations/`
    is the highest-value prose here — it states trust boundaries the source only

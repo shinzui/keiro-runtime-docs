@@ -15,7 +15,7 @@ workqueue reservation_work {
   derive physical = "hospital_capacity_reservation_work"
          dlq = "hospital_capacity_reservation_work_dlq"
          table = "pgmq.q_hospital_capacity_reservation_work"
-  ordering fifo-throughput
+  ordering fifo-heads
   group key from reservationId via raw
   provision standard
   payload ReservationWorkItem {
@@ -32,8 +32,11 @@ workqueue reservation_work {
 }
 ```
 
-Choose `fifo-throughput` for maximum cross-group concurrency or `fifo-roundrobin` for fairer group
-selection. `unordered` is the default and forbids a group key. FIFO requires one group key.
+Choose `fifo-heads` when strict per-group ordering matters: PGMQ returns at most the absolute head of
+each group, so a hidden head blocks successors while other groups remain eligible. It supports safe
+batches and requires PGMQ 1.12+. The legacy `fifo-throughput` and `fifo-roundrobin` strategies are
+restricted to batch size 1 because a larger lease can expose a successor before its predecessor
+settles. `unordered` is the default and forbids a group key. FIFO requires one group key.
 
 `via raw` requires a `text` payload field. For an opaque derivation, use
 `via <function> fixture "input => output"`; fill that function consistently with the captured row.
@@ -65,8 +68,9 @@ keiro-dsl scaffold keiro-dsl/test/fixtures/reservation-work.keiro --out gen
 
 Generated `Queue` contains payload codec, queue reference, and group derivation. Generated
 `QueuePolicy` contains `jobOrdering`, FIFO-aware `queueProvision`, retry policy, and outcome mapping.
-Pass `queueProvision` to `ensureJobQueueWith` at startup and the generated ordering through the job
-worker tuning.
+Put that value in `Job.jobOrdering`, pass `queueProvision` to `ensureJobQueueWith` at startup, and
+make any explicit `JobTuning.ordering` match it. Keiro rejects a mismatch before it constructs an
+adapter or performs a direct read.
 
 Fan-out, raw-SQL queue dedupe, handler behavior, batch size, visibility timeout, polling, concurrency,
 headers, and metrics remain hand-owned/runtime configuration.

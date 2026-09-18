@@ -44,8 +44,10 @@ stateDiagram-v2
   Firing --> Scheduled: requeueStuckTimers after timeout / operator requeue
   Scheduled --> Cancelled: cancelTimer
   Firing --> Cancelled: cancelTimer
-  Firing --> Dead: deadLetterTimer / maxAttempts ceiling
+  Firing --> Dead: deadLetterTimer / maxAttempts ceiling / expired resume lease
   Scheduled --> Dead: deadLetterTimer
+  Dead --> Firing: claimDeadTimer (exact guards + lease)
+  Firing --> Dead: parkTimerResume
   Fired --> [*]
   Cancelled --> [*]
   Dead --> [*]
@@ -59,8 +61,9 @@ stateDiagram-v2
 - **`Cancelled`** — withdrawn before firing via `cancelTimer`; terminal. `Cancelled` is **also the
   decode fallback** for an unrecognized stored status string (`statusFromText` maps anything unknown
   to `Cancelled`).
-- **`Dead`** — abandoned after exceeding the attempt ceiling, via `deadLetterTimer` (or the worker's
-  `maxAttempts` auto-dead-letter); terminal. Carries a `last_error` explaining why.
+- **`Dead`** — parked or abandoned after exceeding the attempt ceiling, via `deadLetterTimer` (or
+  the worker's `maxAttempts` auto-dead-letter). Carries a `last_error`; Keiro 0.16 can resume it only
+  through an exact, token-guarded foreground claim.
 
 ## At-least-once firing
 
@@ -132,7 +135,8 @@ command. `Jitsurei/EscalationProcess.hs`'s `incidentIdFromTimer` does exactly th
 A `Firing` row left by a crash (or a `fire` that keeps returning `Nothing`) is not directly claimable —
 `claimDueTimer` selects only `Scheduled` rows. `runTimerWorkerWith` first runs the bounded
 `requeueStuckTimers` sweep when `requeueStuckAfter = Just ttl`; the default is five minutes. Set the
-option to `Nothing` only when a separate recovery loop owns this transition. Keiro also ships a
+option to `Nothing` only when a separate recovery loop owns this ordinary transition. Expired
+foreground claims still recover directly to `Dead` on every worker pass. Keiro also ships a
 supported per-row recovery API in `Keiro.Timer` / `Keiro.Timer.Schema`:
 
 - **`findStuckTimers now filter`** — list `Firing` rows, filtered by how long they have been firing
@@ -150,6 +154,23 @@ To bound poison timers automatically, drive the worker with `runTimerWorkerWith`
 instead of firing it. The default `Nothing` never produces that terminal outcome. Choose
 `requeueStuckAfter` above the longest legitimate fire duration: if a live action crosses the timeout,
 another worker pass can requeue and fire the same timer concurrently.
+
+## Inspecting and resuming dead work
+
+Keiro 0.16 separates **observation** from **ownership**. `lookupTimerInspection` and bounded
+`findDeadTimers` pages expose the stored reason without claiming the row. After application-level
+authorization and session preflight, `claimDeadTimer` atomically checks the exact timer id, owner,
+reason, and total attempt ceiling, increments the attempt, and returns an opaque expiring claim.
+
+Only that claim may renew, complete, park, or cancel the resumed work. Losing ownership returns
+`False`; the caller must stop where possible and must not report success. ID-only recovery functions
+refuse guarded rows even after lease expiry until `recoverExpiredTimerResumes` returns them to
+`Dead`. The token prevents two cooperating writers from finalizing each other's work, but it cannot
+make an external API exactly-once—keep a durable application receipt.
+
+Migration `0032` adds the paired token/lease columns. Its rollout must drain old timer writers before
+the migration and deploy every upgraded writer before enabling resume. See [Resume a dead timer
+safely](/docs/keiro/how-to/resume-a-dead-timer-safely) for the complete runbook.
 
 ## Trade-offs
 

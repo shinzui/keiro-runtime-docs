@@ -28,7 +28,7 @@ orderingProducer :: IntegrationProducer OrderEvent
 orderingProducer = IntegrationProducer
   { name = "ordering-integration-producer"   -- checkpoints its cursor under this name
   , source = "ordering"                        -- written into keiro_outbox.source
-  , messageIdPrefix = "msg"                    -- TypeID prefix for the minted messageId
+  , messageIdPrefix = "msg"                    -- deterministic message-id namespace
   , mapEvent = \recorded event -> case event of
       OrderSubmitted o -> Just IntegrationEventDraft
         { destination = "billing.orders.v1"
@@ -50,9 +50,22 @@ orderingProducer = IntegrationProducer
   }
 ```
 
-The subscription worker calls `enqueueProducerEventTx producer outboxId draft` per mapped event,
-which mints the `messageId` and inserts one row in the subscription's checkpoint transaction. Then
-schedule the publisher worker — **one pass per tick**:
+The subscription worker calls `enqueueProducerEventTx producer recorded 0 draft` per mapped event.
+It derives a stable UUIDv8 outbox ID and an opaque `msg_v1_<sha256>` message ID from the producer and
+source-event coordinates, defaults missing provenance from `recorded`, and inserts the row in the
+subscription's checkpoint transaction. Handle all three outcomes:
+
+```haskell
+outcome <- enqueueProducerEventTx producer recorded 0 draft
+case outcome of
+  ProducerInserted _           -> pure ()
+  ProducerDuplicateIdentical _ -> pure ()
+  ProducerIdentityConflict _ fields -> Tx.condemn
+```
+
+After the transaction runner returns, call `recordProducerEnqueueOutcome metrics outcome` once. It
+records `keiro.outbox.identity.conflict` without double-counting transaction serialization retries.
+Then schedule the publisher worker — **one pass per tick**:
 
 ```haskell
 summary <- publishClaimedOutbox publish defaultPublishOptions Nothing
@@ -69,6 +82,13 @@ Schedule maintenance separately from publishing:
 maintenance <- outboxMaintenancePass defaultMaintenanceOptions Nothing
 -- reclaims stale publishing rows and samples keiro.outbox.backlog
 ```
+
+<Callout type="warn">
+When upgrading a producer that previously minted random TypeID/outbox identities, drain its source
+subscription and checkpoint, deploy all writers sharing that producer identity, and only then
+resume. No database migration is required, but overlapping the old and new identity families can
+publish one source event twice.
+</Callout>
 
 ## Path B — the inline escape hatch (sagas / process managers)
 

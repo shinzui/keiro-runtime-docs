@@ -1,6 +1,6 @@
 ---
 title: "01 — The integration-event envelope"
-description: "Reading keiro-core/src/Keiro/Integration/Event.hs: the sixteen-field IntegrationEvent record, the identity rule, the JSON helpers, the header wire mapping, the content-type round-trip, and the minted message id."
+description: "Reading keiro-core/src/Keiro/Integration/Event.hs: the sixteen-field IntegrationEvent record, the identity rule, the JSON helpers, the header wire mapping, the content-type round-trip, and the producer message id."
 ---
 
 This chapter reads the contract both halves of the integration path serialize:
@@ -196,12 +196,13 @@ parseContentType raw
 lower-cased and stripped before comparison); anything else is preserved verbatim as
 `OtherContentType` — the open door for future binary formats.
 
-## The minted message id
+## The producer message id
 
-The envelope's `messageId` is a *minted* value, not produced by this module. The next chapter on the
-outbox reads `mintIntegrationEvent`, which mints it as a **TypeID** — a UUIDv7 with a human-readable
-prefix (e.g. `order_01h...`). It is minted when the producer writes the outbox row, so it is stable
-across publish retries (that stability is what makes it a safe dedupe key). See [03 — The outbox:
-enqueue and claim](/docs/keiro/walkthrough/integration/03-the-outbox-enqueue-and-claim).
+The envelope's `messageId` is supplied by the outbox producer. The canonical subscription path
+derives it deterministically as `<namespace>_v1_<sha256>` from the producer and source-event
+coordinates, so transaction retries and later source redelivery recover the same wire identity.
+`freshIntegrationEvent` still creates a fresh TypeID for explicitly fresh envelopes, but that helper
+does not supply producer replay identity. See [03 — The outbox: enqueue and
+claim](/docs/keiro/walkthrough/integration/03-the-outbox-enqueue-and-claim).
 
 Next: [02 — The inbox](/docs/keiro/walkthrough/integration/02-the-inbox).

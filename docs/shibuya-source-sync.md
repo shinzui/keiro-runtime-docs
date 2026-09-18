@@ -28,13 +28,13 @@ source walkthroughs.
 ## Last reviewed commit
 
 ```text
-bf2cff1e00334636f676bdb015d87fc8e539779c  (bf2cff1e)
-2026-08-19T20:59:57-07:00
-docs(okf): file keiro-ui inspection improvement requests
+cb3c4a9ae91de946fa17a6287241ca91699f7c50  (cb3c4a9a)
+2026-09-17T14:22:19-07:00
+docs(plans): add post-0.9 review remediation master plan and three child exec plans
 ```
 
-> **Current range.** `7158f3e1..bf2cff1e` (**1 commits**). The only commit proposes inspection/HTTP/WebSocket work in the OKF improvement requests. No worker source, API or runtime behavior changed; no Shibuya pages changed. Shared compatibility records the new SHA; public packages remain 0.9.0.0.
-> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+> **Current range.** `bf2cff1e..cb3c4a9a` (**7 commits**). Release 0.9.0.1 adds effectful-core 2.7 build support without public API or runtime changes; other commits are manifest/tooling/plans. Updated release compatibility only.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `172df24..7158f3e` range (**10 commits**, 43 files,
 > +2,777/−22) is the **0.9.0.0 release**: `shibuya-core` and `shibuya-metrics` move from `0.8.0.1`
@@ -107,8 +107,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    SHIBUYA=$(mori registry show shinzui/shibuya --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$SHIBUYA" log --oneline bf2cff1e..HEAD
-   git -C "$SHIBUYA" diff --stat bf2cff1e..HEAD
+   git -C "$SHIBUYA" log --oneline cb3c4a9a..HEAD
+   git -C "$SHIBUYA" diff --stat cb3c4a9a..HEAD
    ```
 2. Inspect changed modules under `shibuya-core/`, `shibuya-metrics/`, and
    `shibuya-example/`, plus `README.md`, `CHANGELOG.md`, and
@@ -122,7 +122,9 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
-- `bf2cff1e00334636f676bdb015d87fc8e539779c` (`bf2cff1e`) — baseline before the `bf2cff1e..bf2cff1e` review (1 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
+- `bf2cff1e00334636f676bdb015d87fc8e539779c` (`bf2cff1e`, shibuya-core 0.9.0.0) — baseline before
+  the `bf2cff1e..cb3c4a9a` review (7 commits). The range moved to effectful-core 2.7 and released
+  0.9.0.1 without changing runtime behavior; see the [2026-09-17 ledger](source-sync-2026-09-17.md).
 
 - `172df245f40a454af46dd7f4cde855eaa4414c5a` (`172df24`, 2026-07-04, shibuya 0.8.0.1) — the baseline before the 0.9.0.0 review. The `bf2cff1e..bf2cff1e` range (10 commits) added application-defined dead-letter reasons: `DeadLetterReason.ApplicationFailure`, the validated `DeadLetterCode`, telemetry reason codes, and total public reason projections. Breaking for exhaustive matches. Updated `reference/adapters-handlers-and-ack.mdx`, `how-to/dead-letter-or-halt.mdx`, and `tutorials/handler-decisions.mdx`.
 - `f5c921f862d1b0d2b035801c3b7cfe339f0b5125 (f5c921f)` — pointer before the

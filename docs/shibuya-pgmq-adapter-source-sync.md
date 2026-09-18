@@ -12,7 +12,7 @@ Content-authored. The integration page now documents runtime shape,
 environment callbacks, configuration validation, split poll/ack retry policies,
 ack mapping, idempotent finalization, dead letters, FIFO and topic helpers,
 envelope mapping, optional prefetch, operational notes, and related links. This
-pass checked the prose against the 0.12.0.0 adapter source and bundled user
+  pass checked the prose against the 0.16.0.0 adapter source and bundled user
 guides.
 
 ## Upstream source
@@ -36,13 +36,13 @@ guides.
 ## Last reviewed commit
 
 ```text
-1d882238f22b107b81104d7112833d521fcdb5ea  (1d882238)
-2026-08-19T21:01:51-07:00
-docs(okf): file keiro-ui inspection improvement requests
+392f7545af32ef893c24139fd194d16ec1172f75  (392f7545)
+2026-09-16T08:57:35-07:00
+docs(plan): complete grouped-head adapter release
 ```
 
-> **Current range.** `fee9b3a8..1d882238` (**1 commits**). The only commit adds proposed inspection endpoints to upstream improvement requests. No adapter source, public API, queue behavior or integration page changed. Adapter remains 0.14.0.0; proposed endpoints are not documented as shipped.
-> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+> **Current range.** `1d882238..392f7545` (**7 commits**). Releases 0.15 and 0.16 adopt pgmq-hs 0.6 and add `HeadPerGroup`, the strict grouped-head FIFO strategy. Updated adapter FIFO, compatibility and preserved-header DLQ guidance; tests/benchmarks/plans add no separate public surface.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `85931b4..fee9b3a` range (**13 commits**, 55 files,
 > +4,372/−130) lands **two releases**, `0.13.0.0` and `0.14.0.0`, taking the adapter from `0.12.0.0`.
@@ -111,7 +111,12 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
-- `fee9b3a8670e41baaa41388cfe9235aa03a5caf2` (`fee9b3a8`) — baseline before the `fee9b3a8..1d882238` review (1 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
+- `1d882238f22b107b81104d7112833d521fcdb5ea` (`1d882238`, shibuya-pgmq-adapter 0.14.0.0) —
+  baseline before the `1d882238..392f7545` review (7 commits). The range released 0.15/0.16 with
+  pgmq-hs 0.6 compatibility and `HeadPerGroup` polling; see the
+  [2026-09-17 ledger](source-sync-2026-09-17.md).
+
+- `fee9b3a8670e41baaa41388cfe9235aa03a5caf2` (`fee9b3a8`) — baseline before the `fee9b3a8..1d882238` review (1 commit); see [2026-09-06 ledger](source-sync-2026-09-06.md).
 
 - `85931b45702faecc035d89bb5cff381e8679f793` (`85931b4`, 2026-07-14, shibuya-pgmq-adapter 0.12.0.0) — the baseline before the 0.13/0.14 review. The `85931b4..fee9b3a` range (13 commits) moved the adapter to pgmq-hs 0.5 (narrowing `parseQueueName` to `[a-z0-9_]{1,47}`, which needs a mixed-case `pgmq.meta` remediation before rollout) and then to shibuya-core 0.9, adding `dead_letter_reason_code` and an always-present `dead_letter_reason_detail` to every DLQ payload. Public Haskell signatures unchanged.
 - `99e997e8a05f4a0deb92ddede4d419351f6da3d8` (`99e997e`), 2026-07-04 —
@@ -129,8 +134,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    ADAPTER=$(mori registry show shinzui/shibuya-pgmq-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$ADAPTER" log --oneline 1d882238..HEAD
-   git -C "$ADAPTER" diff --stat 1d882238..HEAD
+   git -C "$ADAPTER" log --oneline 392f7545..HEAD
+   git -C "$ADAPTER" diff --stat 392f7545..HEAD
    ```
    Also inspect `README.md`, `CHANGELOG.md`, `docs/user/`, and the source
    modules listed above. Because the adapter sits on `pgmq-hs`, check

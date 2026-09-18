@@ -18,24 +18,25 @@ the affected pages, then bump the pointer below.
   `keiro-ops` (the operational console — library + standalone binary),
   `keiro-test-support` (test fixtures). The in-repository `jitsurei` package remains a legacy source
   anchor and is not current release evidence.
-- **Reviewed release:** all seven published Keiro packages at `0.15.0.0`, including
+- **Reviewed release:** all seven published Keiro packages at `0.17.0.0`, including
   `keiro-test-support`. Verified against Hackage preferred versions and upstream release tags
-  on 2026-09-06. `Keiro.version` derives from `Paths_keiro`.
+  on 2026-09-17. `Keiro.version` derives from `Paths_keiro`.
 - **Required peers:** `keiki >=0.9 && <0.10`, `kiroku-store >=0.8 && <0.9`,
   `kiroku-store-migrations ^>=0.4.0.0`, `shibuya-core ^>=0.9.0.0`.
 - **Stable authoring contract:** `keiro-dsl` language **5** (`syntax-profile/4`,
-  `runtime-semantics/4`), the sole `Stable PublishedLanguage` registry entry.
+  `runtime-semantics/4`), the sole `Stable PublishedLanguage` registry entry. Language 6
+  (`syntax-profile/5`, `runtime-semantics/5`) is an accepted unpublished candidate.
 
 ## Last reviewed commit
 
 ```text
-de574cdcb0add3fefbb0fdd96d820258d15f8997  (de574cdc)
-2026-08-30T20:34:35-07:00
-chore(release): 0.15.0.0
+11e0bba4f634ac6fa4526e2814bd5a8177e3f050  (11e0bba4)
+2026-09-17T21:09:38-07:00
+chore(release): 0.17.0.0
 ```
 
-> **Current range.** `93ada2d4..de574cdc` (**46 commits**). Reviewed the 0.13/0.14/0.15 releases: Kiroku 0.8 typed transaction aborts and worker retry classification; terminal outbox rejection with bounded audit truth, conditional batch finalization, committed counters and migration 0031; concise DSL records and explicit idiomatic-v2 adoption with combined legacy flags, backups, unreadable-ledger refusal and restored checked-construction boundaries. Added how-to/handle-terminal-outbox-rejection.mdx and how-to/adopt-generated-haskell-v2.mdx. Updated reference, telemetry, ops, explanation, ordering/recovery guides, integration tours, FAQ and compatibility. Migration count is 31; keiro still owns 25 tables, with no new table in this range. Corrected the pre-existing markOutboxSent result in the reference to Bool. Test-support is now published in lockstep. Private generated-language internals, UI proposals, transition-family/guard classification and mapped-register plans are deliberately not documented as shipped.
-> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+> **Current range.** `de574cdc..11e0bba4` (**142 commits**). Reviewed Keiro 0.16/0.17: migration 0032 and guarded Dead-timer resume; replay-safe producer identity and conflict reporting; typed process reactions; delegated inbox idempotence; required job ordering, FIFO heads, partition validation and DLQ safeguards; candidate DSL Language 6; and pgmq-hs 0.6 compatibility. Added the timer-resume runbook and updated the reference, walkthroughs, integration guides and compatibility. Plans, tests, benchmarks, review bundles and temporary reverted work are explicitly classified in the ledger.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > ### Prior release boundary: the 0.12 release-prep items were closed
 >
@@ -1041,6 +1042,12 @@ chore(release): 0.15.0.0
 
 ### Previous pointers (for traceability)
 
+- `de574cdcb0add3fefbb0fdd96d820258d15f8997` (`de574cdc`, Keiro 0.15.0.0) — baseline before the
+  `de574cdc..11e0bba4` review (142 commits). The range released 0.16/0.17 with guarded Dead-timer
+  resume and migration `0032`, replay-safe producer identity, typed process reactions, delegated
+  inbox idempotence, expanded PGMQ job/DLQ/FIFO contracts, and candidate DSL Language 6; see the
+  [2026-09-17 ledger](source-sync-2026-09-17.md).
+
 - `8d1cd74ab966cf463462430846913d23612eb607` (`8d1cd74a`, 2026-08-10, Keiro 0.12.0.0 pre-cut) —
   the baseline before the 0.12.0.0 **release** review. The `8d1cd74..93ada2d` range (176 commits)
   cut the release the prior round had only described: language 5 published `Stable` with 1–4
@@ -1173,18 +1180,18 @@ chore(release): 0.15.0.0
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline de574cdc..HEAD
-   git -C "$KEIRO" diff --stat de574cdc..HEAD
+   git -C "$KEIRO" log --oneline 11e0bba4..HEAD
+   git -C "$KEIRO" diff --stat 11e0bba4..HEAD
 
    # Do these two FIRST — they are cheap and they SIZE the round either way.
    # They collapsed the f05102b and fc935b7 rounds to "keiro-dsl only, no SQL";
    # they blew the 8d1cd74 round wide open (3 migrations, 2 new exposed modules,
    # a new package). Do not assume the collapsing outcome.
-   git -C "$KEIRO" diff --name-status de574cdc..HEAD -- '*.sql'
-   git -C "$KEIRO" diff --stat de574cdc..HEAD -- keiro/src keiro-core/src keiro-pgmq/src
+   git -C "$KEIRO" diff --name-status 11e0bba4..HEAD -- '*.sql'
+   git -C "$KEIRO" diff --stat 11e0bba4..HEAD -- keiro/src keiro-core/src keiro-pgmq/src
 
    # And check the cabal files — a new package is invisible to the two above:
-   git -C "$KEIRO" diff de574cdc..HEAD -- '*.cabal' | grep -E '^[-+].*(exposed-modules|other-modules|^\+name:)'
+   git -C "$KEIRO" diff 11e0bba4..HEAD -- '*.cabal' | grep -E '^[-+].*(exposed-modules|other-modules|^\+name:)'
    ```
    keiro's own `docs/adr/*` is now the fastest way to read a decision's *rationale and consequences*
    (ADRs 0001–0036 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only

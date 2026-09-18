@@ -1,6 +1,6 @@
 ---
 title: "Keiro.Timer"
-description: "Reference for keiro's durable timers: the TimerId, TimerRequest, TimerRow, and TimerStatus types, the storage operations, the worker and its options, the stuck-row recovery API, and the keiro_timers table."
+description: "Reference for keiro's durable timers: scheduling and workers, bounded inspection, guarded dead-timer resume, recovery, and the keiro_timers table."
 ---
 
 The types and functions on this page live in `Keiro.Timer` (the wire types are defined in
@@ -69,7 +69,7 @@ data TimerStatus
     Firing: { type: "—", description: "Claimed by a worker and being processed. It becomes claimable again only after requeueStuckTimers or requeueStuckTimer moves it back to Scheduled." },
     Fired: { type: "—", description: "Successfully fired; terminal." },
     Cancelled: { type: "—", description: "Withdrawn before firing (via cancelTimer); terminal. ALSO the decode fallback for an unrecognized stored value." },
-    Dead: { type: "—", description: "Abandoned after exceeding the attempt ceiling (via deadLetterTimer or the maxAttempts auto-dead-letter); terminal; carries an explanatory last_error." },
+    Dead: { type: "—", description: "Parked or abandoned after exceeding the attempt ceiling. It carries last_error and may be resumed only through the guarded foreground-resume API." },
   }}
 />
 
@@ -122,6 +122,11 @@ scheduleTimerTx :: TimerRequest -> Tx.Transaction ()
 
 The re-arm guard is the `ON CONFLICT … WHERE keiro_timers.status = 'scheduled'` clause on the
 underlying `INSERT`.
+
+`scheduleTimerOnceTx :: TimerRequest -> Tx.Transaction Bool` is the insert-only sibling: it returns
+`True` only when it inserted a new timer and never re-arms an existing row. `cancelTimerTx :: TimerId
+-> Tx.Transaction Bool` is the transaction-level form of cancellation, used when a saga append and
+timer cancellation must commit together.
 
 ## `claimDueTimer`
 
@@ -232,7 +237,8 @@ post-claim count: with `maxAttempts = Just 0` the very first claim dead-letters;
 third claim does. A dead-lettered timer is moved to `Dead` with an explanatory `last_error` (e.g.
 `"timer exceeded attempt ceiling of 2"`) and the `fire` action is **not** run.
 
-Before that claim, `requeueStuckAfter = Just ttl` runs `requeueStuckTimers ttl now` and records the
+Before that claim, every pass recovers expired foreground-resume leases directly to `Dead`. Then
+`requeueStuckAfter = Just ttl` runs `requeueStuckTimers ttl now` and records the
 count in `keiro.timer.requeued`. Requeued timers retain their original due time and are immediately
 eligible on a later claim; there is no retry backoff. Choose `ttl` above the longest legitimate fire
 duration, because a still-running action that crosses the timeout can be fired again.
@@ -290,11 +296,100 @@ Reads one timer row by id. Exposed so an operator surface — notably
 [`keiro-ops timer`](/docs/keiro/reference/keiro-ops-cli#timer--durable-timers) — can inspect a timer
 without reproducing the query.
 
+## Read-only inspection *(Keiro 0.16+)*
+
+Inspection preserves the stored reason without claiming work. `NULL` and empty text remain distinct.
+The owner label and reason are filtering data, not authorization credentials; authorize the decoded
+payload before rendering it.
+
+```haskell
+data TimerInspection = TimerInspection
+  { timer     :: !TimerRow
+  , lastError :: !(Maybe Text)
+  }
+
+data TimerReasonFilter
+  = AnyTimerReason | ReasonAbsent | ReasonExact !Text | ReasonPrefix !Text
+
+data DeadTimerFilter = DeadTimerFilter
+  { processManagerName :: !(Maybe Text)
+  , reason             :: !TimerReasonFilter
+  }
+
+anyDeadTimer :: DeadTimerFilter
+
+data DeadTimerPageRequest = DeadTimerPageRequest
+  { pageSize     :: !Int
+  , afterTimerId :: !(Maybe TimerId)
+  }
+
+data DeadTimerReadError = InvalidDeadTimerPageSize !Int
+data DeadTimerPage = DeadTimerPage
+  { timers           :: ![TimerInspection]
+  , nextAfterTimerId :: !(Maybe TimerId)
+  }
+
+lookupTimerInspection :: (Store :> es) => TimerId -> Eff es (Maybe TimerInspection)
+findDeadTimers ::
+  (Store :> es) =>
+  DeadTimerFilter -> DeadTimerPageRequest ->
+  Eff es (Either DeadTimerReadError DeadTimerPage)
+```
+
+Pages contain 1–100 rows in ascending UUID order. The cursor is exclusive and continuation exists
+only when another matching row was observed. This is not snapshot pagination: newly eligible IDs
+behind the cursor are not revisited, and changing the filter requires restarting without a cursor.
+Reason matching is case-sensitive and literal; `%`, `_`, and `\` are ordinary characters.
+
+## Guarded foreground resume *(Keiro 0.16+)*
+
+```haskell
+data DeadTimerClaimRequest = DeadTimerClaimRequest
+  { timerId            :: !TimerId
+  , processManagerName :: !Text
+  , expectedReason     :: !Text
+  , maxAttempts        :: !Int
+  , leaseSeconds       :: !Int
+  }
+
+data TimerResumeError
+  = InvalidTimerResumeMaxAttempts !Int
+  | InvalidTimerResumeLeaseSeconds !Int
+
+data TimerResumeClaim -- opaque
+
+resumeClaimTimer      :: TimerResumeClaim -> TimerRow
+resumeClaimLeaseUntil :: TimerResumeClaim -> UTCTime
+claimDeadTimer ::
+  (IOE :> es, Store :> es) =>
+  DeadTimerClaimRequest -> Eff es (Either TimerResumeError (Maybe TimerResumeClaim))
+renewTimerResume    :: (Store :> es) => TimerResumeClaim -> Int -> Eff es (Either TimerResumeError Bool)
+completeTimerResume :: (Store :> es) => TimerResumeClaim -> EventId -> Eff es Bool
+parkTimerResume     :: (Store :> es) => TimerResumeClaim -> Eff es Bool
+cancelTimerResume   :: (Store :> es) => TimerResumeClaim -> Eff es Bool
+recoverExpiredTimerResumes :: (Store :> es) => Eff es Int
+```
+
+`claimDeadTimer` requires an exact timer id, owner, and non-`NULL` reason, plus an explicit total
+attempt ceiling and a lease of 1–2,147,483,647 seconds. Refusal consumes no attempt. A successful
+claim increments `attempts`, changes the row to `Firing`, and returns an opaque ownership token.
+Renewal extends from database time; `False` from renewal or a terminal mutation means ownership was
+lost and must not be reported as success. `parkTimerResume` returns the row to `Dead` with its reason
+and attempts intact; `cancelTimerResume` explicitly abandons it.
+
+Expired claims recover directly to `Dead`. Ordinary ID-only mark-fired, cancel, dead-letter, and
+requeue operations refuse token-bearing rows—even after expiry—until recovery clears ownership.
+Every ordinary timer-worker pass runs that recovery independently of `requeueStuckAfter`; a
+foreground-only host must call it periodically and before discovery/resume. External execution is
+still at-least-once, so the caller owns a durable idempotency receipt. See [Resume a dead timer
+safely](/docs/keiro/how-to/resume-a-dead-timer-safely).
+
 ## Recovery operations
 
-A timer left in `Firing` by a crash is not directly claimable. The default worker first moves rows
-stale for five minutes back to `Scheduled`; callers that set `requeueStuckAfter = Nothing` own that
-recovery themselves. When a timer cannot make progress — its `fire` action keeps failing, or the row
+A timer left in ordinary `Firing` by a crash is not directly claimable. The default worker first moves
+rows stale for five minutes back to `Scheduled`; callers that set `requeueStuckAfter = Nothing` own
+that **ordinary** recovery themselves. Expired guarded claims are still recovered to `Dead` on every
+worker pass. When a timer cannot make progress — its `fire` action keeps failing, or the row
 is genuinely stranded — these operations let an operator inspect and resolve it. They live in
 `Keiro.Timer.Schema` (re-exported from
 `Keiro.Timer`). For the runbook, see [Understanding durable timers](/docs/keiro/explanation/durable-timers).
@@ -357,7 +452,7 @@ requeueStuckTimer :: (Store :> es) => TimerId -> Eff es Bool
 
 ### `cancelTimer`
 
-Move a timer from `Scheduled` or `Firing` to the terminal `Cancelled` state so it never fires.
+Move an unguarded timer from `Scheduled` or `Firing` to the terminal `Cancelled` state so it never fires.
 Terminal rows (`fired`, `cancelled`, `dead`) are left untouched. Idempotent. Returns `True` when a
 row changed.
 
@@ -367,7 +462,7 @@ cancelTimer :: (Store :> es) => TimerId -> Eff es Bool
 
 ### `deadLetterTimer`
 
-Move a timer from `Scheduled` or `Firing` to the terminal `Dead` state, recording `reason` in
+Move an unguarded timer from `Scheduled` or `Firing` to `Dead`, recording `reason` in
 `last_error` so an operator can see why it was abandoned (`SELECT * FROM keiro_timers WHERE status =
 'dead'`). Terminal rows are left untouched. Idempotent. Returns `True` when a row changed.
 
@@ -392,9 +487,17 @@ CREATE TABLE IF NOT EXISTS keiro_timers (
   attempts BIGINT NOT NULL DEFAULT 0,
   fired_event_id UUID,
   last_error TEXT,                     -- added by the timer-recovery migration
+  resume_claim_token UUID,             -- migration 0032
+  resume_lease_until TIMESTAMPTZ,      -- migration 0032
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE keiro.keiro_timers
+  ADD CONSTRAINT keiro_timers_resume_ownership CHECK (
+    (resume_claim_token IS NULL AND resume_lease_until IS NULL)
+    OR (resume_claim_token IS NOT NULL AND resume_lease_until IS NOT NULL AND status = 'firing')
+  );
 
 -- timer-recovery migration: the index now also covers 'firing' rows (for the
 -- recovery queries) and is partial on active statuses.
@@ -404,12 +507,15 @@ CREATE INDEX IF NOT EXISTS keiro_timers_due_idx
 ```
 
 The status column stores the lowercase strings `scheduled | firing | fired | cancelled | dead`.
-`last_error` is populated only for dead-lettered (`dead`) rows; it is not surfaced on the `TimerRow`
-record, so operators read it directly from the table.
+`last_error` is populated for dead-lettered (`dead`) rows. It is intentionally absent from
+`TimerRow`, but `lookupTimerInspection` and `findDeadTimers` surface it without requiring direct SQL.
+Migration `0032` adds the paired resume-ownership columns; stop/drain old writers, apply it, deploy
+all upgraded writers, then enable resume. Mixed-version writers are unsafe.
 
 <Cards>
   <Card title="Keiro.ProcessManager reference" href="/docs/keiro/reference/process-manager" />
   <Card title="Understanding durable timers" href="/docs/keiro/explanation/durable-timers" />
   <Card title="Drive the timer worker" href="/docs/keiro/how-to/drive-the-timer-worker" />
+  <Card title="Resume a dead timer safely" href="/docs/keiro/how-to/resume-a-dead-timer-safely" />
   <Card title="Verify durable worker outcomes" href="/docs/keiro/how-to/verify-durable-worker-outcomes" />
 </Cards>

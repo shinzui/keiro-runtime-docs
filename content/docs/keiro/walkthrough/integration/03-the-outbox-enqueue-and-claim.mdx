@@ -54,32 +54,31 @@ There are two surfaces:
 For the end-to-end producer setup, see [Publish with the
 outbox](/docs/keiro/how-to/publish-with-the-outbox).
 
-## Minting the message id: `mintIntegrationEvent`, `draftToEvent`, `enqueueProducerEventTx`
+## Deriving producer identity: `enqueueProducerEventTx`
 
 ```haskell
-mintIntegrationEvent :: (IOE :> es) => IntegrationProducer e -> IntegrationEventDraft -> Eff es IntegrationEvent
-mintIntegrationEvent producer draft = do
-  typeId <- liftIO (TypeID.genTypeID (producer ^. #messageIdPrefix))
-  pure (draftToEvent (producer ^. #source) (TypeID.toText typeId) draft)
+enqueueProducerEventTx ::
+  IntegrationProducer e -> RecordedEvent -> Word32 -> IntegrationEventDraft ->
+  Tx.Transaction ProducerEnqueueOutcome
 
-draftToEvent :: Text -> Text -> IntegrationEventDraft -> IntegrationEvent   -- pure assembly
-
-enqueueProducerEventTx producer outboxId draft = do
-  event <- mintIntegrationEvent producer draft     -- mints a prefixed TypeID as messageId
-  pure (enqueueOutboxTx (OutboxMessage {outboxId, event}))
+data ProducerEnqueueOutcome
+  = ProducerInserted ProducerIdentity
+  | ProducerDuplicateIdentical ProducerIdentity
+  | ProducerIdentityConflict ProducerIdentity (NonEmpty ConflictField)
 ```
 
-`enqueueProducerEventTx` is the primitive a subscription worker calls per event.
-`mintIntegrationEvent` mints a fresh `messageId` as a **TypeID** — a UUIDv7 with the producer's
-`messageIdPrefix` (1–63 lowercase Latin letters) — then `draftToEvent` purely assembles the full
-envelope from `source` + the minted id + the draft. That `messageId` is the envelope field [chapter
-01](/docs/keiro/walkthrough/integration/01-the-integration-event-envelope) called the canonical
+`enqueueProducerEventTx` is the primitive a subscription worker calls per event. Version 1 hashes
+the producer source/name, source event ID, and emission index. The first 128 bits become a UUIDv8
+`OutboxId`; the full digest becomes `<messageIdPrefix>_v1_<sha256>`. Neither identity reads a clock,
+random generator, or process state. The message ID is the envelope field [chapter
+01](/docs/keiro/walkthrough/integration/01-the-integration-event-envelope) uses as the canonical
 dedupe key.
 
 <Callout type="warn">
-The TypeID is minted *before* the insert. If the transaction rolls back, the id is discarded and the
-next attempt mints a different one — so **row-level idempotency hinges on a stable `OutboxId`, not on
-the minted message id**. That is why the escape hatch asks the caller for a deterministic `OutboxId`.
+The producer identity recipe is durable replay behavior. Drain and checkpoint an existing producer
+before switching it from the old random identity family; otherwise the same source event can be
+enqueued once under each family. The inline escape hatch still asks its caller for a stable
+`OutboxId` because it has no recorded source-event coordinate from which to derive one.
 </Callout>
 
 ## `enqueueOutboxTx`: idempotent insert
@@ -95,8 +94,9 @@ ON CONFLICT (source, message_id) DO NOTHING
 
 `enqueueOutboxTx` inserts the row inside the caller's transaction. The `ON CONFLICT (source,
 message_id) DO NOTHING`, backed by the table's `UNIQUE (source, message_id)` constraint, is what
-coalesces duplicate retries: a re-run of the same logical enqueue with the same stable `OutboxId`
-hits the conflict and does nothing.
+coalesces duplicate retries. The producer helper additionally reads and compares an existing row:
+an identical replay returns `ProducerDuplicateIdentical`, while changed canonical content returns
+`ProducerIdentityConflict` with non-sensitive field classes.
 
 ## The row lifecycle
 

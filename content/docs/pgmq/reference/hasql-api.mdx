@@ -3,10 +3,8 @@ title: "Hasql API"
 description: "Direct Hasql sessions for pgmq queue management, message lifecycle, visibility, FIFO, topics, notifications, and observability."
 ---
 
-`pgmq-hasql` is the direct database client. The umbrella module `Pgmq`
-re-exports the common session functions and record types. `Pgmq.Hasql.Sessions`
-also exposes lower-level FIFO grouped read helpers that are not re-exported from
-`Pgmq` at commit `973c1076f469448818de5d2044a483296be2c02e`.
+`pgmq-hasql` is the direct database client. In the current 0.6.1 family the umbrella module `Pgmq`
+re-exports the common session functions and record types, including all six FIFO grouped reads.
 
 ## Queue management
 
@@ -14,12 +12,16 @@ also exposes lower-level FIFO grouped read helpers that are not re-exported from
 createQueue :: QueueName -> Session ()
 dropQueue :: QueueName -> Session Bool
 createPartitionedQueue :: CreatePartitionedQueue -> Session ()
+createPartitionedQueueWithPremake :: CreatePartitionedQueue -> Int32 -> Session ()
 createUnloggedQueue :: QueueName -> Session ()
 detachArchive :: QueueName -> Session () -- deprecated no-op
 
 enableNotifyInsert :: EnableNotifyInsert -> Session ()
 disableNotifyInsert :: QueueName -> Session ()
 ```
+
+`createPartitionedQueue` keeps pgmq's default premake count. The explicit variant requires PGMQ
+1.13 and passes the requested positive partition-premake count to `pgmq.create_partitioned`.
 
 `createQueue` creates a standard durable queue. `createUnloggedQueue` creates a
 queue that skips PostgreSQL write-ahead logging, trading crash durability for
@@ -44,15 +46,8 @@ data EnableNotifyInsert = EnableNotifyInsert
 
 `Nothing` means pgmq's default throttle interval of 250 ms.
 
-<Callout type="warn">
-  On the released `0.4.0.1`, `throttleIntervalMs = Nothing` does **not** work: it
-  fails with SQLSTATE 23502 on every call, because a column `DEFAULT` does not
-  apply to an explicitly supplied `NULL`. Since queue reconciliation is not one
-  transaction, this fails application startup repeatedly and permanently for any
-  config using the default throttle — including `pgmq-config`'s
-  `withNotifyInsert Nothing`. Pass an explicit `Just 250` until you are on
-  `0.5.0.0`, whose statement supplies the value with a SQL `coalesce($2, 250)`.
-</Callout>
+`throttleIntervalMs = Nothing` uses 250 ms. The fix shipped in 0.5.0.0; older 0.4 clients sent SQL
+`NULL` and failed with SQLSTATE 23502.
 
 Insert notifications arrive on the channel `notifyChannelName` returns —
 `pgmq.q_<lowercased queue name>.INSERT`. See
@@ -124,29 +119,10 @@ data ReadMessage = ReadMessage
 removes it. `pop` atomically reads and deletes messages, which is useful for
 work that does not need a separate processing window.
 
-<Callout type="warn">
-  **A `Nothing` count did not mean "one" on `0.4.0.1`.** The `Maybe` parameter
-  was encoded as a nullable bind, so `Nothing` reached PostgreSQL as SQL `NULL`;
-  a plpgsql parameter `DEFAULT` applies only to an *omitted* argument, and `NULL`
-  in a `LIMIT` clause means `LIMIT ALL`. Concretely, on the released version:
+Since 0.5.0.0, `Nothing` for `qty`/`batchSize` correctly means one message. On 0.4.0.1 it reached
+PostgreSQL as `LIMIT NULL` and could read—or, for `pop`, delete—the entire visible queue.
 
-  - `pop` with `qty = Nothing` deletes and returns **every visible message in the
-    queue**. Because `pop` deletes, there is no visibility timeout to recover
-    them.
-  - `readMessage` and `readWithPoll` with `batchSize = Nothing` lease the
-    **entire queue**, hiding every message from other consumers for the
-    visibility timeout.
-
-  Both are fixed in the unreleased `0.5.0.0` to read or pop one message, as
-  documented. Until you are on it, pass an explicit count.
-</Callout>
-
-<Callout type="info">
-  Also committed for `0.5.0.0`: `ReadMessage.conditional` now filters. The field
-  existed and was documented, but was never encoded, so on `0.4.0.1` a `Just`
-  filter is silently ignored and every visible message is returned.
-  `readWithPoll`'s conditional already worked.
-</Callout>
+`ReadMessage.conditional` is encoded and filters in current releases; 0.4.0.1 silently ignored it.
 
 ## Visibility timeout changes
 
@@ -158,7 +134,7 @@ batchSetVisibilityTimeoutAt :: BatchVisibilityTimeoutAtQuery -> Session (Vector 
 ```
 
 <Callout type="warn">
-  **Breaking in the unreleased `0.5.0.0`:** the two single-message forms return
+  **Breaking since `0.5.0.0`:** the two single-message forms return
   `Maybe Message` rather than `Message`, at the statement, session, and effect
   layers. `pgmq.set_vt` is `RETURNS SETOF` and yields zero rows when the target
   message no longer exists — already deleted, archived, or popped. Decoding that
@@ -188,14 +164,17 @@ readGrouped :: ReadGrouped -> Session (Vector Message)
 readGroupedWithPoll :: ReadGroupedWithPoll -> Session (Vector Message)
 readGroupedRoundRobin :: ReadGrouped -> Session (Vector Message)
 readGroupedRoundRobinWithPoll :: ReadGroupedWithPoll -> Session (Vector Message)
+readGroupedHead :: ReadGrouped -> Session (Vector Message)
+readGroupedHeadWithPoll :: ReadGroupedWithPoll -> Session (Vector Message)
 createFifoIndex :: QueueName -> Session ()
 createFifoIndexesAll :: Session ()
 ```
 
-These functions are exported from `Pgmq.Hasql.Sessions`, not from the top-level
-`Pgmq` module in this reviewed source. FIFO grouping uses the reserved
-`x-pgmq-group` header. `readGrouped` fills a batch from the earliest eligible
-group first; `readGroupedRoundRobin` interleaves groups for fairness.
+These functions are exported from both `Pgmq.Hasql.Sessions` and the top-level `Pgmq` module. FIFO
+grouping uses the reserved `x-pgmq-group` header. `readGrouped` fills a batch from the earliest
+eligible group first; `readGroupedRoundRobin` interleaves groups for fairness. PGMQ 1.12's
+`readGroupedHead` returns at most the absolute visible head of each group: a leased/delayed head
+blocks its successors while other groups remain independently eligible.
 
 ## Topic routing
 
@@ -236,8 +215,7 @@ updateNotifyInsert :: UpdateNotifyInsert -> Session ()
 ```
 
 <Callout type="info">
-  `listQueuesUnvalidated` and `listFifoIndexQueueNames` are committed for the
-  unreleased `0.5.0.0`. `listQueues` re-validates every name it reads back, so it
+  `listQueuesUnvalidated` and `listFifoIndexQueueNames` shipped in `0.5.0.0`. `listQueues` re-validates every name it reads back, so it
   fails on a database holding queues this client would reject;
   `listQueuesUnvalidated` returns
   [`UnvalidatedQueue`](/docs/pgmq/reference/core-types#reading-queues-this-client-would-reject)
@@ -255,8 +233,11 @@ data QueueMetrics = QueueMetrics
   , totalMessages :: !Int64
   , scrapeTime :: !UTCTime
   , queueVisibleLength :: !Int64
+  , defaultPartitionLength :: !(Maybe Int64)
   }
 ```
 
-`queueLength` is total queue depth. `queueVisibleLength` is the count available
-for reading now.
+`queueLength` is total queue depth. `queueVisibleLength` is the count available for reading now.
+`defaultPartitionLength`, added with PGMQ 1.13 support in 0.6.0.0, is nullable on 1.12 and ordinary
+queues. It estimates spill across active/archive default partitions; it is not an instantaneous row
+count.

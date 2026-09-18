@@ -16,18 +16,18 @@ the pinned commit to `HEAD`, update the affected pages, then bump the pointer be
   documented below.
 - **Reviewed releases:** `kiroku-store 0.8.0.0`, migrations `0.4.0.0`,
   `kiroku-otel 0.2.0.7`, `kiroku-cli 0.2.0.6`, `kiroku-metrics 0.1.0.8`, and
-  `shibuya-kiroku-adapter 0.5.1.1`. Hackage and upstream release tags checked 2026-09-06.
+  `shibuya-kiroku-adapter 0.5.1.1`. Hackage and upstream release tags checked 2026-09-17.
 
 ## Last reviewed commit
 
 ```text
-7051b12342b3002659e39061b03bee2e37275099  (7051b123)
-2026-08-29T06:52:44-07:00
-docs(plans): address MasterPlan 11 pre-implementation review findings
+07cd034aafc0d88b6c55abdf3509e25b9d69e63d  (07cd034a)
+2026-09-16T21:01:15-07:00
+chore(seihou): apply exec-plan and master-plan module updates
 ```
 
-> **Current range.** `b9aecf3a..7051b123` (**27 commits**). Reviewed Store 0.8.0.0, migrations 0.4.0.0 and companion point releases. TransientTransactionFailure classifies serialization/deadlock aborts as retryable; existing-row pre-locking still permits fresh-stream deadlocks. Corrected migration 0010 changes its checksum; forward 0011 converges the UUIDv7 function/default, taking the manifest from 10 to 11 entries without new tables. Added how-to/recover-the-0010-checksum.mdx; updated core/store/schema references, worker and adapter tours, FAQ and compatibility. The defensive Retrying driver arm is documented. Selective compaction, lock-order redesign, hardening plans and UI endpoints remain unshipped; build/test/profile/blueprint changes add no further runtime surface.
-> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
+> **Current range.** `7051b123..07cd034a` (**11 commits**). Plans, ADRs, review metadata, provenance and Seihou module updates only. No package source, Cabal release, migration, store API, or adapter behavior changed.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `3009dda..b9aecf3` range (**51 commits**, 151 files,
 > +15,323/−996) lands **four releases** — `kiroku-store` `0.4`, `0.5`, `0.6`, and `0.7` — taking the
@@ -161,6 +161,11 @@ docs(plans): address MasterPlan 11 pre-implementation review findings
 
 ### Previous pointers (for traceability)
 
+- `7051b12342b3002659e39061b03bee2e37275099` (`7051b123`) — baseline before the
+  `7051b123..07cd034a` review (11 commits). The range changed plans, ADRs, provenance and review
+  metadata only; no released source or documentation contract changed. See the
+  [2026-09-17 ledger](source-sync-2026-09-17.md).
+
 - `3009dda7238f7d05b1d0c97b04ec5d4c55031304` (`3009dda`, 2026-07-22, kiroku-store 0.3.1.0) — the baseline before the 0.4–0.7 review. The `3009dda..b9aecf3` range (51 commits) landed four releases: the durable subscription checkpoint inventory (0.4), the closed `MissingCheckpointPolicy` (0.5), the visible-head surface (0.6), and renewable history-retention leases with a stream replay guard (0.7). Eight new `Store` constructors, new `KirokuEvent`s, and `StoreError.HistoryRetentionActive` — all breaking for exhaustive interpreters. Migrations 8 → 10. Updated `reference/store-effect.mdx`, `reference/schema-migrations.mdx`, and `explanation/subscriptions-and-consumer-groups.mdx`. Nothing added or retired.
 - `58aff77b3a6d6093e3613753a0543aab62db9fac` (`58aff77`, 2026-07-14,
   `kiroku-store 0.3.0.1`) — the baseline before the 0.3.1.0 point release. The
@@ -195,8 +200,8 @@ docs(plans): address MasterPlan 11 pre-implementation review findings
 1. List what changed since the pointer:
    ```sh
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 7051b123..HEAD
-   git -C "$KIROKU" diff --stat 7051b123..HEAD
+   git -C "$KIROKU" log --oneline 07cd034a..HEAD
+   git -C "$KIROKU" diff --stat 07cd034a..HEAD
    ```
    Kiroku also keeps its own `docs/`, `CHANGELOG.md` files, and `docs/plans|masterplans`
    entries — the prose diff there is the fastest way to understand intent before touching

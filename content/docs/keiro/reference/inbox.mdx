@@ -154,6 +154,84 @@ flowchart TD
   Fallback --> Results
 ```
 
+## Delegated idempotence *(Keiro 0.17+)*
+
+Delegated intake omits the `keiro_inbox` row and lets the downstream atomic operation own the durable
+deduplication receipt. These runners require `IOE` but not `Store`; the handler receives the computed
+dedupe key and must cover every protected effect with that identity.
+
+```haskell
+data DelegatedOutcome a
+  = DelegatedFresh a
+  | DelegatedDuplicate
+
+runInboxDelegated ::
+  (IOE :> es) =>
+  Maybe KeiroMetrics -> InboxDedupePolicy -> IntegrationEvent -> Maybe KafkaDeliveryRef ->
+  (Text -> IntegrationEvent -> Eff es (DelegatedOutcome a)) ->
+  Eff es (Either InboxError (InboxResult a))
+
+runInboxDelegatedBatch ::
+  (IOE :> es) =>
+  Maybe KeiroMetrics -> InboxDedupePolicy ->
+  [(IntegrationEvent, Maybe KafkaDeliveryRef)] ->
+  (Text -> IntegrationEvent -> Eff es (DelegatedOutcome a)) ->
+  Eff es [Either InboxError (InboxResult a)]
+```
+
+`runInboxDelegatedBatch` is sequential. It suppresses a repeated identity within that call only after
+the first occurrence succeeds or reports a durable duplicate. It creates no transactions or worker
+threads.
+
+The retrying variant takes a caller-owned, one-based delivery position. Attempts above the ceiling
+return `InboxPreviouslyFailed` without invoking the handler; synchronous exceptions at or below it
+become `InboxHandlerFailed`. Async cancellation and typed effect errors still propagate.
+
+```haskell
+data DelegatedRetryContext -- constructor is hidden
+
+mkDelegatedRetryContext :: Int -> Int -> Either Text DelegatedRetryContext
+delegatedRetryCeiling   :: DelegatedRetryContext -> Int
+delegatedRetryAttempt   :: DelegatedRetryContext -> Int
+
+runInboxDelegatedWithRetries ::
+  (IOE :> es) =>
+  Maybe KeiroMetrics -> DelegatedRetryContext -> InboxDedupePolicy ->
+  IntegrationEvent -> Maybe KafkaDeliveryRef ->
+  (Text -> IntegrationEvent -> Eff es (DelegatedOutcome a)) ->
+  Eff es (Either InboxError (InboxResult a))
+```
+
+`Keiro.Inbox.Delegated` supplies the safer single-command adapters:
+
+```haskell
+delegatedEventId :: Text -> Text -> Text -> StreamName -> Text -> EventId
+
+data DelegatedCommandError
+  = DelegatedCommandFailed StreamName CommandError
+  | DelegatedCommandWithoutReceipt StreamName
+
+delegatedCommand ::
+  Store :> es =>
+  RunCommandOptions -> StreamName -> EventId ->
+  (RunCommandOptions -> Eff es (Either CommandError (CommandResult target))) ->
+  Eff es (Either DelegatedCommandError (DelegatedOutcome (CommandResult target)))
+
+delegatedFromPMCommand ::
+  StreamName -> PMCommandResult target ->
+  Either DelegatedCommandError (DelegatedOutcome (CommandResult target))
+```
+
+`delegatedCommand` uses a deterministic first-event ID as the receipt, confirms duplicates in the
+resolved target stream, and rejects a successful command that appended no event. The command and all
+protected SQL, projection, and outbox work must be one atomic append transaction.
+
+<Callout type="warn">
+  Delegated intake has no inbox backlog, failed-row inspection, or inbox GC record. Do not use it for
+  silent commands, non-atomic side effects, or an arbitrary multi-command reaction. Prefer the
+  table-backed wrappers whenever the downstream operation cannot supply one complete durable receipt.
+</Callout>
+
 ## `InboxDedupePolicy`
 
 Which identity becomes the inbox primary key.

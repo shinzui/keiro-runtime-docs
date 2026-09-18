@@ -4,7 +4,7 @@ description: "The language keiro-dsl N preamble, the released-language registry,
 ---
 
 Everything on this page lives in `Keiro.Dsl.LanguageVersion` *(new in Keiro 0.6.0.0; extended
-through 0.15.0.0)*. It answers one question: **which released contract is this `.keiro` file written
+through 0.17.0.0)*. It answers one question: **which language contract is this `.keiro` file written
 against?**
 
 Before Keiro 0.6.0.0 nothing in a `.keiro` source said which parser and semantic contract its author
@@ -89,7 +89,7 @@ languageSupportForVersion :: LanguageVersion -> Maybe LanguageSupport
   `case` over `LanguageSupport` must add the new arm.
 </Callout>
 
-Five contracts are registered:
+Six contracts are registered:
 
 <TypeTable
   type={{
@@ -98,6 +98,7 @@ Five contracts are registered:
     "3": { type: "syntax-profile/2 · runtime-semantics/2", description: "compatibility-only, published. Same syntax as 2; adds the enforced TypeID-v7 generated-ID domain and exact nominal equality." },
     "4": { type: "syntax-profile/3 · runtime-semantics/3", description: "compatibility-only, published. Adds field alias syntax to 2's grammar; adds contract-field TypeID admission and strict spec-surface validation." },
     "5": { type: "syntax-profile/4 · runtime-semantics/4", description: "STABLE, published. Adds projection catalogs, external-read contracts, the mapped-consumer surface, typed domain outcomes, declarative router selection, and the separated delivery/freshness policy." },
+    "6": { type: "syntax-profile/5 · runtime-semantics/5", description: "CANDIDATE, unpublished. Adds delegated inboxes, first-class process reactions, fifo-heads, declared contract IDs, keyed maps, and structural nominal leaves." },
   }}
 />
 
@@ -139,8 +140,9 @@ declared version.
   behaviour of a predecessor.
 </Callout>
 
-Language 5 is the stable contract as of Keiro 0.12.0.0, and every `keiro-dsl new <kind>` skeleton
-starts there. No language 6 contract is allocated.
+Language 5 remains the stable published contract. Language 6 is accepted as the single active
+candidate, but `keiro-dsl new <kind>` deliberately writes stable Language 5; opt in by declaring
+`language keiro-dsl 6` in a source that uses candidate features.
 
 Two different selectors answer "which version should this source use?", and they differ only while a
 candidate is open:
@@ -150,9 +152,9 @@ currentStableLanguageVersion :: LanguageVersion     -- the one Stable entry; err
 currentAuthoringLanguageVersion :: LanguageVersion  -- the one Candidate entry, else the stable one
 ```
 
-With no candidate registered, both return `5`. `currentAuthoringLanguageVersion` is what selects a
-new skeleton's preamble, so a future candidate becomes the authoring default without disturbing the
-published stable contract.
+In this registry `currentStableLanguageVersion` is `5` and `currentAuthoringLanguageVersion` is `6`.
+The latter is an API for candidate-aware authoring tools; the `new` command remains conservative and
+emits the published stable version.
 
 Once a version is released, new syntax or semantics must be registered under a **successor** with its
 predecessor relation. Existing version parsers and their rejection fixtures are never widened.
@@ -178,6 +180,11 @@ data LanguageFeature
     | DomainCommandOutcomeSyntax
     | DeclarativeRouterSelectionSyntax
     | SeparatedProjectionQueryPolicySyntax
+    | DelegatedInboxSyntax
+    | ProcessReactionSyntax
+    | WorkqueueFifoHeadsSyntax
+    | ContractDeclaredIdSyntax
+    | KeyedMapSyntax
     deriving stock (Eq, Ord, Show)
 
 syntaxProfileIdentifier :: SyntaxProfile -> Text
@@ -193,6 +200,7 @@ languageSupportsFeature :: LanguageVersion -> LanguageFeature -> Bool
 | `keiro-dsl/syntax-profile/2` | `NominalBindingSyntax`, `IntegerScalarSyntax`, `TypedAggregateExpressionSyntax`, `ExplicitTransitionImplementationSyntax` |
 | `keiro-dsl/syntax-profile/3` | all of profile 2, plus `FieldAliasSyntax` |
 | `keiro-dsl/syntax-profile/4` | all of profile 3, plus `ProjectionCatalogSyntax`, `ExternalReadContractSyntax`, `MappedConsumerSurfaceSyntax`, `DomainCommandOutcomeSyntax`, `DeclarativeRouterSelectionSyntax`, and `SeparatedProjectionQueryPolicySyntax` |
+| `keiro-dsl/syntax-profile/5` | all of profile 4, plus delegated inboxes, process reactions, FIFO heads, declared contract IDs, and keyed maps |
 
 Profiles are monotone: profile 3 adds `FieldAliasSyntax` to profile 2. `SyntaxProfile` is
 abstract; query it with `syntaxProfileIdentifier` and `syntaxProfileSupportsFeature`, and

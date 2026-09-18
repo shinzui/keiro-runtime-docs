@@ -9,10 +9,9 @@ archive table, topic routing tables, FIFO group indexes, and JSONB message
 payload. shibuya owns handler execution, runner policy, ack finalization,
 metrics, tracing, and shutdown.
 
-Current compatibility is `shibuya-pgmq-adapter 0.14.0.0`, the `pgmq-* 0.5`
-package family, and `shibuya-core 0.9.0.0`. The adapter's public Haskell API is
-unchanged across 0.13 and 0.14; those releases change the `pgmq-hs` line and the
-DLQ payload shape respectively.
+Current compatibility is `shibuya-pgmq-adapter 0.16.0.0`, the `pgmq-* 0.6`
+package family, and `shibuya-core 0.9.0.1`. Version 0.15 moves to pgmq-hs 0.6;
+0.16 adds the `HeadPerGroup` FIFO strategy backed by PGMQ 1.12 grouped-head reads.
 
 <Callout type="warn">
   **Upgrading past 0.13 needs a database check.** The re-exported `parseQueueName` now accepts only
@@ -183,7 +182,8 @@ topicDeadLetter  :: RoutingKey -> Bool -> DeadLetterConfig
 through the adapter's topic-routing helper so bindings decide which queues see
 the dead-letter payload. With `includeMetadata = True`, the DLQ payload includes
 the original message id, original enqueue and read timestamps, read count,
-headers, payload, and the shibuya dead-letter reason.
+`original_headers`, payload, and the shibuya dead-letter reason. Redrive tooling
+can therefore retain FIFO group and producer trace metadata.
 
 ### Structured reason fields *(0.14.0.0)*
 
@@ -212,11 +212,12 @@ the outgoing trace context, while the original upstream `traceparent` and
 
 ## FIFO and Topic Helpers
 
-When `fifoConfig` is present, the adapter reads grouped messages instead of the
-plain PGMQ queue stream. `ThroughputOptimized` lets busy groups dominate.
-`RoundRobin` rotates across groups for fairer processing. In both cases, the
-message payload remains raw JSON `Value`; FIFO only changes how the adapter
-chooses leased rows.
+When `fifoConfig` is present, the adapter reads grouped messages instead of the plain PGMQ queue
+stream. `ThroughputOptimized` lets busy groups dominate and `RoundRobin` rotates across groups for
+fairer processing; both legacy strategies must use a singleton batch when strict ordering matters.
+`HeadPerGroup` returns at most the absolute head of each group, so a failed or hidden head blocks its
+successors while other groups remain eligible; it safely supports larger batches and requires PGMQ
+1.12+. In every case the payload remains raw JSON `Value`; FIFO changes only how rows are leased.
 
 The package also exposes helpers for topic bindings:
 

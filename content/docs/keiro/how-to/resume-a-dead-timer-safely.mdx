@@ -1,0 +1,90 @@
+---
+title: "Resume a dead timer safely"
+description: "Inspect, authorize, claim, renew, and finish a dead timer through Keiro's guarded foreground-resume protocol."
+---
+
+You need to re-run work parked in a `Dead` timer without allowing two operator sessions to complete
+each other's claim. This runbook uses the Keiro 0.16 guarded API introduced with migration `0032`.
+
+<Callout type="warn">
+  Complete the coordinated rollout first: stop/drain old timer writers, apply migration `0032`,
+  deploy every 0.16+ writer, and only then enable resume. Stored owner and reason text are filters,
+  not authorization credentials.
+</Callout>
+
+## Goal
+
+Claim one authorized dead timer under an expiring token, execute idempotent work, and finish it only
+while the token is still yours.
+
+## Steps
+
+1. **Recover expired claims, then inspect bounded pages without claiming them.** A foreground-only
+   host must run recovery periodically and before discovery.
+
+   ```haskell
+   _ <- recoverExpiredTimerResumes
+
+   page <- findDeadTimers
+     (DeadTimerFilter (Just "billing-timeouts") (ReasonPrefix "gateway:"))
+     (DeadTimerPageRequest 50 Nothing)
+   ```
+
+   Follow `nextAfterTimerId` exactly. Decode and authorize every candidate before showing its
+   payload; an empty authorized page may still have a storage continuation.
+
+2. **Preflight the downstream session before claiming.** Establish credentials, confirm the target
+   system is reachable, and prepare the application-owned idempotency key first. A refused claim
+   costs no attempt, but an acquired claim increments the total attempt count.
+
+3. **Claim with exact stored guards and an explicit ceiling.**
+
+   ```haskell
+   claimed <- claimDeadTimer DeadTimerClaimRequest
+     { timerId = selectedId
+     , processManagerName = "billing-timeouts"
+     , expectedReason = selectedReason
+     , maxAttempts = 10
+     , leaseSeconds = 60
+     }
+
+   claim <- case claimed of
+     Left configError -> throwIO configError
+     Right Nothing    -> fail "timer no longer matches or attempt ceiling reached"
+     Right (Just c)   -> pure c
+   ```
+
+4. **Renew from database time while work is active.** Schedule renewal by the requested interval,
+   not by the claim-time `resumeClaimLeaseUntil` snapshot. Stop local work where possible when
+   renewal returns `False`.
+
+   ```haskell
+   renewed <- renewTimerResume claim 60
+   case renewed of
+     Left configError -> throwIO configError
+     Right False      -> abortLocalWork
+     Right True       -> continueLocalWork
+   ```
+
+5. **Finish through the claim handle.** Use exactly one terminal action:
+
+   - `completeTimerResume claim eventId` after the durable resulting event exists;
+   - `parkTimerResume claim` to return it to `Dead`, preserving reason and attempts;
+   - `cancelTimerResume claim` for explicit abandonment.
+
+   Treat `False` as lost ownership, never as successful completion. Do not fall back to
+   `markTimerFired`, `cancelTimer`, `deadLetterTimer`, or `requeueStuckTimer`; ID-only mutations
+   intentionally refuse guarded rows.
+
+## Verify it worked
+
+Read the timer again with `lookupTimerInspection`. Completion reports `Fired` and the exact
+`firedEventId`; parking reports `Dead` with the original `lastError`; cancellation reports
+`Cancelled`. Also verify the application-owned idempotency receipt, because the lease prevents
+cooperating-writer confusion but external execution remains at-least-once.
+
+## Related
+
+- [Keiro.Timer reference](/docs/keiro/reference/timers#guarded-foreground-resume-keiro-016)
+- [Understanding durable timers](/docs/keiro/explanation/durable-timers)
+- [Deploy ordering](/docs/keiro/reference/deploy-ordering#guarded-foreground-resume-rollout)

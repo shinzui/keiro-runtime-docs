@@ -40,10 +40,11 @@ PGMQ → When not to reach for a job](/docs/keiro/explanation/background-jobs-wi
 
 ```haskell
 data Job p = Job
-  { jobName   :: !Text          -- ^ shibuya ProcessorId + telemetry label
-  , jobQueue  :: !QueueRef
-  , jobCodec  :: !(JobCodec p)
-  , jobPolicy :: !RetryPolicy
+  { jobName     :: !Text          -- ^ shibuya ProcessorId + telemetry label
+  , jobQueue    :: !QueueRef
+  , jobCodec    :: !(JobCodec p)
+  , jobOrdering :: !JobOrdering   -- ^ required consumption ordering
+  , jobPolicy   :: !RetryPolicy
   }
 ```
 
@@ -58,6 +59,7 @@ reservationWorkJob =
     { jobName   = "reservation-work"
     , jobQueue  = queueRef "hospital_capacity.reservation_work"
     , jobCodec  = aesonJobCodec
+    , jobOrdering = FifoHeads
     , jobPolicy = defaultRetryPolicy
     }
 ```
@@ -201,8 +203,15 @@ SQL migrations, you can skip it (it is harmless to add later).
 ```haskell
 data QueueKind = StandardKind | UnloggedKind | PartitionedKind PartitionSpec
 data PartitionSpec = PartitionSpec { partitionInterval :: Text, retentionInterval :: Text }
+data PartitionSpecConfigError
+  = EmptyPartitionInterval | EmptyRetentionInterval
+  | NonPositivePartitionInterval Integer | NonPositiveRetentionInterval Integer
+  | PartitionIntervalOutsidePostgresInteger Integer
+  | MixedPartitionUnits Text Text
+  | RetentionBelowPartitionInterval Integer Integer
 data QueueProvision = QueueProvision { provisionKind :: QueueKind, provisionFifoIndex :: Bool }
 
+mkPartitionSpec :: Text -> Text -> Either PartitionSpecConfigError PartitionSpec
 standardProvision :: QueueProvision
 unloggedProvision :: QueueProvision
 partitionedProvision :: PartitionSpec -> QueueProvision
@@ -211,14 +220,22 @@ queueProvisionConfigs :: QueueProvision -> Job p -> [Config.QueueConfig]
 ```
 
 `UnloggedKind` trades crash durability for faster transient work; `PartitionedKind` requires a
-`pg_partman`-enabled server. `ensureOrderedJobQueue` creates the main queue, optional DLQ, and the
-FIFO GIN index used by grouped reads. The DLQ is always a standard queue with no FIFO index.
+`pg_partman`-enabled server. Prefer `mkPartitionSpec`: it trims inputs, checks non-empty values,
+validates positive matching numeric units, bounds the partition span to PostgreSQL `INTEGER`, and
+requires numeric retention to cover at least one partition. Nonnumeric time intervals remain opaque
+for PostgreSQL/pg_partman to validate. Retention drops whole old active and archive partitions, so
+size it above the worst outage and backlog age.
+
+PGMQ 0.6's lower-level partition config supports `premake`; Keiro intentionally provisions with
+`premake = Nothing`. `ensureOrderedJobQueue` creates the main queue, optional DLQ, and the
+conventional FIFO GIN index used by grouped reads. The DLQ is always a standard queue with no FIFO
+index.
 
 ## `JobTuning` and ordering
 
 ```haskell
 data JobPolling = PollEvery NominalDiffTime | LongPoll Int32 Int32
-data JobOrdering = Unordered | FifoThroughput | FifoRoundRobin
+data JobOrdering = Unordered | FifoThroughput | FifoRoundRobin | FifoHeads
 data JobTuning = JobTuning
   { visibilityTimeout :: Int32, batchSize :: Int32, polling :: JobPolling, ordering :: JobOrdering }
 
@@ -228,10 +245,16 @@ withOrdering :: JobOrdering -> JobTuning -> JobTuning
 ```
 
 `defaultJobTuning` is a 30 s visibility timeout, batch size 1, `PollEvery 1`, and unordered reads.
-`mkJobTuning` rejects non-positive visibility timeouts, batch sizes, and polling intervals. Use
-`withOrdering FifoThroughput` or `withOrdering FifoRoundRobin` with messages enqueued by
-`enqueueToGroup` to enable strict per-group delivery. `FifoThroughput` fills a batch from the oldest
-eligible group first; `FifoRoundRobin` interleaves eligible groups fairly.
+`mkJobTuning` rejects non-positive visibility timeouts, batch sizes, and polling intervals. Every
+`Job` now declares `jobOrdering`; explicit tuning must match it or consumption fails with
+`JobOrderingMismatch` before an adapter/read is created.
+
+Use grouped ordering with messages enqueued by `enqueueToGroup`. `FifoThroughput` fills a batch from
+the oldest eligible group first, and `FifoRoundRobin` interleaves groups, but both legacy strategies
+reject `batchSize > 1` as `UnsafeLegacyFifoBatch`: leasing multiple same-group rows can expose a
+successor before its predecessor settles. `FifoHeads` uses PGMQ 1.12's grouped-head read to return at
+most the absolute head of each group; a failed/delayed head blocks its successors while other groups
+remain eligible, and larger batches are safe. Current Keiro handlers still process serially.
 
 ## Consuming work
 
@@ -361,13 +384,18 @@ See [Version a job payload](/docs/keiro/how-to/version-a-job-payload).
 data DlqEntry p = DlqEntry
   { dlqMessageId :: MessageId, reason :: Text, originalPayload :: Either JobDecodeError p
   , originalMessageId :: Maybe Int64, originalEnqueuedAt :: Maybe UTCTime
-  , readCount :: Maybe Int64, rawBody :: Value }
+  , readCount :: Maybe Int64, originalHeaders :: Maybe Value, rawBody :: Value }
+
+data PurgeDlqResult = PurgeDlqPurged Int64 | PurgeDlqBlocked Int64
 
 readDlq :: (Pgmq :> es, IOE :> es) => Job p -> Int32 -> Eff es [DlqEntry p]
 redriveDlq :: (Pgmq :> es, IOE :> es) => Job p -> Int -> Eff es Int
-purgeDlq :: (Pgmq :> es, IOE :> es) => Job p -> Eff es ()
+purgeDlq :: (Pgmq :> es, IOE :> es) => Job p -> Eff es PurgeDlqResult
+purgeDlqForce :: (Pgmq :> es, IOE :> es) => Job p -> Eff es Int64
 archiveDlq :: (Pgmq :> es, IOE :> es) => Job p -> Int -> Eff es Int
+archiveDlqEntries :: (Pgmq :> es, IOE :> es) => Job p -> [MessageId] -> Eff es [MessageId]
 archiveDlqEntry :: (Pgmq :> es, IOE :> es) => Job p -> MessageId -> Eff es Bool
+archiveDlqEntryById :: (Pgmq :> es, IOE :> es) => Job p -> Int64 -> Eff es Bool
 
 jobQueueMetrics :: (Pgmq :> es) => Job p -> Eff es QueueMetrics
 jobDlqMetrics :: (Pgmq :> es) => Job p -> Eff es QueueMetrics
@@ -376,11 +404,16 @@ allJobMetrics :: (Pgmq :> es) => Eff es [QueueMetrics]
 ```
 
 `readDlq` decodes shibuya's DLQ wrapper and preserves malformed wrappers as inspectable entries.
-`redriveDlq` sends the preserved original payload back to the main queue and deletes the DLQ row;
-redrive is at-least-once because a crash between those statements can leave the payload in both
-places. `archiveDlq` moves active DLQ rows into PGMQ's archive table `pgmq.a_<dlq>` for retention;
-`purgeDlq` deletes active DLQ rows permanently. Use `jobDlqMetrics.queueLength` for DLQ depth
-alerts.
+New adapter writes include `originalHeaders`; `redriveDlq` preserves those headers (including FIFO
+group and trace metadata), but creates a new main-queue ID/read count and places the item at the back
+of its group. Redrive remains at-least-once because a crash between send and delete can leave the
+payload in both places.
+
+`archiveDlq` moves visible active rows into `pgmq.a_<dlq>`. After an inspection read hides rows, use
+`archiveDlqEntries` with their exact IDs and verify the returned set before purging. `purgeDlq`
+refuses while the metrics snapshot reports hidden rows; `purgeDlqForce` is the explicitly destructive
+escape hatch that deletes hidden rows too. The snapshot and deletion are not atomic, so quiesce
+producers/readers for a complete audit. Use `jobDlqMetrics.queueLength` for DLQ depth alerts.
 
 ## `QueueRef` and `queueRef`
 

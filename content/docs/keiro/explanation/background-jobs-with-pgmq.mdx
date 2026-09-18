@@ -49,6 +49,7 @@ data Job p = Job
   { jobName   :: !Text          -- telemetry / ProcessorId label
   , jobQueue  :: !QueueRef      -- logical name → physical + DLQ names
   , jobCodec  :: !(JobCodec p)  -- p ↔ JSON
+  , jobOrdering :: !JobOrdering -- required read/ordering contract
   , jobPolicy :: !RetryPolicy   -- retries + dead-letter
   }
 
@@ -123,7 +124,9 @@ FIFO group derivation, and initial storage provision. The scaffold lowers those 
 generated `Queue` and `QueuePolicy` modules; handler behavior and deployment tuning such as batch
 size, visibility timeout, polling, and concurrency remain hand-owned.
 
-The ordering vocabulary is `unordered`, `fifo-throughput`, and `fifo-roundrobin`. FIFO is
+The ordering vocabulary is `unordered`, `fifo-throughput`, `fifo-roundrobin`, and `fifo-heads`.
+`fifo-heads` is the strict PGMQ 1.12 strategy and safely supports batches; the two legacy FIFO
+strategies are restricted to singleton reads. FIFO is
 per-group, remains at-least-once, and requires one resolvable group key. Provision is `standard`,
 `unlogged`, or `partitioned(interval="…", retention="…")`; changing an already-created queue still
 requires an operational migration. See [Configure FIFO queue ordering and

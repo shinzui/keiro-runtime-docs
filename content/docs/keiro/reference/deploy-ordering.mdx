@@ -19,7 +19,9 @@ Three terms recur:
   crash before checkpoint, a visibility timeout, or a consumer rebalance.
 
 
-Apply Keiro migration `0031` before deploying 0.14+ outbox readers or publishers. Kiroku
+Apply Keiro migration `0031` before deploying 0.14+ outbox readers or publishers. For Keiro 0.16+,
+stop/drain old timer writers, apply `0032`, deploy every upgraded writer, and only then enable
+guarded dead-timer resume. Kiroku
 migrations 0.4 also needs the [0010 checksum recovery](/docs/kiroku/how-to/recover-the-0010-checksum)
 when the withdrawn payload was already applied.
 
@@ -85,6 +87,12 @@ applies whenever hand-owned logic changes.
 **If violated:** no error is raised. Benign-duplicate confirmation silently preserves a half-old,
 half-new fan-out.
 
+The 0.17 reaction runner is a different identity family: target dispatch IDs include the physical
+target stream and the occurrence among commands to that target. Switching an existing manager name
+from `ProcessManager` to `ReactiveProcessManager`, changing a reaction's target order/payloads, or
+removing a reaction timer therefore needs the same drain. A reaction-version bump records intent;
+it does not translate old IDs or remove the drain requirement.
+
 ## 5. Stamp every direct event-store write
 
 `decodeRecorded` treats absent schema-version metadata as version 1. An event written directly to
@@ -114,6 +122,21 @@ payloads keep the same manual obligation with no gate.
 
 **If violated:** the fire callback fails repeatedly; once attempts exceed
 `TimerWorkerOptions.maxAttempts`, the timer moves to terminal `Dead` with `last_error` set.
+
+### Guarded foreground resume rollout
+
+Migration `0032` adds the opaque token and expiring lease that protect resumed `Dead` timers. The
+writer order is strict: stop/drain old timer writers → apply `0032` → deploy all 0.16+ writers →
+enable resume. Old writers can mutate rows without the token predicates, so mixed writers are unsafe.
+Before rollback, disable resume and drain or recover guarded claims. Resume remains at-least-once;
+stored owner/reason text is not authorization and external effects need their own durable receipt.
+
+### Change queue ordering only across a drain
+
+`keiro-pgmq` 0.17 makes ordering part of every `Job`. Moving between `Unordered`, either legacy FIFO
+strategy, and `FifoHeads` changes which rows may be leased together. Drain the queue, deploy the new
+worker/provisioning contract, and then resume producers. `FifoHeads` requires PGMQ 1.12+ and safely
+batches at most one absolute head per group; legacy FIFO modes must keep batch size one.
 
 ## 7. Coordinate integration contracts manually
 
@@ -175,6 +198,8 @@ inversion-compatible change or a stale snapshot can silently derive different st
 | `keiroJobCodec` bump | workers, then producers | safe until a new-version body is enqueued |
 | PM/router decide change | drain redelivery, then deploy | mixing is silent — drain again |
 | Timer payload shape | firers, then schedulers | keep the old decoder until pending timers clear |
+| Enable guarded timer resume | drain writers, apply `0032`, deploy all writers, enable resume | disable resume and clear guarded claims before rollback |
+| Job ordering / `FifoHeads` | drain queue, provision/upgrade, deploy workers, resume producers | drain again; old/new leases are not one contract |
 | Integration contract | additive: producer first; structural: consumer first | keep decoding the old shape until the backlog drains |
 | Workflow step result type | rename the step, or `patch` | resurrect after fixing forward |
 | Guard / fold / mode change | replay audit before traffic switch | deleting a replay-only twin re-breaks history |

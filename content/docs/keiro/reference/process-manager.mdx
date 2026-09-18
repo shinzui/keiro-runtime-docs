@@ -172,6 +172,87 @@ runProcessManagerWorkerWith ::
 handle is finalized exactly once. A duplicate manager-state append still reruns target dispatch, so
 a crash after manager commit but before a target commit is filled in on redelivery.
 
+## Typed process reactions *(Keiro 0.17+)*
+
+`Keiro.ProcessManager.Reaction` is an additive runner for reactions that may advance a saga, apply
+timer changes atomically with that accepted append, and then fan out commands to independent target
+streams:
+
+```haskell
+data ReactionPlan ci targetCi
+  = NoAdvance [FollowUp targetCi]
+  | AdvanceReaction
+      { command    :: ci
+      , followUps  :: [FollowUp targetCi]
+      , onAccepted :: [FollowUp targetCi]
+      }
+
+data FollowUp targetCi
+  = FollowDispatch (PMCommand targetCi)
+  | FollowSchedule ScheduleMode TimerRequest
+  | FollowCancel TimerId
+
+data ScheduleMode = Rearm | Once
+
+data ReactiveProcessManager ... = ReactiveProcessManager
+  { name              :: Text
+  , correlate         :: input -> Text
+  , sagaHandler       :: DomainCommandHandler phi rs s ci co rejection noOp
+  , streamFor         :: Text -> Stream (EventStream phi rs s ci co)
+  , targetEventStream :: ValidatedEventStream targetPhi targetRs targetState targetCi targetCo
+  , targetProjections :: Stream targetCi -> [InlineProjection targetCo]
+  , react             :: input -> ReactionPlan ci targetCi
+  }
+```
+
+An accepted saga event and its selected timer SQL commit in one transaction. Target dispatches run
+afterward, in declared order but in independent transactions. `onAccepted` runs only when the
+invocation appends or recovers the deterministic accepted witness; unconditional `followUps` run for
+the observed outcome. `Once` is insert-only for a timer ID, while `Rearm` may update an existing
+still-scheduled timer.
+
+`NoAdvance` and silent domain decisions leave no durable saga receipt. Their unconditional timer
+effects can therefore repeat, including around a concurrent accepted delivery. Put effects that
+must be tied to acceptance in `onAccepted`.
+
+```haskell
+data ReactionStateResult target co rejection noOp
+  = ReactionNotAdvanced
+  | ReactionEvaluated (DomainCommandOutcome target co rejection noOp)
+  | ReactionDuplicate EventId
+
+data ReactionTimerEffects = ReactionTimerEffects
+  { statementsCommitted :: Int
+  , onceInserted        :: Int
+  , timersCancelled     :: Int
+  }
+
+data ReactionError
+  = ReactionCommandFailed CommandError
+  | ReactionWitnessMissing StreamName EventId
+  | ReactionWitnessUndecodable StreamName EventId
+
+data ReactiveProcessManagerResult ... = ReactiveProcessManagerResult
+  { managerResult  :: ReactionStateResult managerTarget co rejection noOp
+  , commandResults :: [PMCommandResult commandTarget]
+  , timerEffects   :: ReactionTimerEffects
+  }
+```
+
+Use `runReactiveProcessManagerOnce`, `runReactiveProcessManagerWorkerWith`, or the
+`defaultWorkerOptions` specialization `runReactiveProcessManagerWorker`. On accepted redelivery the
+runner validates the exact saga witness, skips timer SQL, and retries target fan-out.
+
+```haskell
+deterministicReactionCommandId ::
+  Text -> Text -> EventId -> StreamName -> Int -> EventId
+```
+
+Reaction target IDs are keyed by manager, correlation, source event, resolved target stream, and the
+occurrence number for that target. They are not compatible with the older positional identity
+family. Drain the source subscription before converting an existing manager; there is no schema
+migration or positional-ID fallback.
+
 ## Deterministic IDs and duplicate confirmation
 
 ```haskell

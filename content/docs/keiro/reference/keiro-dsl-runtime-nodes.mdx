@@ -34,6 +34,43 @@ contracts, commands, queues, workflows, and fields are resolved by `check`.
 
 ## Process and timer
 
+Language 1–5 keep the legacy process body and positional `emitIndex` dispatch identity shown below.
+Candidate Language 6 adds a separate `reactions version <n>` body that lowers to
+`Keiro.ProcessManager.Reaction`:
+
+```keiro-dsl
+process IncidentReaction
+  name "incident-reaction"
+  reactions version 1
+  input IncidentReported { incidentId:IncidentId severity:Severity }
+  correlate input.incidentId via idText
+  saga IncidentSaga category "incidentSaga"
+  target Incident
+  projections [ ]
+  on IncidentReported
+    when input.severity == Severity.Sev1
+      advance RecordCritical { incidentId }
+      dispatch Incident@input.incidentId EscalateIncident { incidentId }
+        on-appended AckOk ; on-duplicate AckOk ; on-failed Retry
+    otherwise
+      no-action
+  dispatch-id strategy=uuidv5 from=(name, correlationId, sourceEventId, targetStreamName, occurrence)
+  rejected => halt
+  poison => halt
+```
+
+Reaction inputs, guard coverage, arm totality, command mappings, targets, and follow-up order are
+checked. Scaffolding generates the input ADT, pure reaction, typed `ReactiveProcessManager`, worker,
+reaction version/fingerprint, and timer codecs; the create-once hole only decodes a `RecordedEvent`
+to a typed input. Reaction timers support `schedule`, insert-only `schedule-once`, and `cancel` and
+share the saga append transaction when accepted.
+
+The target-keyed identity tuple is mandatory. Moving an existing manager name from the legacy body
+to reactions is an identity migration: drain its subscription before deploy. Reaction evolution
+advisories carry `drain-required`.
+
+### Legacy process body
+
 ```keiro-dsl
 process HospitalSurge
   name "hospital-surge"
@@ -146,8 +183,10 @@ contract emergency {
 }
 ```
 
-Contract field types are `typeid "prefix"`, `text`, or `int`. Topic aliases map to actual Kafka
-topics; events declare their topic affinity. Generated `Contract` modules own payload ADTs/codecs.
+Contract field types are `typeid "prefix"`, `text`, or `int`. Candidate Language 6 also lets a field
+name a declared `id`, reusing its TypeID prefix and nominal Haskell type instead of repeating an
+anonymous prefix. Topic aliases map to actual Kafka topics; events declare their topic affinity.
+Generated `Contract` modules own payload ADTs/codecs.
 
 ### Intake
 
@@ -176,6 +215,11 @@ intake incidentInbox {
 Binding sources are `header "name"`, `body`, `kafka-key`, or `kafka-cursor`; `required` and
 `cross-check body` are optional modifiers. `persist` is `full-envelope` (default) or `dedupe-only`.
 The latter drops successful payload bytes but failed rows always retain the full envelope.
+
+Candidate Language 6 accepts `idempotence delegated` in place of inbox-table ownership. Its
+generated runner uses the no-`Store` delegated APIs and requires the downstream atomic state
+transition to provide the durable receipt. It is not appropriate for silent commands, non-atomic
+side effects, or multi-command reactions, and it provides no inbox backlog or failed-row inspection.
 
 The directly scaffoldable dedupe policies are `PreferIntegrationMessageId`,
 `PreferSourceEventIdentity`, and `KafkaDeliveryIdentity`. A custom runtime key remains hand-owned.
@@ -216,7 +260,7 @@ workqueue reservation_work {
   derive physical = "hospital_capacity_reservation_work"
          dlq = "hospital_capacity_reservation_work_dlq"
          table = "pgmq.q_hospital_capacity_reservation_work"
-  ordering fifo-throughput
+  ordering fifo-heads
   group key from reservationId via raw
   provision standard
   payload ReservationWorkItem { reservationId -> "reservation_id" text required }
@@ -230,9 +274,11 @@ workqueue reservation_work {
 }
 ```
 
-Ordering is `unordered` (default), `fifo-throughput`, or `fifo-roundrobin`. FIFO requires exactly one
-group key; unordered forbids it. `via raw` requires a `text` payload field. An opaque `via <name>`
-requires `fixture "input => output"`.
+Ordering is `unordered` (default), `fifo-throughput`, `fifo-roundrobin`, or `fifo-heads`. FIFO
+requires exactly one group key; unordered forbids it. `fifo-heads` lowers to the strict grouped-head
+reader and safely supports batches; the legacy FIFO strategies require batch size 1 at runtime.
+`via raw` requires a `text` payload field. An opaque `via <name>` requires
+`fixture "input => output"`.
 
 Provisioning is `standard` (default), `unlogged`, or
 `partitioned(interval="daily", retention="7 days")`. Unlogged queues can be truncated to empty after
