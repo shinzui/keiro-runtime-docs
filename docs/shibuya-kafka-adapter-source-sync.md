@@ -25,12 +25,15 @@ runnable examples.
 ## Last reviewed commit
 
 ```text
-6c0cd3fc840c9f5ba48558ca94c7d826a3da6c9f  (6c0cd3fc)
-2026-09-15T20:51:52-07:00
-build(deps): support effectful-core 2.7
+74fed7e8df366072b0587c4bdae8d4e92317c8a3  (74fed7e8)
+2026-09-21T06:19:13-07:00
+chore(release): prepare 0.9.0.2 candidate
 ```
 
-> **Current range.** `28625bea..6c0cd3fc` (**6 commits**). Release 0.9.0.1 adds effectful-core 2.7 build support; adapter API and runtime behavior are unchanged. Remaining commits are formatting, metadata and development configuration.
+> **Current range.** `6c0cd3fc..74fed7e8` (**7 commits**). Reviewed lifecycle acknowledgement/remediation candidate and evidence. Published behavior remains 0.9.0.1; candidate 0.9.0.2 is unpublished. Updated integration and compatibility boundaries, without presenting candidate acknowledgements as released behavior.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
+
+> **Note (prior range).** `28625bea..6c0cd3fc` (**6 commits**). Release 0.9.0.1 adds effectful-core 2.7 build support; adapter API and runtime behavior are unchanged. Remaining commits are formatting, metadata and development configuration.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `65111ae..89e8026` range (**3 commits**, 16 files) is the
@@ -81,6 +84,8 @@ the reviewed SHA.
 
 ## Previous pointers
 
+- `6c0cd3fc840c9f5ba48558ca94c7d826a3da6c9f` (`6c0cd3fc`, 2026-09-15) — baseline before the 7-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
+
 - `28625beaf68ac35474c6635a8f71d7f10da33425` (`28625bea`) — baseline before the
   `28625bea..6c0cd3fc` review (6 commits). The range moved to effectful-core 2.7 and released
   0.9.0.1 without changing the adapter API; see the [2026-09-17 ledger](source-sync-2026-09-17.md).
@@ -100,8 +105,8 @@ the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    KAFKA=$(mori registry show shinzui/shibuya-kafka-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KAFKA" log --oneline 6c0cd3fc..HEAD
-   git -C "$KAFKA" diff --stat 6c0cd3fc..HEAD
+   git -C "$KAFKA" log --oneline 74fed7e8..HEAD
+   git -C "$KAFKA" diff --stat 74fed7e8..HEAD
    ```
 2. Inspect source modules and `shibuya-kafka-adapter-jitsurei/app/`.
 3. Update `content/docs/integrations/shibuya-kafka-adapter.mdx` and the shared

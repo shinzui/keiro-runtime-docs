@@ -1,0 +1,244 @@
+---
+title: "Replay compatibility evidence"
+description: "Build-bound retained-history inventories, capture reports, compatibility failures, and normalization laws in Keiro.Test.ReplayCompatibility."
+---
+
+`Keiro.Test.ReplayCompatibility` is exposed by `keiro-test-support` 0.18. It compares semantic
+observations from independently built baseline and candidate programs against an independently
+derived inventory. It does not capture application history automatically or authorize removal of
+old decoders. For the procedure, see [prove checked mapping replay](/docs/keiro/how-to/prove-checked-mapping-replay).
+
+## Versioned envelope
+
+`reportVersionV1` is `keiro.replay-compatibility/report/v1`; `inventoryVersionV1` is
+`keiro.replay-compatibility/inventory/v1`. Records have JSON instances; capture roles encode as
+`baseline`/`candidate`. Case kinds encode as `historical-read`, `semantic-equivalence`,
+`old-reader-new-writer`, `snapshot`, `process-manager`, and `workflow`.
+
+## Build identity
+
+```haskell
+data BuildIdentity = BuildIdentity
+  { sourceRevision :: Text,
+    languageProfile :: Text,
+    runtimeProfile :: Text,
+    dependencyPlanHash :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+
+data BuildPair = BuildPair
+  { baseline :: BuildIdentity,
+    candidate :: BuildIdentity
+  }
+  deriving stock (Eq, Show, Generic)
+
+data CaptureRole = BaselineCapture | CandidateCapture
+  deriving stock (Eq, Ord, Show)
+```
+
+## Required cases
+
+```haskell
+data PersistedSurface = PersistedSurface
+  { kind :: Text,
+    owner :: Text,
+    identity :: Text
+  }
+  deriving stock (Eq, Ord, Show, Generic)
+
+data CaseKind
+  = HistoricalRead
+  | SemanticEquivalence
+  | OldReaderNewWriter
+  | SnapshotReplay
+  | ProcessManagerReplay
+  | WorkflowReplay
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+data RequiredCase = RequiredCase
+  { caseId :: Text,
+    caseKind :: CaseKind,
+    surface :: PersistedSurface
+  }
+  deriving stock (Eq, Ord, Show, Generic)
+```
+
+## Independent inventory
+
+```haskell
+data InventorySource
+  = BaselinePersistedSurfaces
+  | CandidatePersistedSurfaces
+  | OrdinaryCompatibilityFindings
+  | AggregateReplayImpacts
+  | MappedConsequences
+  | CheckedProcessReactions
+  | ApplicationOwnedObligations
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+data SourceApplicability
+  = Applicable
+  | NotApplicable Text
+  | SourceUnverified Text
+  deriving stock (Eq, Show)
+
+data InventoryContribution = InventoryContribution
+  { source :: InventorySource,
+    applicability :: SourceApplicability,
+    cases :: [RequiredCase]
+  }
+  deriving stock (Eq, Show, Generic)
+
+data EvidenceInventory = EvidenceInventory
+  { inventoryVersion :: Text,
+    inventoryId :: Text,
+    buildPair :: BuildPair,
+    contributions :: [InventoryContribution]
+  }
+  deriving stock (Eq, Show, Generic)
+```
+
+## Capture observations
+
+```haskell
+data HighWaterMark = HighWaterMark
+  { stream :: Text,
+    revision :: Integer
+  }
+  deriving stock (Eq, Ord, Show, Generic)
+
+data DeterminismInputs = DeterminismInputs
+  { clock :: Text,
+    randomness :: Text,
+    externalResponsesHash :: Text,
+    failureScheduleHash :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+
+data Observation = Observation
+  { durableState :: Map Text Value,
+    continuations :: [Value],
+    durableIdentities :: Map Text Text,
+    freshAllocations :: [Text]
+  }
+  deriving stock (Eq, Show, Generic)
+
+data EvidenceVerdict
+  = Passed
+  | Failed Text
+  | Unverified Text
+  deriving stock (Eq, Show)
+
+data CaseResult = CaseResult
+  { requiredCase :: RequiredCase,
+    verdict :: EvidenceVerdict,
+    observation :: Maybe Observation
+  }
+  deriving stock (Eq, Show, Generic)
+
+data CaptureReport = CaptureReport
+  { reportVersion :: Text,
+    role :: CaptureRole,
+    buildPair :: BuildPair,
+    inventoryId :: Text,
+    corpusHash :: Text,
+    observationContractVersion :: Text,
+    highWaterMarks :: [HighWaterMark],
+    selectedSurfaces :: [PersistedSurface],
+    determinismInputs :: DeterminismInputs,
+    results :: [CaseResult]
+  }
+  deriving stock (Eq, Show, Generic)
+```
+
+Every inventory includes each of the seven `inventorySourcesV1` sources exactly once. An applicable
+source supplies nonempty cases; a not-applicable source supplies a nonempty reason and no cases.
+An unverified source fails validation. Identical required cases can be shared by several sources;
+conflicting definitions of one case ID fail.
+
+## Validation
+
+```haskell
+requiredCases :: EvidenceInventory -> Map Text RequiredCase
+validateCompatibility :: EvidenceInventory -> CaptureReport -> CaptureReport -> [CompatibilityFailure]
+compareObservation :: Text -> Observation -> Observation -> [CompatibilityFailure]
+releaseReady :: EvidenceInventory -> CaptureReport -> CaptureReport -> Bool
+renderCompatibilityFailure :: CompatibilityFailure -> Text
+```
+
+Pass baseline then candidate. `validateCompatibility` returns every detected failure;
+`releaseReady` means that list is empty. Build pairs, inventory identity, corpus, observation
+contract, deterministic inputs and stream high-water marks must agree. High-water marks must
+be nonempty and unique by stream. Every required case must appear once per report, retain its
+inventory definition, select its surface, pass, and contain a nonempty semantic observation.
+Observations compare exactly, including continuation order and fresh allocations. Fresh allocations
+alone do not make an observation nonempty. Extra report rows do not substitute for missing required
+cases; the caller must derive a complete inventory independently of those rows.
+
+```haskell
+data CompatibilityFailure
+  = UnsupportedInventoryVersion Text
+  | UnsupportedReportVersion CaptureRole Text
+  | WrongCaptureRole CaptureRole CaptureRole
+  | BuildPairMismatch Text
+  | InventoryIdentityMismatch CaptureRole
+  | CorpusIdentityMismatch
+  | ObservationContractMismatch
+  | DeterminismInputMismatch
+  | MissingInventorySource InventorySource
+  | DuplicateInventorySource InventorySource
+  | InvalidInventoryContribution InventorySource Text
+  | ConflictingRequiredCase Text
+  | MissingRequiredCase CaptureRole Text
+  | DuplicateCaseResult CaptureRole Text
+  | CaseDefinitionMismatch CaptureRole Text
+  | RequiredCaseFailed CaptureRole Text Text
+  | RequiredCaseUnverified CaptureRole Text Text
+  | EmptyPassedObservation CaptureRole Text
+  | ObservationMismatch Text
+  | MissingSelectedSurface CaptureRole PersistedSurface
+  | EmptyHighWaterMarks CaptureRole
+  | DuplicateHighWaterMark CaptureRole Text
+  | HighWaterMarkMismatch
+  deriving stock (Eq, Show)
+```
+
+## Normalization law
+
+```haskell
+checkNormalizationLaw ::
+  (Eq wire, Eq domain, Eq observation) =>
+  (wire -> Either Text domain) ->
+  (domain -> wire) ->
+  ([wire] -> Either Text observation) ->
+  [wire] ->
+  wire ->
+  wire ->
+  [wire] ->
+  [NormalizationFailure]
+```
+
+Arguments are decoder, canonical encoder, raw-wire replay function, historical prefix,
+noncanonical value, expected canonical value, and suffix. The helper checks canonical bytes,
+domain round trips, and equal observations from replaying the raw historical chain and its
+canonical replacement. Normalizing both inputs before calling the replay function would erase
+the evidence this check needs.
+
+```haskell
+data NormalizationFailure
+  = NonCanonicalDecodeFailed Text
+  | CanonicalEncodingMismatch
+  | CanonicalDecodeFailed Text
+  | DomainRoundTripFailed
+  | NonCanonicalReplayFailed Text
+  | CanonicalReplayFailed Text
+  | NormalizedReplayDiverged
+  deriving stock (Eq, Show)
+```
+
+## Evidence limits
+
+Passing a finite corpus is evidence for that corpus and build pair, not a proof that every
+application-owned process/workflow codec is compatible. Publication, consumer adoption and removal
+of predecessor implementations have separate evidence requirements. Keep readers for all permitted
+retained histories, including histories outside today's queue backlog.

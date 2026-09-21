@@ -45,7 +45,7 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     **process managers** + **durable timers** (`keiro_timers`), which remain the right tool for
     fundamentally event-driven, reactive coordination. It also ships **continue-as-new** journal
     rotation (`continueAsNew` / `restoreSeed`, for unbounded histories) and a **versioning** API
-    (`patch`, for cross-cutting logic changes — prefer renaming a step for single-step changes). See
+    (`patch`, for recorded branch decisions that preserve in-flight behavior). See
     [Understanding durable execution](/docs/keiro/explanation/durable-execution), the [durable
     workflows reference](/docs/keiro/reference/durable-workflows), and the [workflow
     roadmap](/docs/keiro/explanation/workflow-roadmap). If the workflow comes from a `.keiro`
@@ -54,12 +54,10 @@ Short answers to the questions people ask most about keiro. Each links to the pa
   </Accordion>
 
   <Accordion title="How do I change a workflow's logic while instances are in flight?">
-    Two tools, and the common one needs no API. Because step identity is the **name**, a single
-    step's change is just a **rename** — the new `StepName` has no journaled history, so it runs fresh.
-    For a change that *cross-cuts several steps*, `patch (PatchId "…")` returns a stable, journaled
-    `Bool`: `True` for instances fresh at that point, `False` for ones already in flight, replayed
-    verbatim forever. Reach for `patch` only when an in-flight instance would otherwise be left
-    incoherent, and never reuse a retired `PatchId`. See [Write a durable workflow →
+    Preserve recorded results with versioned decoding or a `patch` branch that keeps old
+    generations on their old reader and key. Renaming a `StepName` can run a new effect, so use a
+    new key only for an intentional new action on the new branch. A patch decision is journaled
+    and remains stable across replay. Never reuse a retired `PatchId`. See [Write a durable workflow →
     Versioning](/docs/keiro/how-to/write-a-durable-workflow#versioning-a-running-workflow).
   </Accordion>
 
@@ -446,3 +444,10 @@ Keiro DSL 0.15 requires explicit backup-backed idiomatic-v2 adoption. Legacy sid
 ## Does terminal outbox rejection stop the line?
 
 No. It releases ordered successors and continues `StopTheLine`; `PublishFailed` stops it. Rejections retain audit evidence and schedule no retry. See [terminal rejection](/docs/keiro/how-to/handle-terminal-outbox-rejection).
+
+## Does a mapping round trip prove an existing service can upgrade?
+
+No. Current-value conformance does not cover retained event bytes, process reactions, workflow
+continuations or old readers consuming new writes. Use [build-bound replay
+captures](/docs/keiro/how-to/prove-checked-mapping-replay), and retain old decoders until the separate
+retirement evidence permits removing them.

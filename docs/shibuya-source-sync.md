@@ -28,12 +28,15 @@ source walkthroughs.
 ## Last reviewed commit
 
 ```text
-cb3c4a9ae91de946fa17a6287241ca91699f7c50  (cb3c4a9a)
-2026-09-17T14:22:19-07:00
-docs(plans): add post-0.9 review remediation master plan and three child exec plans
+efbe2a87268a759e825f388e238343a83badd6da  (efbe2a87)
+2026-09-21T06:47:04-07:00
+test(release): retain candidate test transcripts
 ```
 
-> **Current range.** `bf2cff1e..cb3c4a9a` (**7 commits**). Release 0.9.0.1 adds effectful-core 2.7 build support without public API or runtime changes; other commits are manifest/tooling/plans. Updated release compatibility only.
+> **Current range.** `cb3c4a9a..efbe2a87` (**70 commits**). Published 0.9.0.2/0.9.0.3 liveness fixes: no idle linked master loop and no caller-linked supervisor. Updated app-supervision, walkthrough, FAQ and compatibility. Unpublished 0.10 lifecycle ownership, shutdown/error, progress-health and WebSocket contracts are explicitly excluded from released APIs. Dirty upstream worktree changes are excluded; only the frozen committed tree was reviewed.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
+
+> **Note (prior range).** `bf2cff1e..cb3c4a9a` (**7 commits**). Release 0.9.0.1 adds effectful-core 2.7 build support without public API or runtime changes; other commits are manifest/tooling/plans. Updated release compatibility only.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `172df24..7158f3e` range (**10 commits**, 43 files,
@@ -107,8 +110,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    SHIBUYA=$(mori registry show shinzui/shibuya --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$SHIBUYA" log --oneline cb3c4a9a..HEAD
-   git -C "$SHIBUYA" diff --stat cb3c4a9a..HEAD
+   git -C "$SHIBUYA" log --oneline efbe2a87..HEAD
+   git -C "$SHIBUYA" diff --stat efbe2a87..HEAD
    ```
 2. Inspect changed modules under `shibuya-core/`, `shibuya-metrics/`, and
    `shibuya-example/`, plus `README.md`, `CHANGELOG.md`, and
@@ -121,6 +124,8 @@ clean at the reviewed SHA.
    range.
 
 ## Previous pointers
+
+- `cb3c4a9ae91de946fa17a6287241ca91699f7c50` (`cb3c4a9a`, 2026-09-17) — baseline before the 70-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
 
 - `bf2cff1e00334636f676bdb015d87fc8e539779c` (`bf2cff1e`, shibuya-core 0.9.0.0) — baseline before
   the `bf2cff1e..cb3c4a9a` review (7 commits). The range moved to effectful-core 2.7 and released

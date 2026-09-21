@@ -14,19 +14,22 @@ the pinned commit to `HEAD`, update the affected pages, then bump the pointer be
 - Relevant packages: `kiroku-store` (core store + subscription FSM), `shibuya-kiroku-adapter`
   (worker adapter); the source tree also carries the metrics, CLI, and OpenTelemetry packages
   documented below.
-- **Reviewed releases:** `kiroku-store 0.8.0.0`, migrations `0.4.0.0`,
-  `kiroku-otel 0.2.0.7`, `kiroku-cli 0.2.0.6`, `kiroku-metrics 0.1.0.8`, and
-  `shibuya-kiroku-adapter 0.5.1.1`. Hackage and upstream release tags checked 2026-09-17.
+- **Reviewed releases:** `kiroku-store 0.8.0.1`, migrations `0.5.0.0`,
+  `kiroku-otel 0.2.0.8`, `kiroku-cli 0.2.0.6`, `kiroku-metrics 0.1.0.8`, and
+  `shibuya-kiroku-adapter 0.5.1.2`. Hackage and upstream release tags checked 2026-09-21.
 
 ## Last reviewed commit
 
 ```text
-07cd034aafc0d88b6c55abdf3509e25b9d69e63d  (07cd034a)
-2026-09-16T21:01:15-07:00
-chore(seihou): apply exec-plan and master-plan module updates
+246a27b6e7ac55fbd7c7a66e8ad84a3b3f46237e  (246a27b6)
+2026-09-21T06:19:13-07:00
+chore(release): prepare lifecycle candidate packages
 ```
 
-> **Current range.** `7051b123..07cd034a` (**11 commits**). Plans, ADRs, review metadata, provenance and Seihou module updates only. No package source, Cabal release, migration, store API, or adapter behavior changed.
+> **Current range.** `07cd034a..246a27b6` (**7 commits**). Published store 0.8.0.1, migrations 0.5.0.0, OTel 0.2.0.8 and adapter 0.5.1.2. Updated schema-migrations and adapter guides: pg-migrate 1.2 adoption changes bounds, not embedded SQL. Store 0.8.0.2 and adapter 0.5.1.3 lifecycle candidates are unpublished and excluded from released behavior; compatibility records this gap.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
+
+> **Note (prior range).** `7051b123..07cd034a` (**11 commits**). Plans, ADRs, review metadata, provenance and Seihou module updates only. No package source, Cabal release, migration, store API, or adapter behavior changed.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `3009dda..b9aecf3` range (**51 commits**, 151 files,
@@ -161,6 +164,8 @@ chore(seihou): apply exec-plan and master-plan module updates
 
 ### Previous pointers (for traceability)
 
+- `07cd034aafc0d88b6c55abdf3509e25b9d69e63d` (`07cd034a`, 2026-09-16) — baseline before the 7-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
+
 - `7051b12342b3002659e39061b03bee2e37275099` (`7051b123`) — baseline before the
   `7051b123..07cd034a` review (11 commits). The range changed plans, ADRs, provenance and review
   metadata only; no released source or documentation contract changed. See the
@@ -200,8 +205,8 @@ chore(seihou): apply exec-plan and master-plan module updates
 1. List what changed since the pointer:
    ```sh
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 07cd034a..HEAD
-   git -C "$KIROKU" diff --stat 07cd034a..HEAD
+   git -C "$KIROKU" log --oneline 246a27b6..HEAD
+   git -C "$KIROKU" diff --stat 246a27b6..HEAD
    ```
    Kiroku also keeps its own `docs/`, `CHANGELOG.md` files, and `docs/plans|masterplans`
    entries — the prose diff there is the fastest way to understand intent before touching

@@ -133,19 +133,17 @@ journaled*; your action should be safe under *at least once until it commits*.
 
 ## Versioning a running workflow
 
-When you change a workflow whose instances are already in flight, you have **two** tools — and the
-common one needs no API.
+When a recorded result changes, retain a decoder for every historical shape or keep old
+generations on their old reader and key through a recorded patch branch. This applies even when
+only one step changes.
 
-**Rename the step.** Because step durability is keyed on the *name*, not the source position, changing
-one step's behaviour is just a rename. Change `step (StepName "charge") …` to
-`step (StepName "charge-v2") …`: the new name has no journaled history, so its action runs fresh on the
-next replay, exactly as you want. **The rule of thumb: if a single rename makes the change correct,
-rename.**
+**A renamed step is a new action.** Changing `StepName "charge"` to `StepName "charge-v2"`
+removes the old journal hit and can charge again on replay. Use a new key only when executing that
+new action is intentional and restricted to the intended branch.
 
-**Patch — the escape hatch.** Only when a change *cross-cuts several steps* — an instance already past
-some of them must take one stable branch for the rest of its life — reach for `patch`. It returns a
-stable, journaled `Bool`: `True` for an instance fresh at that point, `False` for one already in flight
-when the patch shipped. For example, wrapping two existing steps in a new fraud check:
+**Patch the branch.** `patch` returns a stable journaled decision, preserving the old branch for
+old generations and the new branch for fresh ones. Both branches must retain the decoders they
+need. For example, wrapping two existing steps in a new fraud check:
 
 ```haskell
 orderFlow orderId = do

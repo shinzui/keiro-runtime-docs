@@ -4,7 +4,7 @@ description: "The language keiro-dsl N preamble, the released-language registry,
 ---
 
 Everything on this page lives in `Keiro.Dsl.LanguageVersion` *(new in Keiro 0.6.0.0; extended
-through 0.17.0.0)*. It answers one question: **which language contract is this `.keiro` file written
+through 0.18.0.0)*. It answers one question: **which language contract is this `.keiro` file written
 against?**
 
 Before Keiro 0.6.0.0 nothing in a `.keiro` source said which parser and semantic contract its author
@@ -157,7 +157,7 @@ The latter is an API for candidate-aware authoring tools; the `new` command rema
 emits the published stable version.
 
 The [Candidate Language 6 reference](/docs/keiro/reference/keiro-dsl-language-6) is the exhaustive
-map from each of its five syntax and two runtime capabilities to notation, generated code, runtime
+map from each of its ten syntax and seven runtime capabilities to notation, generated code, runtime
 meaning, and evolution behavior.
 
 Once a version is released, new syntax or semantics must be registered under a **successor** with its
@@ -189,6 +189,11 @@ data LanguageFeature
     | WorkqueueFifoHeadsSyntax
     | ContractDeclaredIdSyntax
     | KeyedMapSyntax
+    | BareStructuralMappingSyntax
+    | CalendarDaySyntax
+    | TextSetSyntax
+    | RefinedBase16Syntax
+    | ExplicitIdAdmissionDomainSyntax
     deriving stock (Eq, Ord, Show)
 
 syntaxProfileIdentifier :: SyntaxProfile -> Text
@@ -204,7 +209,7 @@ languageSupportsFeature :: LanguageVersion -> LanguageFeature -> Bool
 | `keiro-dsl/syntax-profile/2` | `NominalBindingSyntax`, `IntegerScalarSyntax`, `TypedAggregateExpressionSyntax`, `ExplicitTransitionImplementationSyntax` |
 | `keiro-dsl/syntax-profile/3` | all of profile 2, plus `FieldAliasSyntax` |
 | `keiro-dsl/syntax-profile/4` | all of profile 3, plus `ProjectionCatalogSyntax`, `ExternalReadContractSyntax`, `MappedConsumerSurfaceSyntax`, `DomainCommandOutcomeSyntax`, `DeclarativeRouterSelectionSyntax`, and `SeparatedProjectionQueryPolicySyntax` |
-| `keiro-dsl/syntax-profile/5` | all of profile 4, plus delegated inboxes, process reactions, FIFO heads, declared contract IDs, and keyed maps |
+| `keiro-dsl/syntax-profile/5` | all of profile 4, plus delegated inboxes, process reactions, FIFO heads, declared contract IDs, keyed maps, bare mappings, calendar days, text sets, base16 refinements, and explicit ID admission |
 
 Profiles are monotone: profile 3 adds `FieldAliasSyntax` to profile 2. `SyntaxProfile` is
 abstract; query it with `syntaxProfileIdentifier` and `syntaxProfileSupportsFeature`, and
@@ -272,6 +277,11 @@ data RuntimeCapability
     | SeparatedProjectionQueryPolicy
     | DelegatedInboxRuntime
     | StructuralNominalLeaves
+    | BareStructuralMappings
+    | CalendarDayMappings
+    | TextSetMappings
+    | RefinedBase16Mappings
+    | ExplicitIdAdmissionDomains
     deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 runtimeProfileIdentifier :: RuntimeSemanticsProfile -> Text
@@ -298,11 +308,16 @@ The subtle part is fold identity. Each capability **exhaustively** chooses `Just
     SeparatedProjectionQueryPolicy: { type: "Nothing", description: "Delivery and freshness are read-side query policy; they contribute no aggregate fold segment." },
     DelegatedInboxRuntime: { type: "Nothing", description: "Candidate Language 6 delegates inbox idempotence to a named external owner; this changes integration ownership, not aggregate fold identity." },
     StructuralNominalLeaves: { type: "Nothing", description: "Candidate Language 6 admits nominal leaves inside structural mapped values and changes generated codecs, not transition/fold semantics." },
+    BareStructuralMappings: { type: "Nothing", description: "Candidate Language 6 capability; declaration-scoped identity remains relevant to replay." },
+    CalendarDayMappings: { type: "Nothing", description: "Candidate Language 6 capability; declaration-scoped identity remains relevant to replay." },
+    TextSetMappings: { type: "Nothing", description: "Candidate Language 6 capability; declaration-scoped identity remains relevant to replay." },
+    RefinedBase16Mappings: { type: "Nothing", description: "Candidate Language 6 capability; declaration-scoped identity remains relevant to replay." },
+    ExplicitIdAdmissionDomains: { type: "Nothing", description: "Candidate Language 6 capability; declaration-scoped identity remains relevant to replay." },
   }}
 />
 
 <Callout type="info">
-  Both capabilities added in Language 5 beyond `ProjectionCatalogRuntime`, and both capabilities
+  Both capabilities added in Language 5 beyond `ProjectionCatalogRuntime`, and all seven capabilities
   added in Candidate Language 6, are deliberately **fold-neutral**.
   `semantic-contract:keiro-dsl/projection-catalog/1` remains the only segment added after runtime
   semantics 3. A 5 → 6 candidate adoption therefore adds no aggregate fold segment.
@@ -437,3 +452,8 @@ codemod. Ordinary validation, scaffolding, and diffing consume only lowered sema
   `DeclarativeRouterSelectionSyntax`.
 - [Workspaces](/docs/keiro/reference/keiro-dsl-workspaces) — how provenance survives composition.
 - [The CLI](/docs/keiro/reference/keiro-dsl-cli) — `inspect` and the rest of the commands.
+
+The five mapping/admission runtime capabilities added in 0.18 each return `Nothing` from
+`capabilityFoldSegment`. This keeps unrelated candidate services unchanged. An individual
+ID-admission or mapped declaration change still changes its declaration-scoped identity; use
+[retained-history evidence](/docs/keiro/how-to/prove-checked-mapping-replay) before adoption.

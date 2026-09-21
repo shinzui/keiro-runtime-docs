@@ -9,7 +9,7 @@ generated API documentation. This file pins the exact reviewed source.
 - **Qualified name (mori):** `shinzui/pg-migrate`; resolve it with
   `mori registry show shinzui/pg-migrate --full`.
 - **Path at last sync:** `/Users/shinzui/Keikaku/bokuno/pg-migrate`.
-- **Reviewed release:** all six public packages at `1.1.0.0`:
+- **Reviewed release:** all six public packages at `1.2.0.0`:
   `pg-migrate`, `pg-migrate-cli`, `pg-migrate-embed`,
   `pg-migrate-import-codd`, `pg-migrate-import-hasql-migration`, and
   `pg-migrate-test-support`.
@@ -19,12 +19,15 @@ generated API documentation. This file pins the exact reviewed source.
 ## Last reviewed commit
 
 ```text
-8a528b67641608dd92b70369e3b61d587a8aa505  (8a528b67)
-2026-08-26T14:23:24-07:00
-chore(seihou): update nix-haskell-flake to 0.13.2 and exec-plan to 0.8.0
+13865052bef62688c40576ad36889221a0ba7e08  (13865052)
+2026-09-18T12:02:19-07:00
+chore(release): 1.2.0.0
 ```
 
-> **Current range.** `f39d64e3..8a528b67` (**4 commits**). All four commits are doc-neutral: Seihou origin manifests, master-plan registration, exec-plan/ADR guidance and development module pins. Public packages remain 1.1.0.0. No runtime, migration, or API pages changed; shared compatibility records the new reviewed SHA.
+> **Current range.** `8a528b67..13865052` (**8 commits**). All six public packages released at 1.2.0.0. Documented defaultEphemeralConfig and the stable per-user temporary root; updated dependency examples, compatibility and composition recipes. The ledger schema remains v1. Keiro 0.18 remains on pg-migrate 1.1.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
+
+> **Note (prior range).** `f39d64e3..8a528b67` (**4 commits**). All four commits are doc-neutral: Seihou origin manifests, master-plan registration, exec-plan/ADR guidance and development module pins. Public packages remain 1.1.0.0. No runtime, migration, or API pages changed; shared compatibility records the new reviewed SHA.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-06.md).
 
 The initial full-site review covers compile-time manifest embedding,
@@ -47,6 +50,8 @@ pass; the source tree was clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `8a528b67641608dd92b70369e3b61d587a8aa505` (`8a528b67`, 2026-08-26) — baseline before the 8-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
+
 - `f39d64e354818999667d345a1452f33eb4857fc1` (`f39d64e3`) — baseline before the `f39d64e3..8a528b67` review (4 commits); see [2026-09-06 ledger](source-sync-2026-09-06.md).
 
 - None; `f39d64e` is the first full reviewed boundary for this documentation
@@ -57,8 +62,8 @@ pass; the source tree was clean at the reviewed SHA.
 1. Resolve the source with mori and inspect committed drift:
    ```text
    PG_MIGRATE=$(mori registry show shinzui/pg-migrate --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$PG_MIGRATE" log --oneline 8a528b67..HEAD
-   git -C "$PG_MIGRATE" diff --stat 8a528b67..HEAD
+   git -C "$PG_MIGRATE" log --oneline 13865052..HEAD
+   git -C "$PG_MIGRATE" diff --stat 13865052..HEAD
    ```
 2. Read changed public modules, tests, changelogs, and upstream docs. Recheck
    every affected versioned contract and predecessor adapter.

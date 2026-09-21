@@ -286,3 +286,134 @@ idDomainSampleText :: IdDomainContract -> Text
 ([`TextPattern`](/docs/keiki/reference/projection-domain)) — that is what lets a generated aggregate
 guard comparing two same-declaration IDs reach a *verified* symbolic result rather than a
 conservative one. `idDomainSampleText` renders a valid sample for scaffolded fixtures.
+
+## Frozen checked value codecs
+
+Keiro 0.18 exposes three frozen wire policies from `keiro-core`; their modules are also
+re-exported by the `keiro` package for generated consumers. The declaration-owned codecs run
+before the total consumer binding. Their policy identities participate in mapped wire fingerprints.
+
+### `Keiro.Codec.CalendarDay`
+
+`keiro-core/calendar-day/1` covers the complete `Day` carrier without timezone conversion.
+The reader accepts a signed year with at least four ASCII digits, redundant leading zeroes and
+an optional plus sign, with exactly two month/day digits. Invalid Gregorian dates fail. The
+writer removes redundant signs/zeroes while padding short years to four digits; years are unbounded.
+`parseCanonicalCalendarDayText` additionally requires exact writer spelling.
+
+```haskell
+calendarDayCodecPolicyIdentity :: Text
+renderCalendarDay :: Day -> Text
+encodeCalendarDay :: Day -> Value
+parseCalendarDayText :: Text -> Either Text Day
+parseCanonicalCalendarDayText :: Text -> Either Text Day
+parseCalendarDay :: Value -> Parser Day
+```
+
+### `Keiro.Codec.TextSet`
+
+`keiro-core/text-set/1` accepts JSON string arrays in any order, including duplicates, and
+constructs the set before binding or replay. The writer emits unique strings in ascending Unicode
+code-point order. It performs no Unicode normalization or case folding; invalid elements retain
+Aeson's located diagnostics.
+
+```haskell
+textSetCodecPolicyIdentity :: Text
+encodeTextSet :: Set Text -> Value
+parseTextSet :: Value -> Parser (Set Text)
+```
+
+### `Keiro.Codec.Base16Bytes`
+
+`keiro-core/base16-bytes/1` admits empty and even-length upper/lowercase hexadecimal text.
+The writer is lowercase and preserves all bytes, including leading zeroes. Odd lengths, prefixes,
+whitespace, invalid digits and non-string JSON are rejected. `Keiro.Codec.Refined` in
+`keiro-core` is a facade over this same API, not a consumer validation callback.
+
+```haskell
+base16BytesCodecPolicyIdentity :: Text
+decodeBase16BytesText :: Text -> Either Base16BytesError ByteString
+encodeBase16Bytes :: ByteString -> Value
+parseBase16Bytes :: Value -> Parser ByteString
+renderBase16Bytes :: ByteString -> Text
+```
+
+```haskell
+data Base16BytesError
+  = Base16BytesOddLength !Int
+  | Base16BytesInvalidDigit !Int !Char
+  deriving stock (Eq, Show)
+```
+
+## Explicit ID admission
+
+Keiro 0.18 adds a closed admission selector to `Keiro.Codec.IdDomain`. It controls accepted
+existing TypeID values, not identifier generation. Use the smart contract constructors rather than
+manually filling the record.
+
+```haskell
+data IdAdmission
+  = TypeIdV7
+  | TypeIdV5OrV7
+  deriving stock (Eq, Ord, Show)
+
+data IdNormalization = CanonicalLowercase
+  deriving stock (Eq, Ord, Show)
+
+data IdDomainContract = IdDomainContract
+  { idDomainAdmission :: !IdAdmission,
+    idDomainVersion :: !Text,
+    idDomainPrefix :: !Text,
+    idDomainSeparator :: !Char,
+    idDomainSuffixLength :: !Int,
+    idDomainMaxLength :: !Int,
+    idDomainNormalization :: !IdNormalization,
+    idDomainJsonRepresentation :: !Text
+  }
+  deriving stock (Eq, Ord, Show)
+
+data IdDomainFailure
+  = IdDomainNonCanonical
+  | IdDomainWrongPrefix !Text !Text
+  | IdDomainMalformed !Text
+  | IdDomainNotUuidV7 !Text
+  | IdDomainVersionNotAdmitted !Char
+  | IdDomainVariantNotRfc4122 !Char
+  deriving stock (Eq, Ord, Show)
+```
+
+```haskell
+typeIdV7Domain :: Text -> IdDomainContract
+typeIdV5OrV7Domain :: Text -> IdDomainContract
+validateIdDomainText :: IdDomainContract -> Text -> Either IdDomainFailure ()
+parseKindIdText :: forall prefix. (ValidPrefix prefix) => IdDomainContract -> Text -> Either IdDomainFailure (KindID prefix)
+parseKindIdValue :: forall prefix. (ValidPrefix prefix) => IdDomainContract -> Value -> Parser (KindID prefix)
+```
+
+`enforcedIdDomainVersion` remains `keiro-dsl/id-domain/typeid-v7/1`; `v5OrV7IdDomainVersion` is
+`keiro-dsl/id-domain/typeid-v5-or-v7/1`. Both enforce prefix, canonical lowercase Crockford text,
+length and RFC variant. `parseKindIdV7Text` and `parseKindIdV7Value` preserve the v7 convenience API.
+The runtime validator and `idDomainTextPattern` derive from the same closed admission table.
+
+Under Candidate Language 6:
+
+```keiro-dsl
+id LegacyId prefix=legacy domain=typeid-v5-or-v7
+```
+
+Omitting `domain` preserves v7 and released identity bytes; explicit `domain=typeid-v7` selects
+the same domain. The selected domain follows direct/nested fields, keyed maps, workqueues,
+query types, router identity and declared contract IDs. Anonymous `typeid "prefix"` fields retain v7.
+
+`IdDecl.admission`, `NominalRepresentation.IdRepresentation` and `NominalLeafKind.NominalIdLeaf`
+carry `IdAdmission`; direct construction and exhaustive matches need updating.
+`EnforcedTypeIdV7TextDomain` is renamed to `EnforcedTypeIdTextDomain`; the default v7 serialized
+equality identity remains unchanged. The new
+`IdDomainContract.idDomainAdmission` field and error constructors are breaking source changes.
+Widening to v5-or-v7 preserves retained reads but new v5 writes can break old readers; narrowing
+can reject retained v5 history. Both raise `IdDomainContractChanged`, with direction-specific
+rollout guidance, and participate in fold/replay identity. Keep old readers reachable until the
+retained-history and rolling-reader evidence permits retirement.
+
+See [checked mappings](/docs/keiro/reference/keiro-dsl-mapped-types) and
+[replay compatibility evidence](/docs/keiro/reference/replay-compatibility).

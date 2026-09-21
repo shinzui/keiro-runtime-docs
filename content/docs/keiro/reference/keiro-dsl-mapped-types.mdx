@@ -5,14 +5,15 @@ description: "The mapped structural and mapped opaque declarations, the wire sha
 
 A **mapped consumer type** lets a `.keiro` spec use a type your application already owns — an
 `EmailAddress`, a `Money`, a `ShippingAddress` — in a command, event, or register, without keiro
-inventing a duplicate. Two modes, and the choice between them is the whole design:
+inventing a duplicate. The declaration chooses who owns the wire contract:
 
 Language 5 introduces mapped consumer surfaces. Candidate Language 6 inherits them and additionally
-admits nominal leaves and `keyed-map`; see the [Language 6 capability matrix](/docs/keiro/reference/keiro-dsl-language-6).
+admits nominal leaves, `keyed-map`, checked bare containers, calendar days, text sets, and base16 refinements; see the [Language 6 capability matrix](/docs/keiro/reference/keiro-dsl-language-6).
 
 | Mode | Keiro knows | Wire authority |
 |---|---|---|
 | `mapped structural` | the type's full **wire shape**, field by field | the **checked declaration** and the generated codec |
+| `mapped refined` (Language 6) | a closed Keiro-owned representation policy | Keiro's frozen codec, then your total binding |
 | `mapped opaque` | only that a value crosses a **declared JSON boundary** | your `codec` at that boundary |
 
 <Callout type="info">
@@ -27,14 +28,14 @@ admits nominal leaves and `keyed-map`; see the [Language 6 capability matrix](/d
 
 <Callout type="warn">
   **A structural binding must be total.** If converting a valid shape into your consumer type can
-  *fail*, the declaration is not structural and must use `opaque` instead. Consumer invariants have to
+  *fail*, the declaration needs a Keiro-owned refined policy that represents that invariant, or must use `opaque` instead. Consumer invariants have to
   be represented **by the shape**, not enforced by a partial constructor — see [the binding
   contract](#the-binding-contract) below.
 </Callout>
 
 ## `mapped structural`
 
-Three kinds, distinguished by their wire encoding: `record`, `enum`, and `union`.
+Published languages support `record`, `enum`, and `union`. Candidate Language 6 also supports `value` for a bare checked wire shape.
 
 ```text
 mapped structural record ShippingAddress {
@@ -198,7 +199,7 @@ decodeViaBinding ::
 ```
 
 Both functions in a `StructuralBinding` are **total** — that is the whole requirement, and the reason a
-partial conversion must use `opaque` mode.
+partial conversion cannot be used as a structural or refined binding.
 
 The two law helpers are what the generated harness exercises:
 `bindingDomainRoundTrip` checks a consumer value survives conversion through its shape;
@@ -250,7 +251,7 @@ command/event/register use-site paths:
 | Coverage | `CoverageOpaqueSurface`, `CoverageOpaqueBoundaryAdded`, `CoverageOpaqueGateExceeded` |
 | Migration evidence | `CodecCompareDifference`, `CodecCompareCoverageGap`, `CodecCompareInvalidInput` |
 
-`MappedModeCrossed` — switching a declaration between `structural` and `opaque` — is called out
+`MappedModeCrossed` — switching a declaration between checked (`structural`/`refined`) and `opaque` — is called out
 separately because it changes what keiro can *see*, not merely what it encodes.
 
 Mapped register wire, binding, and initial identities participate in the aggregate **fold
@@ -394,3 +395,79 @@ the two query positions.
   value compiles to.
 - [Codec and schema evolution](/docs/keiro/explanation/codec-and-schema-evolution) — why wire authority
   sits in the declaration.
+
+## Candidate Language 6 checked value mappings
+
+Keiro 0.18 adds the following forms under `language keiro-dsl 6`. Each needs the same `haskell`,
+`binding`, `binding-version`, `canonical-type`, and `fixtures` facts as a structural record, plus
+`initial` when used as a register.
+
+```keiro-dsl
+mapped structural value OptionalLabel {
+  haskell package = example-domain module = Example.Domain type = OptionalLabel
+  binding = "optionalLabelBinding"
+  binding-version = "1"
+  canonical-type = "Example.Domain.OptionalLabel/v1"
+  fixtures = "optionalLabelFixtures"
+  initial = "emptyOptionalLabel"
+  wire Optional Text
+}
+```
+
+A bare root can be `Optional <t>`, `List <t>`, a text-keyed `Map <t>`, `Day`, or `Set Text`. The generated shape is a type alias, without an object
+wrapper. Containers compose recursively with admitted mapped references. Nullability follows
+those references: aliases cannot hide nested optionals, optional `Json`, or optional opaque data.
+
+Presence and nullability remain separate. A required record field must be present even if its
+bare mapped value admits null. Optional record fields may use `on-missing=null`, `[]`, or `{}`
+only when the resolved shape admits that default. Direct private-event fields whose mapped root
+is `Optional` preserve historical Aeson behavior: an omitted key decodes exactly like explicit
+null. Non-optional mapped event roots remain required.
+
+| Wire form | Generated shape / policy | Accepted reads and canonical writes |
+|---|---|---|
+| `wire Day` | `Day`; `keiro-core/calendar-day/1` | Signed proleptic Gregorian years of unbounded size; accepts redundant leading zeroes and plus signs, writes at least four year digits and exactly two month/day digits; rejects invalid dates |
+| `wire Set Text` | `Set Text`; `keiro-core/text-set/1` | Reads arrays with duplicates or any order; writes unique ascending Unicode code-point order; no case folding or Unicode normalization |
+| `wire base16-bytes` in `mapped refined` | strict `ByteString`; `keiro-core/base16-bytes/1` | Reads empty or even-length upper/lowercase hex; writes lowercase and preserves leading zero bytes; rejects prefixes, whitespace, odd lengths and non-hex input |
+
+`Day` and `Set Text` also work as leaves inside checked records, unions and containers. Aggregate
+commands/events/registers reach them through a named mapping; direct aggregate date/set fields,
+nominal wrappers for them, scalar guards, arithmetic, ordering and collection operations remain
+unsupported. Workqueue codecs and read-model query types follow the resolved graph. A shared
+Haskell type does not transfer application-owned public-contract or workflow-journal codec
+ownership to the DSL.
+
+A refined declaration uses the same facts as the example, but starts `mapped refined Bytes {`
+and ends with `wire base16-bytes`. Its only policy is `Base16BytesV1`; no consumer validation
+callback or digest-length option is accepted. The binding must cover every strict byte string.
+It is non-null and composes with containers, but cannot serve as a JSON object key.
+
+The exact runtime codec API is in [Codec](/docs/keiro/reference/codec#frozen-checked-value-codecs).
+A plain Haskell type alias must reuse its carrier's canonical type identity. Use a newtype with
+its own instance and total binding when a separate durable identity is required.
+
+### Checked mapping evolution
+
+Extracting an inline container behind a bare name preserves its wire token. Binding and fold
+provenance remain independently visible. Date, set and base16 policy identities are included in
+mapped wire fingerprints; a policy change is compatibility work even if its Haskell carrier stays
+the same. `MappedFieldTypeChanged` also covers changed bare expressions or refined policy.
+
+The public AST adds `MappedRefined`, `ShapeBare`, `ShapeRefined`, `TDay`, `TTextSet`, `RDay`,
+`RTextSet`, `RBare`, and `RRefined`. `RefinedWirePolicy` contains `Base16BytesV1`.
+`TypeExprAlgebra` gains `onDay` and `onTextSet`; `MappedShapeAlgebra` gains `onBare` and
+`onRefined`. Exhaustive consumers and direct algebra construction must be updated.
+
+`wireFingerprintForCalendarDayPolicy`, `wireFingerprintForTextSetPolicy`, and
+`wireFingerprintForBase16BytesPolicy` each have type `Text -> TypeGraph -> Name -> Text` and
+support compatibility analysis with a proposed policy identity. Production callers use
+`wireFingerprint`, which chooses the frozen policies.
+
+Run the generated conformance target after regeneration, then
+[prove retained-history compatibility](/docs/keiro/how-to/prove-checked-mapping-replay).
+A current-value round trip alone does not establish safe normalization of historical bytes.
+
+Bare-container conformance fixtures must cover both absent/present optional values and empty/nonempty
+lists or maps. Binding obligations report the bare/refined `value` path. Generated dependency
+planning follows named mappings for `time`, `containers`, `text`, `bytestring` and codec imports;
+reconcile the emitted Cabal fragment instead of guessing dependencies from the root field alone.

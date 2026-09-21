@@ -36,12 +36,15 @@ guides.
 ## Last reviewed commit
 
 ```text
-392f7545af32ef893c24139fd194d16ec1172f75  (392f7545)
-2026-09-16T08:57:35-07:00
-docs(plan): complete grouped-head adapter release
+9c709d76b8c1e66a45148888970d5518cc3c0d7e  (9c709d76)
+2026-09-21T06:19:13-07:00
+chore(release): prepare 0.16.0.1 candidate
 ```
 
-> **Current range.** `1d882238..392f7545` (**7 commits**). Releases 0.15 and 0.16 adopt pgmq-hs 0.6 and add `HeadPerGroup`, the strict grouped-head FIFO strategy. Updated adapter FIFO, compatibility and preserved-header DLQ guidance; tests/benchmarks/plans add no separate public surface.
+> **Current range.** `392f7545..9c709d76` (**7 commits**). Reviewed lifecycle recovery candidate and evidence. Published behavior remains 0.16.0.0; candidate 0.16.0.1 is unpublished. Updated integration and compatibility boundaries; candidate recovery behavior is deferred until publication.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
+
+> **Note (prior range).** `1d882238..392f7545` (**7 commits**). Releases 0.15 and 0.16 adopt pgmq-hs 0.6 and add `HeadPerGroup`, the strict grouped-head FIFO strategy. Updated adapter FIFO, compatibility and preserved-header DLQ guidance; tests/benchmarks/plans add no separate public surface.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `85931b4..fee9b3a` range (**13 commits**, 55 files,
@@ -111,6 +114,8 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `392f7545af32ef893c24139fd194d16ec1172f75` (`392f7545`, 2026-09-16) — baseline before the 7-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
+
 - `1d882238f22b107b81104d7112833d521fcdb5ea` (`1d882238`, shibuya-pgmq-adapter 0.14.0.0) —
   baseline before the `1d882238..392f7545` review (7 commits). The range released 0.15/0.16 with
   pgmq-hs 0.6 compatibility and `HeadPerGroup` polling; see the
@@ -134,8 +139,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    ADAPTER=$(mori registry show shinzui/shibuya-pgmq-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$ADAPTER" log --oneline 392f7545..HEAD
-   git -C "$ADAPTER" diff --stat 392f7545..HEAD
+   git -C "$ADAPTER" log --oneline 9c709d76..HEAD
+   git -C "$ADAPTER" diff --stat 9c709d76..HEAD
    ```
    Also inspect `README.md`, `CHANGELOG.md`, `docs/user/`, and the source
    modules listed above. Because the adapter sits on `pgmq-hs`, check

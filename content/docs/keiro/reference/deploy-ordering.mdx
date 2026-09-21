@@ -158,8 +158,9 @@ retry/dead-letter policy; a changed dedupe identity instead admits duplicate eff
 ## 8. Treat workflow step results as permanent
 
 A workflow journal stores each named step's result as JSON and decodes it into the type the current
-body expects. Never change that type in place: **rename** the changed step so it runs fresh, or
-protect a cross-cutting change with a stable `patch` decision.
+body expects. Retain versioned decoding, or keep old generations on their old reader and key
+through a recorded `patch` branch. A renamed key can execute a new effect; use it only for an
+intentional new action, not to repair decoding automatically.
 
 The resume worker defaults to five attempts. A step-result decode crash consumes that budget and then
 appends `WorkflowFailed`, after which the instance is terminally failed and leaves discovery. Deploy
@@ -201,5 +202,5 @@ inversion-compatible change or a stale snapshot can silently derive different st
 | Enable guarded timer resume | drain writers, apply `0032`, deploy all writers, enable resume | disable resume and clear guarded claims before rollback |
 | Job ordering / `FifoHeads` | drain queue, provision/upgrade, deploy workers, resume producers | drain again; old/new leases are not one contract |
 | Integration contract | additive: producer first; structural: consumer first | keep decoding the old shape until the backlog drains |
-| Workflow step result type | rename the step, or `patch` | resurrect after fixing forward |
+| Workflow step result type | retain versioned decoding or an old-reader/key patch branch | resurrect after fixing forward |
 | Guard / fold / mode change | replay audit before traffic switch | deleting a replay-only twin re-breaks history |

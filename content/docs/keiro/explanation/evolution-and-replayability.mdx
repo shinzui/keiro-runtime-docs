@@ -344,9 +344,11 @@ each throw as a crash, and after the default five attempts the instance is termi
 leaves resume discovery. Recovery is supported and transactional: deploy the corrected binary, then
 call [`resurrectFailedWorkflow`](/docs/keiro/how-to/resurrect-a-failed-workflow) — never manual SQL.
 The workflow snapshot's fixed sentinel shape hash (`keiro.workflow.stepmap.v1`) deliberately does not
-protect per-step types; the step decode is the intended failure point. The safe procedure is never to
-change a journaled result type in place: **rename the step**. Awakeable payloads are journaled step
-results too (`awk:<uuid>`) and follow the same rule.
+protect per-step types; the step decode is the intended failure point. Retain a decoder for every permitted historical result, or use a recorded patch branch that keeps
+old generations on their old reader and step key. **Renaming an existing step can execute a new
+effect**; a new key is appropriate only for an intentional new action on the new branch. Awakeable
+payloads are journaled step results too (`awk:<uuid>`) and need the same retained-reader evidence.
+See [prove checked mapping replay](/docs/keiro/how-to/prove-checked-mapping-replay).
 
 **pgmq job payloads.** `keiro-pgmq` ships `aesonJobCodec` (raw, unversioned) and `keiroJobCodec` (a
 versioned `{v,t,data}` envelope with the full upcaster-chain story and a `JobPayloadFromFuture`
@@ -385,8 +387,8 @@ caught by consumer dead letters in production.
 The full treatment is in [Durable workflows](/docs/keiro/reference/durable-workflows); the
 evolution-relevant rules in brief:
 
-- **One step changed:** rename its `StepName`. A renamed step has no journaled history, so it runs
-  fresh. Never change a journaled result type in place.
+- **One recorded result changed:** preserve versioned decoding or keep the old reader and key on
+  a recorded patch branch. Renaming can execute a new effect; it is not a decoder migration.
 - **Cross-cutting change:** wrap it in `patch (PatchId "...")` and add the id to `activePatches` in
   the same deploy. In-flight instances keep the old branch forever; fresh instances take the new one.
   Remove the id from `activePatches` only after deleting the `patch` call, and never reuse a retired

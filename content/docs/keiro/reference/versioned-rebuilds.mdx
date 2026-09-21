@@ -205,3 +205,16 @@ Keiro does not own already occupies the name), and `ExternalReadManagedObjectOwn
 - [Rebuild a read model](/docs/keiro/how-to/rebuild-a-read-model) — the non-versioned path.
 - [Projections, read models, and snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots) —
   why the four identities are separate.
+
+## Cutover timeout limitation in 0.18
+
+Migration `0029` sets transaction-local `lock_timeout` and `statement_timeout` inside the guarded
+cutover functions without restoring the caller's settings. The remaining promotion transaction
+inherits the shrinking lock budget, so post-lock work can fail with SQLSTATE `57014` through
+`UnexpectedServerError` instead of `VersionedCutoverDeadlineExceeded`. The promotion transaction
+rolls back. Treat this as a failed cutover and inspect it before retrying; do not assume acquiring
+the locks guarantees promotion will finish.
+
+The proposed restore migration was reverted and `0033` is absent from the reviewed tree. The open
+upstream work is `mori://shinzui/keiro/okf/improvement-requests/concepts/IR-47`; no deployed fix is
+claimed here.

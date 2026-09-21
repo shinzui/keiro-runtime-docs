@@ -28,12 +28,15 @@ consumer groups, and runnable examples.
 ## Last reviewed commit
 
 ```text
-fa7b958462a34b9ac12cf26995f93625d4fcd2ef  (fa7b958)
-2026-08-08T14:31:38-07:00
-docs(okf): add the capabilities bundle
+1701c0441649dfa49152e0718c5295d554069816  (1701c044)
+2026-09-19T21:27:19-07:00
+chore: mark shibuya-message-db-adapter as archived
 ```
 
-> **Current range.** The `4307255..fa7b958` range (**1 commit**) is
+> **Current range.** `fa7b9584..1701c044` (**1 commits**). Upstream archived metadata; no runtime change. Updated integration and adapter comparison to identify retained historical documentation and the incompatible Shibuya 0.5 bound.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
+
+> **Note (prior range).** The `4307255..fa7b958` range (**1 commit**) is
 > **doc-neutral**. `git diff --stat 4307255..HEAD -- '*/src' '*.cabal' 'CHANGELOG.md'` is **empty**:
 > the only commit is `docs(okf): add the capabilities bundle`, upstream repository metadata.
 > `shibuya-message-db-adapter` remains at `0.1.0.0`, still bounded to `shibuya-core ^>=0.5.0.0`.
@@ -72,6 +75,8 @@ those behaviors.
 
 ## Previous pointers (for traceability)
 
+- `fa7b958462a34b9ac12cf26995f93625d4fcd2ef` (`fa7b9584`, 2026-08-08) — baseline before the 1-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
+
 - `43072558a58d9613cce46c3624157d6fc3e5b6b0` (`4307255`, 2026-06-03,
   shibuya-message-db-adapter 0.1.0.0) — the baseline before the doc-neutral OKF round. The
   `4307255..fa7b958` range (1 commit) touched no source — upstream metadata only. The adapter stays
@@ -83,8 +88,8 @@ those behaviors.
 1. List what changed since the pointer:
    ```text
    MDB=$(mori registry show shinzui/shibuya-message-db-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$MDB" log --oneline fa7b958..HEAD
-   git -C "$MDB" diff --stat fa7b958..HEAD
+   git -C "$MDB" log --oneline 1701c04..HEAD
+   git -C "$MDB" diff --stat 1701c04..HEAD
    ```
 2. Inspect source modules, `docs/user/`, and
    `shibuya-message-db-adapter-jitsurei/app/`.

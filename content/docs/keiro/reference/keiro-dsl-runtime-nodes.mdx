@@ -488,7 +488,8 @@ workflow HospitalTransferReservation
 Body item forms are `step`, `await`, injected-delay `sleep`, child workflow, nested `patch`, and
 top-level terminal `continueAsNew`. Labels are unique and replay matches labels. Patch IDs are
 opaque, globally unique within the workflow, colon-free, and never reused. Use a patch for a
-cross-cutting change to several journaled steps; rename one changed step instead of patching it.
+change that must preserve an old generation's reader and key. A renamed step can execute a new
+effect, so it is not an automatic result-decoder migration.
 
 `continueAsNew <Seed>` must be the final top-level item and cannot appear in a patch. The hand-owned
 body calls `restoreSeed` at the beginning and `continueAsNew` at the tail. Generated output is
@@ -522,3 +523,16 @@ operation RunReservationWorkflow
 Aggregate/read-model/workflow references resolve. A signal label and value type must match an
 `await`; workflow ID/sleep fields must exist. Operations validate entry points but own no separate
 persisted decode or identity surface in `diff`.
+
+## Checked process scaffolding in 0.18
+
+Library callers generating reaction input modules with mapped fields use the checked-service entry
+point exported by `Keiro.Dsl.Scaffold`:
+
+```haskell
+scaffoldProcessForService :: Context -> CheckedService -> ProcessNode -> [ScaffoldModule]
+```
+
+It resolves consumer-owned mapped types through the service graph. Single-service and workspace
+scaffolding call this entry point automatically. The older `scaffoldProcess` has no service graph;
+it does not supply that mapped-type resolution.

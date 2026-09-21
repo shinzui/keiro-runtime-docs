@@ -25,12 +25,15 @@ reviewed by the documentation.
 ## Last reviewed commit
 
 ```text
-79337c57967db09c6ef7e27d68d349fe25e4b92b  (79337c57)
-2026-09-07T19:45:47-07:00
-chore(mori): declare every package and its dependencies
+3ed37eb08bde38ab8af8c0855d9e8cca87db7f4e  (3ed37eb0)
+2026-09-19T10:52:40-07:00
+docs: add OKF terminology bundle
 ```
 
-> **Current range.** `97d8b07e..79337c57` (**1 commit**). Mori package/dependency metadata only; no package source, release, API, or behavior changed. Compatibility records the reviewed SHA.
+> **Current range.** `79337c57..3ed37eb0` (**3 commits**). Tooling, provenance and terminology metadata only; no public API changes. No library pages changed.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
+
+> **Note (prior range).** `97d8b07e..79337c57` (**1 commit**). Mori package/dependency metadata only; no package source, release, API, or behavior changed. Compatibility records the reviewed SHA.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `9714d37..04296a7` range (**1 commit**) is
@@ -436,6 +439,8 @@ chore(mori): declare every package and its dependencies
 
 ## Previous pointers
 
+- `79337c57967db09c6ef7e27d68d349fe25e4b92b` (`79337c57`, 2026-09-07) — baseline before the 3-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
+
 - `97d8b07e87ceb2d9b6e6b2b8a60a7de84e15e2bb` (`97d8b07e`) — baseline before the
   `97d8b07e..79337c57` review (1 commit). The range changed only Mori registry
   metadata, so no product page changed; see the [2026-09-17 ledger](source-sync-2026-09-17.md).
@@ -477,8 +482,8 @@ chore(mori): declare every package and its dependencies
 1. Resolve the source with mori and inspect committed drift:
    ```text
    KEIKI=$(mori registry show shinzui/keiki --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIKI" log --oneline 79337c57..HEAD
-   git -C "$KEIKI" diff --stat 79337c57..HEAD
+   git -C "$KEIKI" log --oneline 3ed37eb0..HEAD
+   git -C "$KEIKI" diff --stat 3ed37eb0..HEAD
    ```
 2. Read changed source, tests, changelogs, and release notes. `docs/foundations/`
    is the highest-value prose here — it states trust boundaries the source only

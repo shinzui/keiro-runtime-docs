@@ -25,12 +25,15 @@ mapping, consumer groups, and handler exception behavior.
 ## Last reviewed commit
 
 ```text
-07cd034aafc0d88b6c55abdf3509e25b9d69e63d  (07cd034a)
-2026-09-16T21:01:15-07:00
-chore(seihou): apply exec-plan and master-plan module updates
+246a27b6e7ac55fbd7c7a66e8ad84a3b3f46237e  (246a27b6)
+2026-09-21T06:19:13-07:00
+chore(release): prepare lifecycle candidate packages
 ```
 
-> **Current range.** `7051b123..07cd034a` (**11 commits** in the shared Kiroku repository). No adapter package source or Cabal file changed; plans, ADRs, provenance and Seihou metadata are doc-neutral.
+> **Current range.** `07cd034a..246a27b6` (**7 commits**). Shared Kiroku range: published adapter 0.5.1.2 dependency compatibility and unpublished 0.5.1.3 lifecycle remediation. Updated integration, Kiroku guides and compatibility; candidate acknowledgement/retry behavior is excluded from the released contract.
+> No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
+
+> **Note (prior range).** `7051b123..07cd034a` (**11 commits** in the shared Kiroku repository). No adapter package source or Cabal file changed; plans, ADRs, provenance and Seihou metadata are doc-neutral.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `3009dda..b9aecf3` range (**51 commits** in the shared
@@ -85,6 +88,8 @@ The source tree was clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `07cd034aafc0d88b6c55abdf3509e25b9d69e63d` (`07cd034a`, 2026-09-16) — baseline before the 7-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
+
 - `7051b12342b3002659e39061b03bee2e37275099` (`7051b123`) — shared-repository baseline before the
   `7051b123..07cd034a` review (11 commits). No adapter source or user contract changed; see the
   [2026-09-17 ledger](source-sync-2026-09-17.md).
@@ -104,8 +109,8 @@ The source tree was clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 07cd034a..HEAD -- shibuya-kiroku-adapter docs/user
-   git -C "$KIROKU" diff --stat 07cd034a..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" log --oneline 246a27b6..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" diff --stat 246a27b6..HEAD -- shibuya-kiroku-adapter docs/user
    ```
 2. Update `content/docs/integrations/shibuya-kiroku-adapter.mdx` and any Kiroku
    pages that repeat adapter-specific behavior.
