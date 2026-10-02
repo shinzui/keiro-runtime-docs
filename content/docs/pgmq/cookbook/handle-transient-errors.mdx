@@ -22,7 +22,7 @@ runWithRetryDecision pool program = do
   case result of
     Right _ -> pure ()
     Left err
-      | isTransient err -> putStrLn "retry this operation"
+      | isTransient err -> putStrLn "transient failure: check operation safety before a bounded retry"
       | otherwise -> putStrLn ("permanent pgmq failure: " <> show err)
 ```
 
@@ -39,9 +39,27 @@ A statement error carrying a *server* error is retryable when its SQLSTATE is
 anything in class `53` (insufficient resources). Every other statement error,
 including decode and row-count mismatches, is permanent.
 
-That whitelist shipped in 0.5.0.0. On 0.4.0.1 every statement error maps to permanent
-unconditionally; inspect SQLSTATE yourself if maintaining that older line.
+That whitelist applies to the published 0.6.1.1 package. The unreleased classifier below adds
+receive-side lost-reply handling; it does not make arbitrary decode failures retryable.
 
 A retry is only safe if the operation is idempotent. `sendMessage` retried after
 an ambiguous failure can enqueue the job twice; prefer a dedupe key in the
 payload or accept at-least-once delivery downstream.
+
+## Lost replies in unreleased source
+
+The reviewed source exports `isAmbiguousReply`; published 0.6.1.1 does not.
+For that source version, choose the retry action in this order:
+
+1. Check `isAmbiguousReply`. If true, record that the operation may have committed.
+2. For operations that can duplicate effects, reconcile by a durable application key before retrying.
+   Alternatively, use an idempotent design. Do not assume PGMQ deduplicates arbitrary sends.
+3. Check `isTransient` for service recovery. Use a finite attempt count, backoff, and an overall
+   application deadline for retry orchestration. The package does not add a call deadline here.
+4. Keep ambiguity in the retry state. A later connection failure does not prove that the first send
+   failed before commit. The pool may need another attempt to evict the dead connection.
+5. Stop on permanent errors and return the unresolved outcome when the retry budget ends.
+
+The helper recognizes empty-SQLSTATE statement/script errors and the exact driver extra-result
+shape. Read the [classifier contract](/docs/pgmq/reference/effectful-api#unreleased-disconnect-classification).
+It does not classify every network symptom or `DriverSessionError` as retryable.

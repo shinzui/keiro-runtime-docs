@@ -17,9 +17,11 @@ This means every HTTP and WebSocket surface sees the same source of truth:
 processor loop -> ProcessorMetrics TVar -> Master -> metrics server
 ```
 
-Health is derived from that same snapshot. Liveness only proves the master can answer. Readiness
-adds interpretation: failed processors, processors stuck in `Processing` beyond the configured
-threshold, and unhealthy dependencies make readiness false.
+Health combines the live metrics snapshot with retained lifecycle. A stopped master is not live.
+Readiness also requires an application that accepts work, visible running processors, healthy
+dependencies, and no failed processor. Stuck detection uses elapsed time since sampled last progress.
+Terminal failures remain visible to health after live metrics are removed. WebSocket clients that
+previously saw a removed terminal processor receive a `terminal` frame.
 
 Tracing is separate. The runner creates one OpenTelemetry `Consumer` span for each handler call.
 The span is parented from `Envelope.traceContext`, labeled by framework defaults plus

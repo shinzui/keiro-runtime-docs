@@ -6,7 +6,10 @@ description: "Stop adapter ingestion, drain in-flight messages, and align proces
 Use `stopAppGracefully` when the process receives a shutdown signal:
 
 ```haskell
-let shutdown = ShutdownConfig { drainTimeout = 45 }
+let shutdown = defaultShutdownConfig
+      { drainTimeout = 45
+      , totalShutdownTimeout = 55
+      }
 drained <- stopAppGracefully shutdown appHandle
 unless drained (logWarn "forced shutdown before all processors drained")
 ```
@@ -14,14 +17,14 @@ unless drained (logWarn "forced shutdown before all processors drained")
 The sequence is:
 
 ```text
-1. call adapter.shutdown for every processor
-2. wait for in-flight work to finish, up to drainTimeout
-3. stop the master and supervised processors
-4. return True if every processor drained, False on timeout
+1. mark the application draining and try adapter shutdowns
+2. wait for processors to finish, up to drainTimeout
+3. interrupt the graceful phase at totalShutdownTimeout
+4. always attempt master cleanup; return the drain result or propagate the failure
 ```
 
-Size your container or service shutdown window longer than `drainTimeout`, otherwise the platform may
-kill the process before shibuya finishes draining:
+Size the process shutdown window above `totalShutdownTimeout`, with additional time for master
+cleanup. The total option bounds the graceful phase, not the entire stop call:
 
 ```yaml
 terminationGracePeriodSeconds: 60
@@ -29,3 +32,15 @@ terminationGracePeriodSeconds: 60
 
 Choose `drainTimeout` from your longest normal handler execution time plus a margin. If handlers may
 exceed their backend visibility timeout, use `message.lease` when the adapter supplies one.
+
+## Verify the replacement boundary
+
+A `False` result means the graceful phase did not finish. It does not prove that every asynchronous
+handler has ended: the published release has a reported late-finalization defect.
+Keep handler side effects idempotent and fence the old worker before a replacement starts.
+Use a process stop when the deployment requires a strict termination boundary.
+Do not release pools used by old handlers merely because the in-process stop returned.
+
+The first stop call owns the operation. Concurrent and repeated calls observe its result and
+configuration. Adapter or cleanup exceptions can propagate. Log that outcome and verify that the
+old process is stopped before assigning its work to a replacement.

@@ -288,11 +288,33 @@ their runtime uses. Migration jobs should use a schema-owner role before applica
 
 ## Compatibility boundaries
 
-- Keiro package release: `0.18.0.0`.
-- Native migration family: pg-migrate `1.1`.
+- Keiro package release: `0.19.0.0`.
+- Native migration family: pg-migrate `1.2`.
+- Kiroku migration package: `0.6.0.0` (twelve entries).
+- Framework-only plan: forty-four entries (twelve Kiroku and thirty-two Keiro).
 - Component identities: `kiroku/*` then `keiro/*`.
 - Ledger: `pgmigrate` schema v1 by default.
 - Legacy Codd objects: cutover evidence only; never a current runner.
 
 See [Compose runtime components](/docs/pg-migrate/cookbook/compose-runtime-components) and
 [Ledger schema v1](/docs/pg-migrate/reference/ledger-schema-v1).
+
+## Kiroku category-index preparation
+
+The framework plan includes Kiroku migration `0012` before Keiro's component.
+It adds `kiroku.stream_events.category` to `$all` junction rows, backfills existing rows, and
+creates `ix_stream_events_all_by_category`. Keiro's own component remains at thirty-two entries.
+Adding PGMQ or application migrations increases the complete service plan beyond forty-four.
+
+For a new database, apply and verify the complete plan before starting writers.
+For an existing database, stop every process that appends with Kiroku 0.8 or earlier before
+applying `0012`. Start the current writers only after the migration commits. There is no rolling
+writer deployment across this boundary. Old writers fail against the new constraint; new writers
+fail when the column is absent.
+
+The migration runs in one transaction and blocks appends during the backfill. Rehearse it on a
+restored database to measure the maintenance window. Afterward, run
+`VACUUM (ANALYZE) kiroku.stream_events` and verify the plan. Review custom SQL appenders: every
+`$all` junction insert must now supply its source category.
+Read the [Kiroku schema reference](/docs/kiroku/reference/schema-migrations#category-index-preparation)
+for the constraint and operator checks.

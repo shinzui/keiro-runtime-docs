@@ -22,15 +22,20 @@ runnable examples.
   `Shibuya.Adapter.Kafka.Internal`.
 - **Examples reviewed:** `shibuya-kafka-adapter-jitsurei/app/`.
 
+- **Reviewed release:** adapter `0.9.1.0`. Hackage and upstream release tags checked 2026-10-02.
+
 ## Last reviewed commit
 
 ```text
-74fed7e8df366072b0587c4bdae8d4e92317c8a3  (74fed7e8)
-2026-09-21T06:19:13-07:00
-chore(release): prepare 0.9.0.2 candidate
+c04758990927bbda6d0616ae9609c263ec73758b  (c047589)
+2026-09-30T13:43:44-07:00
+docs(kafka): confirm the buffered-retry stall and ordering reports
 ```
 
-> **Current range.** `6c0cd3fc..74fed7e8` (**7 commits**). Reviewed lifecycle acknowledgement/remediation candidate and evidence. Published behavior remains 0.9.0.1; candidate 0.9.0.2 is unpublished. Updated integration and compatibility boundaries, without presenting candidate acknowledgements as released behavior.
+> **Current range.** `74fed7e8..c0475899` (**17 commits**). Reviewed published adapter 0.9.1.0 with Shibuya 0.10. Promoted lifecycle remediation from the prior candidate boundary: unresolved retry barriers, assignment-generation fencing when the rebalance handler is installed, and synchronous typed acknowledgement failure. Updated `content/docs/integrations/shibuya-kafka-adapter.mdx`, the adapter comparison and compatibility matrix. Serial execution remains a caller contract. Reported buffered-retry stalls and ordering failures remain unresolved; do not claim planned remediation or broker-restart improvements are implemented.
+> No pages added or retired; existing pages were extended. Every commit is classified in [the sync ledger](source-sync-2026-10-02.md). All upstream worktrees were clean.
+
+> **Note (prior range).** `6c0cd3fc..74fed7e8` (**7 commits**). Reviewed lifecycle acknowledgement/remediation candidate and evidence. Published behavior remains 0.9.0.1; candidate 0.9.0.2 is unpublished. Updated integration and compatibility boundaries, without presenting candidate acknowledgements as released behavior.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
 
 > **Note (prior range).** `28625bea..6c0cd3fc` (**6 commits**). Release 0.9.0.1 adds effectful-core 2.7 build support; adapter API and runtime behavior are unchanged. Remaining commits are formatting, metadata and development configuration.
@@ -77,12 +82,16 @@ the reviewed SHA.
 - The adapter does not publish retry-topic or DLQ records; applications that
   need durable retry/DLQ flows must do so in handlers before finalizing.
 - The adapter serializes poll, seek, store, pause, and commit operations behind
-  a shared consumer lock and records fatal/exhausted ack errors for the source
-  stream to surface.
+  a shared consumer lock. Fatal or exhausted acknowledgement errors also throw
+  `KafkaAcknowledgementException` synchronously so failure does not depend on another source pull.
+- Assignment-generation fencing requires the rebalance handler to be installed before consumer
+  construction and its state shared with the adapter. Buffered retry and ordering reports remain open.
 - Envelope conversion lifts topic, partition, offset, timestamp, trace headers,
   ordered Kafka headers including duplicates, and the raw record value.
 
 ## Previous pointers
+
+- `74fed7e8df366072b0587c4bdae8d4e92317c8a3` (`74fed7e8`, 2026-09-21) — baseline before the October 2 review (17 commits); see [the ledger](source-sync-2026-10-02.md).
 
 - `6c0cd3fc840c9f5ba48558ca94c7d826a3da6c9f` (`6c0cd3fc`, 2026-09-15) — baseline before the 7-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
 
@@ -105,8 +114,8 @@ the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    KAFKA=$(mori registry show shinzui/shibuya-kafka-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KAFKA" log --oneline 74fed7e8..HEAD
-   git -C "$KAFKA" diff --stat 74fed7e8..HEAD
+   git -C "$KAFKA" log --oneline c0475899..HEAD
+   git -C "$KAFKA" diff --stat c0475899..HEAD
    ```
 2. Inspect source modules and `shibuya-kafka-adapter-jitsurei/app/`.
 3. Update `content/docs/integrations/shibuya-kafka-adapter.mdx` and the shared

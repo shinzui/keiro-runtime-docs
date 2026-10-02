@@ -9,18 +9,11 @@ headers, and broker delivery. shibuya owns handler execution and ack decisions.
 The adapter maps those ack decisions to local offset bookkeeping and commits
 stored offsets during shutdown.
 
-Current compatibility is `shibuya-kafka-adapter 0.9.0.1` with
-`shibuya-core 0.9.0.1`. This patch line adds effectful-core 2.7 build support without changing the
-adapter API. The adapter itself never destructured `DeadLetterReason`, so the new
-`ApplicationFailure` constructor needed no adapter code change and the behavior below is unchanged —
-but the release forces consumers onto the new core major, and **your own `DeadLetterReason` matches
-must be reviewed.**
-
-One visible change: the `AckDeadLetter` stderr warning now renders through `renderDeadLetterReason`
-instead of derived `Show`. An application failure that used to log as
-`ApplicationFailure (DeadLetterCode "my.app.code") "detail"` now logs as `my.app.code: detail`, so a
-dead-letter code greps identically here and in the DLQ payloads the
-[PGMQ adapter](/docs/integrations/shibuya-pgmq-adapter) writes.
+Current compatibility is `shibuya-kafka-adapter 0.9.1.0` with `shibuya-core 0.10.0.0`.
+The adapter serializes delivery finalization, preserves the earliest unresolved retry boundary,
+and exposes synchronous acknowledgment failures to supervision. `AckDeadLetter` still writes a
+warning and stores the offset; the adapter has no DLQ producer.
+Application reasons use Shibuya's canonical `code: detail` rendering.
 
 ## Runtime Shape
 
@@ -114,9 +107,11 @@ offset per partition without gap tracking, so concurrent finalization can commit
 past an earlier record that requested retry or halt. Use `Serial` for Kafka
 processors until a gap-tracking commit layer exists.
 
-Ack finalizer failures are retried a small number of times. Fatal Kafka errors,
-or exhausted finalizer retries, are recorded in adapter state and then surfaced
-through the source stream so shibuya supervision sees a processor failure.
+Ack finalizer failures are retried a bounded number of times. Exhaustion throws
+`KafkaAcknowledgementException` synchronously at the finalizer boundary. The exception contains
+the underlying `KafkaError`. Core retains it as processor failure even after ingestion ends.
+Successful duplicate finalizer calls are no-ops; failed or cancelled attempts release ownership
+and remain retryable.
 
 ## Examples
 
@@ -139,9 +134,29 @@ main shapes:
   <Card title="Enable OpenTelemetry" href="/docs/shibuya/how-to/enable-opentelemetry" description="Trace context and spans around processors." />
 </Cards>
 
-## Candidate boundary
+## Retry and assignment boundaries
 
-The reviewed upstream source also contains an unpublished `0.9.0.2` lifecycle candidate requiring
-Shibuya core 0.10. The behavior above describes the published release. Candidate recovery and
-ownership changes are recorded in the [compatibility matrix](/docs/getting-started/compatibility-and-upgrades#unpublished-lifecycle-candidates);
-they are not guarantees of the released adapter.
+Delivery tokens distinguish an original callback from the replay that can resolve its retry
+barrier. Later buffered or duplicate callbacks cannot replace the earliest unresolved boundary or
+store an offset past it. This fixes seek-barrier overwrite; it does not prove complete retry ordering.
+
+Install `kafkaRebalanceHandler state` in the consumer's rebalance callback before creating the
+consumer, and pass that same state to `kafkaAdapterWith`. Assignment generations then fence
+callbacks retained by a revoked owner from storing, seeking, or pausing after reassignment.
+Without the helper, recovery within an assignment remains available but cross-assignment fencing
+is absent. Keep processing `Serial`; this is a caller contract, not a runtime concurrency guard.
+
+## Reported recovery limits
+
+Buffered retries can still leave acknowledged successors uncommitted or let buffered successors
+execute before the retried record. A planned buffered-drain repair has not landed. Serial execution
+alone does not establish strict handler order through a retry. Do not describe the adapter as an
+exactly-once processor. The confirmed reports are
+`mori://shinzui/shibuya-kafka-adapter/okf/bug-reports/concepts/BUG-1` and
+`mori://shinzui/shibuya-kafka-adapter/okf/bug-reports/concepts/BUG-2`.
+
+Upstream also retains reports of consumers ending during broker restart or group rebalance,
+replayed offset order, and slow caught-up finalization. Those reports describe tested schedules;
+their presence does not establish failure in every deployment. Monitor worker completion and lag
+and verify recovery under the application's broker-outage and rebalance schedule.
+Rebalance fencing does not promise automatic reconnect or durable retry topics.

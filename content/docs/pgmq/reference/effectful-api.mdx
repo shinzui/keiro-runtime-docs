@@ -184,3 +184,52 @@ readMessageWithContext ::
 headers and sends with `sendMessageWithHeaders`. `readMessageWithContext`
 extracts a parent context from each returned message so the consumer can start
 its own application-level process span.
+
+## Unreleased inspection operations
+
+<Callout type="info">
+  These operations landed after published 0.6.1.1. They are available at reviewed source
+  `mori://shinzui/pgmq-hs` commit `f4bdd914`, under both interpreters.
+</Callout>
+
+```haskell
+peekMessages :: (Pgmq :> es) => PeekMessages -> Eff es (Vector Message)
+peekArchivedMessages :: (Pgmq :> es) => PeekMessages -> Eff es (Vector ArchivedMessage)
+lookupMessage :: (Pgmq :> es) => LookupMessage -> Eff es (Maybe Message)
+lookupArchivedMessage :: (Pgmq :> es) => LookupMessage -> Eff es (Maybe ArchivedMessage)
+queueMetricsUnvalidated :: (Pgmq :> es) => Text -> Eff es QueueMetrics
+```
+
+The effect gains five constructors: `PeekMessages`, `PeekArchivedMessages`, `LookupMessage`,
+`LookupArchivedMessage`, and `QueueMetricsUnvalidated`. Custom interpreters that match every
+constructor must handle them. The new argument records share names with effect constructors;
+use qualified imports when matching the effect.
+The built-in and traced interpreters retain the
+[Hasql name, cursor, and non-leasing contract](/docs/pgmq/reference/hasql-api#unreleased-inspection-reads).
+Missing queues surface as `PgmqSessionError`. Inspection spans are internal; the traced interpreter
+does not add message bodies or headers to inspection spans, even when `includeMessageBodies` is enabled.
+
+## Unreleased disconnect classification
+
+<Callout type="info">
+  This classifier change and helper landed after published 0.6.1.1. The published classifier
+  still treats the lost-reply forms below as permanent and has no `isAmbiguousReply` export.
+</Callout>
+
+```haskell
+isAmbiguousReply :: PgmqRuntimeError -> Bool
+```
+
+The reviewed source treats a server error with empty SQLSTATE in a statement or script as a lost
+reply. It also recognizes exactly `UnexpectedRowCountStatementError 1 1 1`, the driver's extra-result
+shape. Both are transient and ambiguous. Other row-count and decoding failures remain permanent.
+Script server errors now use the same SQLSTATE rules as statement server errors.
+`DriverSessionError` remains permanent.
+
+`isAmbiguousReply err` implies `isTransient err`. A transient classification says that retry may
+restore service; it does not establish that the operation had no effect. A send with a lost reply
+may already have committed. Check durable application keys or use a duplicate-tolerant operation
+before sending again. A later pool-connection error must not erase the earlier ambiguity.
+The dead connection can cause one additional transient failure while the pool evicts it.
+
+Read [Handle transient errors](/docs/pgmq/cookbook/handle-transient-errors) for retry decisions.

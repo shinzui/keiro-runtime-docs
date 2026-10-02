@@ -25,15 +25,20 @@ source walkthroughs.
 - **Docs reviewed:** upstream `README.md`, `CHANGELOG.md`, and
   `docs/architecture/`.
 
+- **Reviewed release:** core and metrics `0.10.0.0`. Hackage and upstream release tags checked 2026-10-02.
+
 ## Last reviewed commit
 
 ```text
-efbe2a87268a759e825f388e238343a83badd6da  (efbe2a87)
-2026-09-21T06:47:04-07:00
-test(release): retain candidate test transcripts
+02cf260604341c1a4e3a22a62fbf67d3c715f81c  (02cf260)
+2026-09-30T16:59:37-07:00
+docs(plan): plan the browser-ready inspection and control surface
 ```
 
-> **Current range.** `cb3c4a9a..efbe2a87` (**70 commits**). Published 0.9.0.2/0.9.0.3 liveness fixes: no idle linked master loop and no caller-linked supervisor. Updated app-supervision, walkthrough, FAQ and compatibility. Unpublished 0.10 lifecycle ownership, shutdown/error, progress-health and WebSocket contracts are explicitly excluded from released APIs. Dirty upstream worktree changes are excluded; only the frozen committed tree was reviewed.
+> **Current range.** `efbe2a87..02cf2606` (**20 commits**). Published core and metrics 0.10.0.0 replaces the prior candidate boundary. Breaking shapes include `ShutdownConfig.totalShutdownTimeout`, `ProcessorFailure`, expanded metrics/health records, and progress-aware `Processing`. Documented startup ownership, duplicate-ID/concurrency validation, shared shutdown results, retained lifecycle readiness, loopback host configuration, bounded dependency checks and WebSocket selections, terminal frames, and the externally hosted `combinedApp`. Updated supervision/metrics/policy references, operational how-tos, explanations, walkthroughs, health recipe, FAQ and index. Reported late finalization after forced stop and sticky readiness are explicit limitations. Browser inspection/control and correlation/tracing changes remain plans.
+> No pages added or retired; existing pages were extended. Every commit is classified in [the sync ledger](source-sync-2026-10-02.md). All upstream worktrees were clean.
+
+> **Note (prior range).** `cb3c4a9a..efbe2a87` (**70 commits**). Published 0.9.0.2/0.9.0.3 liveness fixes: no idle linked master loop and no caller-linked supervisor. Updated app-supervision, walkthrough, FAQ and compatibility. Unpublished 0.10 lifecycle ownership, shutdown/error, progress-health and WebSocket contracts are explicitly excluded from released APIs. Dirty upstream worktree changes are excluded; only the frozen committed tree was reviewed.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
 
 > **Note (prior range).** `bf2cff1e..cb3c4a9a` (**7 commits**). Release 0.9.0.1 adds effectful-core 2.7 build support without public API or runtime changes; other commits are manifest/tooling/plans. Updated release compatibility only.
@@ -91,8 +96,13 @@ clean at the reviewed SHA.
   handler invocation, ack finalization, tracing, and graceful shutdown.
 - `Ordering` is now `OrderingPolicy`; `PartitionedInOrder` with `Ahead` or
   `Async` is enforced for single-message processors.
-- `runApp` takes `AppConfig`, validates `inboxSize`, and returns
-  `AppConfigInvalid (InvalidInboxSize n)` for invalid sizes.
+- `runApp` takes `AppConfig` and rejects invalid inbox sizes, duplicate processor IDs,
+  nonpositive concurrency and capacity overflow before acquiring resources.
+- Stop callers share the first shutdown configuration and result. The total deadline covers
+  graceful adapter shutdown and drain, followed by master cleanup. Reported late finalization
+  after a forced stop remains a replacement-worker limitation.
+- Readiness uses retained application lifecycle and recent progress. The metrics server defaults
+  to loopback, bounds dependency checks and WebSocket selections, and emits terminal frames.
 - `Shibuya.Batch` provides first-class batch processors, keyed accumulation,
   size/timeout/flush triggers, and deterministic `BatchAck` resolution.
 - `AckHandle.finalize` may be retried with the same `AckDecision` after a
@@ -110,8 +120,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    SHIBUYA=$(mori registry show shinzui/shibuya --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$SHIBUYA" log --oneline efbe2a87..HEAD
-   git -C "$SHIBUYA" diff --stat efbe2a87..HEAD
+   git -C "$SHIBUYA" log --oneline 02cf2606..HEAD
+   git -C "$SHIBUYA" diff --stat 02cf2606..HEAD
    ```
 2. Inspect changed modules under `shibuya-core/`, `shibuya-metrics/`, and
    `shibuya-example/`, plus `README.md`, `CHANGELOG.md`, and
@@ -124,6 +134,8 @@ clean at the reviewed SHA.
    range.
 
 ## Previous pointers
+
+- `efbe2a87268a759e825f388e238343a83badd6da` (`efbe2a87`, 2026-09-21) — baseline before the October 2 review (20 commits); see [the ledger](source-sync-2026-10-02.md).
 
 - `cb3c4a9ae91de946fa17a6287241ca91699f7c50` (`cb3c4a9a`, 2026-09-17) — baseline before the 70-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
 

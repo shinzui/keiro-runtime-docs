@@ -176,9 +176,9 @@ nextInput = \case
           events <- readTBQueue liveQueue           -- blocks until the publisher pushes
           let fresh = V.filter ((> c) . globalPosition) events  -- drop events already seen in catch-up
           pure (if V.null fresh then FetchEmpty else BatchFetched fresh)
-    (Nothing, Category cat) ->                       -- Phase 2b: NOTIFY-driven category live loop
+    (_, Category cat) ->                             -- Phase 2b: category/member NOTIFY-driven loop
       liveExitToInput =<< liveLoopCategoryNotify ...
-    (Just _, _) ->                                   -- Phase 2c: DB-driven loop for group members
+    (Just _, AllStreams) ->                          -- Phase 2c: all-stream group loop
       liveExitToInput =<< liveLoopDbDriven ...
   Paused{}        -> do drainQueue liveQueue; ...; pure QueueDrained   -- drain, clear flag, re-catch-up
   Reconnecting c _ -> fetchBatch ... >>= ...         -- re-probe the DB from the checkpoint
@@ -189,7 +189,7 @@ A few things this makes concrete. The non-group `AllStreams` live path filters `
 subscription registers its publisher queue **before** catch-up starts, so an event appended
 mid-catch-up can be both fetched from SQL _and_ waiting in the queue — the filter stops live mode
 replaying it or rewinding the checkpoint. The two **DB-driven** live loops (`liveLoopCategoryNotify`
-for a non-group `Category`, `liveLoopDbDriven` for any group member) run to their own natural
+for any `Category`, `liveLoopDbDriven` for an all-stream group member) run to their own natural
 termination and report back through
 `liveExitToInput`: a clean handler stop becomes `HandlerStopped`, a fetch error becomes
 `ConnectionLost` (which `step` turns into `Reconnecting`). `AllStreams` has no such loop because it
@@ -304,3 +304,10 @@ stopped subscription as simply absent.
 
 [03 — The event publisher](/docs/kiroku/walkthrough/03-the-event-publisher): the centralized `$all`
 broadcaster that fills the live queue this driver reads from.
+
+## Category fetch and wake boundary
+
+Category reads now scan `ix_stream_events_all_by_category` from the checkpoint instead of probing
+every stream. Category consumer-group members register for their own category's notifications.
+They do not query an idle category after unrelated appends. All-stream group workers retain the
+global wake path. The persisted checkpoint and ascending delivery order are unchanged.

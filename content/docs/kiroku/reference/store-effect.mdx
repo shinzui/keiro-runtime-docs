@@ -345,3 +345,32 @@ The two runners differ only in who owns the handle's lifetime:
 
 Keiro's transactional command runners require this effect; see
 [the Command reference](/docs/keiro/reference/command).
+
+## Category read index
+
+`readCategory` and category consumer-group reads use the `$all` category index in store 0.9.
+Each read scans forward from `(category, checkpoint)` and stops at the requested limit.
+Its cost does not include a probe of every stream in the category. This requires migration `0012`;
+read [schema preparation](/docs/kiroku/reference/schema-migrations#category-index-preparation)
+before starting writers.
+
+
+## SQL codecs
+
+Store 0.9 also exports these helpers from `Kiroku.Store.SQL`:
+
+```haskell
+import Hasql.Decoders qualified as D
+import Hasql.Encoders qualified as E
+
+appendParamsEncoder :: E.Params AppendParams
+appendResultDecoder :: D.Result (Maybe AppendResult)
+readCategoryEncoder :: E.Params (Int64, Text, Int32)
+readCategoryConsumerGroupEncoder :: E.Params (Int64, Text, Int32, Int32, Int32)
+recordedEventRow :: D.Row RecordedEvent
+```
+
+The category encoder takes `(startPosition, category, limit)`.
+The group encoder takes `(startPosition, category, member, size, limit)`.
+These exports let custom Hasql statements reuse the store's parameter and result formats.
+The `Store` effect remains the application interface for normal reads and appends.

@@ -1,5 +1,5 @@
 ---
-title: "Inspect queue depth"
+title: "Inspect queue depth and messages"
 description: "Read pgmq queue metrics and distinguish total depth from visible depth."
 ---
 
@@ -29,3 +29,32 @@ printAllDepths pool = do
   result <- Pool.use pool allQueueMetrics
   print result
 ```
+
+## Inspect messages without consuming them
+
+<Callout type="info">
+  This example requires the unreleased inspection exports at reviewed source
+  `mori://shinzui/pgmq-hs` commit `f4bdd914`. Published 0.6.1.1 supports the metrics examples above.
+</Callout>
+
+Do not use `readMessage` to inspect a payload. It leases messages and increases `readCount`.
+Use a peek with a positive page limit:
+
+```haskell
+result <- Pool.use pool $ peekMessages PeekMessages
+  { unvalidatedQueueName = queueNameToText queue
+  , afterMessageId = Nothing
+  , limit = 100
+  }
+```
+
+For the next page, pass the last returned `Message.messageId` as `Just afterMessageId`.
+Stop when a page is shorter than the limit. Consumers can remove rows between pages;
+this traversal does not retain a historical snapshot.
+
+Use `peekArchivedMessages` with the same record to inspect the archive.
+Use `lookupMessage` or `lookupArchivedMessage` with `LookupMessage` for a known ID.
+A missing message returns `Nothing`; a missing queue raises a permanent server error.
+When inspecting a name returned by `listQueuesUnvalidated`, pass its text directly rather than
+forcing it through `parseQueueName`. Validate page limits before exposing them to a client.
+Read the [inspection contract](/docs/pgmq/reference/hasql-api#unreleased-inspection-reads).

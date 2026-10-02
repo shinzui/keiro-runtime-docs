@@ -25,27 +25,42 @@ The internal supervised runner creates metrics and done state, registers with th
 the processor body as a supervised child. It catches `ProcessorHalt` so a handler's intentional halt
 is not treated as an unexpected exception by that child.
 
-Graceful shutdown is in `stopAppGracefully`:
+## Shutdown ownership
+
+`stopAppGracefully` masks the ownership transfer and atomically elects one leader.
+The leader runs the stop operation and places its result in a shared TMVar.
+Later callers wait for that same result rather than shutting adapters down again.
 
 ```text
-1. call every adapter.shutdown
-2. wait for in-flight processors to drain, up to drainTimeout
-3. stop the master, cancelling remaining children
-4. return whether the drain completed before timeout
+1. mark the master and configured processors as draining
+2. try adapter shutdowns; collect synchronous failures
+3. if shutdowns succeed, wait for processors up to drainTimeout
+4. bound steps 1–3 by totalShutdownTimeout
+5. always attempt stopMaster, then publish the result or exception
 ```
 
-`waitApp` is different. It blocks until every processor's `done` TVar is true. Use `waitApp` for
-finite streams or top-level programs that should run until external shutdown code calls `stopApp`.
+The default drain limit is 30 seconds and the graceful-phase limit is 60 seconds.
+Timeout returns `False` after cleanup. A clean drain returns `True`; shutdown or cleanup failures
+can throw. Master cleanup lies outside the graceful-phase timeout.
 
-## Released liveness fixes
+`waitApp` waits until each processor's `done` TVar is true. It does not initiate shutdown.
+Use it for finite streams or for programs whose separate shutdown handler owns the stop.
 
-Shibuya 0.9.0.2 removes the unused linked master mailbox actor. The master retains the actual
-NQE supervisor and metrics registry. Version 0.9.0.3 starts that supervisor without linking it to
-the `runApp` caller. This prevents a finished application's unreachable supervisor from killing
-the caller during major garbage collection, and prevents duplicate failure delivery under
-`StopAllOnFailure`. Processor links still propagate failures and stop siblings under that policy.
-`stopMaster` cancels the supervisor and its children; public application signatures are unchanged.
+## Retained lifecycle
 
-The 0.10 lifecycle API at the reviewed upstream head is an unpublished candidate. Its total
-shutdown deadline, new error constructors, retained lifecycle, health and WebSocket changes are
-not part of the released 0.9 API documented here.
+The master retains configured processor lifecycle independently of the live metrics registry.
+A terminal failed processor remains visible to readiness after unregistering. Failed finalization
+wakes idle intake and exits as `ProcessorFailure`, while `AckHalt` is a deliberate graceful exit.
+`IgnoreFailures` keeps siblings running; `StopAllOnFailure` stops siblings and propagates one failure
+to the caller. The supervisor itself is not caller-linked.
+
+## Forced-stop observation
+
+Source cleanup attempts cancellation after timeout. The published release nevertheless has a
+reported asynchronous-handler case that finalizes after stop returns. Treat `False` as incomplete
+drain, and fence or terminate the old process before replacement. Read the
+[shutdown runbook](/docs/shibuya/how-to/configure-graceful-shutdown#verify-the-replacement-boundary).
+
+Startup also rejects duplicate processor IDs before acquiring resources. A masked ownership ledger
+tracks acquired processor resources; if a later acquisition fails, cleanup attempts cover earlier
+resources and preserve the primary construction exception.

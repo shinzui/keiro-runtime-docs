@@ -97,6 +97,7 @@ Knobs for a single command invocation.
     metrics: { type: "Maybe KeiroMetrics", description: "Optional command/snapshot metrics handle", default: "Nothing" },
     verifyReplayOnAppend: { type: "Bool", description: "Replay each successful append from its pre-command state and report divergence; snapshot-enabled streams fold regardless", default: "True" },
     seedVerifySampleRate: { type: "Int", description: "Verify one in N accepted snapshot seeds against a full replay through the seed version; 0 disables the witness", default: "1000" },
+    seedVerifyInFlightLimit: { type: "Int", description: "Maximum concurrent sampled verifications across this process; skip a sample at capacity; 0 removes the limit", default: "1" },
     tracer: { type: "Maybe Tracer", description: "Optional OpenTelemetry tracer", default: "Nothing" },
     metadata: { type: "Maybe Value", description: "JSON merged into every event's metadata", default: "Nothing" },
   }}
@@ -105,7 +106,7 @@ Knobs for a single command invocation.
 ```haskell
 -- Defaults: 3 retries, 256-event read pages, no caller ids, no-op hook,
 -- 5ms base retry backoff, no metrics, replay verification enabled,
--- one sampled snapshot-seed verification per 1000 snapshot hits,
+-- sample one in 1000 snapshot hits, with one verification in flight per process,
 -- no tracer, no metadata.
 defaultRunCommandOptions :: RunCommandOptions
 ```
@@ -136,7 +137,7 @@ matches. That discriminator cannot see a hand-written or Holes-only change to a 
 and tail-only replay derives state a full replay would never reach.
 
 `seedVerifySampleRate` is the amortized backstop. On an accepted snapshot hit, one hydration in `N`
-(default 1000) spawns a background full replay bounded **through the seed's own stream version** and
+(default 1000) attempts to start a background full replay bounded **through the seed's own stream version** and
 compares RFC 8785 canonical encoded `(state, registers)` against the seed. On disagreement it:
 
 - increments `keiro.snapshot.seed.divergence`; and
@@ -144,7 +145,7 @@ compares RFC 8785 canonical encoded `(state, registers)` against the seed. On di
   SHA-256 digests.
 
 It never blocks the command, never fails it, and never writes a snapshot. Set the rate to `1` to
-verify every hit (useful in staging) or `0` to disable the witness. This is a *runtime* backstop; the
+sample every hit (useful in staging) or `0` to disable the witness. This is a *runtime* backstop; the
 pre-deploy gate is the [replay audit](/docs/keiro/reference/replay-audit).
 
 ## Hydration primitives
@@ -278,3 +279,23 @@ the event committed alongside a partial projection write. The callback discovers
 See [Run a command in a transaction](/docs/keiro/how-to/run-a-command-in-a-transaction) for the
 transactional pattern and [Configure concurrency retries](/docs/keiro/how-to/configure-concurrency-retries)
 for tuning `retryLimit`/`pageSize`.
+
+## Sampled verification capacity
+
+`seedVerifyInFlightLimit` defaults to `1`. All streams in the process share one in-flight counter.
+Each sampled command checks that counter against its configured limit. Use the same limit across
+command callers for a consistent process bound. At capacity, the runner skips the sample and
+increments `keiro.snapshot.seed.skipped`; it does not queue the replay.
+
+Set the limit to `0` to remove the bound. The implementation also treats negative values as
+unbounded. Keep a positive limit for normal operation. A sample rate of `1` samples every hit,
+but capacity can still prevent verification. Sampling does not prove complete replay coverage.
+Use the [replay audit](/docs/keiro/reference/replay-audit) for the deployment gate.
+
+The runner reserves capacity before starting the task. It releases the reservation on completion,
+exception, cancellation, or failure to start. An unexpected synchronous verification exception
+increments `keiro.snapshot.seed.verification.failed` and writes a stderr JSON object with `event`,
+`level`, and `reason`. The command result is unaffected.
+
+Code that constructs `RunCommandOptions` directly must include `seedVerifyInFlightLimit`.
+Prefer a record update of `defaultRunCommandOptions`.

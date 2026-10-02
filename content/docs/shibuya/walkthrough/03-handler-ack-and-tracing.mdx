@@ -3,42 +3,36 @@ title: "03 — Handler, ack, and tracing"
 description: "The processOne path: call the handler, finalize the decision, record metrics, and stop on halt."
 ---
 
-`processOne` in `Shibuya.Internal.Runner.Supervised` is the message execution center. It receives
-the processor metrics handle, processor id, max concurrency, halt flag, handler, and `Ingested`
-message.
+`processOne` in `Shibuya.Internal.Runner.Supervised` receives the metrics handle, processor
+identity, concurrency, terminal-exit publisher, handler, and ingested delivery.
+It extracts the parent trace context, opens a consumer span, and merges framework attributes with
+adapter attributes. Adapter attributes win on duplicate keys.
 
-First it extracts parent trace context:
-
-```haskell
-let parentCtx = ingested.envelope.traceContext >>= extractTraceContext
-```
-
-Then it creates a consumer span and merges framework messaging attributes with adapter-supplied
-attributes. Adapter attributes win on duplicate keys.
-
-The handler call is intentionally small:
+The handler and finalizer have separate failure boundaries. A synchronous handler exception records
+the exception and selects `AckRetry (RetryDelay 0)`. The runner then calls `finalizeWithRetry`
+for that decision. A finalizer failure does not invoke the handler again.
 
 ```haskell
-decision <- handler (toMessage ingested)
-ingested.ack.finalize decision
-pure (Right decision)
+finalizeResult <- finalizeWithRetry traceSpan ingested decision
 ```
 
-If the handler throws, `processOne` records the exception on the trace span and finalizes the
-message with `AckRetry (RetryDelay 0)`. If the handler returns normally, the runner records the ack
-decision as a span event and attribute.
+A successful `AckOk` or `AckRetry` increments processed. `AckDeadLetter` and handler exceptions
+increment failed. Those counters do not count successful business effects exclusively.
+Finalization failure records failure metrics and trace evidence.
 
-Metrics are updated after the handler finishes. `AckOk` and `AckRetry` increment processed.
-`AckDeadLetter` increments failed. Exceptions increment failed. `AckHalt` records a failed processor
-state with the halt reason.
-
-Finally, `AckHalt` writes the halt flag:
+The terminal request uses an exit publisher that wakes blocked intake:
 
 ```haskell
-case result of
-  Right (AckHalt reason) -> liftIO $ atomicWriteIORef haltRef (Just reason)
-  _ -> pure ()
+case finalizeResult of
+  Left _ ->
+    liftIO $ requestProcessorExit exitPublisher
+      (ProcessorFailed (finalizationFailureText msgIdText) (Just messageId))
+  Right () -> case result of
+    Right (AckHalt reason) ->
+      liftIO $ requestProcessorExit exitPublisher (ProcessorHalted reason)
+    _ -> pure ()
 ```
 
-The surrounding stream loop notices the flag, stops reading, and throws `ProcessorHalt` so the
-supervised child exits intentionally.
+Infrastructure failure takes precedence if concurrent work requests both failure and graceful halt.
+The surrounding loop exits with `ProcessorFailure` for failed finalization; deliberate halt uses
+`ProcessorHalt`. Supervision retains failure lifecycle after removing the live metrics entry.

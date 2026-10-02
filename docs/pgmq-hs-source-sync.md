@@ -10,19 +10,23 @@ pgmq-hs source. This file records the exact review boundary.
 - **Path at last sync:**
   `/Users/shinzui/Keikaku/bokuno/libraries/pgmq-hs-project/pgmq-hs`.
 - **Reviewed releases:** `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`,
-  `pgmq-config`, and `pgmq-migration` at `0.6.1.0`.
+  `pgmq-config`, and `pgmq-migration` at `0.6.1.1`. Hackage and upstream release tags checked
+  2026-10-02. Later inspection and disconnect-classifier exports are documented as unreleased.
 - **Schema boundary:** the embedded component installs PGMQ 1.13.0 without
   requiring the PostgreSQL extension, through migrations `0001`–`0006`.
 
 ## Last reviewed commit
 
 ```text
-8fff5fb154a754252116c1a8c3ff1c6cd3b6e25e  (8fff5fb1)
-2026-09-16T14:04:04-07:00
-docs(reviews): record the v0.4.0.1..v0.6.1.0 review as REV-1 through REV-5
+f4bdd91437ccf9c1981983fb1c6fd99dcc3c10f6  (f4bdd91)
+2026-10-01T14:25:36-07:00
+docs: record the inspection read contract and close IR-1
 ```
 
-> **Current range.** `590a46f3..8fff5fb1` (**41 commits**). The 0.6.0 release adds PGMQ 1.12 grouped-head reads, PGMQ 1.13 premake/metrics, umbrella exports and migrations `0004`–`0006`; 0.6.1 adds effectful-core 2.7 support. Updated core API, queue configuration, migrations, FIFO guidance and compatibility. Review/plan/build metadata is classified separately.
+> **Current range.** `8fff5fb1..f4bdd914` (**14 commits**). Reviewed published family 0.6.1.1 and later committed source. The release accepts pg-migrate 1.2; the six embedded migrations are unchanged. Later source adds ArchivedMessage, five Hasql inspection reads and five Pgmq effect constructors (breaking exhaustive interpreters), plus isAmbiguousReply and transient lost-reply classification. These APIs are explicitly unreleased and absent from the 0.6.1.1 tag despite unchanged source package versions. Updated core/Hasql/Effectful/migration references, visibility explanation, inspection/retry recipes and index cards. JSON codecs, the inspection CLI, concurrent reconciliation and a package-level call deadline remain unimplemented.
+> No pages added or retired; existing pages were extended. Every commit is classified in [the sync ledger](source-sync-2026-10-02.md). All upstream worktrees were clean.
+
+> **Note (prior range).** `590a46f3..8fff5fb1` (**41 commits**). The 0.6.0 release adds PGMQ 1.12 grouped-head reads, PGMQ 1.13 premake/metrics, umbrella exports and migrations `0004`–`0006`; 0.6.1 adds effectful-core 2.7 support. Updated core API, queue configuration, migrations, FIFO guidance and compatibility. Review/plan/build metadata is classified separately.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-17.md).
 
 > **Note (prior range).** The `5eca8d6..9ee9a2f` range (**3 commits**, 29 files) **cuts
@@ -142,6 +146,8 @@ docs(reviews): record the v0.4.0.1..v0.6.1.0 review as REV-1 through REV-5
 
 ## Previous pointers
 
+- `8fff5fb154a754252116c1a8c3ff1c6cd3b6e25e` (`8fff5fb1`, 2026-09-16) — baseline before the October 2 review (14 commits); see [the ledger](source-sync-2026-10-02.md).
+
 - `590a46f3e499d8b129976ca15e76acb4c1d928c6` (`590a46f3`, pgmq-hs 0.5.0.0) — baseline before the
   `590a46f3..8fff5fb1` review (41 commits). The range released 0.6.0.0/0.6.1.0 with grouped FIFO
   heads, queue premake, nullable metrics, DLQ header preservation and archive/purge safeguards;
@@ -167,8 +173,8 @@ docs(reviews): record the v0.4.0.1..v0.6.1.0 review as REV-1 through REV-5
 1. Resolve the source and inspect committed drift:
    ```text
    PGMQ=$(mori registry show shinzui/pgmq-hs --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$PGMQ" log --oneline 8fff5fb1..HEAD
-   git -C "$PGMQ" diff --stat 8fff5fb1..HEAD
+   git -C "$PGMQ" log --oneline f4bdd914..HEAD
+   git -C "$PGMQ" diff --stat f4bdd914..HEAD
    ```
 2. **Check the release status first.** `grep '^version' "$PGMQ"/*/*.cabal`. If
    they now read `0.5.0.0`, the main task is to remove the "unreleased"

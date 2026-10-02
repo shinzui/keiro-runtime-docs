@@ -9,8 +9,8 @@ archive table, topic routing tables, FIFO group indexes, and JSONB message
 payload. shibuya owns handler execution, runner policy, ack finalization,
 metrics, tracing, and shutdown.
 
-Current compatibility is `shibuya-pgmq-adapter 0.16.0.0`, the `pgmq-* 0.6`
-package family, and `shibuya-core 0.9.0.1`. Version 0.15 moves to pgmq-hs 0.6;
+Current compatibility is `shibuya-pgmq-adapter 0.16.1.0`, the published `pgmq-* 0.6.1.1`
+package family, and `shibuya-core 0.10.0.0`. Version 0.15 moves to pgmq-hs 0.6;
 0.16 adds the `HeadPerGroup` FIFO strategy backed by PGMQ 1.12 grouped-head reads.
 
 <Callout type="warn">
@@ -35,7 +35,7 @@ row-count decoder error, and picks up pgmq-migration 0.5's notification crash-sa
 ## Install the schema before starting the adapter
 
 The adapter consumes an existing PGMQ schema; it does not install database
-objects. With `pgmq-migration` 0.4, resolve `Pgmq.Migration.pgmqMigrations`,
+objects. With `pgmq-migration` 0.6.1.1, resolve `Pgmq.Migration.pgmqMigrations`,
 compose it with the application's other components through `migrationPlan`, and
 run that final plan through `runMigrationPlan` or a standard `pg-migrate-cli`
 host.
@@ -275,9 +275,31 @@ fields; the raw payload stays as the handler's `Value`.
   <Card title="keiro ⇄ pgmq jobs" href="/docs/integrations/keiro-with-pgmq" description="The typed job layer most keiro applications use instead of raw adapter wiring." />
 </Cards>
 
-## Candidate boundary
+## Finalization ownership
 
-The reviewed upstream source also contains an unpublished `0.16.0.1` lifecycle candidate requiring
-Shibuya core 0.10. The behavior above describes the published release. Candidate recovery and
-ownership changes are recorded in the [compatibility matrix](/docs/getting-started/compatibility-and-upgrades#unpublished-lifecycle-candidates);
-they are not guarantees of the released adapter.
+Each acknowledgment handle serializes concurrent callers. A completed duplicate is a no-op.
+Failure or cancellation releases ownership so the operation can be retried.
+
+Exhausted errors call `PgmqAdapterEnv.onAckFailure` and throw
+`PgmqAcknowledgementException` synchronously. The exception contains `PgmqRuntimeError`.
+Core retains failed lifecycle even when ingestion has ended. Automatic dead-letter failure also
+calls the failure hook and propagates; it is not swallowed after the hook.
+
+A transactional DLQ move claims the source row before inserting the copy. Both actions commit in
+one transaction. If the successful commit reply is lost, a retry sees the source absent and writes
+no second copy. If the send fails, rollback restores the source. This protects that database move;
+it does not make arbitrary handler side effects exactly once.
+
+## Server-side long-poll limits
+
+The published 0.16.1.0 adapter still uses server-side `read_with_poll` for `LongPolling`.
+Two long-polling processors sharing a two-connection pool have been reported to starve their own
+acknowledgments until shutdown. Reserve pool headroom and verify the application's concurrency
+schedule, or select `StandardPolling`. A larger pool has not been proved sufficient by that report.
+This is tracked by `mori://shinzui/shibuya-pgmq-adapter/okf/bug-reports/concepts/BUG-1`.
+
+A server-side long poll can also continue after its client is killed, lease a later-visible message,
+and increase its read count without handler delivery. Select `StandardPolling` when the retry ceiling
+must track observed handler deliveries, and verify the crash schedule. The poll-every control passed
+in the reported Keiro scenario. The proposed client-side polling repair is not implemented.
+This is tracked by `mori://shinzui/shibuya-pgmq-adapter/okf/bug-reports/concepts/BUG-4`.

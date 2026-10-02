@@ -296,6 +296,8 @@ take `Double`. All instruments are recorded with empty attributes (no per-call l
 | `keiro.snapshot.write.failures` | Counter | `{failure}` | `recordSnapshotWriteFailures` | Command and workflow runners — post-commit snapshot store writes that failed and were swallowed. |
 | `keiro.snapshot.apply.divergence` | Counter | `{failure}` | `recordSnapshotApplyDivergence` | Command runners — just-appended batches that failed replay from pre-command state. The append is committed and the next hydration will fail. |
 | `keiro.snapshot.seed.divergence` | Counter | `{failure}` | `recordSnapshotSeedDivergence` | Hydration — sampled snapshot seeds whose encoded state disagreed with a full replay through the seed version. Usually a fold change deployed without a `stateCodecVersion` bump. |
+| `keiro.snapshot.seed.skipped` | Counter | `{verification}` | `recordSnapshotSeedSkipped` | Sampled verifications skipped because the process in-flight limit is full. |
+| `keiro.snapshot.seed.verification.failed` | Counter | `{failure}` | `recordSnapshotSeedVerificationFailed` | Unexpected synchronous verification exceptions; the command result is unaffected. |
 | `keiro.dispatch.failed` | Counter | `{command}` | `recordDispatchFailed` | Process-manager/router workers — dispatched commands or source reactions that failed. |
 | `keiro.dispatch.deadlettered` | Counter | `{command}` | `recordDispatchDeadlettered` | Process-manager/router workers — rejected dispatches handled by explicit dead-letter or skip policy. |
 | `keiro.subscription.deadlettered` | Counter | `{event}` | `recordSubscriptionDeadlettered` | Subscription workers — source events dead-lettered by disposition or retry exhaustion. |
@@ -357,7 +359,7 @@ reinterpreted stored data, and neither one fails a command:
 - `keiro.snapshot.seed.divergence` — a sampled accepted snapshot seed disagrees with a full replay
   through its own version. Alongside the counter, a structured JSON line goes to stderr with the
   `stream`, `seedVersion`, and both SHA-256 digests. Sampling is one hit in
-  `RunCommandOptions.seedVerifySampleRate` (default 1000); `1` verifies every hit and `0` disables it.
+  `RunCommandOptions.seedVerifySampleRate` (default 1000); `1` samples every hit and `0` disables it. The default in-flight limit is `1`; samples at capacity are skipped.
 
 If nothing alerts on these, the [runtime gate](/docs/keiro/explanation/evolution-and-replayability)
 does not exist for you.
@@ -431,3 +433,15 @@ healthy resume after a crash is mostly replays plus a small executed tail.
   <Card title="Command reference" href="/docs/keiro/reference/command" />
   <Card title="Outbox reference" href="/docs/keiro/reference/outbox" />
 </Cards>
+
+## Verification capacity signals
+
+Read `keiro.snapshot.seed.skipped` with `keiro.snapshot.seed.verification.failed`.
+Skipped samples show a capacity limit; they do not indicate divergence. Verification failures
+show an exception that prevented the comparison. Check the structured stderr event
+`keiro.snapshot.seed.verification.failed` and its `reason` before changing the limit.
+
+`KeiroMetrics` gains `snapshotSeedSkipped :: Counter Int64` and
+`snapshotSeedVerificationFailed :: Counter Int64`. Code that constructs the record directly must
+supply both fields. `newKeiroMetrics` creates them. The exported instrument-name constants are
+`keiroSnapshotSeedSkippedName` and `keiroSnapshotSeedVerificationFailedName`.

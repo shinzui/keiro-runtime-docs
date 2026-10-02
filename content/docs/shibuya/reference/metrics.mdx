@@ -10,8 +10,8 @@ and start time. It does not create metrics itself; processors update their own T
 
 <Callout type="info">
   Package `shibuya-metrics` exposes `Shibuya.Metrics`, `Config`, `Health`, `JSON`,
-  `Prometheus`, `Server`, `Types`, and `WebSocket`. The server binds Warp to host `"*"` on
-  `config.port`; put auth, TLS, and public exposure policy in your deployment layer.
+  `Prometheus`, `Server`, `Types`, and `WebSocket`. The built-in server binds Warp to `config.host`,
+  which defaults to `"127.0.0.1"`. Configure authentication and public exposure in the deployment layer.
 </Callout>
 
 ## Metrics values
@@ -23,8 +23,8 @@ newtype ProcessorId = ProcessorId { unProcessorId :: Text }
 
 data ProcessorState
   = Idle
-  | Processing InFlightInfo UTCTime
-  | Failed Text UTCTime
+  | Processing !InFlightInfo !UTCTime !UTCTime
+  | Failed !Text !UTCTime
   | Stopped
 
 data InFlightInfo = InFlightInfo
@@ -69,22 +69,30 @@ batches, partial-failure batches, and which trigger emitted each batch.
 
 ```haskell
 data MetricsServerConfig = MetricsServerConfig
-  { port :: Int
-  , enableJSON :: Bool
-  , enablePrometheus :: Bool
-  , enableWebSocket :: Bool
-  , wsPushIntervalUs :: Int
-  , wsMaxConnections :: Int
-  , livenessTimeoutMicros :: Int
-  , stuckThreshold :: NominalDiffTime
+  { host :: !String
+  , port :: !Int
+  , enableJSON :: !Bool
+  , enablePrometheus :: !Bool
+  , enableWebSocket :: !Bool
+  , wsPushIntervalUs :: !Int
+  , wsMaxConnections :: !Int
+  , wsMaxSubscriptions :: !Int
+  , livenessTimeoutMicros :: !Int
+  , dependencyTimeoutMicros :: !Int
+  , stuckThreshold :: !NominalDiffTime
   }
 
 defaultConfig :: MetricsServerConfig
 ```
 
-Defaults are port `9090`, JSON enabled, Prometheus enabled, WebSocket enabled, push interval
-`100_000` microseconds, max connections `100`, liveness timeout `1_000_000` microseconds, and stuck
-threshold `60` seconds.
+Defaults are host `"127.0.0.1"`, port `9090`, and all endpoints enabled.
+The push interval is `100_000` microseconds. The connection limit is `100`; the retained processor
+ID limit per connection is `1000`. Liveness and each dependency check have separate `1_000_000`
+microsecond timeouts. The stuck threshold is `60` seconds.
+
+The built-in server rejects an empty host, a negative port, and nonpositive interval, capacity,
+timeout, or stuck-threshold values. Port `0` is accepted. Set `host = "*"` only when the deployment
+provides the required access controls.
 
 ## Server lifecycle
 
@@ -127,9 +135,10 @@ Use `getAppMaster` from `Shibuya` to obtain the `Master` from an `AppHandle`.
 
 ```haskell
 data ReadinessStatus = ReadinessStatus
-  { ready :: Bool
-  , processors :: ProcessorHealth
-  , dependencies :: [DependencyStatus]
+  { ready :: !Bool
+  , application :: !ApplicationStatus
+  , processors :: !ProcessorHealth
+  , dependencies :: ![DependencyStatus]
   }
 
 data ProcessorHealth = ProcessorHealth
@@ -149,8 +158,42 @@ data DependencyStatus = DependencyStatus
 type DependencyCheck = IO DependencyStatus
 ```
 
-Readiness is true only when every dependency is healthy, no processor is failed, and no processor is
-stuck. A processor is stuck when it remains in `Processing` longer than `stuckThreshold`.
+Readiness requires application status `Running` or `ConfiguredEmpty`, every running processor's
+live metrics, healthy dependencies, and no failed or stuck processor. Retained failed lifecycle
+makes readiness false even after that processor leaves the live map. A stopped master is not live.
+
+`Processing` carries in-flight information, a sampled burst-start time, and sampled last progress.
+The JSON fields are `lastActivity` and `lastProgress`. Stuck detection compares current time with
+`lastProgress`, not total time in the processing burst. Older JSON without `lastProgress` decodes
+with `lastActivity` as the fallback.
+
+Each dependency check has its own timeout. A synchronous exception or timeout becomes an unhealthy
+`DependencyStatus` named `unknown`, with no latency and an error detail. Asynchronous cancellation
+still propagates. Checks run in sequence, so the dependency timeout is not one overall probe deadline.
+
+```haskell
+data HealthConfig = HealthConfig
+  { livenessTimeoutMicros :: !Int
+  , dependencyTimeoutMicros :: !Int
+  , stuckThreshold :: !NominalDiffTime
+  }
+
+data ApplicationStatus
+  = ConfiguredEmpty
+  | Starting
+  | Running
+  | Draining
+  | ApplicationStopped
+  | ApplicationFailed
+```
+
+Readiness JSON encodes `application` as `configured_empty`, `starting`, `running`, `draining`,
+`stopped`, or `failed`.
+
+A reported limitation in 0.10.0.0 leaves readiness failed after a transient handler exception even
+when its retry succeeds and processing continues. Inspect counters, traces, and lifecycle together.
+Do not infer terminal failure from readiness alone. This is tracked by
+`mori://shinzui/shibuya/okf/improvement-requests/concepts/IR-7`; recovery is not implemented.
 
 ## Prometheus names
 
@@ -187,9 +230,57 @@ Server messages:
 ```json
 { "type": "snapshot", "metrics": {} }
 { "type": "update", "processor": "orders", "metrics": {} }
+{ "type": "terminal", "processor": "orders", "status": "stopped" }
+{ "type": "terminal", "processor": "payments", "status": "failed", "error": "finalization failed", "messageId": null }
 { "type": "pong" }
 { "type": "goodbye" }
 ```
 
 Invalid client messages are ignored. A connection beyond `wsMaxConnections` is rejected with "Too
 many connections".
+
+## WebSocket selection and ownership
+
+`subscribe_all` selects all processors and clears exclusions. `subscribe` switches an all-selection
+to the supplied IDs, or adds IDs to an existing explicit selection. `unsubscribe` excludes IDs from
+an all-selection or removes them from an explicit selection. The retained explicit IDs or exclusions
+must not exceed `wsMaxSubscriptions`; the server closes an oversized selection with policy code `1008`.
+
+A `terminal` frame reports a formerly visible processor removed with retained stopped or failed
+lifecycle. It is not an event-history feed. `goodbye` reports metrics-server shutdown.
+Connection-slot ownership is released on normal close, exception, or cancellation.
+
+```haskell
+data ProcessorTerminalStatus
+  = TerminalStopped
+  | TerminalFailed !Text !(Maybe Text)
+
+data WebSocketState = WebSocketState
+  { connectionCount :: !(TVar Int)
+  , maxConnections :: !Int
+  , shutdownRequested :: !(TVar Bool)
+  }
+
+newWebSocketState :: Int -> IO WebSocketState
+shutdownWebSockets :: WebSocketState -> IO ()
+```
+
+Import the state helpers from `Shibuya.Metrics.WebSocket`.
+
+## Mount the WAI application
+
+`Shibuya.Metrics.Server` exports the application for an externally managed server:
+
+```haskell
+combinedApp ::
+  MetricsServerConfig ->
+  Master ->
+  WebSocketState ->
+  [DependencyCheck] ->
+  Application
+```
+
+The host owns server startup, configuration validation, and shutdown. Create shared WebSocket state
+with `newWebSocketState`; call `shutdownWebSockets` during shutdown so active clients receive
+`goodbye`. The built-in server's configuration validation is not performed by `combinedApp`.
+The application respects the endpoint flags.

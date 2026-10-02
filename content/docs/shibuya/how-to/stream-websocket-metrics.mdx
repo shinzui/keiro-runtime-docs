@@ -11,6 +11,7 @@ let config =
         { enableWebSocket = True
         , wsPushIntervalUs = 250_000
         , wsMaxConnections = 50
+        , wsMaxSubscriptions = 500
         }
 ```
 
@@ -44,9 +45,19 @@ Server messages look like:
 ```json
 { "type": "snapshot", "metrics": {} }
 { "type": "update", "processor": "orders", "metrics": {} }
+{ "type": "terminal", "processor": "orders", "status": "stopped" }
+{ "type": "terminal", "processor": "payments", "status": "failed", "error": "finalization failed", "messageId": null }
 { "type": "pong" }
 { "type": "goodbye" }
 ```
 
 The server only sends `update` frames for processors whose metrics changed since the last push.
 Connections beyond `wsMaxConnections` are rejected.
+
+Treat `terminal` as the retained stopped or failed outcome of a previously visible processor.
+Remove it from the live display and retain its status for operators.
+
+`subscribe_all` clears exclusions; `unsubscribe` in that mode excludes the named IDs.
+An explicit `subscribe` switches to a selected set. Selections and exclusions above
+`wsMaxSubscriptions` close the connection with code `1008`.
+Handle `goodbye` before reconnecting. This stream reports metrics, not durable message history.

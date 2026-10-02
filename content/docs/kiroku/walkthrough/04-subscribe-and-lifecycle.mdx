@@ -32,9 +32,9 @@ subscribe store config = liftIO $ do
     (Nothing, AllStreams) -> do
       (queue, statusVar, unsubscribe) <- subscribePublisher ...
       pure (LiveFromPublisherQueue queue statusVar, unsubscribe)
-    (Nothing, Category (CategoryName cat)) ->
+    (_, Category (CategoryName cat)) ->
       pure (LiveFromCategoryNotify cat, pure ())
-    (Just _, _) ->
+    (Just _, AllStreams) ->
       pure (LiveFromGroupPolling, pure ())
 
   -- 3. Seed the observable state TVar with the catch-up entry state.
@@ -80,7 +80,8 @@ Six things happen, in order. Read each:
 2. **Live-source allocation** gives the worker its live source. A non-group `AllStreams`
    subscription registers a bounded publisher queue and a `statusVar` for overflow/backpressure.
    Category subscriptions and consumer-group members register no publisher queue; their live loops
-   fetch filtered batches from the database when the publisher position advances.
+   fetch filtered batches on category notifications or the all-stream group position wake.
+   Both paths retain safety reconciliation.
 3. **The observable `stateVar`** is seeded with `CatchingUp` so a `currentState` read _before_ the
    worker's first transition still returns something sensible.
 4. **Registry registration.** The worker's _own_ `stateVar` is inserted into the store's central
@@ -190,3 +191,11 @@ resumable, backpressure-safe, and observable, with almost no logic duplicated be
 That is kiroku's subscription machinery end to end. The tour now crosses into a _separate_ package
 that builds on it: [05 — The shibuya adapter](/docs/kiroku/walkthrough/05-the-shibuya-adapter),
 which bridges this push-based subscription into shibuya's pull-based queue-processing runtime.
+
+## Category live-source selection
+
+`subscribe` selects `LiveFromCategoryNotify` for both plain category subscriptions and category
+consumer-group members. Only all-stream group members select `LiveFromGroupPolling`.
+The category loop wakes on its category generation or the existing safety reconciliation path;
+the SQL fetch applies the member partition predicate. Unrelated category appends do not trigger
+that member's live fetch.

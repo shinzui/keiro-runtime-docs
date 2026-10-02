@@ -10,11 +10,11 @@ loops. The `AppHandle` returned by `runApp` is both the control handle and the m
 Processor state is intentionally small:
 
 `Idle` means no message is currently being handled. `Processing` carries current in-flight count,
-maximum concurrency, and last activity time. `Failed` carries an error or halt reason and timestamp.
+maximum concurrency, burst-start time, and sampled last-progress time. `Failed` carries an error or halt reason and timestamp.
 `Stopped` is a terminal stopped state.
 
 Readiness treats `Failed` and stuck `Processing` as unsafe. A processor is stuck when the current
-time minus `lastActivity` exceeds `stuckThreshold`. Because this check is snapshot-based, choose a
+time minus `lastProgress` exceeds `stuckThreshold`. Because this check is snapshot-based, choose a
 threshold longer than your longest legitimate handler run.
 
 Graceful shutdown starts at adapters. `stopAppGracefully` calls every adapter's `shutdown` so new
@@ -24,3 +24,15 @@ stops the master. If the drain finishes, it returns `True`; if timeout forces st
 
 The operational rule is simple: readiness controls whether new traffic should arrive; graceful
 shutdown controls whether already-started message work gets a chance to finish.
+
+## Retained lifecycle and shutdown
+
+The master retains each configured processor's lifecycle after its live metrics are removed.
+A failed processor therefore keeps readiness false under `IgnoreFailures`, even though siblings
+continue. Application status distinguishes starting, running, draining, stopped, and failed states.
+The live metrics map alone cannot establish that the whole application is healthy.
+
+`totalShutdownTimeout` bounds adapter shutdown plus graceful draining. Master cleanup follows that
+phase. Repeated stop calls share the first result. The published release also has a reported forced-stop
+case where handlers finalize after stop returns. Fence the old worker before replacement; read
+[shutdown configuration](/docs/shibuya/how-to/configure-graceful-shutdown).

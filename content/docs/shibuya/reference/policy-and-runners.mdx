@@ -19,10 +19,10 @@ data Concurrency
 validatePolicy :: OrderingPolicy -> Concurrency -> Either PolicyError ()
 ```
 
-`validatePolicy` rejects `StrictInOrder` with `Ahead _` or `Async _`. Other combinations are
-accepted by `shibuya-core` for single-message processors. `PartitionedInOrder` with `Ahead _` or
-`Async _` is now enforced by keyed scheduling: messages with the same `Envelope.partition` are
-processed and acknowledged in arrival order, while distinct partitions can run concurrently.
+`validatePolicy` rejects nonpositive `Ahead`/`Async` values and derived buffer-capacity overflow.
+It also rejects `StrictInOrder` with `Ahead _` or `Async _`. Other valid combinations are
+accepted by `shibuya-core` for single-message processors. Keyed scheduling enforces `PartitionedInOrder` with `Ahead _` or `Async _`. Messages with the same
+`Envelope.partition` are processed and acknowledged in arrival order. Distinct partitions can run concurrently.
 
 Batching processors use `BatchKey`, not `Envelope.partition`, for their scheduling key. `runApp`
 therefore rejects `BatchingProcessor` with `PartitionedInOrder` plus `Ahead _` or `Async _`.
@@ -77,9 +77,15 @@ runApp ::
 ```
 
 `defaultAppConfig` is `IgnoreFailures` with an inbox of `100`. `runApp` validates `inboxSize`,
-processor policies, and batch configs before starting processors. An invalid inbox size returns
+unique processor IDs, processor policies, and batch configs before starting processors. An invalid inbox size returns
 `Left (AppConfigInvalid (InvalidInboxSize n))`.
 
 Runner internals now live under `Shibuya.Internal.Runner.*` and carry no public stability
 guarantee. Application code should enter through `runApp` and observe the app with `AppHandle`
 operations.
+
+## Resource bounds
+
+`inboxSize` bounds the per-processor inbox. It does not bound the number of distinct in-progress
+batch keys. Bound externally supplied key cardinality separately. Use positive concurrency limits;
+`InvalidConcurrency` and `ConcurrencyCapacityOverflow` reject invalid capacity before startup.

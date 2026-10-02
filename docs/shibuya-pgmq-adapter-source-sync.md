@@ -12,7 +12,7 @@ Content-authored. The integration page now documents runtime shape,
 environment callbacks, configuration validation, split poll/ack retry policies,
 ack mapping, idempotent finalization, dead letters, FIFO and topic helpers,
 envelope mapping, optional prefetch, operational notes, and related links. This
-  pass checked the prose against the 0.16.0.0 adapter source and bundled user
+  pass checked the prose against the 0.16.1.0 adapter source and bundled user
 guides.
 
 ## Upstream source
@@ -33,15 +33,20 @@ guides.
   `docs/user/pgmq-advanced.md`, `docs/user/pgmq-dead-letter-queues.md`, and
   `docs/user/pgmq-topic-routing.md`.
 
+- **Reviewed release:** adapter `0.16.1.0`. Hackage and upstream release tags checked 2026-10-02.
+
 ## Last reviewed commit
 
 ```text
-9c709d76b8c1e66a45148888970d5518cc3c0d7e  (9c709d76)
-2026-09-21T06:19:13-07:00
-chore(release): prepare 0.16.0.1 candidate
+65af8ed8cd8a0ff7a89682346c3769f088a64732  (65af8ed)
+2026-10-01T20:25:52-07:00
+docs(pgmq): record BUG-4 and document BUG-1 root cause with fix plan
 ```
 
-> **Current range.** `392f7545..9c709d76` (**7 commits**). Reviewed lifecycle recovery candidate and evidence. Published behavior remains 0.16.0.0; candidate 0.16.0.1 is unpublished. Updated integration and compatibility boundaries; candidate recovery behavior is deferred until publication.
+> **Current range.** `9c709d76..65af8ed8` (**6 commits**). Reviewed published adapter 0.16.1.0 with Shibuya 0.10 and PGMQ 0.6.1.1. Promoted the prior lifecycle candidate: serialized and cancellation-safe acknowledgement, typed terminal failures, and transactional source-claim-before-DLQ-copy behavior. Updated `content/docs/integrations/shibuya-pgmq-adapter.mdx`, Keiro job/integration operations, comparison and compatibility. Added confirmed shared-pool long-poll starvation and server reads continuing after client cancellation, with StandardPolling/PollEvery controls. Client-side polling and the reported starvation fixes remain unimplemented.
+> No pages added or retired; existing pages were extended. Every commit is classified in [the sync ledger](source-sync-2026-10-02.md). All upstream worktrees were clean.
+
+> **Note (prior range).** `392f7545..9c709d76` (**7 commits**). Reviewed lifecycle recovery candidate and evidence. Published behavior remains 0.16.0.0; candidate 0.16.0.1 is unpublished. Updated integration and compatibility boundaries; candidate recovery behavior is deferred until publication.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
 
 > **Note (prior range).** `1d882238..392f7545` (**7 commits**). Releases 0.15 and 0.16 adopt pgmq-hs 0.6 and add `HeadPerGroup`, the strict grouped-head FIFO strategy. Updated adapter FIFO, compatibility and preserved-header DLQ guidance; tests/benchmarks/plans add no separate public surface.
@@ -95,8 +100,9 @@ clean at the reviewed SHA.
   `AckDeadLetter` archives or writes a DLQ copy and removes the original;
   `AckHalt` changes visibility using `haltVisibilityTimeout` or the main
   visibility timeout and stops.
-- `AckHandle.finalize` is idempotent per delivery; DLQ write plus original
-  delete run in one transaction when a DLQ target is configured.
+- `AckHandle.finalize` is serialized and idempotent per delivery. With a DLQ target, claim the
+  original before writing its copy in one transaction. An ambiguous commit retry cannot write a
+  second copy after the source row is gone. Terminal failures throw `PgmqAcknowledgementException`.
 - Concurrent prefetch is opt-in via `PrefetchConfig`; shutdown of prefetched
   unread messages is at-least-once safe, with redelivery delayed by visibility
   timeout rather than lost.
@@ -113,6 +119,8 @@ clean at the reviewed SHA.
   are filtered; an idle source therefore ends and lets the Shibuya runner drain.
 
 ## Previous pointers
+
+- `9c709d76b8c1e66a45148888970d5518cc3c0d7e` (`9c709d76`, 2026-09-21) — baseline before the October 2 review (6 commits); see [the ledger](source-sync-2026-10-02.md).
 
 - `392f7545af32ef893c24139fd194d16ec1172f75` (`392f7545`, 2026-09-16) — baseline before the 7-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
 
@@ -139,8 +147,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    ADAPTER=$(mori registry show shinzui/shibuya-pgmq-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$ADAPTER" log --oneline 9c709d76..HEAD
-   git -C "$ADAPTER" diff --stat 9c709d76..HEAD
+   git -C "$ADAPTER" log --oneline 65af8ed8..HEAD
+   git -C "$ADAPTER" diff --stat 65af8ed8..HEAD
    ```
    Also inspect `README.md`, `CHANGELOG.md`, `docs/user/`, and the source
    modules listed above. Because the adapter sits on `pgmq-hs`, check

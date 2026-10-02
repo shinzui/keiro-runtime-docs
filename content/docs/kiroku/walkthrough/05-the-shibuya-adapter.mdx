@@ -11,11 +11,11 @@ description: "Reading shibuya-kiroku-adapter and kiroku-store's Stream.hs: how a
 </Callout>
 
 
-Adapter 0.5.1 supports Shibuya 0.9 `ApplicationFailure`: it stores Kiroku `DeadLetterOther`
+Adapter 0.5.1.5 supports Shibuya 0.10 `ApplicationFailure`: it stores Kiroku `DeadLetterOther`
 with the canonical `code: detail` summary and a JSON detail object containing both fields.
 Existing framework-owned reason encodings remain unchanged. Query the application code with
 `reason->'detail'->>'code'`; see [the adapter reference](/docs/integrations/shibuya-kiroku-adapter).
-Adapter 0.5.1.2 requires Kiroku Store 0.8.
+Adapter 0.5.1.5 requires Kiroku Store 0.9.0.1 and schema migration `0012`.
 
 ## What this part covers
 
@@ -100,8 +100,8 @@ Read it as two halves joined at the worker:
    ticks, reads the new `$all` events **once** in 1000-event batches, and fans each batch out to every
    registered non-group `AllStreams` subscriber's own bounded `TBQueue`. The worker reads its batch
    from that queue. (A `Category` or consumer-group worker registers no publisher queue and
-   re-queries with a SQL filter when the publisher's position advances — same wakeup, different
-   fetch. Catch-up always reads the database directly.)
+   re-queries with a SQL filter. Category members wake on category notifications; all-stream
+   group members wake on publisher position. Both retain safety reconciliation. Catch-up reads SQL.)
 2. **Back half — pull, the subject of this part.** The worker hands each event, one at a time, to the
    `bridgeHandler`, which enqueues an `AckItem` on the **ack `TBQueue`** and blocks on a one-shot
    reply `TMVar`. Streamly's `unfoldrM` pulls items off that queue on demand; the adapter wraps each
@@ -171,9 +171,9 @@ Three steps, three things to notice:
    coordinated shutdown tears down the kiroku subscription cleanly.
 
 <Callout type="warn">
-  Direct `kirokuAdapter` users must pass `guardKirokuHandler handler` to `mkProcessor`, or provide an
-  equivalent `guardKirokuHandlerWith` mapping. A synchronous exception otherwise prevents Shibuya
-  from finalizing the ack and leaves the worker waiting. `kirokuConsumerGroupProcessors` applies the
+  The supervised runner maps a synchronous exception to immediate retry and finalizes the ack.
+  Use `guardKirokuHandler handler` for the adapter's one-second delay, or
+  `guardKirokuHandlerWith` for an application-specific exception decision. `kirokuConsumerGroupProcessors` applies the
   default one-second-retry guard automatically; asynchronous cancellation still propagates.
 </Callout>
 
@@ -491,10 +491,10 @@ each has a guaranteed waker, and there is no cycle of "A waits on B waits on A."
 | kiroku worker, AllStreams live   | `readTBQueue liveQueue`           | the publisher's push, **or** `AsyncCancelled`                                                              |
 | EventPublisher                   | `readTChan tick \`orElse\` timer` | a `NOTIFY` tick, **or** the 30 s safety timer                                                              |
 
-With the required handler guard, Shibuya runs to a verdict and calls `finalize`, which is
-`tryPutTMVar` and cannot block. The dependency edge is one-way: worker → waits for → Shibuya's
-verdict → reply. A direct unguarded handler breaks that premise if it throws synchronously, which is
-why `guardKirokuHandler` is part of the adapter contract rather than optional error decoration.
+Shibuya produces a verdict even after a synchronous handler exception and calls `finalize`,
+which uses `tryPutTMVar`. The worker waits for Shibuya's verdict and then receives the reply.
+The adapter guard selects a different exception decision; it is not required to keep this
+supervised path from abandoning the reply.
 
 Shutdown is the case worth checking explicitly, because that is where a careless bridge wedges:
 
@@ -557,3 +557,14 @@ consumer-group members, and graceful shutdown on top. The seam between them is t
 
 [06 — Consumer groups and policy](/docs/kiroku/walkthrough/06-consumer-groups-and-policy): how one
 call turns a size-`N` group into `N` correctly-policed shibuya processors.
+
+## Acquisition and shutdown ownership
+
+The bridge masks the subscription-to-monitor transfer. If the monitor cannot start, the subscription
+is cancelled. The shutdown action cancels the subscription and waits for the monitor before closing
+the bridge.
+
+Consumer-group construction tracks each acquired member in a masked ledger. A later factory
+failure triggers cleanup attempts for all acquired members and preserves the primary exception.
+Category members now use category-specific notifications and the `$all` category index, with the
+existing safety reconciliation path. A cross-process lifetime member guard remains unimplemented.

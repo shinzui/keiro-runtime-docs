@@ -241,3 +241,53 @@ data QueueMetrics = QueueMetrics
 `defaultPartitionLength`, added with PGMQ 1.13 support in 0.6.0.0, is nullable on 1.12 and ordinary
 queues. It estimates spill across active/archive default partitions; it is not an instantaneous row
 count.
+
+## Unreleased inspection reads
+
+<Callout type="info">
+  These exports landed after published 0.6.1.1. They are available at reviewed source
+  `mori://shinzui/pgmq-hs` commit `f4bdd914`. Do not expect them from Hackage 0.6.1.1.
+</Callout>
+
+The `Pgmq` umbrella exports these sessions and argument records:
+
+```haskell
+data PeekMessages = PeekMessages
+  { unvalidatedQueueName :: !Text
+  , afterMessageId :: !(Maybe MessageId)
+  , limit :: !Int32
+  }
+
+data LookupMessage = LookupMessage
+  { unvalidatedQueueName :: !Text
+  , messageId :: !MessageId
+  }
+
+peekMessages :: PeekMessages -> Session (Vector Message)
+peekArchivedMessages :: PeekMessages -> Session (Vector ArchivedMessage)
+lookupMessage :: LookupMessage -> Session (Maybe Message)
+lookupArchivedMessage :: LookupMessage -> Session (Maybe ArchivedMessage)
+queueMetricsUnvalidated :: Text -> Session QueueMetrics
+```
+
+Peeks and lookups execute plain `SELECT`s. They leave `vt`, `read_ct`, and `last_read_at` unchanged.
+They add no schema migration. Reads of partitioned parents include their partitions.
+`ArchivedMessage` adds the archival time to the original message fields.
+
+Names are plain `Text` so operators can inspect server-accepted names that `parseQueueName`
+rejects. The server resolves each physical queue or archive table with `pgmq.format_table_name`.
+The client quotes the returned identifier. It does not construct table names from user input.
+Use `queueNameToText` when you already hold a validated `QueueName`.
+The typed creation, configuration, and leasing APIs retain strict name validation.
+
+`afterMessageId` is exclusive: a page returns IDs greater than the cursor, in ascending order.
+`Nothing` starts at the beginning. Choose a positive, bounded `limit`; `0` returns no rows and a
+negative value causes a server error. Pages never use `OFFSET`. Concurrent consumers can remove
+rows between pages; inspection is not a snapshot of all queue history.
+
+A missing message returns `Nothing`. A missing queue raises `42P01`; a server-rejected name raises
+the server's name error. These are permanent errors. Queue-specific SQL is unprepared to avoid a
+prepared-statement cache entry for every inspected queue.
+`queueMetricsUnvalidated` uses the existing metrics projection with a plain-text name.
+
+Read [Inspect queue depth and messages](/docs/pgmq/cookbook/inspect-queue-depth) for page traversal.

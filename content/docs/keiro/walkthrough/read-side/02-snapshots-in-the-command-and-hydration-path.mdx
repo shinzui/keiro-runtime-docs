@@ -168,7 +168,7 @@ misses exactly once and is re-persisted with a real hash.
 
 An accepted seed is only as trustworthy as the discriminator that accepted it, and the discriminator
 cannot see a hand-written or Holes-only fold edit. So `hydrate` samples: on a snapshot hit, one
-hydration in `RunCommandOptions.seedVerifySampleRate` (default 1000) spawns a background replay
+hydration in `RunCommandOptions.seedVerifySampleRate` (default 1000) attempts to start a background replay
 bounded **through the seed's own stream version** and compares RFC 8785 canonical encoded state
 against the seed.
 
@@ -181,7 +181,16 @@ Right hydrated -> do
 
 It never blocks or fails the command and never writes a snapshot. A mismatch increments
 `keiro.snapshot.seed.divergence` and writes a structured stderr line with the stream, seed version,
-and both SHA-256 digests. Set the rate to `1` to verify every hit, `0` to disable it.
+and both SHA-256 digests. Set the rate to `1` to sample every hit, `0` to disable it.
+
+`scheduleSeedVerification` atomically reserves a slot in a process-wide TVar before starting the
+asynchronous replay. `seedVerifyInFlightLimit` defaults to `1`. At capacity, it skips the sample
+and records `keiro.snapshot.seed.skipped`.
+
+Completion, cancellation, exception, or failure to
+start releases the slot. An unexpected synchronous exception records
+`keiro.snapshot.seed.verification.failed` and logs its reason. Neither outcome changes the command.
+A rate of `1` still permits skipped samples; use a replay audit for complete coverage.
 
 ## Read the signals together
 

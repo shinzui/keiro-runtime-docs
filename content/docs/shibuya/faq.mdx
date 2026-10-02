@@ -12,14 +12,14 @@ description: Answers to frequently asked questions about shibuya workers, metric
   </Accordion>
 
   <Accordion title="What is the difference between liveness and readiness?">
-    Liveness checks whether the `Master` answers before `livenessTimeoutMicros`. Readiness checks
+    Liveness checks that the master is not stopped and answers before `livenessTimeoutMicros`. Readiness checks
     failed processors, stuck processors, and dependency checks. Use `/health/live` to restart a dead
     process and `/health/ready` to decide whether traffic should reach this worker.
   </Accordion>
 
   <Accordion title="Why is my processor not ready while it is still running?">
-    Readiness can be false if a processor is failed, if a processor has been `Processing` longer
-    than `stuckThreshold`, or if a dependency check reports unhealthy. Inspect `/health` for both
+    Readiness can be false if a processor is failed, if elapsed time since its last progress exceeds
+    `stuckThreshold`, or if a dependency check reports unhealthy. Inspect `/health` for both
     the readiness summary and the full metrics map.
   </Accordion>
 
@@ -29,7 +29,7 @@ description: Answers to frequently asked questions about shibuya workers, metric
   </Accordion>
 
   <Accordion title="Does shibuya expose a stuck-processor Prometheus series?">
-    No. Stuck detection is computed by the health endpoint from `Processing` last-activity time and
+    No. Stuck detection is computed by the health endpoint from `Processing` last-progress time and
     `stuckThreshold`. Alert on `/health/ready` or add an application-specific exporter if you need a
     Prometheus timestamp.
   </Accordion>
@@ -57,12 +57,20 @@ description: Answers to frequently asked questions about shibuya workers, metric
 
   <Accordion title="What happens during graceful shutdown?">
     `stopAppGracefully` calls every adapter's `shutdown`, waits for in-flight messages to drain up
-    to `drainTimeout`, stops the master, and returns whether the drain completed cleanly.
+    to `drainTimeout`, and always attempts master cleanup. `totalShutdownTimeout` bounds
+    the graceful phase. A forced stop can leave late finalization in the published release;
+    read [the replacement checks](/docs/shibuya/how-to/configure-graceful-shutdown#verify-the-replacement-boundary).
   </Accordion>
 </Accordions>
 
-## Why can an idle or finished application fail during major GC?
+## Why is readiness still failed after a handler retry succeeds?
 
-Shibuya 0.9.0.2 removes an unused linked master actor; 0.9.0.3 also unlinks the childless NQE
-supervisor and fixes duplicate `StopAllOnFailure` delivery. Use the reviewed 0.9.0.3 patch release
-and see [App supervision](/docs/shibuya/reference/app-supervision).
+The published 0.10.0.0 release has a reported sticky failed-metrics state after a transient handler
+exception. Processing can continue while readiness stays false. Check counters and traces before
+classifying it as terminal failure; see [health types](/docs/shibuya/reference/metrics#health-types).
+
+## Why can an idle application fail during major GC?
+
+The current release removes the unused linked master mailbox and does not link the NQE supervisor
+to the `runApp` caller. Use the reviewed release set in
+[release compatibility](/docs/getting-started/compatibility-and-upgrades).
