@@ -42,8 +42,8 @@ They exit 0 — you still have to act on them.
 |---|---|---|
 | `AggGuardTightened` | a live transition's guard changed with no replay-only twin | paste the printed twin, or prove by audit that no stored data is affected |
 | `AggFoldSurfaceChanged` | the spec-visible replay surface moved, so the fold fingerprint changed | expect one full replay per snapshot-bearing stream |
-| `IdDomainContractChanged` | a generated prefix-bearing ID adopted the enforced TypeID-v7 domain (language 3) | old history stays readable and old snapshots miss, but public consumers break — roll out **producer-last** |
-| `ContractTypeIdDomainChanged` | a public contract field became `typeid` (language 4), even when the field is otherwise unchanged | roll out **producer-first** and drain before the consumer moves |
+| `IdDomainContractChanged` | a generated prefix-bearing ID adopted the enforced TypeID-v7 domain  | old history stays readable and old snapshots miss, but public consumers break — roll out **producer-last** |
+| `ContractTypeIdDomainChanged` | a public contract field became `typeid` , even when the field is otherwise unchanged | roll out **producer-first** and drain before the consumer moves |
 | `DeprecatedEventReplayHazard` | a deprecated event has no replay-only emitter | keep an inverting edge, or audit and truncate |
 | `EventRetirementInProgress` | the safe retained shape is in place | keep the eventual cleanup on the backlog |
 | `RouterDecideSurfaceChanged` / `ProcessDecideSurfaceChanged` | fan-out changed | drain the subscription's redelivery window before deploying |
@@ -61,22 +61,12 @@ They exit 0 — you still have to act on them.
 is the removed region `old ∧ ¬new`. See
 [Tighten a guard with a replay-only twin](/docs/keiro/how-to/tighten-a-guard-with-a-replay-only-twin).
 
-### The language 4 → 5 freshness migration
+### Query freshness changes
 
-`diff` classifies read-model query policy **across** the language boundary, which is what makes the
-upgrade auditable rather than a wall of noise:
-
-| Change | Verdict |
-|---|---|
-| `consistency = Strong` → `freshness = immediate` | breaking `QueryFreshnessChanged` |
-| `consistency = Strong` → `freshness = wait-for-head` with a **narrower** scope | breaking `QueryFreshnessChanged` |
-| `consistency = Strong scope = X` → `freshness = wait-for-head X` | equivalent — no finding |
-| `consistency = Eventual` → `freshness = wait-for-head …` | additive `CompatibilityStrengthened` |
-
-<Callout type="info">
-  Same-language diff classification is unchanged, and the spurious additive *"Strong scope widened"*
-  verdict that mixed-policy comparisons used to emit is gone.
-</Callout>
+A change from `wait-for-head` to `immediate` weakens the query contract.
+A narrower wait scope can also weaken the contract.
+Review `QueryFreshnessChanged` before deployment.
+A stronger compatible wait can produce `CompatibilityStrengthened`.
 
 ## Capture old payload shapes while both specs exist
 

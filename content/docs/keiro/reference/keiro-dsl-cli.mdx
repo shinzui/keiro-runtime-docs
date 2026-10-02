@@ -9,24 +9,20 @@ Run `keiro-dsl` from an installed environment. In the Keiro source tree, use
 The [keiro-dsl coverage map](/docs/keiro/reference/keiro-dsl-coverage-map) links every command,
 language/node registry, and public Haskell module to its owning reference.
 
-## Haskell record API (Keiro DSL 0.15)
+## Haskell record API
 
-Product records now use concise repeated labels with `DuplicateRecordFields`,
-`NoFieldSelectors`, and `OverloadedRecordDot`. Read supported fields with `value.name`
-rather than applying a former selector such as `aggName`. Publicly constructible records
-still support construction and constructor patterns. Abstract checked values remain abstract:
-record modernization does not grant constructors or allow record updates to bypass preflight.
-Twelve intentional single-field newtype unwrappers remain explicit functions.
+Product records use repeated labels with `DuplicateRecordFields`, `NoFieldSelectors`, and `OverloadedRecordDot`.
+Read supported fields with `value.name`.
+Publicly constructible records support construction and constructor patterns.
+Checked abstract values do not expose constructors or permit record updates that bypass preflight.
+Twelve single-field newtype unwrappers remain explicit functions.
 
-Serialized keys, canonical/rendered output, diagnostics, fingerprints, and `.keiro` language
-meaning stay unchanged. The renamed labels in this reference describe the 0.15 Haskell API;
-historical version notes identify when the underlying feature first appeared.
+### Generated Haskell edition
 
-Generated output has a separate `idiomatic-v2` edition. Existing pre-v2 ledgers require
-`--apply-generated-haskell-edition`; legacy sidecar/module moves also require
-`--apply-name-migrations` in the same run. Corrupt ledgers refuse before writes. Follow
-[Adopt generated Haskell v2](/docs/keiro/how-to/adopt-generated-haskell-v2) for backup,
-hand-owned-code remediation, rollback, and compilation checks.
+Generated output uses the `idiomatic-v2` edition.
+The `--generated-haskell-edition` option selects that edition.
+The tool refuses corrupt ledgers before writes.
+See the [scaffold options](#scaffold) for generated-file ownership and explicit edition-change controls.
 
 ### Library-facing adoption API
 
@@ -124,7 +120,7 @@ aggregate process router contract intake emit publisher workqueue dispatch workf
 ```
 
 ```bash
-keiro-dsl new aggregate > service.keiro
+keiro-dsl new aggregate | sed 's/^language keiro-dsl [0-9][0-9]*$/language keiro-dsl 6/' > service.keiro
 keiro-dsl check service.keiro
 ```
 
@@ -133,12 +129,9 @@ read models needed by its dispatch example. Each starter is compiled by the upst
 conformance suite.
 
 <Callout type="info">
-  *(Keiro 0.9.0.0; language 5 since 0.12.0.0.)* Every skeleton begins with a
-  `language keiro-dsl 5` preamble. The starter version is derived from
-  `currentStableLanguageVersion`, not `currentAuthoringLanguageVersion`. Candidate Language 6 is
-  accepted and available to candidate-aware authoring tools, but `new` keeps emitting the
-  published stable contract until that stable selector moves.
-  See [language versions](/docs/keiro/reference/keiro-dsl-language-versions).
+  The checked starter command uses `currentStableLanguageVersion` and emits an older preamble.
+  Set the first declaration to `language keiro-dsl 6`.
+  Run `check --min-language 6` before scaffolding.
 </Callout>
 
 ## `parse`
@@ -165,7 +158,7 @@ keiro-dsl pretty service.keiro
 
 ## `inspect`
 
-*(Keiro 0.6.0.0.)* `inspect` reports **source-language provenance** as JSON, for a single `.keiro`
+`inspect` reports **source-language provenance** as JSON, for a single `.keiro`
 file or a whole workspace manifest.
 
 ```bash
@@ -173,24 +166,15 @@ keiro-dsl inspect service.keiro --format=json
 keiro-dsl inspect service.keiro-workspace --format=json
 ```
 
-It answers three separate questions per source: what the file **declared** (a version, or
-`legacy-unversioned`), what version is therefore **effective**, and what that version's **support
-lifecycle** is — `stable` for language 5, `compatibility-only` for 1 through 4.
-Candidate Language 6 is reported as `candidate` with runtime semantics 5. See the
-[complete Language 6 matrix](/docs/keiro/reference/keiro-dsl-language-6).
-
-<Callout type="info">
-  The declared/effective split is not pedantry. A workspace can hold a legacy-unversioned member and
-  an explicitly-version-1 member; both are effective version 1, but only one of them said so. `inspect`
-  reports each member honestly rather than inventing one declaration for the merged graph. The same
-  rows appear in scaffold and workspace records. See [language
-  versions](/docs/keiro/reference/keiro-dsl-language-versions).
-</Callout>
+`inspect` reports each file's declared language, effective language, and registry support value.
+Release sources must declare version `6` and report effective version `6`.
+The checked upstream registry reports `candidate` for Language 6 and runtime semantics profile 5.
+See [Language 6](/docs/keiro/reference/keiro-dsl-language-6).
 
 ## `behavior-obligations`
 
-*(Keiro 0.7.0.0.)* `behavior-obligations` inventories the **complete finite behaviour surface** of
-every version-2 aggregate in a file or workspace — a static listing, with no compilation and no
+`behavior-obligations` inventories the **complete finite behaviour surface** of
+every Language 6 aggregate in a file or workspace — a static listing, with no compilation and no
 consumer code involved.
 
 ```bash
@@ -380,7 +364,7 @@ no-modules: emit orderPlaced, emit orderCancelled (validated and diff-classified
 
 ### `--apply-name-migrations`
 
-*(keiro-dsl 0.11.0.0.)* Ordinary scaffolding **reports** the complete migration plan and writes
+Ordinary scaffolding **reports** the complete migration plan and writes
 nothing. This flag applies an explicitly reviewed legacy-to-current move: it backs up original
 generated and create-once files, rewrites exact Haskell module references outside comments and
 literals, journals content digests, and resumes exact interrupted states.
@@ -510,7 +494,7 @@ A later run reports paths it no longer emits under `stale:` and exits 0. Scaffol
 
 #### The `semantic-impact` ledger row
 
-*New in Keiro 0.12.0.0.* Scaffold ledgers and workspace records carry an **additive**
+Scaffold ledgers and workspace records carry an **additive**
 `semantic-impact <json>` row: a baseline snapshot of which consumers each mapped declaration reaches.
 Its presence is what lets a later `scaffold` or `diff` report a *delta* rather than restating the
 whole graph.
@@ -612,7 +596,7 @@ Each surface gets `compatible`, `advisory`, `breaking`, or `n/a`. When the vecto
 constraint:
 
 <Callout type="info">
-  *(keiro-dsl 0.11.0.0.)* **Generated-only source evolution** — a change that moves generated Haskell
+  **Generated-only source evolution** — a change that moves generated Haskell
   names without touching persisted meaning — is now classified as `consumer-build` **advisory**, with
   re-scaffold, recompile, and conformance remedies. Wire, replay, SQL, runtime, and persisted
   identities remain compatible. This is the classification the naming-edition migration falls under:
@@ -696,7 +680,7 @@ These exit 0 but carry an operational obligation:
 | `EventRetirementInProgress` | the safe retained shape is in place | keep the cleanup on the backlog |
 | `RouterDecideSurfaceChanged` | router resolve/dispatch changed | drain the subscription redelivery window |
 | `ProcessDecideSurfaceChanged` | process handle surface changed | drain the subscription redelivery window |
-| `ProcessReactionRemoved` | a Candidate Language 6 input reaction was removed | drain or pause the process subscription before deploy |
+| `ProcessReactionRemoved` | a Language 6 input reaction was removed | drain or pause the process subscription before deploy |
 | `ProcessReactionGuardChanged` | a reaction guard at an arm ordinal changed | drain so redelivery cannot select old and new branches |
 | `ProcessReactionArmsReordered` | reaction arm order changed | drain because branch choice and dispatch occurrences moved |
 | `ProcessReactionFanOutChanged` | an arm body or arm count changed | drain so redelivery cannot merge old and new target-keyed fan-out |

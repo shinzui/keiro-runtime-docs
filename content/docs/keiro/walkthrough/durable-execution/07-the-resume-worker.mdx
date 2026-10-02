@@ -42,12 +42,10 @@ resumeWorkflowsOnceUpTo limit opts registry = do
 `resumeWorkflowsOnce` is `resumeWorkflowsOnceUpTo maxBound`; the bound exists so an operator surface
 can run a *capped* pass.
 
-Discovery is now a **single** query. Since Keiro 0.12.0.0 it is
-[exact](/docs/keiro/reference/durable-workflows#discovery-is-exact): an instance is returned only when
-its row says it has progress to make. The union with `findRunningChildIds` is gone — `spawnChild`
-upserts the child's instance row as `running` inside the spawn step's transaction, so a zero-step
-child is already visible here without a second source. (Migration `0011` backfilled the running
-children that predate the instance table.)
+Discovery uses one [exact query](/docs/keiro/reference/durable-workflows#discovery-is-exact).
+It returns an instance only when its row indicates possible progress.
+`spawnChild` upserts the child's running instance row in the spawn step transaction.
+This makes a child with no completed steps visible to discovery.
 
 `advanceAll` replaces the old `foldM`: it advances up to `maxConcurrentAdvances` candidates at a time
 and combines per-candidate deltas through `ResumeSummary`'s `Monoid`, so the pass total does not
@@ -78,7 +76,7 @@ advance owner acc (widText, wnameText) =
 ```
 
 <Callout type="warn">
-  **Breaking in Keiro 0.12.0.0.** `claimInstance` returns `ClaimOutcome`, not `Bool`:
+  `claimInstance` returns a `ClaimOutcome`:
 
   ```haskell
   claimInstance :: (IOE :> es, Store :> es) => Text -> NominalDiffTime -> WorkflowName -> WorkflowId -> Eff es ClaimOutcome

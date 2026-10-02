@@ -1,433 +1,86 @@
 ---
-title: Compatibility and upgrades
-description: Reviewed September 2026 release lines, adapter pairings, breaking changes, database cutovers, and pending modernization work.
+title: Release compatibility
+description: Reviewed package versions, adapter constraints, and Language 6 requirements for the initial release.
 ---
 
-This matrix records the exact committed releases reviewed by this documentation
-pass. It is an evidence boundary, not a promise that arbitrary newer versions
-are compatible. Pin package versions, read upstream release notes, and rerun your
-own build, migration, and integration tests before upgrading.
+Use this matrix to select the documented packages. It records reviewed source versions.
+It does not establish compatibility with later releases.
 
-## Reviewed release lines
+## Supported DSL
+
+Language 6 is the only supported Keiro DSL language in this documentation.
+Put this declaration before `context` in every `.keiro` file:
+
+```keiro-dsl
+language keiro-dsl 6
+```
+
+Require it during validation:
+
+```bash
+keiro-dsl check service.keiro --min-language 6 --deny-warnings
+```
+
+For workspaces, declare Language 6 in every member.
+Read the [Language 6 reference](/docs/keiro/reference/keiro-dsl-language-6) for capabilities and current tool behavior.
+
+## Reviewed package versions
 
 | Surface | Reviewed packages | Reviewed source |
 | --- | --- | --- |
 | keiki | `keiki 0.9.1.0`, `keiki-codec-json 0.9.1.0` | `mori://shinzui/keiki` at `3ed37eb0` |
-| Keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, `keiro-migrations`, `keiro-ops`, and `keiro-test-support` at `0.18.0.0` | `mori://shinzui/keiro` at `c68dbdd7` |
-| Kiroku | `kiroku-store 0.8.0.1`, migrations `0.5.0.0`, CLI `0.2.0.6`, OTel `0.2.0.8`, metrics `0.1.0.8` | `mori://shinzui/kiroku` at `246a27b6` |
-| Shibuya | `shibuya-core 0.9.0.3`, `shibuya-metrics 0.9.0.3` | `mori://shinzui/shibuya` at `efbe2a87` |
-| pgmq-hs | `pgmq-core`, `pgmq-hasql`, `pgmq-effectful`, `pgmq-config`, and `pgmq-migration` at `0.6.1.0` | `mori://shinzui/pgmq-hs` at `8fff5fb1` |
-| pg-migrate | All six public packages at `1.2.0.0` | `mori://shinzui/pg-migrate` at `13865052` |
+| keiro | `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, `keiro-migrations`, `keiro-ops`, `keiro-test-support`: `0.18.0.0` | `mori://shinzui/keiro` at `c68dbdd7` |
+| kiroku | Store `0.8.0.1`, migrations `0.5.0.0`, CLI `0.2.0.6`, OTel `0.2.0.8`, metrics `0.1.0.8` | `mori://shinzui/kiroku` at `246a27b6` |
+| shibuya | Core and metrics: `0.9.0.3` | `mori://shinzui/shibuya` at `efbe2a87` |
+| pgmq-hs | Core, Hasql, Effectful, config, migration: `0.6.1.0` | `mori://shinzui/pgmq-hs` at `8fff5fb1` |
+| pg-migrate | All six public packages: `1.2.0.0` | `mori://shinzui/pg-migrate` at `13865052` |
 
-The Keiro package family requires **keiki `>=0.9 && <0.10`** (and `keiki-codec-json 0.9` where used),
-and every published package, including `keiro-test-support`, is at `0.18.0.0`.
-Keiro 0.13–0.18 requires `kiroku-store >=0.8 && <0.9` and
-`kiroku-store-migrations ^>=0.4.0.0`. These releases were checked against Hackage preferred
-versions and upstream release tags on 2026-09-21.
-
-<Callout type="info">
-  **`Keiro.version` is now authoritative.** It derives from package metadata (`Paths_keiro`), so it
-  reports the real release. Earlier documentation warned that it returned a stale literal; that is
-  fixed as of 0.12.0.0.
-</Callout>
+The source review checked Hackage preferred versions and upstream release tags on 2026-09-21.
+Use the package bounds from the selected release. Compile and verify the complete application before deployment.
+`Keiro.version` reads the package version from `Paths_keiro`.
 
 <Callout type="warn">
-  **Historical Keiro 0.12 requires `kiroku-store >=0.7 && <0.8` and `kiroku-store-migrations ^>=0.3.2.0`** —
-  a three-minor jump from the 0.4 floor Keiro 0.11 required. Three Kiroku releases land in that span,
-  and each one adds to the exported `Store` effect, so an **exhaustive third-party interpreter must
-  add an arm for each**:
-
-  | Kiroku | Adds |
-  |---|---|
-  | `0.5` | durable subscription checkpoint inventory |
-  | `0.6` | the visible-head surface |
-  | `0.7` | the renewable history-retention lease used to protect schema-versioned replay and cutover |
-
-  Kiroku migration `0010` supplies the retention lease and is required by online replay.
+  These reviewed versions do not form one compatible package set.
+  keiro 0.18 requires `kiroku-store >=0.8 && <0.9` and `kiroku-store-migrations ^>=0.4.0.0`.
+  Its migration and fixture packages require pg-migrate `^>=1.1.0.0`.
+  kiroku migrations 0.5 requires pg-migrate 1.2.
+  Do not substitute that migration package into the keiro 0.18 plan.
 </Callout>
 
-<Callout type="info">
-  **pgmq-hs `0.6.1.0` is the reviewed line.** It includes PGMQ 1.12 grouped heads, PGMQ 1.13
-  partition controls/metrics, and `effectful-core` 2.7 support. Start at the [pgmq landing
-  page](/docs/pgmq).
-</Callout>
-
-<Callout type="info">
-  **`keiro-dsl` language 5 remains the sole stable published contract.** Candidate Language 6 is
-  accepted for explicit opt-in and adds delegated inboxes, process reactions, nominal structural
-  leaves, declared contract IDs, keyed maps, and FIFO heads. It is unpublished, so `keiro-dsl new`
-  continues to write Language 5. Languages 1–4 and unversioned sources remain readable as
-  `compatibility-only` with their immutable released meaning, and every `keiro-dsl new <kind>`
-  skeleton starts at language 5. See [language
-  versions](/docs/keiro/reference/keiro-dsl-language-versions).
-
-  Language 5 adds the [projection-catalog
-  grammar](/docs/keiro/reference/keiro-dsl-domain-nodes#the-projection-catalog), [mapped consumer
-  surfaces](/docs/keiro/reference/keiro-dsl-mapped-types#mapped-consumer-surfaces), [typed domain
-  outcomes](/docs/keiro/reference/keiro-dsl-domain-outcomes), [projection revisions and external
-  reads](/docs/keiro/reference/keiro-dsl-projection-revisions), [declarative router
-  selection](/docs/keiro/reference/keiro-dsl-router-selection), and the separated
-  delivery/freshness policy. Note that its `ProjectionCatalogRuntime` capability contributes a **fold
-  segment**, so adopting it changes aggregate fold identity — plan it as a replay concern, not just a
-  grammar upgrade. The other two language-5 capabilities are fold-neutral.
-
-  **Language 4 stays published and byte-compatible** under explicit compatibility ownership, so an
-  existing language-4 service may retain `--min-language 4` until you migrate deliberately.
-</Callout>
-
-<Callout type="warn">
-  **Catalog rebuild prerequisite:** complete or abandon every active catalog
-  rebuild *before* applying migration `0024`, which renames rebuild-group `catalog_fingerprint` to
-  `slice_fingerprint`. Recover a stale group fingerprint with `keiro-ops rebuild adopt`. See
-  [`0024`: quiesce catalog rebuilds before upgrading](/docs/keiro/reference/migrations-and-schema#0024-quiesce-catalog-rebuilds-before-upgrading).
-</Callout>
+The keiro fixture requires ephemeral-pg 0.3.1.
+`pg-migrate-test-support 1.1.0.0` has an incompatible upper bound.
+Upstream records the specific `allow-newer: pg-migrate-test-support:ephemeral-pg` workaround.
+Verify the resulting test plan before use. Do not apply a general `allow-newer` override.
 
 ## Adapter compatibility
 
-| Adapter | Reviewed release | Required line | Status in these docs |
+| Adapter | Reviewed release | Required packages | Status |
 | --- | --- | --- | --- |
-| Shibuya ⇄ Kiroku | `shibuya-kiroku-adapter 0.5.1.2` | Kiroku store 0.8, Shibuya core 0.9 | Current reviewed pairing; preserves structured application dead-letter codes. |
-| Shibuya ⇄ PGMQ | `shibuya-pgmq-adapter 0.16.0.0` | pgmq-hs 0.6, Shibuya core 0.9 | Current reviewed pairing; adds strict `HeadPerGroup` FIFO and preserves DLQ headers. |
-| Shibuya ⇄ Kafka | `shibuya-kafka-adapter 0.9.0.1` | Shibuya core 0.9 | Current reviewed pairing; adds effectful-core 2.7 build support. |
-| Shibuya ⇄ Message DB | `shibuya-message-db-adapter 0.1.0.0` | Shibuya core `^>=0.5.0.0` | Archived upstream; historical behavior is source-reviewed, but the release is **not compatible with the current 0.9 core line**. |
+| shibuya ⇄ kiroku | `shibuya-kiroku-adapter 0.5.1.2` | kiroku store 0.8, shibuya core 0.9 | Preserves application dead-letter codes. |
+| shibuya ⇄ PGMQ | `shibuya-pgmq-adapter 0.16.0.0` | pgmq-hs 0.6, shibuya core 0.9 | Supports strict `HeadPerGroup` FIFO and DLQ headers. |
+| shibuya ⇄ Kafka | `shibuya-kafka-adapter 0.9.0.1` | shibuya core 0.9 | Supports effectful-core 2.7. |
+| shibuya ⇄ Message DB | `shibuya-message-db-adapter 0.1.0.0` | shibuya core `^>=0.5.0.0` | Archived upstream. Incompatible with shibuya core 0.9. |
 
-The adapter comparison explains source-specific retry, progress, and
-finalization semantics. The matrix above decides whether the package bounds can
-be combined in the first place.
+Read the [adapter guide](/docs/integrations/shibuya-adapters) for acknowledgment, retry, and progress behavior.
 
-## September 0.18 and migration-family upgrades
+## Database preparation
 
-- **Keiro 0.18:** extend direct `IdDomainContract` construction and exhaustive ID/DSL AST matches.
-  Candidate Language 6 adds bare mappings, calendar days, text sets, base16 refinements and explicit
-  ID admission; Language 5 remains stable. Regenerate, run conformance and compare retained-history
-  captures before adoption. See [checked mappings](/docs/keiro/reference/keiro-dsl-mapped-types).
-- **pg-migrate 1.2:** all six packages use the 1.2 family. The test helper requires ephemeral-pg
-  0.3.1 and supplies a stable per-user temporary root. Ledger, manifest and JSON remain v1.
-- **Kiroku migrations 0.5:** adopts pg-migrate 1.2 without changing SQL payloads or checksums.
-  Store 0.8.0.1, OTel 0.2.0.8 and adapter 0.5.1.2 are accompanying dependency/test releases.
-- **Shibuya 0.9.0.3:** includes the idle-master GC fix and the unlinked-supervisor/single-delivery
-  fix; public APIs are unchanged. The 0.10 lifecycle work is still a candidate.
+Use the [installation guide](/docs/getting-started/installation) for a new database.
+Compose the store, framework, queue, and application migration components in one plan.
+Apply and verify the plan before runtime pools and workers start.
 
-<Callout type="warn">
-  **Reviewed releases are not one jointly solvable package set.** Keiro 0.18's published migration
-  and fixture packages still require `kiroku-store-migrations ^>=0.4.0.0` and pg-migrate `^>=1.1.0.0`.
-  Keep those for that stack. Kiroku migrations 0.5 requires pg-migrate 1.2 and cannot simply replace
-  0.4 in a Keiro 0.18 plan. The Keiro test fixture's ephemeral-pg 0.3.1 requirement also conflicts
-  with `pg-migrate-test-support 1.1.0.0`'s old cap; upstream documents the narrow
-  `allow-newer: pg-migrate-test-support:ephemeral-pg` workaround pending a revision. Validate that
-  test plan explicitly; a broad `allow-newer` is not implied.
-</Callout>
+For later schema changes, read the [migration reference](/docs/keiro/reference/migrations-and-schema).
+It identifies required SQL, rebuild constraints, and verification commands.
+Complete or abandon active catalog rebuilds before migration `0024`.
+Stop timer writers before migration `0032`; deploy the new writers before guarded timer resume starts.
 
-## Earlier September upgrade sequence
+## Service validation
 
-For the September 0.16–0.17 line:
+1. Declare Language 6 in each source file.
+2. Run `check` with `--min-language 6`.
+3. Generate the service and compile its application code.
+4. Run the generated conformance harnesses and application tests.
+5. Compare persisted contracts with `keiro-dsl diff` before later changes.
+6. Apply and verify the database plan before deployment.
 
-- Stop/drain old timer writers, apply Keiro migration `0032`, deploy all new timer writers, then
-  enable guarded Dead-timer resume. Disable resume and drain/recover guarded claims before rollback.
-- Drain and checkpoint each existing integration producer before moving it from random IDs to the
-  deterministic producer identity family; no schema migration supplies a bridge.
-- Drain an existing process-manager subscription before switching that manager name to the reaction
-  runner's target-keyed identity family.
-- Add `jobOrdering` to every `Job`; make explicit tuning match it, and move strict batched FIFO work
-  to `FifoHeads`/`HeadPerGroup` on PGMQ 1.12+.
-- Update DLQ callers for `originalHeaders` and `PurgeDlqResult`; an ordinary purge now refuses while
-  inspected rows remain hidden.
-
-- **Kiroku Store 0.8:** handle `TransientTransactionFailure` for `40001`/`40P01`.
-  Existing-stream pre-locking does not eliminate fresh-stream deadlocks. Retry the whole
-  rolled-back transaction with a bounded policy.
-- **Kiroku migrations 0.4:** the corrected `0010` changes its checksum; databases that already
-  applied the withdrawn payload need the supplied fixup before `up`, followed by `0011`.
-  Follow [Recover the 0010 checksum](/docs/kiroku/how-to/recover-the-0010-checksum).
-- **Keiro 0.13:** process-manager/router workers retry the new transient store errors.
-  Direct command runners still surface them to the caller.
-- **Keiro 0.14:** apply `0031`, update exhaustive outbox outcome/status matches and direct
-  row/summary/metrics record construction, then deploy terminal rejection support.
-  See [Handle terminal rejection](/docs/keiro/how-to/handle-terminal-outbox-rejection).
-- **Keiro DSL 0.15:** migrate Haskell product selectors to concise labels/record dot and
-  explicitly adopt generated `idiomatic-v2`. Language 5 and external serialized identities
-  are unchanged. See [Adopt generated Haskell v2](/docs/keiro/how-to/adopt-generated-haskell-v2).
-- **Keiki 0.9.1:** default inversion warnings can disappear for complementary exact Bool
-  register guards; validation signatures and runtime replay are unchanged.
-
-## Breaking source upgrades
-
-Treat every pre-1.0 minor line as potentially breaking.
-
-- **keiki 0.2:** the `Keiki.Decider` facade is removed; builders require
-  explicit output intent; replay failures are structured; pinned shape names
-  intentionally cause one cache miss and full replay for non-empty 0.1
-  snapshots. See [persist a register
-  snapshot](/docs/keiki/how-to/persist-a-register-snapshot#upgrading-from-keiki-01).
-- **keiki 0.3:** `Edge` gains `mode :: EdgeMode`; hand-written edges must set
-  `mode = Live`. Tightening a guard now has a sanctioned remedy — see [tighten a
-  guard without breaking
-  replay](/docs/keiki/how-to/tighten-a-guard-without-breaking-replay).
-- **keiki 0.4:** `Term` gains `TFieldProj`, and
-  `TransducerValidationWarning` / `ComposeAlignmentWarning` gain projection
-  constructors, so exhaustive matches must be extended;
-  `checkComposeAlignment` now requires `WeakenR rs1`. See [field
-  projections](/docs/keiki/reference/core#field-projections).
-- **keiki 0.5:** the `Sym` class gains `constrainSymDomain` (defaulted, so hand-written instances
-  still compile); `Natural` becomes a curated symbolic carrier with a non-negative domain and a
-  pinned `CanonicalTypeName`; the opt-in opaque-guard audit widens to unsupported `TArith` carriers
-  and its message text changes, so tests asserting on it need updating. `keiki-codec-json` gains
-  `Natural` wire support, rejecting negative and fractional numbers.
-- **keiki 0.6 (semantic):** structural `Natural` subtraction is **total monus** —
-  `a - b = max 0 (a - b)` — in both concrete and symbolic evaluation, so a model that relied on
-  `Underflow` to signal an invalid state must guard the ordering explicitly. See [the term
-  language](/docs/keiki/reference/core#the-term-language).
-- **keiki 0.7 (semantic):** `verifyPredicate` no longer treats a one-way `fieldWitness` projection as
-  an exact translation — such predicates now report `UnverifiedOpaque`. `symSatExt` concretely
-  rechecks every candidate, so it returns `Nothing` where it previously could return a pair that
-  failed `models`. Neither change weakens `symIsBot`. New: `Keiki.ProjectionDomain`,
-  `exactFieldWitness`, and the detailed step/replay attribution APIs.
-- **keiki 0.8:** `TLit` and `lit` require `Show` and `Term` gains `TOpaqueLit`, so exhaustive matches
-  must be extended and literals without `Show` move to `opaqueLit`. `toMermaid` and every no-options
-  shape renderer now default to **readable** guards and complete updates — every diagram golden
-  changes; use `toTopologyMermaid` for the old bytes. `MermaidOptions` **removes**
-  `showWrittenSlots` and `showGuardSummary` in favour of `updateMode` and `guardMode`. Readable
-  rendering discloses `lit` values: secrets must use `opaqueLit`. See [readable and opaque
-  literals](/docs/keiki/reference/core#readable-and-opaque-literals).
-- **keiki 0.9:** `InCtor` and `WireCtor` construction **and record update** are sealed behind
-  read-only patterns — replace manual records with `unavailableInCtor` / `unavailableWireCtor`, a
-  `Via` producer, or TH. `mkInCtor`, `mkInCtor0`, `mkWireCtor`, `mkWireCtor0` are deprecated;
-  `renameInCtor` / `renameWireCtor` replace record update for relabelling. Sequential composition
-  substitutes only through typed input-to-wire alignment, so `ComposeAlignmentWarning` gains
-  `StructurallyDifferentInputWire` and `UnwitnessedInputWireAlignment`. Nullary TH wires match via
-  `Generic co` instead of `Eq co`. Default `inversionAmbiguityWarnings` classifies heads
-  structurally and can prove some candidates disjoint, so **a recompile may report a different
-  warning set** and `tvwDetail` text changed. The JSON wire format is unchanged. See [what replay
-  proves](/docs/keiki/explanation/what-replay-proves).
-- **Keiro 0.5:** `keiro-dsl` **service workspaces** ship. `DiagnosticCode` gains nine append-only
-  workspace constructors, `ScaffoldRun.Refusal` gains `GoldenRootDivergence`,
-  `ScaffoldRun.WriteDisposition` gains `Unchanged`, and `DiffReport.Remedy` gains
-  `RemedyRescaffoldWorkspace`; exhaustive matches must be extended. No existing behaviour changed,
-  and a single `.keiro` file behaves as a one-member workspace. See [service
-  workspaces](/docs/keiro/reference/keiro-dsl-workspaces).
-- **Keiro 0.6:** requires keiki `>=0.6 && <0.7`. Adds the `language keiro-dsl N` preamble and
-  language 2 (nominal consumer bindings, `Keiro.Codec.Nominal`, typed aggregate expressions,
-  direct `Time`/`Natural` aggregate fields). The public expression AST gains located arithmetic,
-  scalar literals, explicit roots/paths, and transition implementation ownership; aggregate fields
-  use `AggregateField` and register types use `TypeExpr` instead of a raw `Name`. `DiagnosticCode`
-  gains the aggregate-type, source-language, nominal, and scalar-expression codes. See [language
-  versions](/docs/keiro/reference/keiro-dsl-language-versions).
-- **Keiro 0.7:** requires keiki `>=0.7 && <0.8` — Keiki now classifies a predicate crossing a
-  one-way generated projection conservatively, so symbolic verification may return
-  `UnverifiedOpaque` where an earlier release reported a verified result. **Runtime command
-  execution and replay are unchanged**; only proof strength moves. Adds language 3 and the enforced
-  `Keiro.Codec.IdDomain` TypeID-v7 contract: generated prefix-bearing IDs become **abstract**
-  (`parseX`/`mkX`/`xText` from `Generated.<Context>.Nominals`) and service-level IDs and enums move
-  out of per-aggregate `Domain` modules into one context-level `Nominals` module, so hand-owned
-  imports must be updated. New diagnostics: `IdDomainContractChanged`, `EventOutputCommandMismatch`,
-  `AggregateEventlessStateChange`.
-- **Keiro 0.8:** `keiro-dsl` only. `LanguageDefinition` gains `definitionSyntaxProfile` and
-  `definitionRuntimeSemantics` and is exported as `LanguageDefinition (..)`, so positional
-  construction and non-wildcard record patterns no longer compile. Generated bytes, the 0.7
-  acceptance matrix, and rendered diagnostics are unchanged.
-- **Keiro 0.9:** requires keiki `>=0.8 && <0.9`. Language 4 becomes the sole stable contract.
-  **Aggregate fold fingerprints widen from 16-hex FNV-1a-64 to 32-hex FNV-1a-128, intentionally
-  invalidating existing snapshots** — generated transducers must be refreshed. Read-model,
-  mapped-wire, and behavior-key 64-bit identities do not move. Fold, diff, replay-impact, and
-  workspace-diff APIs now return `Either FoldSurfaceError`, and the `Spec`-only legacy wrappers are
-  **removed** in favour of passing a `CheckedService`. Generated runtime surfaces close over `Text`
-  (closed outcome sums, `<aggregate>CommandCategory`, a generated `WorkflowFacts` record), structural
-  projection witnesses are renamed to deterministic owner-and-JSON-pointer names, and the unreachable
-  grammar types `Derivation`, `DerivStrategy`, `Disposition`, `DispAction`, `EnvelopeBinding`, and
-  `EnvelopeLayer` are removed. `DiagnosticCode` and `RolloutConstraint` gain append-only
-  constructors.
-- **Keiro 0.10:** no user-facing changes. `keiro-core` and `keiro-migrations` report "no changes";
-  `keiro`, `keiro-pgmq` move only their lockstep bounds. Released with the package set for the
-  `keiro-dsl` 0.10.0.0 work.
-- **Keiro 0.11:** requires keiki `>=0.9 && <0.10` and `keiki-codec-json 0.9`. Generated aggregates
-  already use the trusted TH path, so keiki 0.9's seal needs no source change — but validation
-  results may differ where 0.9 distinguishes structural heads. **JSON event and snapshot formats are
-  unchanged.** `Keiro.Timer.Schema.TimerStatus` additionally derives `Enum` and `Bounded`; stored
-  representations are unchanged.
-
-  `keiro-dsl` carries the rest, and it is a substantial adopter upgrade:
-
-  - **Scaffold sidecars are renamed** and an old-name tree **refuses without writing**. Review the
-    reported moves and rerun `scaffold --apply-name-migrations`. The conformance ledger also changes
-    to the versioned `keiro-dsl conformance ledger v1` format, converted only by that explicit path.
-  - **Generated Haskell uses one checked naming edition** — `service_oncall` now generates
-    `ServiceOncall`, not `Service_oncall`. Apply the reported source migration and recompile.
-  - **`check --deny-warnings` is an honest gate at last.** With `--coverage-report` it previously
-    printed coverage warnings and exited 0. `--deny CODE` now refuses codes `check` cannot emit, so a
-    CI file naming one fails loudly. Router notices moved to `RouterBenignInversion` — add it to any
-    `--deny ProcessBenignInversion` list.
-  - **Four accepted-but-unimplemented spellings are now refused** (`body lenient`, non-`AckOk`
-    `on-appended`, `not-mine Fired`, unknown intake headers), and a process `dispatch-id` line is
-    checked as strictly as a router's.
-  - **Every workqueue payload field is required**; `WqField` loses `wqfRequired`, and adding a
-    payload field is now classified breaking however spelled.
-  - `keiro-dsl/coverage-report/1` spells warning severity `"warning"`, not `"advisory"`.
-  - Language 4 gains **field aliases** (`haskell <selector>`, `as "<wire-key>"`) and moves to
-    `syntax-profile/3`.
-
-  See the [keiro-dsl CLI](/docs/keiro/reference/keiro-dsl-cli) and [language
-  versions](/docs/keiro/reference/keiro-dsl-language-versions).
-- **Keiro 0.12:** the largest runtime release since the 0.3 line. Requires
-  `kiroku-store >=0.7 && <0.8` and `kiroku-store-migrations ^>=0.3.2.0`.
-
-  **Migrations `0021` through `0030` all apply.** Two need planning; the rest are additive object
-  creation, and `0028` and `0030` change policy and locking only.
-
-  - `0021` rewrites live state: it returns every pre-existing `suspended` workflow instance to
-    `running` once, costing one extra replay each. Budget a single elevated resume pass at the
-    cutover. See
-    [migrations and schema](/docs/keiro/reference/migrations-and-schema#0021-exact-discovery-is-not-additive).
-  - `0024` renames rebuild-group `catalog_fingerprint` to `slice_fingerprint`. **Complete or abandon
-    every active catalog rebuild before applying it**, and recover a stale fingerprint with
-    `keiro-ops rebuild adopt`.
-
-  - **Workflow discovery is exact.** A `suspended` instance with no due `wake_after` is now invisible
-    to the resume worker, so idle cost no longer scales with parked workflows. The cost: a
-    **third-party wake source must write the owning instance row on every lifecycle transition**, or
-    it strands its workflow. See [write a custom wake
-    source](/docs/keiro/how-to/write-a-custom-wake-source).
-  - **A terminally failed workflow now stops at the next step boundary**, as a cancelled one already
-    did. Runs that relied on continuing past a concurrent `WorkflowFailed` marker now return `Failed`.
-  - **Breaking signatures:** `JournalAppendOutcome` gains `JournalRefusedTerminal`;
-    `markInstanceSuspended` is replaced by `markInstanceSuspendedAwaiting`; `recordCrashTx` returns
-    `Maybe Int32`; `cancelAwakeableTx` returns `Maybe (Text, Text)`; `gcWorkflowsOnce` and
-    `runWorkflowGcWorker` gain `Error StoreError :> es`; `ResumeLogEvent` gains
-    `ResumeCrashRecordSkipped`; `WorkflowResumeOptions` gains `maxConcurrentAdvances` (default 1);
-    `KeiroMetrics` gains eight instrument fields.
-  - **Deterministic ids hash UTF-8 seed bytes.** *For ASCII seeds every id is byte-identical* — no
-    migration, no operator action. Only non-ASCII seeds move, and they move off a collision that
-    could wedge a workflow journal. The derivation is now frozen. See [deterministic
-    ids](/docs/keiro/reference/durable-workflows).
-  - **New: the typed [projection catalog](/docs/keiro/reference/projection-catalog)** —
-    `Keiro.Projection.Catalog` and `.Operations`, durable rebuild groups, and a resumable history
-    runner with promotion gated on source exhaustion, adapter participation, and verification.
-  - **New package: [`keiro-ops`](/docs/keiro/reference/keiro-ops-cli)** — an operational console and
-    embeddable command library, with a two-phase preview/`--force` contract on every destructive
-    command.
-  - **`keiro.projection.lag` is deprecated** in favour of
-    `keiro.projection.global_position_distance`; its unit changed from `{event}` to `{position}`
-    because it never counted events. Dashboards should rename. Seven `keiro.projection.rebuild.*`
-    instruments are new.
-  - **`keiro-dsl` language 5 is the new stable contract** — see the callout above; its
-    `ProjectionCatalogRuntime` capability changes aggregate fold identity, and every mapped service
-    needs one regeneration to pick up the `StructuralConformance` and `BehaviorSourceMap` modules.
-  - **New: [typed domain command outcomes](/docs/keiro/reference/keiro-dsl-domain-outcomes)** — a
-    deliberately declined command is a typed `Right`, not a `CommandError`. Additive: the existing
-    `runCommand` family and every aggregate without a `domain-outcomes` declaration are unchanged.
-  - **New: [versioned projection rebuilds and guarded external
-    reads](/docs/keiro/reference/versioned-rebuilds)** — online schema-changing rebuilds with target
-    generations, serving epochs, a bounded atomic cutover, the frozen
-    `keiro_read.projection_group_status_v1` contract, and execute-only `keiro_read` functions raising
-    `KR001`/`KR002`/`KR003`.
-  - **New: [declarative router selection](/docs/keiro/reference/keiro-dsl-router-selection)** — a
-    checked, bounded, target-normalized fan-out contract with versioned coordination drift.
-  - **Consistency waits target the reachable visible head.** Strong and
-    `WaitForHead EntireVisibleLog` read-model queries now target the newest **visible** event rather
-    than Kiroku's authoritative append counter, so a caught-up query no longer times out after
-    workflow garbage collection hard-deletes the newest journal events. Projection position distance
-    uses the same head and returns zero when no visible work remains.
-  - **More breaking signatures:** `claimInstance` returns `ClaimOutcome` instead of `Bool`;
-    `ResumeSummary` gains `advanced`, `paced`, `sleepDue`, and `unregisteredNames` — **loop a bounded
-    drain on `advanced`, not `discovered`**. Generated `WorkflowRuntime` modules drop the pure
-    `awaitAwakeableId` helper in favour of an abstract `AwaitBinding` plus `allocateDeclaredAwait`,
-    which allocates through the runtime and returns the opaque `AwakeableId` with its await action.
-  - **Removed:** the Spec-only planning entry points in `Keiro.Dsl.ScaffoldRun`
-    (`planServiceScaffold`, `planScaffold`, `checkServiceDiagnostics`, `pureRefusals`,
-    `constraintPlan`, and their variants). They could only derive a `CompatibilityLineOnly` source
-    index, which refuses every transition-bearing service. Migrate to the `planIndexed…` family,
-    passing `documentSourceIndex` from `parseSourceDocument`.
-  - **`DiagnosticCode` gains 81 constructors** (392 total) and loses none. `LanguageFeature`,
-    `RuntimeCapability`, `LanguageSupport`, and `BehaviorRequirement` also gain constructors or
-    fields; exhaustive consumers must be extended.
-- **Keiro 0.3 line:** command, replay, worker, read-model, and workflow outcomes
-  are typed more precisely; framework tables live in `keiro`; public event
-  streams require replay validation. For `.keiro` specs, follow [migrate a spec
-  to 0.2](/docs/keiro/how-to/migrate-a-keiro-spec-to-0-2).
-- **Keiro 0.4:** `scheduleTimerOnceTx` returns `Bool`; `ChildRow` gains
-  `failureReason` and `markChildFailedTx` takes the terminal reason as its third
-  argument; snapshot hydration requires a third
-  control-state/fold discriminator, so snapshots written without it are
-  invalidated and rebuilt once (migration
-  `0019-keiro-snapshots-state-shape-hash.sql`); validated event-stream assembly
-  rejects invalid codec schema versions, event tags, and upcaster chains, with
-  `mkEventStreamUnchecked` as the explicit emergency-forensics bypass. Requires
-  keiki 0.4. See [Snapshots](/docs/keiro/reference/snapshot).
-- **Kiroku 0.3:** update cursor, validation, store-error, subscription-source,
-  CLI, and adapter handling using the [0.3 upgrade
-  matrix](/docs/kiroku/how-to/upgrade-to-0-3).
-- **Shibuya 0.8:** handlers receive `Message`, application runners take
-  `AppConfig`, batching is first-class, and adapter finalizers must be
-  idempotent. Start with the [Shibuya landing page](/docs/shibuya).
-- **pgmq-hs 0.4:** `pgmq-migration` exports a component instead of its removed
-  standalone runner. Compose it through pg-migrate and use the explicit
-  predecessor-history path for existing databases.
-- **Kiroku 0.5 → 0.7:** three releases Keiro 0.12 requires together. `0.5` adds the durable
-  subscription checkpoint inventory, `0.6` adds the visible-head surface, and `0.7` adds the
-  renewable history-retention lease plus the public checkpoint reset transaction. Each extends the
-  exported `Store` effect, so an exhaustive third-party interpreter needs one new arm per release.
-  Kiroku migration `0010` supplies the retention lease.
-- **Shibuya 0.9:** adds **application-defined dead-letter reasons** — `DeadLetterReason` carries an
-  application `DeadLetterCode` and detail, and telemetry exposes the reason code. Keiro's
-  [declarative router selection](/docs/keiro/reference/keiro-dsl-router-selection) uses this surface
-  for its `keiro.router.selection.*` codes.
-- **shibuya-pgmq-adapter 0.14:** preserves structured dead-letter reasons end to end and moves to
-  pgmq-hs 0.5. Adopt Shibuya 0.9 first.
-- **pgmq-hs 0.5:** correctness work, now released. See the
-  [pgmq landing page](/docs/pgmq).
-
-## Unpublished lifecycle candidates
-
-The source review also covers committed candidates that are absent from Hackage as of 2026-09-21:
-
-| Candidate | Deliberately excluded from released API instructions |
-|---|---|
-| Shibuya core/metrics `0.10.0.0` | Total shutdown deadline, retained terminal state, new validation/finalization errors, progress-aware health, bounded dependency checks, WebSocket terminal frames and exception-safe lifecycle ownership |
-| Kafka adapter `0.9.0.2` | Delivery/assignment fencing and synchronous acknowledgement exceptions; requires core 0.10 |
-| PGMQ adapter `0.16.0.1` | Serialized recoverable finalization and delete-before-send transactional DLQ deduplication; requires core 0.10 |
-| Kiroku store `0.8.0.2` / adapter `0.5.1.3` | Cancellation-safe subscription/member ownership and adapter resource handling; adapter requires core 0.10 |
-
-The candidates' safe effectful-core family bounds and release evidence do not alter the published
-package matrix above. Recheck publication and the exact solver plan before using these lines.
-The reviewed source column can therefore be newer than the published release it documents.
-
-## Database upgrade order
-
-For an existing PostgreSQL deployment, do not deploy the new runtime first and
-hope startup repairs history:
-
-1. Build the complete application migration plan and inspect `plan`, `status`,
-   and `verify` output against a backup or rehearsal database.
-2. Quiesce old migration writers and back up the production database.
-3. If upgrading Keiro 0.1, follow the [framework-table relocation
-   procedure](/docs/keiro/how-to/upgrade-a-0-1-database).
-4. Import verified Kiroku/Keiro Codd history and PGMQ
-   `public.schema_migrations` history where those predecessor ledgers exist.
-   Imports adopt evidence without replaying schema DDL.
-5. Run the complete native Kiroku → Keiro → PGMQ → application plan, then run
-   strict verification.
-6. Deploy runtime processes, reconcile additive queue topology, and monitor the
-   typed failure and durable-worker outcomes described by each package.
-
-Fresh databases skip the predecessor imports. Use the [runtime composition
-recipe](/docs/pg-migrate/cookbook/compose-runtime-components) and [deployment
-runbook](/docs/pg-migrate/how-to/deploy-a-migration-plan) for the executable and
-operator gates.
-
-## Stability and pending work
-
-- Keiki, Keiro, Kiroku, Shibuya, PGMQ client packages, and adapters are pre-1.0.
-  This documentation does not promise API stability beyond each package's
-  release notes and bounds.
-- pg-migrate is reviewed at 1.2.0.0, but its compatibility page remains the
-  authority for compiler, PostgreSQL, Hasql, and ledger-version support.
-- The archived Message DB adapter is not on the Shibuya 0.9 compatibility line, as noted
-  above.
-- The standalone example-app tour was re-ported through `e3c800eb`. Its application dependency
-  pins remain independent of this library matrix; it is not evidence that all current releases
-  compose without an application upgrade. See [the example-app landing page](/docs/example-app).
-
-<Cards>
-  <Card title="Install the selected stack" href="/docs/getting-started/installation" description="Package selection, migration components, and runtime startup order." />
-  <Card title="pg-migrate compatibility" href="/docs/pg-migrate/reference/compatibility" description="Compiler, PostgreSQL, Hasql, manifest, ledger, and predecessor-adapter support." />
-  <Card title="Compare Shibuya adapters" href="/docs/integrations/shibuya-adapters" description="Backend semantics after package compatibility is established." />
-</Cards>
+Read [replay compatibility](/docs/keiro/reference/replay-compatibility) before a change to retained event history.

@@ -5,12 +5,12 @@ description: "Introduce a business rule whose guard needs accumulated state: add
 
 You are adding a business rule. Its guard has to consult some value the machine has accumulated over
 its life — a running count, a high-water mark, a "has X ever happened" flag, the last recorded amount.
-Control state alone can't answer it, so the value belongs in a **register**. The catch: streams already
+Control state alone cannot answer it, so the value belongs in a **register**. The catch: streams already
 exist, and their logs predate the rule. The new register has to hold the right value for *those*
 streams too, the first time the new guard runs.
 
 <Callout type="info">
-  Assumes you've read [02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration), in
+  Assumes you have read [02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration), in
   particular [output inversion](/docs/keiro/walkthrough/command-cycle/02-hydration#why-replay-runs-backward-from-events)
   — this how-to is the applied form of that mechanism.
 </Callout>
@@ -20,7 +20,7 @@ streams too, the first time the new guard runs.
 Add a register that a new guard reads, and have it populated correctly for **existing** streams without
 a migration script or any rewrite of stored events.
 
-## The one idea: you don't back-fill a register, you re-derive it
+## The one idea: you do not back-fill a register, you re-derive it
 
 There is no "fill in the new column" step, because a register is never *stored* on the event path — it
 is *recomputed*. Hydration rebuilds the register file by replaying the stream's events and re-running
@@ -46,14 +46,14 @@ code, answer one question about the value your new guard needs:
 
 > Is it a pure function of facts already recorded in this stream's event history?
 
-**Yes — it's derivable.** Then this how-to applies directly. The edge `update`'s right-hand term reads
+**Yes — it is derivable.** Then this how-to applies directly. The edge `update`'s right-hand term reads
 only the current registers and the command input recovered from the event by `solveOutput`, so as long
 as the inputs it needs were emitted, replay reconstructs the value exactly. Counting events of a kind,
 tracking the latest emitted amount, flagging that a particular event ever occurred — all derivable,
 because the events that drive them are in the log.
 
 **No — it needs a fact the events never recorded.** Then replay has nothing to fold, and there is no
-honest way to invent the historic value. If your update or guard reads an input field the event doesn't
+honest way to invent the historic value. If your update or guard reads an input field the event does not
 carry, keiki's **build-time hidden-input check** fails by name (`InCtor "…" leaves field {"…"}
 unrecovered`; see [Fix a hidden-input replay failure](/docs/keiki/cookbook/fix-a-hidden-input-replay-failure)).
 Your options are then a deliberate choice, not a mechanism:
@@ -97,7 +97,7 @@ their events stay indistinguishable under the new rule; the log is the only thin
    ```
 
 4. **If the slot is fed from an input field, make sure that field is on the event.** This is the
-   hidden-input discipline: emit every field your guards and updates read, or the slot can't be
+   hidden-input discipline: emit every field your guards and updates read, or the slot cannot be
    recovered on replay. The build-time check enforces it.
 
 5. **(If the stream snapshots) bump `stateCodecVersion`.** The shape change alone already invalidates
@@ -117,8 +117,8 @@ post-deploy command on an existing stream already sees the folded register.
 - [02 — Hydration](/docs/keiro/walkthrough/command-cycle/02-hydration) — output inversion and the
   `Settled`/`InFlight` replay this builds on.
 - [Fix a hidden-input replay failure](/docs/keiki/cookbook/fix-a-hidden-input-replay-failure) — what
-  happens when the value isn't recoverable, and the check that names it.
+  happens when the value is not recoverable, and the check that names it.
 - [Evolve a schema safely](/docs/keiki/cookbook/evolve-a-schema-safely) — defaulting the historic
   prefix when you add a field to feed the register.
 - [Why a SymTransducer, not a Decider](/docs/keiro/explanation/why-symtransducer-not-decider) — why
-  registers are a separate bank that can't be recovered from control state alone.
+  registers are a separate bank that cannot be recovered from control state alone.

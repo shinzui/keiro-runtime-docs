@@ -3,31 +3,11 @@ title: "Author a service with keiro-dsl"
 description: "Build an aggregate, registered read model, and stable router through the write, check, scaffold, fill, harness, and diff loop."
 ---
 
-This tutorial builds the `transfer-routing` service from the current conformance corpus. It is a
+This tutorial builds the `transfer-routing` service with Language 6. It is a
 small but realistic vertical: a registered read model selects hospitals, a router turns an accepted
 transfer need into one command per selected hospital, and an aggregate records each routed need.
 
-The finished source is `keiro-dsl/test/fixtures/transfer-routing.keiro` in the Keiro repository. Its
-filled proof lives under `keiro-dsl/test/conformance-newsurface/`; it does not depend on the separate
-example application.
-
-<Callout type="warn">
-  **This tutorial is a language-4 service**, matching the upstream fixture, which upstream keeps at
-  `language keiro-dsl 4` as compatibility evidence. Language 4 remains published and byte-compatible.
-
-  **Language 5 is the stable contract for new services** as of Keiro 0.12.0.0, and
-  `keiro-dsl new <kind>` starts you there. Two things below are spelled differently under language 5:
-
-  - the read model's `consistency`/`feed`/`subscription` clauses become a single `freshness` clause,
-    with delivery and subscription identity moving to a `projection-owner` — see
-    [Author a read model and router](/docs/keiro/how-to/author-a-read-model-and-router);
-  - `resolve stable via read-model` can instead be a checked
-    [declarative selection](/docs/keiro/reference/keiro-dsl-router-selection).
-
-  Everything else in this tutorial — the write → check → scaffold → fill → harness → diff loop —
-  is identical in both languages. Candidate Language 6 inherits the Language 5 form unchanged and
-  adds the surfaces in the [complete Language 6 matrix](/docs/keiro/reference/keiro-dsl-language-6).
-</Callout>
+The tutorial source uses Language 6. Save the complete example in your own service project.
 
 <Callout type="info">
 Run from the Keiro repository root. The installed command is shown as `keiro-dsl`; in the source tree
@@ -39,22 +19,43 @@ use `cabal run keiro-dsl --`, or put `keiro-dsl/bin` on `PATH`.
 Create `transfer-routing.keiro`:
 
 ```keiro-dsl
-language keiro-dsl 4
+language keiro-dsl 6
 context transfer-routing
 
-readmodel hospital_load {
-  table = "hospital_load"
+target hospital_load_table {
   schema = "hospital_transfer"
+  table = "hospital_load"
+  reset = clear
+}
+
+rebuild-group reporting {
+  targets = [ hospital_load_table ]
+  order = [ hospital_load_table ]
+}
+
+projection-owner hospital_load_writer {
+  source = category "hospitalLoad"
+  delivery = subscription
+  group = reporting
+  targets = [ hospital_load_table ]
+  order = 10
+  subscription = "transfer-routing-hospital-load-sub"
+  dedup = "transfer-routing-hospital-load-v1"
+  checkpoint-on-missing = from-beginning
+  replay = explicit
+}
+
+readmodel hospital_load {
   columns {
     hospital_id text required
     region text required
     available_beds int required
   }
   version = 1
-  shape = "fnv1a:977395d28f254ddb"
-  consistency = Eventual
-  feed = subscription
-  subscription = "transfer-routing-hospital-load-sub"
+  shape = "fnv1a:476e92304e8784f8"
+  freshness = immediate
+  group = reporting
+  targets = [ hospital_load_table ]
 }
 
 router HospitalTransferRouter
@@ -101,7 +102,7 @@ Normalize the syntax, then run the semantic gate:
 
 ```bash
 keiro-dsl parse transfer-routing.keiro
-keiro-dsl check transfer-routing.keiro
+keiro-dsl check transfer-routing.keiro --min-language 6
 # OK
 ```
 
@@ -112,7 +113,7 @@ read-model shape and the router's policy table. Either command exits nonzero on 
 Use `check --emit` when you want both steps in one command:
 
 ```bash
-keiro-dsl check transfer-routing.keiro --emit
+keiro-dsl check transfer-routing.keiro --min-language 6 --emit
 ```
 
 Fix a failure in the `.keiro` file. Do not compensate for a rejected spec in generated Haskell.
@@ -169,20 +170,15 @@ and passes the generated `hospitalTransferRouterWorkerOptions` to `runRouterWork
 the intended target stream. A hand-written dispatch path must call `confirmBenignDuplicate`; a bare
 `DuplicateEvent` match is not evidence of success.
 
-## 5. Run the cold-start proof
+## 5. Verify the generated service
 
-The checked-in proof compiles the generated and hand-owned sides together:
+Compile the generated modules and application implementations together.
+Run the generated aggregate, read-model, and router harnesses.
+Check replay safety, target stream selection, duplicate handling, and rejected-command policy.
 
-```bash
-cabal test keiro-dsl-conformance-newsurface
-```
-
-It asserts the aggregate harness, validated event-stream construction, read-model facts, router
-name/key/policy, stable resolver source, selected target stream, and dispatched command. A green
-scaffold alone does not prove your fills; the harness does.
-
-After any spec change, re-scaffold and rerun the same component. Generated modules are refreshed;
-filled holes remain in place.
+Scaffolding verifies the output plan. It does not verify application behavior.
+After a specification change, regenerate and rerun the same harnesses.
+See [scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes).
 
 ## 6. Gate evolution with `diff`
 
@@ -211,6 +207,5 @@ The repeatable lifecycle is:
 new/write → parse/check → scaffold → fill → harness → diff → re-scaffold
 ```
 
-Keep the [notation and CLI reference](/docs/keiro/reference/keiro-dsl-notation) nearby. If you are
-upgrading an older spec, use
-[Migrate a keiro spec to 0.2](/docs/keiro/how-to/migrate-a-keiro-spec-to-0-2) before scaffolding.
+Keep the [notation and CLI reference](/docs/keiro/reference/keiro-dsl-notation) nearby. Use
+[Language 6](/docs/keiro/reference/keiro-dsl-language-6) before scaffolding.

@@ -70,7 +70,7 @@ whole call up front with `ReservedStreamName`, `StreamNameTooLong`, or `EmptyApp
 
 ## Transactional append: composing with the caller's own SQL
 
-The other reason to open a transaction is to land an append **together with writes the store doesn't
+The other reason to open a transaction is to land an append **together with writes the store does not
 know about** — most importantly a projection row that must exist if and only if the event was
 recorded. That is exactly the [keiro projection](/docs/integrations/keiro-with-kiroku) use case, and
 `runTransactionAppending` is the wrapper for it:
@@ -103,14 +103,14 @@ The design turns on four points:
 - **(B) A conflict condemns and skips the continuation.** If the append loses its precondition, the
   body condemns the transaction and returns the conflict as a `StoreError` — and critically the
   caller's continuation `k` **never runs**, so the projection row is never written for an event that
-  wasn't recorded.
+  was not recorded.
 - **(C) On success the continuation runs in the same transaction.** `k ar` receives the `AppendResult`
   and does the caller's SQL. If `k` itself calls `Tx.condemn`, _everything_ rolls back — including the
   event append. Append and projection are genuinely atomic in both directions.
 
 `runTransactionAppendingNoRetry` is the same with `transactionNoRetry`, for callers who cannot tolerate
 the body running more than once. The `…Resource` variants additionally apply the `enrichEvent` hook (in
-`IO`, before the body, so retries don't re-fire it) — the path the keiro layer uses so trace-context
+`IO`, before the body, so retries do not re-fire it) — the path the keiro layer uses so trace-context
 injection is uniform across plain and transactional appends.
 
 ## When to reach for which
@@ -124,7 +124,7 @@ runTransaction / appendToStreamTx  -- bare escape hatch: full manual control ins
 
 The guidance the source gives is "reach for `appendToStream` by default" — it is the cheapest path
 (one CTE, no transaction envelope, no retry semantics to reason about). Climb to the transactional
-wrappers only when you genuinely need to combine the append with writes the store doesn't perform
+wrappers only when you genuinely need to combine the append with writes the store does not perform
 itself.
 
 ## Recap of the write path

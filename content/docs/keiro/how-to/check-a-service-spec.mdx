@@ -26,7 +26,7 @@ service.keiro:<line>: error[Code]: <message>
 `--emit` combines parse, validation, and canonical pretty-printing. Scaffold runs the same gate and
 writes nothing for an invalid spec.
 
-For a Candidate Language 6 service, declare `language keiro-dsl 6` and use `--min-language 6` in CI.
+For a Language 6 service, declare `language keiro-dsl 6` and use `--min-language 6` in CI.
 The extra diagnostics cover delegated inbox ownership, process reactions/timers, FIFO-head queues,
 declared contract IDs, keyed maps, and nominal structural leaves; see the
 [complete Language 6 matrix](/docs/keiro/reference/keiro-dsl-language-6).
@@ -55,40 +55,14 @@ See [domain/read-side notation](/docs/keiro/reference/keiro-dsl-domain-nodes) an
 [runtime/integration notation](/docs/keiro/reference/keiro-dsl-runtime-nodes) for exact closed values
 and defaults.
 
-## What language 4 additionally rejects
+## Strict validation
 
-*(Keiro 0.9.0.0.)* `check` closed a set of surfaces that were previously **accepted but unenforced** —
-values a spec could declare that could not actually lower to working generated code, or that would
-have produced a runtime collision nothing checked for.
+Language 6 enables `StrictSpecSurfaceValidation`.
+`check` rejects declarations that cannot generate working code.
+It also validates numeric limits, duplicate names, runtime identities, database names, contract topics, and intake schema coupling.
 
-The split matters when you are deciding whether to move a spec to language 4:
-
-- **Under every language version**, a value that cannot lower to working generated code is now
-  rejected. This can turn a previously-passing older spec red — that is intended; it was never going
-  to generate.
-- **Only under language 4**, `check` additionally enforces numeric floors, duplicate and shadowing
-  rules, stable runtime identity uniqueness, Kafka and PostgreSQL naming rules, intake envelope and
-  schema coupling, contract topic aliases, and the aggregate wire convention.
-
-`DiagnosticCode` gained append-only constructors for each of these families, plus contract TypeID
-admission. Exhaustive matches over it must be extended.
-
-<Callout type="info">
-  **Languages 5 and 6 inherit all of this**, because runtime capability profiles are monotone —
-  `StrictSpecSurfaceValidation` is in runtime semantics 3, 4, and 5. New CI for a stable service
-  should pin `--min-language 5`; a candidate service should pin `--min-language 6`.
-
-  An **existing** language-4 service may keep `--min-language 4` until you migrate deliberately.
-  Language 4 stays published and byte-compatible under explicit compatibility ownership; it is no
-  longer the *recommended* contract, but nothing about it changed.
-</Callout>
-
-<Callout type="info">
-  A spec that checks clean under language 3 may report new errors when its preamble moves to 4. Read
-  each one as a latent defect the earlier contract could not see, not as a regression — and note that
-  languages 1 through 3 keep their released acceptance behaviour exactly, so nothing forces the move.
-  See [language versions](/docs/keiro/reference/keiro-dsl-language-versions).
-</Callout>
+Use `--min-language 6` in CI. Review each diagnostic before generation.
+See [language selection](/docs/keiro/reference/keiro-dsl-language-versions).
 
 ## Treat warnings as review items
 
@@ -130,7 +104,7 @@ them. Add a warning policy explicitly:
 
 ```bash
 # Pin the language floor and fail on every warning.
-keiro-dsl check service.keiro --min-language 5 --deny-warnings
+keiro-dsl check service.keiro --min-Language 6 --deny-warnings
 
 # Or fail on selected codes only (repeatable and comma-separated).
 keiro-dsl check service.keiro --deny RouterBenignInversion,ProcessBenignInversion
@@ -163,7 +137,7 @@ keiro-dsl check service.keiro --deny RouterBenignInversion,ProcessBenignInversio
 Use `/dev/stdin` for pipelines, for example:
 
 ```bash
-keiro-dsl new router | keiro-dsl check /dev/stdin
+keiro-dsl new router | sed 's/^language keiro-dsl [0-9][0-9]*$/language keiro-dsl 6/' | keiro-dsl check /dev/stdin --min-language 6
 ```
 
 Continue with [Scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) only after the

@@ -1,6 +1,6 @@
 ---
 title: "Migrations and schema"
-description: "Reference for Keiro's native pg-migrate component, combined framework plan, CLI, legacy Codd import, and dedicated schema."
+description: "Keiro's native migration component, framework plan, CLI, startup checks, and schema ownership."
 ---
 
 `keiro-migrations` owns Keiro's PostgreSQL objects. It embeds exact SQL bytes as a native
@@ -104,7 +104,7 @@ the same exclusion; do not clear ownership fields by hand.
 
 Before rolling back writers, disable foreground resume and drain or recover every guarded claim.
 Expired claims return directly to `Dead` with their original reason and attempts, including when
-`TimerWorkerOptions.requeueStuckAfter = Nothing`. See [Keiro.Timer](/docs/keiro/reference/timers#guarded-foreground-resume-keiro-016)
+`TimerWorkerOptions.requeueStuckAfter = Nothing`. See [Keiro.Timer](/docs/keiro/reference/timers#guarded-foreground-resume)
 and [Resume a dead timer safely](/docs/keiro/how-to/resume-a-dead-timer-safely).
 
 ## Standard CLI
@@ -148,16 +148,8 @@ They answer different questions, and a deployment gate should run **both**.
 Use the [pg-migrate deployment runbook](/docs/pg-migrate/how-to/deploy-a-migration-plan) for the
 preflight/apply/post-verify gate.
 
-### `import-codd-history`
-
-`keiro-migrate import-codd-history` mounts the one-time codd cutover described
-[below](#legacy-codd-history) as a first-class command: `--database-url`, `--source-database-url`
-(defaults to the target), `--source-lock-key`, a required `--reason`, `--confirm`, and `--json`.
-
-`up` also runs a **codd-ledger preflight**: if a `codd.sql_migrations` table exists while
-`pgmigrate.migrations` is absent or empty, `up` refuses rather than initializing fresh native history
-over a retired codd ledger. Override it deliberately with `--allow-fresh-ledger-over-codd`, which
-applies to `up` only.
+The migration runner refuses fresh native history over a retired migration ledger.
+Use a clean database for initial-release setup.
 
 ## Startup handshake
 
@@ -238,30 +230,6 @@ The manifest embedder checks exact membership, order, filenames, UTF-8, directiv
 Released payloads are immutable. Qualify framework DDL as `keiro.<object>` and append corrections.
 Production never discovers the SQL directory at runtime.
 
-## Legacy Codd history
-
-`Keiro.Migrations.History.Codd` exports the one-time combined cutover:
-
-```haskell
-frameworkCoddHistoryMappings :: NonEmpty HistoryMapping
-
-frameworkCoddSourceConfig
-  :: ConnectionProvider
-  -> Bool
-  -> Text
-  -> Confirmation
-  -> Either CoddDefinitionError CoddSourceConfig
-```
-
-The mapping combines seven historical Kiroku rows and sixteen historical Keiro rows. Strict import
-checks the shared Codd ledger, both checked-in manifests, exact payloads, and all 30 mappings before
-atomically recording native history. Target SQL does not run. After import, native `up` applies
-Kiroku `0008`, Keiro `0017`, and Keiro `0018` as the new suffix.
-
-Use this only for an existing predecessor database with every writer quiesced. Fresh databases run
-the native plan directly. See [Upgrade a 0.1 database](/docs/keiro/how-to/upgrade-a-0-1-database)
-and [Import Codd history](/docs/pg-migrate/how-to/import-codd-history).
-
 ## Schema ownership
 
 `Keiro.Schema.keiroSchema == "keiro"`. Runtime queries and DDL both qualify framework objects in
@@ -300,7 +268,7 @@ That is **twenty-five** tables in the `keiro` schema.
 
 ### The `keiro_read` schema
 
-*(New in Keiro 0.12.0.0, migration `0026`.)* A second, deliberately tiny schema holds the **versioned,
+A second, deliberately tiny schema holds the **versioned,
 owner-rights read contracts for out-of-process consumers**:
 
 | Object | Kind | Purpose |

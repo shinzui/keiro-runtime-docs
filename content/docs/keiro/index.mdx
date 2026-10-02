@@ -3,43 +3,28 @@ title: keiro
 description: "An event-sourcing framework and workflow engine — the top of the keiro runtime stack."
 ---
 
-**keiro** (経路, "route / path") is a Haskell **library you import** — not a server you operate —
-that composes three lower libraries into one event-sourcing and workflow framework:
-**kiroku** (記録, the append-only PostgreSQL event store), **keiki** (the pure symbolic-register
-finite-state transducer that is the decision core), and **shibuya** (the supervised
-subscription/worker substrate). Its thesis: aggregates, process managers, and sagas are all the
-*same* mathematical object — keiki's `SymTransducer phi rs s ci co` — persisted to *one* substrate,
-your Postgres. On top of that v1 substrate, the **v2 durable-execution runtime** (`Keiro.Workflow`)
-adds journaled named-step workflows for processes that read as one long-running function with in-line
-waits.
+**keiro** is a Haskell library for event-sourced applications and durable workflows.
+It runs inside the application and stores durable state in PostgreSQL.
+It composes three libraries:
+
+- **keiki** defines transducers and replay behavior.
+- **kiroku** stores events and subscription progress.
+- **shibuya** supervises message workers.
+
+`Keiro.Workflow` provides named steps, waits, child workflows, journal rotation, and patches.
+The application owns its workflow registry, workers, and deployment.
+
+## Service authoring
+
+Language 6 is the only supported Keiro DSL language in this release documentation.
+Declare `language keiro-dsl 6` in every complete source file.
+Use the [DSL tutorial](/docs/keiro/tutorials/author-a-service-with-keiro-dsl) to define and generate a service.
+Read [release compatibility](/docs/getting-started/compatibility-and-upgrades) before selecting packages.
 
 <Callout type="warn">
-  keiro is in **active development** (`0.18.0.0`; every published package moves in lockstep). APIs
-  may change; pin a version. The command-side
-  API now requires `ValidatedEventStream` at every public runner boundary; build streams with
-  `mkEventStream`/`mkEventStreamWith` so replay-unsafe transducers and incoherent snapshot settings
-  fail before hydration. The v2 durable-execution workflow engine (`Keiro.Workflow`) has **shipped** — see
-  [Understanding durable execution](/docs/keiro/explanation/durable-execution) — now including
-  continue-as-new journal rotation (`continueAsNew`) and the `patch` versioning API, plus
-  [LISTEN/NOTIFY push delivery and consumer-group sharding](/docs/keiro/explanation/scaling-the-workers)
-  for scaling the background workers. A new authoring toolchain,
-  [keiro-dsl](/docs/keiro/explanation/the-keiro-dsl-toolchain), lets you specify a whole service as a
-  typed `.keiro` file and scaffold its deterministic layer.
-</Callout>
-
-<Callout type="warn">
-  **Upgrading through 0.16–0.17 requires coordinated cutovers.** Stop old timer writers before
-  migration `0032`, deploy all new writers, and only then enable guarded dead-timer resume. Drain
-  producer subscriptions before adopting deterministic outbox identity, and drain process-manager
-  subscriptions before changing a manager to the reaction identity family. `Job` also gains a
-  required `jobOrdering` field, and legacy FIFO modes refuse batch sizes above one.
-
-  The main additions are [guarded timer resume](/docs/keiro/how-to/resume-a-dead-timer-safely),
-  [typed process reactions](/docs/keiro/reference/process-manager#typed-process-reactions-keiro-017),
-  [delegated inbox idempotence](/docs/keiro/reference/inbox#delegated-idempotence-keiro-017),
-  replay-safe [outbox producer identity](/docs/keiro/reference/outbox#the-producer-helper), and
-  [Candidate DSL Language 6](/docs/keiro/reference/keiro-dsl-language-6). See [compatibility and
-  upgrades](/docs/getting-started/compatibility-and-upgrades).
+  Command runners require a `ValidatedEventStream`.
+  Construct it with `mkEventStream` or `mkEventStreamWith` before hydration.
+  These functions check replay safety and snapshot coherence.
 </Callout>
 
 ## How it fits together
@@ -82,11 +67,10 @@ live aggregate or process manager, and gate the deploy with
 
 <Cards>
   <Card title="Evolution and replayability" href="/docs/keiro/explanation/evolution-and-replayability" description="Changing a deployed service is a change to data you already stored: the six gates, the safe procedure per change class, and what is still not gated." />
-  <Card title="Migrating from tan-event-source" href="/docs/keiro/explanation/migrating-from-tan-event-source" description="The old-to-new mental model for Decider, View, Process, projections, registers, and snapshots." />
   <Card title="Tutorials" href="/docs/keiro/tutorials" description="Run the command cycle, build read-side and workflow paths, or author a service from a typed .keiro specification." />
   <Card title="How-To Guides" href="/docs/keiro/how-to" description="Task-oriented recipes for the command cycle, read side, workflows, integrations, background work, and keiro-dsl evolution." />
   <Card title="Reference" href="/docs/keiro/reference" description="Exact Haskell signatures, PostgreSQL schema, and the complete keiro-dsl notation and CLI contracts." />
-  <Card title="Explanation" href="/docs/keiro/explanation" description="What keiro is, the stack it composes, and the status of the legacy jitsurei architecture tour." />
+  <Card title="Explanation" href="/docs/keiro/explanation" description="Framework roles, runtime contracts, and design decisions." />
   <Card title="Cookbook" href="/docs/keiro/cookbook" description="Short, copy-paste recipes for common problems." />
   <Card title="Code Walkthrough" href="/docs/keiro/walkthrough" description="Ordered tours through keiro's real source." />
 </Cards>

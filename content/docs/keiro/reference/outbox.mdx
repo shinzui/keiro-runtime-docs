@@ -52,7 +52,7 @@ outbox ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
 transaction start time. The canonical `IntegrationProducer` subscription serializes same-key
 enqueues, so its order is stable. Two callers using `enqueueIntegrationEventTx` concurrently for the
 same key or source can commit opposite their timestamps; `PerKeyHeadOfLine` and `PerSourceStream` are
-best-effort for that escape hatch unless the application serializes those enqueues.
+best-effort for that custom implementation option unless the application serializes those enqueues.
 </Callout>
 
 ```mermaid
@@ -134,7 +134,7 @@ also includes rows skipped after an earlier failure in the same ordered group; t
 returned to retryable state without consuming an attempt. `haltedOn` is populated only under
 `StopTheLine` and names the failed pivot row, which is already counted in `retried` or `dead`.
 
-## Inline escape hatch
+## Inline custom implementation option
 
 ```haskell
 freshOutboxId             :: (IOE :> es) => Eff es OutboxId
@@ -251,7 +251,7 @@ Kafka adapter can pipeline or batch broker sends. If the callback omits an outco
 keiro treats it as `PublishFailed "publisher returned no outcome"`; if the callback throws, every row
 in that callback is treated as failed.
 
-## Terminal rejection (Keiro 0.14+)
+## Terminal rejection
 
 Construct `PublishRejection` through `mkPublishRejection`; the type is abstract and its
 implementation module is private. Codes match `[a-z][a-z0-9._-]*` and contain 1–64 ASCII
@@ -354,8 +354,6 @@ missing, or terminal row was not changed. Include these counts only after the tr
 `requeueStuckOutbox` and `garbageCollectSent`: they list the rows a pass would consider or delete,
 oldest first, without mutating anything. They back
 [`keiro-ops outbox requeue-stuck` and `gc-sent`](/docs/keiro/reference/keiro-ops-cli#outbox--transactional-outbox).
-*New in Keiro 0.12.0.0.*
-
 `claimOutboxBatch` selects `WHERE status IN ('pending', 'failed') AND next_attempt_at <= now`,
 applies the ordering predicate, `ORDER BY (created_at, outbox_id) LIMIT n FOR UPDATE SKIP LOCKED`,
 and transitions claimed rows to `publishing` with `attempt_count + 1`. `markOutboxFailedTx` reads
@@ -446,7 +444,7 @@ CREATE INDEX IF NOT EXISTS keiro_outbox_source_order_idx
   WHERE status NOT IN ('sent', 'dead');
 ```
 
-Migration `0031` (Keiro 0.14+) applies this additional SQL:
+Migration `0031` applies this additional SQL:
 
 ```sql
 -- add terminal outbox rejection outcome

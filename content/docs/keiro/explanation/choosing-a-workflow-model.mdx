@@ -1,0 +1,60 @@
+---
+title: Choose a workflow model
+description: Select process reactions or named-step workflows for application coordination.
+---
+
+keiro supports process reactions and named-step workflows.
+Both persist their progress in PostgreSQL. They express application control flow in different ways.
+
+## Process reactions
+
+Use a process manager when independent domain events drive the next action.
+The manager correlates each input with a process instance.
+It records process progress and dispatches commands to target aggregates.
+A timer can request a later action.
+
+Language 6 declares typed reactions, guards, ordered actions, and timer policies.
+The generated worker uses deterministic dispatch and timer identities.
+The application supplies the input decoder and domain behavior.
+
+Use this model for event-driven coordination and compensation.
+Read [process managers and sagas](/docs/keiro/explanation/process-managers-and-sagas).
+For the notation, read [process reactions](/docs/keiro/reference/keiro-dsl-runtime-nodes#process-and-timer).
+
+## Named-step workflows
+
+Use `Keiro.Workflow` when the process is a sequence of actions and waits.
+A named `step` records its result in the workflow journal.
+During replay, the workflow reads that result instead of repeating the action.
+Keep each step name stable while its recorded result remains part of the contract.
+
+| Operation | Purpose |
+| --- | --- |
+| `step` | Record the result of a named action. |
+| `sleepNamed` | Wait until a durable timer becomes due. |
+| `awakeableNamed` | Wait for external completion. |
+| `spawnChild` | Start a child workflow. |
+| `awaitChild` | Wait for a child's result. |
+| `continueAsNew` | Start a new journal generation with an explicit seed. |
+| `patch` | Record a stable branch decision. |
+
+The application owns the registry, workers, deployment, and resource limits.
+Read [durable execution](/docs/keiro/explanation/durable-execution) and the [workflow reference](/docs/keiro/reference/durable-workflows).
+
+## Delivery and recovery
+
+Use deterministic identities for actions that can repeat after a failure.
+Make external effects idempotent where the runtime cannot commit them with journal state.
+A journal record does not make an unrelated external operation atomic.
+
+Apply the database plan before workers start.
+Set bounded retry and dead-letter policies.
+Run the resume worker for suspended named-step workflows.
+Read [worker scaling](/docs/keiro/explanation/scaling-the-workers) for push delivery and subscription sharding.
+
+## Evolution
+
+Preserve the meaning of recorded events and step results.
+Use replay-only transitions for retained domain history when appropriate.
+Use step renaming or a journaled patch for a workflow behavior change.
+Run replay checks and review deployment order before a change reaches retained data.

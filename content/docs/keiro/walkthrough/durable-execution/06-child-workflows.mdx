@@ -156,17 +156,13 @@ on the next drive. A `Suspended` or `Cancelled` child propagates nothing — it 
 SELECT child_id, child_name FROM keiro_workflow_children WHERE status = 'running'
 ```
 
-A freshly-spawned child has a `running` link row but **no step rows yet**. Historically that made it
-invisible to `findUnfinishedWorkflowIds`, and `findRunningChildIds` was a second discovery source the
-resume worker unioned in.
+A new child has a running link row before it has completed steps.
 
 <Callout type="info">
-  **Since Keiro 0.12.0.0 the resume worker no longer unions this query.** `spawnChild` upserts the
-  child's *instance* row as `running` inside the spawn step's transaction, so a zero-step child is
-  already discovered by
-  [chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery)'s single
-  query. `findRunningChildIds` remains exported for operator inspection — it is no longer load-bearing
-  for discovery.
+  `spawnChild` upserts the child's running instance row in the spawn step transaction.
+  The [discovery query](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery) can therefore find children without completed steps.
+  Operators can use `findRunningChildIds` for inspection.
+  The resume worker does not use this separate query for discovery.
 </Callout>
 
 That change is not a simplification for its own sake: under

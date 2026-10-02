@@ -7,11 +7,7 @@ This page owns `aggregate`, its nested `projection` and `snapshot`, and top-leve
 Shared `id`, `enum`, and `rule` declarations are summarized in the [notation
 overview](/docs/keiro/reference/keiro-dsl-notation).
 
-<Callout type="info">
-  Language 5 is the published minimum for the catalog, external-read, mapped-consumer, typed-outcome,
-  and separated freshness surfaces on this page. Candidate Language 6 inherits all of them unchanged;
-  its additional surfaces are indexed in the [Language 6 matrix](/docs/keiro/reference/keiro-dsl-language-6).
-</Callout>
+Language 6 supports the catalog, query, mapped-type, and typed-outcome declarations below.
 
 ## Aggregate
 
@@ -65,7 +61,7 @@ A transition has one source/command, optional guard, zero or more writes/emits, 
 validation to the hand-filled transducer.
 
 <Callout type="info">
-  **Language 5 adds an optional `domain-outcomes` declaration** and a per-transition `outcome`
+  **Language 6 supports an optional `domain-outcomes` declaration** and a per-transition `outcome`
   clause, which turn a deliberately declined command into a typed successful result instead of a
   `CommandError`. Both are opt-in: an aggregate without the declaration is unchanged. See
   [Typed domain command outcomes](/docs/keiro/reference/keiro-dsl-domain-outcomes).
@@ -86,9 +82,7 @@ validation to the hand-filled transducer.
     }
   ```
 
-  Both records gained two fields in keiro-dsl 0.12.0.0 — **breaking for positional construction and
-  exhaustive record patterns.** The duplicate-location lists retain invalid syntax long enough for
-  semantic validation to emit stable located diagnostics.
+  Duplicate-location fields preserve invalid syntax for located semantic diagnostics.
 </Callout>
 
 ### Transition modes: `live` and `replay-only`
@@ -158,40 +152,19 @@ transitively referenced rule bodies — so a spec-visible fold change invalidate
 automatically and raises the non-breaking `AggFoldSurfaceChanged` advisory at diff time. Logic changed
 only inside `Holes` is *not* covered: bump `stateCodecVersion` yourself.
 
-<Callout type="warn">
-  **Breaking in Keiro 0.9.0.0 — the fingerprint widened, and every existing snapshot is invalidated
-  once.** Aggregate fold fingerprints move from a **16-hex-digit FNV-1a-64** digest to a
-  **32-lowercase-hex-digit FNV-1a-128** one. This is deliberate: the new discriminator does not
-  collide with the old, so every snapshot written under the previous fingerprint misses and its
-  stream replays from the log. Refresh generated transducers and expect one full replay per
-  snapshot-bearing stream on the deploy that adopts 0.9.
+Aggregate fold fingerprints use 32 lowercase hexadecimal digits from FNV-1a-128.
+Read-model shape hashes, mapped-wire identities, and behavior keys use their separate 64-bit identities.
 
-  Unrelated 64-bit identities do **not** move — read-model shape hashes, mapped-wire identities, and
-  behaviour keys keep their `fnv1a:` 16-hex form. Only aggregate fold identity widened.
-</Callout>
 
-<Callout type="info">
-  *(Keiro 0.9.0.0, ADR-18.)* Two related hazards were closed with the widening. Pre-hash bytes now
-  come **only** from `Keiro.Dsl.CanonicalEncoding`, whose expression and transition representations
-  are frozen by complete surface goldens — previously the pre-hash surface reused the *human-facing*
-  pretty printer, so a presentation-only rendering edit could invalidate snapshots with no intended
-  fold migration. And fold identity now derives from
-  [runtime capability profiles](/docs/keiro/reference/keiro-dsl-language-versions#runtime-capability-profiles)
-  rather than an opaque identifier string, so registering a successor version that changes no replay
-  behaviour no longer mints a new fold segment by default. Presentation pretty printing may now evolve
-  independently of persisted identity.
-</Callout>
+Canonical fold bytes come from `Keiro.Dsl.CanonicalEncoding`.
+Presentation changes do not alter persisted fold identity.
+Runtime capabilities determine the profile fold segments.
+
 
 <Callout type="warn">
-  **Fold surface construction became total, and its APIs changed shape.** *(Keiro 0.9.0.0,
-  breaking.)* Type-graph, nominal, register, guard, and event-output resolution failures now return a
-  `FoldSurfaceError` instead of silently omitting a canonical segment. The aggregate fold, diff,
-  replay-impact, and workspace-diff service APIs therefore return `Either FoldSurfaceError`, and
-  scaffold planning **refuses before generating any module**. The misleading `Spec`-only wrappers —
-  `aggregateFoldFingerprint`, `aggregateFoldSurface`, `diffSpecs`, `replayImpact`,
-  `nominalEqualityContract`, `nominalEqualityIdentity`, and `nominalEqualityIdentities` — are
-  **removed**; callers retain and pass a `CheckedService`, or construct one explicitly with
-  `legacyCheckedService`.
+  Keep the `CheckedService` for fold, diff, and replay-impact operations.
+  Resolution failures return `FoldSurfaceError`.
+  Scaffold refuses the output plan before module generation.
 </Callout>
 
 ### Principal validation rules
@@ -214,13 +187,10 @@ projection transfer_decisions key=reservationId
   }
 ```
 
-`consistency=Strong|Eventual` is accepted as legacy syntax in **languages 1–4**; a same-named
-first-class read model owns the actual mode. Language 5 **refuses** the clause here —
-*"Language 5 aggregate projections do not declare consistency; put `freshness` on the referenced
-readmodel"* — because delivery and freshness are now separate facts owned by the projection owner and
-the read model respectively. A total status map must name every emitted event exactly. Use
-`status-map partial { … }` only when omitted events intentionally do not change projected status.
-Every included key must still name one declared event, without suffix matching or duplicates.
+Put query `freshness` on the referenced `readmodel`.
+A projection must not declare `consistency`.
+A total status map names every emitted event exactly once.
+Use `status-map partial` when omitted events must leave projected status unchanged.
 
 An inline read model must be referenced by a same-named aggregate projection. Generated projection
 holes use the schema-qualified table constant from the first-class node.
@@ -243,30 +213,9 @@ Custom snapshot predicates are hand-owned and intentionally absent from the nota
 
 ## Read model
 
-Language 5 **separates projection delivery from query freshness**, so the read-model policy clauses
-differ by language. Languages 1–4 keep their original spelling verbatim:
-
-```keiro-dsl
-readmodel transfer_decisions {
-  table = "transfer_decisions"
-  schema = "hospital_capacity"
-  columns {
-    reservation_id text required
-    hospital_id text required
-    status text required
-    decided_at timestamptz
-  }
-  version = 1
-  shape = "fnv1a:3717f6d9e3c44bd6"
-  consistency = Strong
-  scope = category "reservation"
-  feed = subscription
-  subscription = "hospital-capacity-transfer-decisions-sub"
-}
-```
-
-Language 5 replaces all four clauses with one `freshness` clause, and derives delivery, subscription,
-and cursor identity from the validated `projection-owner`:
+Language 6 separates event delivery from query freshness.
+The `projection-owner` defines delivery, subscription, and cursor identity.
+The `readmodel` defines the query policy:
 
 ```keiro-dsl
 readmodel transfer_decisions {
@@ -285,14 +234,8 @@ readmodel transfer_decisions {
 ```
 
 <Callout type="warn">
-  **The two spellings never mix.** A language-5 source that writes `consistency`, `scope`, `feed`, or
-  `subscription` inside a `readmodel` fails at **parse** time with
-  *"Language 5 readmodel policy is `freshness = immediate | wait-for-head ...`; remove legacy
-  `<clause>` and derive delivery/subscription from its projection-owner"*. A language-1–4 source that
-  writes `freshness` fails with `LanguageFeatureRequiresVersion`.
-
-  A language-5 aggregate `projection` also may not declare `consistency` — put `freshness` on the
-  referenced `readmodel` instead.
+  Do not put `consistency`, `scope`, `feed`, or `subscription` inside a Language 6 `readmodel`.
+  The parser rejects these clauses. Put delivery and subscription on the projection owner.
 </Callout>
 
 ### Closed values and defaults
@@ -301,13 +244,9 @@ readmodel transfer_decisions {
 |---|---|
 | column type | `text`, `int`, `bigint`, `bool`, `timestamptz`, `jsonb`, `numeric` |
 | nullability | omitted = nullable; `required` = not null |
-| `freshness` | **language 5 or later** (`SeparatedProjectionQueryPolicySyntax`); `immediate`, or `wait-for-head entire-log \| category "name"` |
-| consistency | **languages 1–4 only**; `Strong` or `Eventual` |
-| scope | **languages 1–4 only**; omitted = `entire-log`; `entire-log` or `category "name"`, only with `Strong` |
-| feed | **languages 1–4 only**; `inline` or `subscription` |
-| subscription | **languages 1–4 only**; omitted = `<context>-<node-with-hyphens>-sub` |
-| `query input` / `query result` | language 5 or later (`MappedConsumerSurfaceSyntax`); both required together |
-| `group` | language 5 or later (`ProjectionCatalogSyntax`); names a `rebuild-group` |
+| `freshness` | **Language 6** (`SeparatedProjectionQueryPolicySyntax`); `immediate`, or `wait-for-head entire-log \| category "name"` |
+| `query input` / `query result` | Language 6 (`MappedConsumerSurfaceSyntax`); both required together |
+| `group` | Language 6 (`ProjectionCatalogSyntax`); names a `rebuild-group` |
 | `targets` | required **iff** `group` is present; the `target` nodes this query observes |
 | `backing` | optional, only with `group`; required when `targets` has more than one member |
 
@@ -315,12 +254,7 @@ The registry name is `<context>-<node_name_with_hyphens>`. Shape is FNV-1a-64 ov
 ordered `name:type:req|null` column surface. `check` prints the expected fixture on drift; changing
 the declared shape also requires a version bump.
 
-In languages 1–4, `Strong` requires `feed = subscription` — an inline-only model has no cursor for a
-strong read to await — `scope` is meaningful only for `Strong`, and `feed = inline` must be owned by
-an aggregate projection. Query operations, routers, and dispatches resolve the node and its declared
-columns.
-
-Language 5 enforces the same safety property against the *owner* rather than the read model:
+Query waits require a compatible owner cursor.
 `freshness = wait-for-head …` requires a validated owner with a compatible durable cursor.
 
 <TypeTable
@@ -336,39 +270,10 @@ Language 5 enforces the same safety property against the *owner* rather than the
   }}
 />
 
-### The AST change
+### Checked query representation
 
-```haskell
-data QueryFreshnessNode = FreshnessImmediate | FreshnessWaitForHead !RmScope
-  deriving stock (Eq, Show, Generic)
-
-data ReadModelSupply
-  = LegacyReadModelSupply
-      { legacyConsistency :: !Consistency
-      , legacyScope :: !(Maybe RmScope)
-      , legacyFeed :: !RmFeed
-      , legacySubscription :: !(Maybe Text)
-      }
-  | OwnerDerivedSupply
-  deriving stock (Eq, Show, Generic)
-```
-
-<Callout type="warn">
-  **Breaking in keiro-dsl 0.12.0.0.** `ReadModelNode` replaces `rmConsistency`, `rmScope`, `rmFeed`,
-  and `rmSubscription` with `freshness :: QueryFreshnessNode` and `supply :: ReadModelSupply`,
-  and adds `backingTarget :: Maybe Name`. Four compatibility accessors recover the old values from
-  a languages-1–4 node, returning `Nothing` for an owner-derived one:
-
-  ```haskell
-  legacyReadModelConsistency  :: ReadModelNode -> Maybe Consistency
-  legacyReadModelScope        :: ReadModelNode -> Maybe RmScope
-  legacyReadModelFeed         :: ReadModelNode -> Maybe RmFeed
-  legacyReadModelSubscription :: ReadModelNode -> Maybe Text
-  ```
-
-  Released source-language behaviour is unchanged — this is an AST migration, not a semantic one.
-  Languages 1–4 remain byte-compatible.
-</Callout>
+`ReadModelNode` records `freshness`, owner-derived `supply`, and optional `backingTarget`.
+`QueryFreshnessNode` selects immediate reads or a wait for a specified head.
 
 Generated: `ReadModelTable`, `ReadModel`, `ReadModelHarness`. Hand-owned: `ReadModelHoles` for inline
 apply, async apply, and query behavior. SQL must interpolate the generated qualified-table constant,
@@ -376,7 +281,7 @@ not depend on `search_path`.
 
 ## The projection catalog
 
-*New in Keiro 0.12.0.0, language 5.* Three top-level nodes — `target`, `rebuild-group`, and
+Three top-level nodes — `target`, `rebuild-group`, and
 `projection-owner` — separate the four identities a read side actually has. They lower to
 [`Keiro.Projection.Catalog`](/docs/keiro/reference/projection-catalog), which is where the runtime
 semantics are specified; this section covers the notation.
@@ -418,8 +323,8 @@ readmodel account_summary {
 ```
 
 <Callout type="info">
-  Under language 5 a `readmodel`'s own `table` and `schema` clauses become **optional** — the physical
-  location moves to the `target` nodes it observes. A language-5 `readmodel` that declares neither is
+  Under Language 6 a `readmodel`'s own `table` and `schema` clauses become **optional** — the physical
+  location moves to the `target` nodes it observes. A Language 6 `readmodel` that declares neither is
   a pure query contract.
 </Callout>
 
@@ -468,16 +373,15 @@ One ordered live/replay handler declaration.
 records a deliberate reason a projection must not be replayed — an external side effect, typically.
 
 <Callout type="warn">
-  **The clause is `delivery`, not `feed`.** A language-5 `projection-owner` that writes `feed` fails
-  at parse time with *"Language 5 projection owners use `delivery = inline | subscription`; replace
-  legacy `feed`"*. `poFeed :: RmFeed` became `delivery :: ProjectionDelivery` in the AST.
+  Use `delivery = inline | subscription` on a projection owner.
+  The parser rejects `feed` in this declaration.
 </Callout>
 
 #### `checkpoint-on-missing` (ADR-31)
 
-*New in language 5.* What a subscription feed does when its exact durable checkpoint is **absent** —
-a first deploy, a renamed subscription, or a restored database — used to be implicit. Now it is
-declared, fingerprinted as catalog identity, and validated.
+The clause declares behavior when the subscription's durable checkpoint is absent.
+This can occur on initial deployment, after a subscription rename, or after database restoration.
+The policy contributes to catalog identity and validation.
 
 ```haskell
 data CheckpointOnMissingNode
@@ -552,20 +456,17 @@ family five ways — a retirement, a new version, a compatibility change, and a 
 carry very different risk for an out-of-process reader.
 
 <Callout type="info">
-  `QueryFreshnessChanged` is the code that makes the 4→5 migration honest. Weakening a legacy
-  `consistency = Strong` to `freshness = immediate`, or narrowing the waited head scope, is a
-  **breaking** finding. Scope-preserving rewrites are equivalent, and strengthenings are additive
-  `CompatibilityStrengthened` findings. See
-  [Gate spec evolution with diff](/docs/keiro/how-to/gate-spec-evolution-with-diff).
+  `QueryFreshnessChanged` identifies a weaker query contract.
+  Changing a required head wait to an immediate query is breaking.
+  Narrowing the waited scope can also be breaking.
+  Review the finding before deployment.
 </Callout>
 
 ### Beyond the catalog
 
-Language 5 also adds [typed domain outcomes](/docs/keiro/reference/keiro-dsl-domain-outcomes),
+Language 6 also supports [typed domain outcomes](/docs/keiro/reference/keiro-dsl-domain-outcomes),
 [projection revisions and external reads](/docs/keiro/reference/keiro-dsl-projection-revisions), and
-[declarative router selection](/docs/keiro/reference/keiro-dsl-router-selection). Across the whole
-language, `DiagnosticCode` gained **81** constructors in Keiro 0.12.0.0 and lost none, for **392**
-total.
+[declarative router selection](/docs/keiro/reference/keiro-dsl-router-selection).
 
 <Callout type="warn">
   **Breaking for exhaustive consumers.** `DiagnosticCode`, `LanguageFeature`, and `RuntimeCapability`

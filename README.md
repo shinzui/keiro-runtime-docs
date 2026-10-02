@@ -1,82 +1,81 @@
 # keiro-runtime-docs
 
-The documentation site for the **keiro runtime** — five Haskell runtime libraries for building
-event-sourced systems on PostgreSQL, plus the pg-migrate schema toolkit they compose with. It is a
-[Fumadocs](https://fumadocs.dev) content site rendered as a static
-[TanStack Start](https://tanstack.com/start) SPA; all the prose lives as MDX under `content/docs/`.
+This repository contains the technical documentation for the keiro runtime.
+The published content uses MDX under `content/docs/`.
+Fumadocs and TanStack Start render the site as a static application.
 
-The libraries it documents:
+| Library    | Role                                                            |
+| ---------- | --------------------------------------------------------------- |
+| keiro      | Commands, read models, process managers, and durable workflows. |
+| kiroku     | PostgreSQL event storage and subscriptions.                     |
+| keiki      | Pure transducers, symbolic validation, and replay.              |
+| shibuya    | Supervised message processing and acknowledgment decisions.     |
+| pgmq-hs    | PostgreSQL queue clients and configuration.                     |
+| pg-migrate | Database components, migration plans, and verification.         |
 
-| Surface        | 漢字 | What it is                                                               |
-| -------------- | ---- | ------------------------------------------------------------------------ |
-| **keiro**      | 経路 | An event-sourcing framework and durable workflow engine.                 |
-| **kiroku**     | 記録 | An append-only PostgreSQL event store — the persistence foundation.      |
-| **keiki**      | 継起 | A pure, dependency-free mathematical core (the decision semantics).      |
-| **shibuya**    | 渋谷 | Supervised queue processing with explicit acknowledgement decisions.     |
-| **pgmq**       | —    | A PostgreSQL-native message queue — the queue substrate (via `pgmq-hs`). |
-| **pg-migrate** | —    | Embedded migration components, application-owned plans, and operations.  |
+Language 6 is the only supported Keiro DSL language in the release documentation.
+Obsolete Keiro upgrade guides and the older example-app tour are retired.
+Historical plans and source-review records remain under `docs/`.
 
-The preserved `content/docs/example-app/` tree documents an older
-`keiro-runtime-jitsurei` architecture. It is pending modernization and is not
-release evidence for the July 2026 package matrix.
+## Local development
 
-## Getting started
-
-Requires **Node 22** and **pnpm**. A Nix dev shell is provided; it also supplies `oxlint`/`oxfmt`.
-Licensed PragmataPro users can opt in to local code-block ligatures through an environment variable
-or Nix registry alias; see [`docs/optional-commercial-fonts.md`](docs/optional-commercial-fonts.md).
+Use Node 22 and pnpm. The Nix development environment also supplies oxlint and oxfmt.
 
 ```bash
-pnpm install        # install dependencies
-pnpm dev            # local dev server with hot reload
+pnpm install
+pnpm dev
 ```
 
-Open the URL Vite prints (default <http://localhost:3000>).
+Open <http://127.0.0.1:5214>.
 
-## Common scripts
+## Verification
 
-| Command             | What it does                                                              |
-| ------------------- | ------------------------------------------------------------------------- |
-| `pnpm dev`          | Dev server with hot reload.                                               |
-| `pnpm build`        | Prerender the static SPA into `.output/public/`.                          |
-| `pnpm start`        | Serve a built `.output/public/`.                                          |
-| `pnpm typecheck`    | Generate `.source/` with `fumadocs-mdx`, then run `tsc --noEmit`.         |
-| `pnpm lint`         | `oxlint`.                                                                 |
-| `pnpm format:check` | `oxfmt --check .` (use `pnpm format` to write).                           |
-| `pnpm lint:nav`     | Verify every MDX page and child section appears exactly once in metadata. |
-| `pnpm lint:links`   | Source-level `/docs` link check, then a `linkinator` crawl of the build.  |
-| `pnpm check`        | The full gate: types → lint → format → nav → build → links.               |
+| Command                     | Purpose                                                            |
+| --------------------------- | ------------------------------------------------------------------ |
+| `pnpm run lint:docs`        | Check release scope and common prose problems.                     |
+| `pnpm run review:prose`     | Report sentence and paragraph findings for editorial review.       |
+| `pnpm run test:docs`        | Verify the documentation checker.                                  |
+| `pnpm run sync:terminology` | Refresh the glossary from Keiro's terminology bundle through Mori. |
+| `pnpm run lint:terminology` | Verify the glossary against its canonical snapshot.                |
+| `pnpm typecheck`            | Compile MDX metadata and check TypeScript.                         |
+| `pnpm lint`                 | Check application code.                                            |
+| `pnpm format:check`         | Check source formatting.                                           |
+| `pnpm lint:nav`             | Check navigation coverage.                                         |
+| `pnpm build`                | Build the static site.                                             |
+| `pnpm lint:links`           | Check source links and built routes.                               |
+| `pnpm check`                | Run the complete release gate.                                     |
 
-`pnpm check` mirrors the CI workflow in `.github/workflows/ci.yml`; run it before pushing.
+Run `pnpm check` before a push.
 
-## Project layout
+## Authoring
+
+Use [the contributing guide](content/docs/getting-started/contributing.mdx) and the templates in `content/docs/_templates/`.
+Use short instructions, active descriptions, and consistent technical terms.
+The writing reference is ASD-STE100 Issue 9.
+Keiro owns the canonical terminology at `mori://shinzui/keiro/okf/terminology`.
+The local [terminology snapshot](docs/writing/technical-terms.json) supplies project noun definitions to the [glossary](content/docs/getting-started/technical-terms.mdx).
+
+The local policy and checks start the STE review. They do not establish complete compliance.
+General vocabulary review requires the official dictionary.
+Request the standard from [ASD](https://www.asd-ste100.org/STE_downloads.html).
+
+Use Mori to verify dependency source and cross-repository references.
+Document current supported behavior. Do not restore obsolete release tutorials.
+
+## Layout
 
 ```text
-content/docs/        # all documentation, as MDX — the source of truth
-  <product>/         # keiro, kiroku, keiki, shibuya, pgmq, pg-migrate
-    tutorials/  how-to/  reference/  explanation/  cookbook/  walkthrough/  faq.mdx
-    meta.json        # per-folder sidebar order (the `pages` array)
-  integrations/      # cross-product integration guides
-  example-app/       # older keiro-runtime-jitsurei tour; pending modernization
-  _templates/        # per-doc-type starting points (hidden from the sidebar)
-docs/*-source-sync.md # exact upstream SHAs reviewed by each source-backed tree
-src/                 # the TanStack Start app shell, routes, and MDX components
-scripts/             # navigation/link checks and static asset helpers
+content/docs/          # Published MDX and navigation metadata.
+content/docs/_templates/ # Authoring templates.
+docs/                  # Source-review evidence, plans, and writing records.
+src/                   # Site routes and components.
+scripts/               # Documentation checks and asset helpers.
 ```
 
-## Writing docs
-
-The docs follow the [Diátaxis](https://diataxis.fr) framework — every page is exactly one of Tutorial,
-How-To Guide, Reference, or Explanation, plus the extras Cookbook, Code Walkthrough, and FAQ. The house
-voice is **problem-first** (open with the reader's problem, then the mechanism), product names are
-always lowercase, and em-dashes are the house punctuation.
-
-To add a page: copy the matching template from `content/docs/_templates/`, save it under the right
-`<product>/<section>/` folder with a lowercase-hyphenated name, fill in the frontmatter, then add its
-name (without `.mdx`) to that folder's `meta.json` `pages` array. The full authoring and style guide
-lives at [`content/docs/getting-started/contributing.mdx`](content/docs/getting-started/contributing.mdx).
+For licensed local fonts, read [the font setup guide](docs/optional-commercial-fonts.md).
 
 ## Deployment
 
-`pnpm build` prerenders a fully static SPA into `.output/public/`, which can be served by any static
-host. CI builds and link-checks every push and pull request to `master`.
+`pnpm build` writes the static site to `.output/public/`.
+CI verifies pushes and pull requests to `master`.
+Serve that directory with a static host.

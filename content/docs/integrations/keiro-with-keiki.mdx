@@ -1,42 +1,30 @@
 ---
 title: keiro with keiki
-description: Pairing the durable keiro runtime with the pure keiki core — and validating an EventStream's transducer for replay-safety before it is ever hydrated.
+description: Use the pure keiki core for Keiro command handling and validate aggregate replay safety before execution.
 ---
 
-keiro (経路, the event-sourcing framework) is the **durable, effectful runtime**: it talks to the
-store, hydrates aggregates, runs the command cycle, and drives process managers and workflows. keiki
-(継起, the pure mathematical core) is the **law-abiding, IO-free decision engine**: a
-`SymTransducer phi rs s ci co` with structured command and replay results. keiro does not
-re-implement those semantics — it embeds a keiki transducer and adds durable storage, routing, and
-failure mapping.
+Keiro supplies durable storage, aggregate hydration, command execution, process managers, and workflows.
+Keiki supplies pure transition semantics through `SymTransducer phi rs s ci co`.
+Keiro embeds this transducer and maps its command and replay results to runtime outcomes.
 
 Current reviewed compatibility is Keiro `0.18.0.0` with `keiki 0.9.1.0` and
 `keiki-codec-json 0.9.1.0`; the Keiro package family requires `keiki >=0.9 && <0.10`. See
-[compatibility and upgrades](/docs/getting-started/compatibility-and-upgrades) for the
-keiki 0.3 (`EdgeMode`), 0.4 (field-projection), 0.6 (total `Natural`), 0.7 (conservative projection
-classification), and 0.8 (`Show` on `TLit`, readable diagrams) upgrade boundaries.
+[release compatibility](/docs/getting-started/compatibility-and-upgrades) for the reviewed package matrix.
 
 <Callout type="warn">
-  **Keiki 0.7 changed what Keiro can prove, not what it does.** Keiki now classifies a predicate
-  crossing a **one-way** generated projection conservatively, so symbolic verification of a generated
-  aggregate guard may return `UnverifiedOpaque` where an earlier release reported a verified result.
-  Concrete command execution and replay still run the same generated term. To recover a
-  proof-strength `Verified*` classification, the projection must supply an exact domain and a reverse
-  witness — which is what the enforced
-  [`Keiro.Codec.IdDomain`](/docs/keiro/reference/codec#the-enforced-identifier-domain) contract does
-  for language-3 prefix-bearing IDs. Conformance tooling must **preserve** an unverified
-  classification rather than relabelling it as source-proved.
+  A guard that crosses a one-way projection can receive the classification `UnverifiedOpaque`.
+  Concrete command execution and replay still evaluate the generated term.
+  A verified classification requires an exact domain and reverse witness.
+  The enforced [`Keiro.Codec.IdDomain`](/docs/keiro/reference/codec#the-enforced-identifier-domain) contract supplies these for Language 6 prefix-bearing IDs.
+  Preserve an unverified classification in conformance reports.
 </Callout>
 
-This page describes that boundary, and then the headline integration the two libraries gained
-recently: keiro can ask keiki to **prove a stream is replay-safe at build time**, with no SMT solver
-and no database.
+Keiro also uses keiki to check aggregate replay safety at build time without an SMT solver or database.
 
 ## Where keiki shows up inside keiro
 
-The seam is the [`EventStream`](/docs/keiro/reference/event-stream-and-stream): one persistent stream
-is a keiki `SymTransducer` plus everything keiro needs to run it against a durable store — a `Codec`,
-a `SnapshotPolicy`, and a `StateCodec` over the folded `(state, registers)` pair.
+An [`EventStream`](/docs/keiro/reference/event-stream-and-stream) is an aggregate contract.
+It combines the transducer with a `Codec`, a `SnapshotPolicy`, and an optional `StateCodec` for `(state, registers)`.
 
 ```haskell
 data EventStream phi rs s ci co = EventStream
@@ -75,10 +63,7 @@ transducer.
 The name `runCommandWithProjections` can obscure an important boundary: its validated stream is for
 running the aggregate command, not for running the projections. Once that command emits events,
 inline projection callbacks receive `(co, RecordedEvent)` and async callbacks receive
-`RecordedEvent`; neither projection flavor steps the keiki transducer or reads its `RegFile`. See
-[Migrating from
-tan-event-source](/docs/keiro/explanation/migrating-from-tan-event-source) for the complete
-old-to-new mental model.
+`RecordedEvent`; neither projection flavor steps the keiki transducer or reads its `RegFile`. See [projections, read models, and snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots) for the state boundaries.
 
 For the field-by-field tour of that boundary, read the foundation walkthrough starting at
 [Start here](/docs/keiro/walkthrough/foundation/00-start-here).
@@ -151,7 +136,7 @@ These map one-to-one onto keiki's structured `TransducerValidationWarning` const
 | `hidden-input @…`     | `HiddenInput`          | An edge reads command data its output never emits — unrecoverable on replay.              |
 | `nondeterministic @…` | `NondeterministicPair` | Two edges of one vertex can both fire for the same command (single-valuedness violation). |
 | `possibly-dead @…`    | `PossiblyDeadEdge`     | An edge whose source is unreachable, or whose guard is statically unsatisfiable.           |
-| `opaque-guard @…`     | `OpaqueGuard`          | An edge whose guard branches on a term the symbolic analyses can't see through (opt-in).   |
+| `opaque-guard @…`     | `OpaqueGuard`          | An edge whose guard branches on a term the symbolic analyses cannot see through (opt-in).   |
 
 ### Fail fast at construction
 
@@ -239,7 +224,7 @@ same proof, asserted one level up where the streams are actually registered.
     failOnEpsilonReadsInput: { type: "Bool", description: "Hidden-input (replay-safety) check.", default: "True" },
     checkDeterminism: { type: "Bool", description: "Pure, structural determinism (single-valuedness) check.", default: "True" },
     checkReachability: { type: "Bool", description: "Structural dead-edge check.", default: "True" },
-    warnOpaqueGuards: { type: "Bool", description: "Audit edges whose guard branches on an opaque term the symbolic analyses can't see through. Opt-in.", default: "False" },
+    warnOpaqueGuards: { type: "Bool", description: "Audit edges whose guard branches on an opaque term the symbolic analyses cannot see through. Opt-in.", default: "False" },
   }}
 />
 
@@ -274,11 +259,6 @@ check on every build; reserve the solver for the edges it flags.
     title="Why SymTransducer, not Decider"
     href="/docs/keiro/explanation/why-symtransducer-not-decider"
     description="Why keiro embeds keiki's transducer directly instead of a decide/evolve façade."
-  />
-  <Card
-    title="Migrating from tan-event-source"
-    href="/docs/keiro/explanation/migrating-from-tan-event-source"
-    description="Map legacy Decider, View, and Process roles without coupling projections to RegFile."
   />
   <Card
     title="The validation umbrella (keiki)"

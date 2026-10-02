@@ -4,91 +4,62 @@ description: "Declare a schema-qualified read model, route stable resolved rows 
 ---
 
 Use this vertical when one source event should query a registered view and dispatch one command per
-selected row. The current source proof is `keiro-dsl/test/fixtures/transfer-routing.keiro`.
+selected row. The example uses the registered view and router APIs.
 
-The legacy opening example is Languages 1–4; the published Language 5 form later in this guide also
-works unchanged in Candidate Language 6. Language 6's additions are orthogonal to this vertical; see
-the [complete Language 6 matrix](/docs/keiro/reference/keiro-dsl-language-6).
+Create `transfer-routing.keiro` with the complete declaration below.
+Use Language 6 for the source file.
 
 ## Declare the read model
 
 ```keiro-dsl
-readmodel hospital_load {
-  table = "hospital_load"
+language keiro-dsl 6
+context transfer-routing
+
+target hospital_load_table {
   schema = "hospital_transfer"
+  table = "hospital_load"
+  reset = clear
+}
+
+rebuild-group reporting {
+  targets = [ hospital_load_table ]
+  order = [ hospital_load_table ]
+}
+
+projection-owner hospital_load_writer {
+  source = category "hospitalLoad"
+  delivery = subscription
+  group = reporting
+  targets = [ hospital_load_table ]
+  order = 10
+  subscription = "transfer-routing-hospital-load-sub"
+  dedup = "transfer-routing-hospital-load-v1"
+  checkpoint-on-missing = from-beginning
+  replay = explicit
+}
+
+readmodel hospital_load {
   columns {
     hospital_id text required
     region text required
     available_beds int required
   }
   version = 1
-  shape = "fnv1a:977395d28f254ddb"
-  consistency = Eventual
-  feed = subscription
-  subscription = "transfer-routing-hospital-load-sub"
+  shape = "fnv1a:476e92304e8784f8"
+  freshness = immediate
+  group = reporting
+  targets = [ hospital_load_table ]
 }
 ```
 
-The ordered columns and table produce the captured shape. When authoring a new node, put a temporary
-shape value in the spec and run `check`; `RmShapeHashDrift` prints the expected value. Copy it only
-after reviewing the table/column surface. Bump `version` whenever that captured surface changes.
+The `target` owns the physical table. The `projection-owner` owns event delivery and the subscription identity.
+The `readmodel` owns the query policy.
+Use `freshness = wait-for-head category "hospitalLoad"` when the query must wait for that category head.
 
-Use `Strong` only with `feed = subscription`; add `scope = category "name"` when a strong wait should
-follow a category head instead of the entire log. An inline feed must be owned by a same-named
-aggregate projection.
-
-<Callout type="warn">
-  **That spelling is languages 1–4.** The snippet above does not parse under language 5, which
-  separates *delivery* (where events come from) from *freshness* (what a query waits for). Since the
-  read model is subscription-fed, language 5 wants it **catalog-bound**: the physical table becomes a
-  `target`, the subscription and dedup identity move to a `projection-owner`, and the read model
-  keeps only its query policy.
-
-  ```keiro-dsl
-  target hospital_load_table {
-    schema = "hospital_transfer"
-    table = "hospital_load"
-    reset = clear
-  }
-
-  rebuild-group reporting {
-    targets = [ hospital_load_table ]
-    order = [ hospital_load_table ]
-  }
-
-  projection-owner hospital_load_writer {
-    source = category "hospitalLoad"
-    delivery = subscription
-    group = reporting
-    targets = [ hospital_load_table ]
-    order = 10
-    subscription = "transfer-routing-hospital-load-sub"
-    dedup = "transfer-routing-hospital-load-v1"
-    checkpoint-on-missing = from-beginning
-    replay = explicit
-  }
-
-  readmodel hospital_load {
-    columns {
-      hospital_id text required
-      region text required
-      available_beds int required
-    }
-    version = 1
-    shape = "fnv1a:977395d28f254ddb"
-    freshness = immediate
-    group = reporting
-    targets = [ hospital_load_table ]
-  }
-  ```
-
-  The captured `shape` is unchanged, because it hashes the table and ordered column surface — neither
-  of which moved. Use `freshness = wait-for-head category "hospitalLoad"` where you would previously
-  have written `consistency = Strong` with a category scope.
-
-  See [domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) for the full clause
-  tables and the migration diagnostics.
-</Callout>
+The captured `shape` identifies the table and ordered columns.
+For a new node, run `check` with a temporary shape value.
+`RmShapeHashDrift` reports the expected value. Review the columns before copying that value.
+Increase `version` when the captured surface changes.
 
 ## Declare the stable router and target
 
@@ -128,8 +99,8 @@ distinct deterministic command identity. Do not replace it with source-only UUID
 ## Check and scaffold
 
 ```bash
-keiro-dsl check keiro-dsl/test/fixtures/transfer-routing.keiro
-keiro-dsl scaffold keiro-dsl/test/fixtures/transfer-routing.keiro --out gen
+keiro-dsl check transfer-routing.keiro --min-language 6
+keiro-dsl scaffold transfer-routing.keiro --out gen
 ```
 
 The scaffold creates:
@@ -156,14 +127,12 @@ In the router fill:
 A hand-written duplicate path must use `confirmBenignDuplicate` with the intended target stream and
 attempted event ID. Never acknowledge a bare `DuplicateEvent` globally.
 
-## Verify the vertical
+## Verify the service
 
-```bash
-cabal test keiro-dsl-conformance-newsurface
-```
-
-The proof covers aggregate replay safety/behavior, read-model facts, router name/key/resolver source,
-rejected-command policy, selected target stream, and dispatched command.
+Compile the generated modules and application fills.
+Run the generated aggregate, read-model, and router harnesses.
+Verify replay, selected target streams, duplicate handling, and dispatch failure policy.
+See [service conformance](/docs/keiro/how-to/scaffold-and-fill-holes) for harness assembly.
 
 ## Evolution gate
 

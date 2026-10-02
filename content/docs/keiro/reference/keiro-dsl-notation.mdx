@@ -11,7 +11,7 @@ documented with their owners below.
 ## File structure
 
 ```keiro-dsl
-language keiro-dsl 5
+language keiro-dsl 6
 context hospital-capacity
 module Acme.Services
 layout collocated
@@ -24,20 +24,9 @@ rule lifeCriticalOverride : DivertStatus -> Bool
 # top-level nodes follow
 ```
 
-The optional `language keiro-dsl <N>` preamble must be the **first significant clause** and must
-precede `context`. It selects a released parser and semantic contract before any body syntax is
-interpreted. A file without it is `legacy-unversioned` and means effective version 1; it is never
-silently rewritten. Language **5** is the sole stable contract — see
-[language versions](/docs/keiro/reference/keiro-dsl-language-versions) for the registry, the syntax
-profiles, and the source-selection diagnostics.
-
-<Callout type="info">
-  **Candidate Language 6 is also accepted.** It inherits every Language 5 construct and adds
-  delegated inboxes, process reactions and reaction timers, FIFO-head workqueue reads, declared IDs
-  in contracts, keyed maps, and nominal leaves in structural mappings. This page's “Language 5”
-  feature thresholds therefore also apply to Language 6 unless a paragraph explicitly says
-  otherwise. See the [complete Language 6 matrix](/docs/keiro/reference/keiro-dsl-language-6).
-</Callout>
+Put `language keiro-dsl 6` before `context` in every complete source file.
+The declaration selects the grammar and runtime contract before body parsing.
+See [language selection](/docs/keiro/reference/keiro-dsl-language-versions) for validation and profile identifiers.
 
 `#` begins a line comment. Whitespace and newlines separate tokens but indentation is not structural;
 keywords and braces define the grammar. Quoted strings support `\"`, `\\`, `\n`, `\t`, and `\r`;
@@ -75,14 +64,14 @@ Changing an ID prefix or enum wire spelling is breaking evolution.
 | Grammar family | Nested clauses | Owning reference |
 |---|---|---|
 | `aggregate` | registers, states, commands, events, transitions, `wire`, `projection`, `snapshot` | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
-| `readmodel` | table/schema/columns, captured shape, `freshness` (languages 1–4: consistency/scope/feed/subscription), catalog `group`/`targets`/`backing` | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
+| `readmodel` | table/schema/columns, captured shape, `freshness`, catalog `group`/`targets`/`backing` | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
 | `target` | physical schema/table, reset policy, `depends-on` | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
 | `rebuild-group` | atomic target set and deterministic preparation order | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
 | `projection-owner` | sources, `delivery`, group/targets/order, subscription and dedup identity, `checkpoint-on-missing`, replay policy | [Domain and read-side nodes](/docs/keiro/reference/keiro-dsl-domain-nodes) |
 | `projection-revision` | per-target schema version, provisioner/validator identities, promotion object renames | [Projection revisions and external reads](/docs/keiro/reference/keiro-dsl-projection-revisions) |
 | `external-read` | contract version, query model, result schema/type, compatible revisions, surface generation | [Projection revisions and external reads](/docs/keiro/reference/keiro-dsl-projection-revisions) |
-| `process` | handle/dispatch policy and one nested `timer` | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
-| `router` | stable resolver (or a language-5 [declarative selection](/docs/keiro/reference/keiro-dsl-router-selection)), target bindings, dispatch identity and worker policy | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `process` | typed reactions, guards, ordered actions, and timers | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
+| `router` | stable resolver (or a [declarative selection](/docs/keiro/reference/keiro-dsl-router-selection)), target bindings, dispatch identity and worker policy | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
 | `contract` | topics and integration event schemas | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
 | `intake` | bindings, persistence, decode and seven-outcome disposition | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
 | `emit` | contract/topic map and deterministic ID holes | [Runtime and integration nodes](/docs/keiro/reference/keiro-dsl-runtime-nodes) |
@@ -97,7 +86,7 @@ Changing an ID prefix or enum wire spelling is breaking evolution.
 identity surface of its own; it validates references to other nodes.
 
 The six catalog nodes — `target`, `rebuild-group`, `projection-owner`, `projection-revision`,
-`external-read`, and the `group`/`targets`/`backing` clauses on `readmodel` — require **Language 5 or later**
+`external-read`, and the `group`/`targets`/`backing` clauses on `readmodel` — use the catalog capabilities
 (`ProjectionCatalogSyntax` and `ExternalReadContractSyntax`).
 
 ## Ownership and generated output
@@ -120,7 +109,7 @@ module. Always use the emitted manifest as the exact module/dependency inventory
 
 ## Aggregate transition expressions
 
-*(Language 2 and later.)* A transition's guard and register writes are a small **typed scalar
+A transition's guard and register writes are a small **typed scalar
 expression language**, checked at `check` time and lowered into structural Keiki terms.
 
 ```keiro-dsl
@@ -184,16 +173,15 @@ A transition may instead declare that its behaviour is **hand-owned**:
     goto Closed
 ```
 
-Every version-2 transition is **exclusively** generated-owned or explicitly `implementation hole` —
+Every transition is **exclusively** generated-owned or explicitly `implementation hole` —
 never both, and never implicitly one of them. Ownership is part of the checked semantic graph, the
 canonical rendering, the diff surface, the scaffold ledger, and the fold fingerprint. See
 [scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes) for what each owner may write.
 
 <Callout type="info">
-  **A transition that changes state without emitting is rejected** *(Keiro 0.7.0.0,
-  `AggregateEventlessStateChange`)*. An accepted edge with no event is legal only as a **true
-  no-op** — same vertex, no register writes. Otherwise the change would be invisible to replay, so a
-  persisted log would fold to a different state than the live command produced.
+  The checker rejects a state-changing transition without emitted events as `AggregateEventlessStateChange`.
+  An accepted edge without events must preserve its vertex and registers.
+  Otherwise replay cannot reconstruct the command's state change.
   `EventOutputCommandMismatch` is the sibling code for an emitted event whose fields do not
   correspond to the consumed command.
 </Callout>
@@ -207,10 +195,10 @@ in the [keiro-dsl CLI reference](/docs/keiro/reference/keiro-dsl-cli). The pract
 For an auditable inventory of the closed registries and every installed library module, use the
 [keiro-dsl coverage map](/docs/keiro/reference/keiro-dsl-coverage-map).
 
-## Candidate checked values and ID domains
+## Checked values and ID domains
 
-Under Language 6, Keiro 0.18 also accepts `mapped structural value`, `Day`, `Set Text`,
+Language 6 accepts `mapped structural value`, `Day`, `Set Text`,
 `mapped refined` with `wire base16-bytes`, and `id … prefix=… domain=typeid-v5-or-v7`.
 Text-keyed maps remain `Map <value-type>`; compound arguments require parentheses.
-See [mapped type syntax and limits](/docs/keiro/reference/keiro-dsl-mapped-types#candidate-language-6-checked-value-mappings)
+See [mapped type syntax and limits](/docs/keiro/reference/keiro-dsl-mapped-types#language-6-checked-value-mappings)
 and [explicit ID admission](/docs/keiro/reference/codec#explicit-id-admission).

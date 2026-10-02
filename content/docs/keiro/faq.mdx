@@ -30,9 +30,7 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     The Keiki register and Keiro `(state, RegFile)` snapshot belong only to aggregate/process-manager
     decision state and command hydration. A projection rebuild truncates or resets derived state and
     folds the event log again. If it needs a fact available only in a register, the event history is
-    missing part of the projection contract. Developers coming from legacy `TanES.View` should start
-    with [Migrating from
-    tan-event-source](/docs/keiro/explanation/migrating-from-tan-event-source). See also
+    missing part of the projection contract. See
     [Projections, read models, and
     snapshots](/docs/keiro/explanation/projections-read-models-and-snapshots).
   </Accordion>
@@ -48,7 +46,7 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     (`patch`, for recorded branch decisions that preserve in-flight behavior). See
     [Understanding durable execution](/docs/keiro/explanation/durable-execution), the [durable
     workflows reference](/docs/keiro/reference/durable-workflows), and the [workflow
-    roadmap](/docs/keiro/explanation/workflow-roadmap). If the workflow comes from a `.keiro`
+    model comparison](/docs/keiro/explanation/choosing-a-workflow-model). If the workflow comes from a `.keiro`
     specification, follow [Evolve a workflow with patch and
     continue-as-new](/docs/keiro/how-to/evolve-a-workflow-with-patch-and-continue-as-new).
   </Accordion>
@@ -145,7 +143,7 @@ Short answers to the questions people ask most about keiro. Each links to the pa
   </Accordion>
 
   <Accordion title="How do I get exactly-once processing with Kafka?">
-    You don't get distributed exactly-once *delivery* — no system does. You get **at-least-once**
+    You do not get distributed exactly-once *delivery* — no system does. You get **at-least-once**
     delivery plus the **inbox** dedupe table, keyed by `(source, dedupe_key)`, which makes
     *processing* effectively-once: a redelivered message is recognized and skipped. On the send side,
     the **outbox** publishes transactionally so a decided event is never lost. See [The inbox
@@ -236,7 +234,7 @@ Short answers to the questions people ask most about keiro. Each links to the pa
     construction](/docs/keiro/reference/event-stream-and-stream#safe-category-based-construction-streamcategory).
   </Accordion>
 
-  <Accordion title="Can I just change a guard? It doesn't touch any event schema.">
+  <Accordion title="Can I just change a guard? It does not touch any event schema.">
     **No — decide logic *is* the replay surface.** keiki has no separate decide/evolve pair: hydration
     re-inverts each stored event back to the command that produced it and *re-checks that edge's
     guard*. Tighten a guard and stored events that satisfied the old rule lose their inverting edge,
@@ -314,132 +312,42 @@ Short answers to the questions people ask most about keiro. Each links to the pa
   </Accordion>
 
   <Accordion title="Which keiro-dsl language version should I write?">
-    **4** — it is the sole `Stable` registry entry, and every `keiro-dsl new <kind>` skeleton starts
-    there. Declare it as the first significant clause, before `context`:
+    Use Language 6. Declare it before `context`:
 
     ```text
-    language keiro-dsl 4
+    language keiro-dsl 6
     ```
 
-    Languages 1 through 3 and unversioned sources stay `compatibility-only`: fully readable, with
-    their immutable released meaning, never silently upgraded. Nothing forces a move. Expect language
-    4 to reject more, though — it enforces numeric floors, duplicate and shadowing rules, runtime
-    identity uniqueness, Kafka and PostgreSQL naming, intake coupling, contract topic aliases, and the
-    aggregate wire convention. Read each new error as a latent defect the earlier contract could not
-    see. See [language versions](/docs/keiro/reference/keiro-dsl-language-versions).
+    Language 6 is the only supported language. Use `check --min-language 6`.
   </Accordion>
 
-  <Accordion title="Every snapshot missed after upgrading to Keiro 0.9 — is something corrupt?">
-    No. Aggregate fold fingerprints widened from a 16-hex-digit FNV-1a-64 digest to a 32-hex-digit
-    FNV-1a-128 one, which **intentionally** invalidates snapshots written under the old
-    discriminator. A discriminator mismatch is an ordinary cache **miss**, not a correctness event:
-    each snapshot-bearing stream full-replays once from its durable log and then reseeds. Refresh your
-    generated transducers and size the deploy window for that replay. Read-model shape hashes,
-    mapped-wire identities, and behaviour keys keep their 64-bit form and are unaffected. See
-    [Snapshots](/docs/keiro/reference/snapshot).
-  </Accordion>
 
   <Accordion title="Can I still hand-write an aggregate guard?">
-    Yes — but you must say so. Since Keiro 0.6.0.0 every version-2 transition is **exclusively**
-    generated-owned or explicitly `implementation hole`. Declare the hole and the guard is yours;
-    leave it out and the checked guard and *ordered* writes are lowered into Keiki terms and
-    necessarily executed by the generated transducer. A hand-owned module can still construct declared
-    event and output values, but it cannot replace the predicate, reorder the writes, or supply an
-    alternative transducer.
+    Declare `implementation hole` for a guard that application code owns.
+    Otherwise the generated transducer executes the checked guard and ordered writes as Keiki terms.
+    Application code can construct declared events and outputs.
+    It cannot replace generated-owned predicates, reorder their writes, or supply an alternative transducer.
 
-    The escape hatch is permanent and deliberate — a closed expression language cannot anticipate
+    The custom implementation option is permanent and deliberate — a closed expression language cannot anticipate
     every domain predicate. What is no longer possible is a hole *silently* replacing behaviour the
     DSL claims to own while diff, replay, snapshot, and symbolic surfaces keep describing the source
     expression. See [scaffold and fill holes](/docs/keiro/how-to/scaffold-and-fill-holes).
   </Accordion>
 
   <Accordion title="My generated aggregate guard is reported UnverifiedOpaque — did something break?">
-    No. Keiro 0.7.0.0 moved to Keiki 0.7, which classifies a predicate crossing a **one-way**
-    generated projection conservatively. **Concrete command execution and replay are unchanged** —
-    the same generated term still runs. Only proof strength moved, and the earlier "verified" answer
-    was the overstatement.
+    A predicate with a one-way generated projection can be `UnverifiedOpaque`.
+    Concrete execution and replay still run the generated term.
+    An exact domain and reverse witness are required for stronger symbolic verification.
 
     To recover a `Verified*` classification the projection needs an exact domain and a reverse
     witness, which is exactly what the enforced
     [TypeID-v7 id domain](/docs/keiro/reference/codec#the-enforced-identifier-domain) supplies for
-    language-3 prefix-bearing IDs. Do **not** have conformance tooling relabel an unverified result
+    Language 6 prefix-bearing IDs. Do **not** have conformance tooling relabel an unverified result
     as source-proved.
   </Accordion>
 
-  <Accordion title="My hand-owned module stopped compiling after re-scaffolding.">
-    Three renames account for almost all of these, all source-level with no data consequence:
 
-    - **Language 3** moved service-level IDs and enums out of every aggregate's `Domain` module into
-      one `Generated.<Ctx>.Nominals`, and made generated prefix-bearing IDs **abstract** — import
-      `parseX`, `mkX`, and `xText` from `Nominals`. The raw constructor and `unsafeXFromLegacyText`
-      live only in the generated internal replay module.
-    - **Keiro 0.9** renamed structural projection witnesses from hex-mangled identifiers to
-      deterministic owner-and-JSON-pointer names. Values and semantics are unchanged.
-    - **Keiro 0.9** also stopped emitting an `Expressions` module at all; delete any leftover and
-      remove it from `other-modules`.
-
-    Event wire bytes and canonical nominal identities are unchanged throughout. See [place generated
-    modules](/docs/keiro/how-to/place-generated-modules-and-wire-cabal).
-
-    **Keiro 0.12** adds one more: every mapped service needs a single regeneration to pick up the new
-    context `StructuralConformance` and `BehaviorSourceMap` modules, and its generated Cabal fragment
-    must be reconciled with them. Generated layout and evidence change; wire, fold, snapshot, and
-    behavior-key identities do not.
-  </Accordion>
-
-  <Accordion title="After upgrading to 0.12, one of my workflows never resumes. What happened?">
-    Almost certainly a **custom wake source** that transitions its own durable row without leaving the
-    owning instance discoverable.
-
-    Since 0.12, [discovery is
-    exact](/docs/keiro/reference/durable-workflows#discovery-is-exact): a `suspended` instance with no
-    due `wake_after` is deliberately invisible to the resume worker. That is what makes parked
-    workflows free — but it means the `keiro_workflows` row is now the complete wake ledger. Every
-    wake-source lifecycle transition must write that row in the **same transaction** that performs it.
-
-    Delivering through `appendJournalEntry` satisfies this automatically. A transition that does *not*
-    append — a cancellation, an abandonment, an expiry — must flip the instance row itself. Check with:
-
-    ```sql
-    SELECT status, wake_after FROM keiro.keiro_workflows
-    WHERE workflow_name = $1 AND workflow_id = $2;
-    ```
-
-    `suspended` with a `NULL` hint, while your own row says the wait is resolved, is the signature.
-    See [Write a custom wake source](/docs/keiro/how-to/write-a-custom-wake-source).
-  </Accordion>
-
-  <Accordion title="Did the 0.12 deterministic-id change move any of my ids?">
-    **Not if your identities are ASCII** — which covers every deployment we know of.
-
-    Deterministic ids are now hashed from the UTF-8 bytes of their seed rather than each character's
-    codepoint truncated to eight bits. For a pure-ASCII seed the UTF-8 bytes *are* the codepoint
-    values, so every id is byte-identical. There is no migration and no operator action.
-
-    Only **non-ASCII** seeds derive new ids, and they move off a genuine collision: the old encoding
-    gave two different seeds the same id whenever their characters agreed modulo 256, which could wedge
-    a workflow journal until the resume worker marked it failed. In-flight consequences are bounded —
-    a journal still replays, a sleep may arm one duplicate timer that collapses idempotently, and a
-    retried process-manager emission may emit one duplicate command. See [deterministic
-    ids](/docs/keiro/reference/durable-workflows).
-  </Accordion>
-
-  <Accordion title="Should I switch my dashboards off keiro.projection.lag?">
-    **Yes** — rename them to `keiro.projection.global_position_distance`. Both gauges are recorded
-    from the same snapshot with the same value, so it is a rename with no re-scaling.
-
-    The old name claimed something false. The value is the difference between the captured store
-    cursor and a projection's slowest durable member checkpoint — a distance between two **positions**,
-    not a count of events. A global cursor can be sparse for a filtered, category, hard-deleted, or
-    sharded history, so reading it as a backlog count overstates it, sometimes wildly. Its unit changed
-    from `{event}` to `{position}` to stop implying otherwise. See [the deprecation
-    note](/docs/keiro/reference/telemetry#keiroprojectionlag-is-deprecated).
-  </Accordion>
 </Accordions>
-
-## Why does scaffolding refuse an older generated edition?
-
-Keiro DSL 0.15 requires explicit backup-backed idiomatic-v2 adoption. Legacy sidecar/module moves need both apply flags. See [Adopt generated Haskell v2](/docs/keiro/how-to/adopt-generated-haskell-v2).
 
 ## Does terminal outbox rejection stop the line?
 
