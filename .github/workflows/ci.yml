@@ -13,64 +13,52 @@ concurrency:
 
 jobs:
   gates:
-    name: Quality gates (pnpm + Node 22)
+    name: Quality gates (Nix, pnpm + Node 22)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v6
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v35
 
-      - name: Set up Node 22
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-
-      # Installs from the committed pnpm-lock.yaml so CI gets the pinned
-      # nitro 3.0.260429-beta (a newer nitro breaks the Vite SSR worker — see the
-      # plan's Decision Log). `pnpm run typecheck` regenerates the `.source/`
-      # collection after install, once pnpm has finished linking Git dependencies.
+      # The shared shell supplies the pinned compiler and Oxc tools plus this
+      # project's Node 22/pnpm extension. The committed pnpm lock remains frozen.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: nix develop --command pnpm install --frozen-lockfile
 
       - name: Documentation tests
-        run: pnpm run test:docs
+        run: nix develop --command pnpm run test:docs
 
       - name: Documentation scope and prose
-        run: pnpm run lint:docs
+        run: nix develop --command pnpm run lint:docs
 
       - name: Documentation navigation
-        run: pnpm run lint:nav
+        run: nix develop --command pnpm run lint:nav
 
       - name: Canonical terminology snapshot
-        run: pnpm run lint:terminology
+        run: nix develop --command pnpm run lint:terminology
 
       - name: Typecheck
-        run: pnpm run typecheck
+        run: nix develop --command pnpm run typecheck
 
-      # oxlint / oxfmt are provided by the Nix dev shell locally; in CI they are
-      # fetched via `pnpm dlx`, PINNED to the same versions the flake ships
-      # (oxlint 1.66.0, oxfmt 0.45.0) so CI's lint/format rules match developers'
-      # exactly and the format gate never flaps on a version skew. Both read their
-      # repo configs (.oxlintrc.json, and .gitignore/.prettierignore for oxfmt).
+      # Lint and format use the module's packages, matching the local shell.
       - name: Lint
-        run: pnpm dlx oxlint@1.66.0
+        run: nix develop --command oxlint
 
       - name: Format check
-        run: pnpm dlx oxfmt@0.45.0 --check .
+        run: nix develop --command oxfmt --check .
 
       # `vite build` prerenders the static SPA into .output/public. The font
       # package is optional and absent on the runner; scripts/copy-fonts.mjs
       # tolerates that and exits 0, so the build still succeeds (code blocks fall
       # back to the system monospace — ligatures are a licensed local/deploy concern).
       - name: Build (static SPA -> .output/public)
-        run: pnpm build
+        run: nix develop --command pnpm build
 
       # Source-level internal doc-link check (catches broken /docs links in MDX —
       # the meaningful gate for this client-rendered SPA) followed by a linkinator
       # crawl of the built output. See the plan's Decision Log on link-check coverage.
       - name: Link check
-        run: pnpm run lint:links
+        run: nix develop --command pnpm run lint:links

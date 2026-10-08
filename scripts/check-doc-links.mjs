@@ -83,8 +83,7 @@ for (const file of files) {
 
     let ok
     if (noAnchor.startsWith("/docs")) ok = docUrlExists(noAnchor)
-    else if (noAnchor.startsWith("/"))
-      ok = false // absolute non-docs internal link: unknown route
+    else if (noAnchor.startsWith("/")) ok = false // absolute non-docs internal link: unknown route
     else ok = relativeExists(fileDir, noAnchor) // relative
 
     if (!ok) broken.push({ file: relative(ROOT, file), target })
