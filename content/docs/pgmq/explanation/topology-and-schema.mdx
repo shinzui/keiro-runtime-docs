@@ -6,6 +6,14 @@ description: "Standard, unlogged, partitioned, FIFO, topic, configuration, and m
 There are two different layers of setup in pgmq-hs: installing the pgmq schema
 and creating application queue topology.
 
+The diagram shows the two layers and the tools that create each one.
+
+<Diagram
+  src="pgmq/schema-and-topology-layers"
+  alt="Three stacked layers. At the bottom is PostgreSQL. Above it is the pgmq schema with functions such as pgmq.send, pgmq.read, and pgmq.archive, created by the pgmq extension or the pgmq-migration component. At the top is the application queue topology with queues, notifications, FIFO indexes, and topic bindings, created by pgmq-config or by direct pgmq-hasql calls."
+  caption="Install the schema once per database. Reconcile the topology on every boot."
+/>
+
 ## Schema installation
 
 The schema is the database implementation of pgmq itself: functions such as
@@ -72,6 +80,18 @@ repaired:
 
 The general rule: **reconcile automatically only where the repair is
 non-destructive and the API supports it in place; otherwise report and stop.**
+
+The flowchart applies that rule to each declared object:
+
+```mermaid
+flowchart TD
+  Declared["declared object"] --> Exists{"exists?"}
+  Exists -->|"no"| Create["create it and report"]
+  Exists -->|"yes"| Same{"matches the declaration?"}
+  Same -->|"yes"| Skip["report Skipped"]
+  Same -->|"throttle interval differs"| Update["UpdatedNotifyThrottle"]
+  Same -->|"queue type differs"| Drift["DetectedQueueTypeDrift, no change"]
+```
 
 This makes it safe to call on every boot, but it also means destructive topology
 changes should be modeled as explicit migrations or operator actions.

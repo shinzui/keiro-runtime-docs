@@ -10,6 +10,21 @@ Where a sleep's wake source is a timer the framework drains, an awakeable's wake
 else's code*, which puts the weight on handing out the right opaque id and making the signal
 crash-safe.
 
+The sequence below shows the lifecycle of one awakeable.
+
+```mermaid
+sequenceDiagram
+  participant WF as workflow run
+  participant DB as keiro_awakeables
+  participant X as external system
+  WF->>DB: allocation step registers a pending row
+  WF->>X: hand out the AwakeableId
+  WF->>WF: await misses, arm runs, run suspends
+  X->>DB: signalAwakeable
+  Note over DB: complete the row and append the awk step in one transaction
+  WF->>WF: next run, await hits the awk step
+```
+
 ## The journaled id
 
 ```haskell
@@ -174,6 +189,21 @@ performed the transition itself, it is repairing an already-completed row from t
 the in-transaction read shows another *signal* completed the row. If **cancellation** won, it appends
 nothing and returns `False`. Cancellation and completion stay mutually exclusive terminal outcomes
 from the workflow's point of view.
+
+The flowchart shows when `signalAwakeable` appends the journal entry.
+
+```mermaid
+flowchart TD
+  S["signalAwakeable"] --> L{"row status"}
+  L -- "no row" --> F1["False, no append"]
+  L -- "cancelled" --> F2["False, no append"]
+  L -- "completed" --> Rep["append from stored payload (repair)"]
+  L -- "pending" --> U{"guarded UPDATE"}
+  U -- "won" --> A1["append awk step"]
+  U -- "lost" --> RR{"re-read status"}
+  RR -- "completed by a signal" --> A2["append awk step"]
+  RR -- "cancellation won" --> F3["False, no append"]
+```
 
 `signalAwakeableFrom` is public purely as a narrow, deterministic race-test seam — it lets a test
 interpose between the initial read and the guarded completion. Ordinary callers use `signalAwakeable`.

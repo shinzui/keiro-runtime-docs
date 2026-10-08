@@ -54,6 +54,28 @@ Two more errors are not about versions but worth knowing here:
   current state, re-decide, and retry the append. That retry loop *is* optimistic concurrency.
 </Callout>
 
+The sequence shows two writers that read the same version of `orders-1`. Only one append can win.
+
+```mermaid
+sequenceDiagram
+  participant A as Writer A
+  participant S as kiroku-store
+  participant B as Writer B
+  A->>S: read orders-1
+  S-->>A: version 4
+  B->>S: read orders-1
+  S-->>B: version 4
+  A->>S: append, ExactVersion 4
+  S-->>A: ok, version 5
+  B->>S: append, ExactVersion 4
+  S-->>B: WrongExpectedVersion
+  B->>S: read orders-1
+  S-->>B: version 5
+  Note over B: re-fold and decide again
+  B->>S: append, ExactVersion 5
+  S-->>B: ok, version 6
+```
+
 ## Trade-offs
 
 Optimistic concurrency assumes conflicts are rare: writers proceed without locking and only one

@@ -21,6 +21,14 @@ happens first. It reuses the store's listener connection.
 work, and the fallback guarantees another pass even if every notification is missed. Push changes
 latency, not truth.
 
+The diagram compares a fixed poll with a push-aware loop.
+
+<Diagram
+  src="keiro/concepts/push-wake-timeline"
+  alt="Two appends occur on a time axis. With a fixed poll, each append waits for the next tick. With a push-aware loop, a NOTIFY for the first append starts a pass at once. The NOTIFY for the second append is lost, so the fallback timeout pass picks up the work later."
+  caption="Push reduces idle latency. The fallback timeout keeps the durable poll as the correctness path."
+/>
+
 ## Sharding changes how many readers run
 
 Kiroku assigns every originating stream to one of `N` consumer-group members and keeps a checkpoint
@@ -37,6 +45,14 @@ The lease table solves assignment, not delivery. A reconcile pass:
 `FOR UPDATE SKIP LOCKED` ensures two valid claims cannot win the same lease row. Claiming only one
 bucket per pass lets concurrently starting workers become visible and converge instead of allowing
 the first process to monopolize the pool.
+
+The diagram shows two processes that share four buckets.
+
+<Diagram
+  src="keiro/concepts/shard-leases"
+  alt="Process 1 leases buckets 0 and 1. Process 2 leases bucket 2 and claims bucket 3, whose lease has expired. Each bucket maps to one Kiroku group member with its own durable checkpoint."
+  caption="Leases decide which process reads each member. Kiroku member checkpoints hold the delivery progress."
+/>
 
 ## Why overlap still exists
 

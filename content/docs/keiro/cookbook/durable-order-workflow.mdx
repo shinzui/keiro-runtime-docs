@@ -66,6 +66,30 @@ appRegistry = Map.fromList
 
 ## How it runs
 
+The sequence shows which worker moves the workflow past each wait.
+
+```mermaid
+sequenceDiagram
+  participant C as Caller
+  participant W as order-fulfillment
+  participant T as Timer worker
+  participant R as Resume worker
+  participant P as Payment webhook
+  participant S as ship-order child
+  C->>W: runWorkflow
+  Note over W: reserve-inventory, arm cooling-off sleep
+  W-->>C: Suspended
+  T->>W: journal the cooling-off completion
+  R->>W: replay past the sleep
+  Note over W: send-payment-link, park on payment-webhook
+  P->>W: signalAwakeable with the confirmation
+  R->>W: replay, then charge
+  W->>S: spawnChild
+  R->>S: drive create-shipment
+  S-->>W: tracking number
+  Note over W: Completed with the tracking number
+```
+
 - **First call** to `runWorkflow orderFulfillmentWorkflowName (WorkflowId (orderIdText orderId)) (orderFulfillmentWorkflow orderId)`
   reserves inventory, arms the cooling-off timer, and returns `Suspended`.
 - A **timer worker** (`runWorkflowTimerWorker`) fires the sleep; the **resume worker**

@@ -9,6 +9,19 @@ Short, self-contained, copy-paste recipes that each solve one common problem —
 
 The recipes below each fix one problem. This section is the level above them: the handful of modelling decisions that decide whether your transducer stays small, replayable, and verifiable — or drifts into shapes the solver cannot see.
 
+The decision tree shows where a new piece of state belongs. The sections below explain each branch.
+
+```mermaid
+flowchart TD
+  Q1{"Does it have its own identity<br/>and its own lifecycle?"}
+  Q1 -- yes --> A1["A separate transducer with its own stream,<br/>wired by a Process"]
+  Q1 -- no --> Q2{"Does a different set of<br/>commands become legal?"}
+  Q2 -- yes --> A2["A new vertex"]
+  Q2 -- no --> Q3{"Does a guard read it?"}
+  Q3 -- yes --> A3["A scalar tally or slot,<br/>plus a structural guard"]
+  Q3 -- no --> A4["A collection register,<br/>if consumers need the elements"]
+```
+
 ### keiki is for durable, pure state machines
 
 keiki (継起) describes an aggregate as a guarded transducer: a finite set of control vertices, a typed register file, and edges that read a command, write registers, and emit events. Everything inside that transducer is pure. **Decode and validate at the boundary, not in keiki.** Parse JSON, look up the current time, generate a fresh confirmation code, check authorization — all of that happens in the runtime adapter *before* the command reaches the transducer. By the time an edge runs, the command is a typed value and the only question left is the state-machine question: from *this* vertex, under *these* registers, does this command transition, and to what?

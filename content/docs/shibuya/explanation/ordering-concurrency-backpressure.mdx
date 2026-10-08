@@ -32,11 +32,27 @@ partitions to move independently. Single-message processors enforce this with pa
 dispatch: equal `Envelope.partition` values run and finalize in arrival order, while distinct
 partitions can use the configured concurrency.
 
+The diagram shows six arrivals from three partitions and the order that dispatch keeps.
+
+<Diagram
+  src="shibuya/partition-keyed-dispatch"
+  alt="Six messages arrive in the order a1, b1, a2, c1, b2, a3. Below, each partition has a lane. Partition A runs a1, then a2, then a3. Partition B runs b1, then b2. Partition C runs c1. Arrows connect messages only inside a lane."
+  caption="Order holds inside each partition. Different partitions can overlap up to the concurrency limit."
+/>
+
 `Unordered` means messages can be processed independently. It can run with `Serial`, `Ahead n`, or
 `Async n`.
 
 Batching processors schedule by `BatchKey`, not by `Envelope.partition`, so `runApp` rejects
 `PartitionedInOrder` with `Ahead n` or `Async n` for `BatchingProcessor`.
+
+The matrix summarizes which policy combinations start.
+
+<Diagram
+  src="shibuya/ordering-concurrency-matrix"
+  alt="A three by three grid. Rows are StrictInOrder, PartitionedInOrder, and Unordered. Columns are Serial, Ahead n, and Async n. StrictInOrder with Ahead or Async is rejected by validatePolicy. PartitionedInOrder with Ahead or Async is keyed by partition for single-message processors. All other cells are accepted."
+  caption="Only StrictInOrder limits concurrency to Serial. Batching processors also reject PartitionedInOrder with Ahead or Async."
+/>
 
 Backpressure is independent of those policies. The internal supervised runner creates a bounded NQE
 inbox of the configured size. The ingester reads from `Adapter.source` and blocks when the inbox is

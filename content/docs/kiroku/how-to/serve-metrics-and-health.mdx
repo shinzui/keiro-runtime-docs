@@ -20,6 +20,26 @@ Build a `KirokuMetrics` collector, attach it to the store **before** the store o
 `withMetricsServerWithStore` so `/metrics`, `/metrics/prometheus`, `/health/*`, `/subscriptions`, and
 `/ws/*` reflect live activity.
 
+The sequence shows the deferred-store pattern from the steps below.
+
+```mermaid
+sequenceDiagram
+  participant App as Your main
+  participant V as storeVar
+  participant M as KirokuMetrics
+  participant St as Store
+  participant Srv as Metrics server
+  App->>V: newTVarIO Nothing
+  App->>M: newKirokuMetricsWith readers over storeVar
+  App->>App: put metrics handlers on ConnectionSettings
+  App->>St: withStore settings
+  St-->>M: eventHandler and observationHandler calls
+  App->>V: writeTVar storeVar (Just store)
+  App->>Srv: withMetricsServerWithStore
+  Srv->>M: take a snapshot per request
+  M->>V: read store gauges through storeVar
+```
+
 ## Steps
 
 1. **Build the collector with the deferred-store pattern.** The collector's callbacks must be on

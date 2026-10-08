@@ -80,6 +80,21 @@ The order is a correctness boundary. Missing registration, stale schema, or non-
 status fails before any wait or application-table read. `runQuery metrics` selects
 `defaultConsistency`; `runQueryWith` overrides it.
 
+The flowchart shows the gates in order. A registry error is `ReadModelUnregistered`,
+`ReadModelStaleSchema`, or `ReadModelNotLive`.
+
+```mermaid
+flowchart TD
+  Q["runQueryWith"] --> R{"ensureReadModel"}
+  R -- "missing, stale or not Live" --> E["Left registry error"]
+  R -- "valid" --> M{"ConsistencyMode"}
+  M -- "Eventual or no target" --> Run["run query in a transaction"]
+  M -- "PositionWait target" --> Wait["waitFor target"]
+  M -- "Strong: strongScope target" --> Wait
+  Wait -- "last_seen reaches target" --> Run
+  Wait -- "deadline" --> TO["Left ReadModelWaitTimeout"]
+```
+
 ## Strong waits now have a scope
 
 ```haskell
@@ -116,6 +131,14 @@ WHERE s.category = $1;
 The `$all` membership `stream_version` is the global position. This target advances only when the
 category does, so unrelated traffic cannot hold a category worker behind. That matters because
 Kiroku currently does not advance category checkpoints on empty fetches.
+
+The example below shows both targets on one `$all` log.
+
+<Diagram
+  src="keiro/walkthrough/read-side/strong-scope-targets"
+  alt="Ten $all positions. Order events sit at positions 1, 3, 4, 6 and 8. Payment events fill the other positions. EntireLog targets position 10. CategoryHead order targets position 8, which the order subscription has reached."
+  caption="CategoryHead waits only for its own category. EntireLog also waits for unrelated traffic."
+/>
 
 `waitFor` polls the minimum `subscriptions.last_seen` for `subscriptionName`. Defaults are five
 seconds with a 10 ms poll. On deadline it records `keiro.projection.wait.timeouts` and returns the

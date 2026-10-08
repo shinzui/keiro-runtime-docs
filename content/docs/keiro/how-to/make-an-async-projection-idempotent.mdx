@@ -46,6 +46,20 @@ case outcome of
 - `AsyncFenced` means the registry row is missing or not `Live`. It performs neither dedup nor table
   writes.
 
+The flowchart shows how `applyAsyncProjection` picks an outcome and what the worker does next.
+
+```mermaid
+flowchart TD
+  A["applyAsyncProjection"] --> L{"Registry row is Live?"}
+  L -- "No, or missing" --> F["AsyncFenced: no dedup row, no table write"]
+  F --> P["Fail or park; do not checkpoint"]
+  L -- "Yes" --> K{"Dedup key already retained?"}
+  K -- "Yes" --> D["AsyncDuplicate: skip the table update"]
+  K -- "No" --> AP["AsyncApplied: insert key, run applyRecorded"]
+  D --> C["Acknowledge and checkpoint"]
+  AP --> C
+```
+
 <Callout type="warn">
   Never acknowledge or advance the subscription checkpoint for `AsyncFenced`. Doing so skips the
   event while the rebuild owns the model. Fail or park the delivery and retry it after guarded

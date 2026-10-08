@@ -56,6 +56,16 @@ process clearly consumes upstream events; the outputs are a `SyncToLegacyRequest
 (the runtime adapter consumes it to call the legacy system — the pure layer never makes the call)
 and a `LegacyAssignmentCommanded` wrapper around the downstream `AssignLegacyLoanId` command.
 
+The process has three vertices. `SyncSettled` is terminal, so it has no outgoing edges.
+
+```mermaid
+stateDiagram-v2
+  [*] --> SyncIdle
+  SyncIdle --> SyncRequested: LoanCreatedIn / SyncToLegacyRequested
+  SyncRequested --> SyncSettled: LegacyCallbackReceivedIn [loanId matches]<br/>/ LegacyAssignmentCommanded
+  SyncSettled --> [*]
+```
+
 Replays are idempotent **by construction**. A duplicate callback for the same loan finds the
 process already in `SyncSettled`, which has no outgoing edges, so `delta` returns `Nothing`. A
 callback whose `loanId` does not match the pending one fails the `requireEq` guard and `delta`

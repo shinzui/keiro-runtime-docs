@@ -4,7 +4,23 @@ description: "Layer fast manifest and plan checks with fresh-database, upgrade, 
 ---
 
 One successful parser check does not prove PostgreSQL can execute the complete application plan.
-Build a pipeline from cheap definition checks to database behavior.
+Build a pipeline from cheap definition checks to database behavior. The flow shows the gate order.
+
+```mermaid
+flowchart TD
+  subgraph Fast["database-free gates"]
+    Build["cabal build: embed and validate"] --> Check["check --manifest"]
+    Check --> Plan["plan and list"]
+  end
+  subgraph Db["ephemeral PostgreSQL gates"]
+    Fresh["apply to a fresh database"] --> Assert["assert through a new connection"]
+    Assert --> Rerun["rerun: all AlreadyApplied"]
+    Rerun --> Verify["strict verify"]
+    Verify --> Upgrade["upgrade from the last released plan"]
+    Upgrade --> Matrix["PostgreSQL 17 and 18"]
+  end
+  Plan --> Fresh
+```
 
 ## Fast, database-free gates
 

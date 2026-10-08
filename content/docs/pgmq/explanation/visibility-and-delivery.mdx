@@ -28,6 +28,14 @@ the message, pgmq will show the message again after the timeout. If a worker
 takes longer than the timeout, another worker can receive the same message while
 the first worker is still running.
 
+The timeline shows the second case with a 30 second visibility timeout.
+
+<Diagram
+  src="pgmq/visibility-timeout-redelivery"
+  alt="A time axis from 0 to 80 seconds. Worker A reads the message at 10 seconds, so the row is leased until 40 seconds. Worker A is still running at 40 seconds, when the visibility timeout expires. Worker B reads the same message at 45 seconds, and readCount becomes 2. Both workers handle the message between 45 and 55 seconds. Worker B archives it at 65 seconds."
+  caption="A lease is a timeout, not a lock. A slow handler can overlap with a redelivery."
+/>
+
 That is why handlers should be idempotent. Store a processed-message id, use
 natural idempotency keys in the downstream system, or design the handler so a
 repeat has the same final effect.
@@ -51,6 +59,14 @@ and message id.
 row immediately is acceptable, or when the handler writes its own durable record
 before doing riskier work. It is not the usual shape for supervised background
 work, because there is no lease to expire for automatic retry.
+
+The diagram compares the three ways that a row leaves the queue table.
+
+<Diagram
+  src="pgmq/archive-delete-pop"
+  alt="Three rows. archiveMessage moves message 42 from the queue table to the archive table. deleteMessage removes message 42 and keeps no history. pop returns message 42 and removes it in one step, with no lease and no automatic retry."
+  caption="Only archive keeps the row. Only pop removes it without a lease."
+/>
 
 ## Delivery guarantee
 

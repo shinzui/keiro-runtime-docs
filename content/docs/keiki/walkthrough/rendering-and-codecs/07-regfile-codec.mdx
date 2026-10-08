@@ -135,6 +135,14 @@ independently and asserts round-trip and within-path determinism, but deliberate
 cross-path byte equality. Pick one path per persistence site and stay on it.
 </Callout>
 
+The diagram shows the two key orders for a three-slot register file.
+
+<Diagram
+  src="keiki/walkthrough/rendering-and-codecs/encoder-key-order"
+  alt="The slot list is retryCount, cooldownUntil, correlationId. regFileToJSON builds a Value through KeyMap and emits the keys in alphabetical order: cooldownUntil, correlationId, retryCount. regFileToEncoding streams a Series and emits the keys in slot order: retryCount, cooldownUntil, correlationId."
+  caption="Both encoders produce the same JSON value. Only the key order, and so the bytes, differ."
+/>
+
 The within-path guarantee that *does* hold is determinism: re-encoding the same RegFile via the same
 path yields byte-equal output every time. That is what `valueDeterministic` and `encodingDeterministic`
 pin in `PropSpec`.
@@ -181,6 +189,14 @@ regFileFromJSON v = case v of
             )
     _ -> Left "regfile: expected JSON Object"
 ```
+
+The diagram traces the decoder over an object that has one extra key.
+
+<Diagram
+  src="keiki/walkthrough/rendering-and-codecs/regfile-decode-walk"
+  alt="The input object has the keys retryCount, cooldownUntil, correlationId, and extra. Each slot step looks up its own key and deletes it. After the three slots, only extra is left. Because the leftover object is not empty, regFileFromJSON returns Left with the message regfile: unknown extra fields, naming extra. A missing key gives slot: missing slot, and a type error gives slot: reason."
+  caption="Each slot consumes its key. Any key that no slot claims fails the decode."
+/>
 
 This is the no-silent-fallback discipline at the data layer: an extra key is never tolerated, a missing
 key is never defaulted, and a type mismatch is never coerced. The error message always names the slot

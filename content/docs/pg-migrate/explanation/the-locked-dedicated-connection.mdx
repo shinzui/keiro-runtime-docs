@@ -15,11 +15,11 @@ sequenceDiagram
   App->>Provider: run plan / repair / import
   Provider->>PG: acquire one connection
   App->>PG: check server version
-  App->>PG: acquire session advisory lock
   App->>PG: save and optionally set statement_timeout
+  App->>PG: acquire session advisory lock
   App->>PG: initialize ledger, verify, execute
-  App->>PG: restore statement_timeout
   App->>PG: release advisory lock
+  App->>PG: restore statement_timeout
   Provider->>PG: release/discard connection
   Provider-->>App: structured report or error
 ```
@@ -30,6 +30,14 @@ sequenceDiagram
 one `Hasql.Connection.Connection`, and the provider keeps it checked out until the callback returns.
 `connectionProviderFromSettings` opens a concrete dedicated connection. A pool integration is valid
 only when its bracket holds one checkout across the complete callback.
+
+The comparison shows why a per-statement checkout breaks the session state.
+
+<Diagram
+  src="pg-migrate/dedicated-connection-vs-pool"
+  alt="On the left, a runner sends the statement timeout to session A, the advisory lock to session B, and the migration SQL to session C. On the right, the runner sends all three to one session."
+  caption="Session state protects only the session that holds it. The provider must keep one connection for the whole operation."
+/>
 
 The session lock serializes plan execution, repair, and generic import that use the same ledger
 configuration. The runner checks the PostgreSQL major, acquires according to `LockWait`, initializes
@@ -47,6 +55,14 @@ outcome:
 - cleanup trouble after success appears in the successful report's `cleanupIssues`;
 - cleanup trouble after a primary failure becomes `CleanupFailed primary issues`; and
 - asynchronous interruption is rethrown only after cleanup is attempted.
+
+The three rows show how each primary outcome combines with cleanup trouble.
+
+<Diagram
+  src="pg-migrate/cleanup-outcomes"
+  alt="Three rows. Committed work followed by cleanup trouble gives a successful report with cleanupIssues. A primary error followed by cleanup trouble gives CleanupFailed with the primary error and the issues. An asynchronous interruption is rethrown after cleanup is attempted."
+  caption="Cleanup comes after the primary outcome and never hides it."
+/>
 
 That ordering prevents an unlock error from erasing the fact that SQL and its ledger evidence have
 already committed. It also prevents a primary execution error from disappearing behind cleanup

@@ -33,6 +33,20 @@ case finalizeResult of
     _ -> pure ()
 ```
 
+This flowchart traces one delivery through `processOne`:
+
+```mermaid
+flowchart TD
+  Handler["call Handler"] --> Result{"result"}
+  Result -->|"returns decision"| Finalize["finalizeWithRetry"]
+  Result -->|"throws"| Retry0["AckRetry (RetryDelay 0)"]
+  Retry0 --> Finalize
+  Finalize -->|"Left"| Failed["requestProcessorExit ProcessorFailed"]
+  Finalize -->|"Right"| Halt{"AckHalt?"}
+  Halt -->|"yes"| Halted["requestProcessorExit ProcessorHalted"]
+  Halt -->|"no"| Next["next message"]
+```
+
 Infrastructure failure takes precedence if concurrent work requests both failure and graceful halt.
 The surrounding loop exits with `ProcessorFailure` for failed finalization; deliberate halt uses
 `ProcessorHalt`. Supervision retains failure lifecycle after removing the live metrics entry.

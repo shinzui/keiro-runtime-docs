@@ -59,6 +59,14 @@ Three mechanisms make this correct:
    `(op, result)` pairs and attributes the failure to the specific stream that conflicted (via
    `emptyResultError`), so the caller learns _which_ stream broke its precondition.
 
+The diagram compares the two lock orders from mechanism 1.
+
+<Diagram
+  src="kiroku/write-path-lock-ordering"
+  alt="Two panels. In caller order, txn A holds stream 1 and waits for stream 2, and txn B holds stream 2 and waits for stream 1. The waits form a cycle. In stream_id order, txn A holds stream 1 and stream 2, and txn B waits for stream 1. There is no cycle."
+  caption="When every transaction locks in stream_id order, a wait cycle cannot form."
+/>
+
 PostgreSQL exceptions (rather than empty results) are attributed by `attributeMultiStreamError`, which
 parses the server detail for the offending stream name when it can and otherwise falls back to the
 first op — the same `mapUsageError` classification from [part 03](/docs/kiroku/write-path/03-outcomes-and-errors)
@@ -107,6 +115,34 @@ The design turns on four points:
 - **(C) On success the continuation runs in the same transaction.** `k ar` receives the `AppendResult`
   and does the caller's SQL. If `k` itself calls `Tx.condemn`, _everything_ rolls back — including the
   event append. Append and projection are genuinely atomic in both directions.
+
+The flowchart shows the paths through `runTransactionAppendingWith`.
+
+```mermaid
+flowchart TD
+  Start["runTransactionAppendingWith"]
+  Valid["validate name and events"]
+  Reject["Left StoreError, no BEGIN"]
+  Prep["prepare ids and time in IO, outside the transaction"]
+  Append["appendToStreamTx in the transaction body"]
+  Conflict["Tx.condemn, k does not run"]
+  K["k ar runs the caller SQL"]
+  KDecide["k finishes"]
+  Rollback["rollback: no event, no projection row"]
+  Commit["commit: event and projection row"]
+  ConflictOut["rollback, Left conflict as StoreError"]
+
+  Start --> Valid
+  Valid -->|"invalid"| Reject
+  Valid -->|"valid"| Prep
+  Prep --> Append
+  Append -->|"Left conflict"| Conflict
+  Conflict --> ConflictOut
+  Append -->|"Right ar"| K
+  K --> KDecide
+  KDecide -->|"k condemns"| Rollback
+  KDecide -->|"k returns"| Commit
+```
 
 `runTransactionAppendingNoRetry` is the same with `transactionNoRetry`, for callers who cannot tolerate
 the body running more than once. The `…Resource` variants additionally apply the `enrichEvent` hook (in

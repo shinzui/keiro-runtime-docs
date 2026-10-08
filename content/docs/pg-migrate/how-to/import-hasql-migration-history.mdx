@@ -36,6 +36,22 @@ The adapter recomputes the predecessor's base64 MD5 from each supplied payload a
 the stored checksum. Only then does it emit `SourceLedgerChecksumVerified` evidence. It also computes
 SHA-256 over the same bytes for comparison with a pg-migrate SQL target.
 
+The same payload bytes feed both checks.
+
+```mermaid
+flowchart TD
+  Bytes["exact legacy SQL bytes"] --> MD5["base64 MD5"]
+  Bytes --> SHA["SHA-256"]
+  Stored["stored checksum"] --> Cmp{"MD5 matches?"}
+  MD5 --> Cmp
+  Cmp -->|no| Err["HasqlMigrationChecksumMismatch"]
+  Cmp -->|yes| Ev["SourceLedgerChecksumVerified evidence"]
+  Ev --> Target{"SHA-256 matches target SQL?"}
+  SHA --> Target
+  Target -->|yes| Same["SamePayload can pass"]
+  Target -->|no| Equiv["needs EquivalentState and a StateValidator"]
+```
+
 ## 2. Map verified rows
 
 ```haskell

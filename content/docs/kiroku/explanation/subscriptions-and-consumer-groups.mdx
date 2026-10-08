@@ -22,6 +22,14 @@ most:
   all-stream group targets. Safety polling reconciles lost notifications. Unrelated category
   appends do not trigger a category member's live fetch.
 
+The diagram shows the two phases on the `$all` log.
+
+<Diagram
+  src="kiroku/catch-up-then-live"
+  alt="A row of events on the $all log. Events before the checkpoint are already processed. In CatchingUp, the worker reads the events between the checkpoint and the publisher position from PostgreSQL in batches. After the publisher position, the worker is Live and gets each new append from the live source of its target."
+  caption="A worker catches up from its checkpoint to the publisher position, then switches to live delivery."
+/>
+
 There are three further states — `Paused` (recoverable backpressure), `Reconnecting` (the live
 connection dropped; back off and re-catch-up), and `Retrying` — plus the terminal `Stopped`. You can
 read the current state at any instant via the handle's `currentState :: m (Maybe SubscriptionState)`:
@@ -38,6 +46,14 @@ whole machine through the real source.
 Delivery is **at-least-once**, and the checkpoint advances **per batch**, not per event. If the
 worker is cancelled or the process crashes after your handler ran but before the batch checkpoint
 was saved, those events **replay** on the next start.
+
+The diagram shows a crash in the middle of a batch.
+
+<Diagram
+  src="kiroku/checkpoint-per-batch-replay"
+  alt="First run: the checkpoint is at e4. The worker gets the batch e5 to e8, and the handler runs e5, e6, and e7. Then the process crashes, so the checkpoint stays at 4. After restart, the worker resumes after 4 and delivers e5, e6, and e7 again. It handles e8 and saves the checkpoint at 8."
+  caption="The checkpoint moves once per batch. A crash inside a batch makes the handler see some events twice."
+/>
 
 <Callout type="warn">
   Your handler **must be idempotent**. Processing the same event twice must not produce a
@@ -90,6 +106,14 @@ same worker. That gives you two properties at once:
 - **Order within a stream** is preserved — all of `orders-1`'s events go to one member, in order.
 - **Parallelism across streams** — distinct streams are processed concurrently by different
   members.
+
+The diagram shows an example assignment for a group of size 4.
+
+<Diagram
+  src="kiroku/consumer-group-partitions"
+  alt="Six streams, orders-1 to orders-6, on the left. Arrows show an example hash assignment to four members on the right. Member 0 owns orders-2 and orders-4. Member 1 owns orders-5. Member 2 owns orders-1 and orders-6. Member 3 owns orders-3. Each member has its own checkpoint."
+  caption="Each stream belongs to exactly one member. Members run in parallel and keep each stream in order."
+/>
 
 You declare membership on the config:
 

@@ -37,7 +37,23 @@ dead-lettered, or exposed to the handler.
 
 ## Ack Mapping
 
-Every delivered event is ack-coupled:
+Every delivered event is ack-coupled. The sequence shows how the Kiroku worker waits for each decision:
+
+```mermaid
+sequenceDiagram
+  participant K as Kiroku worker
+  participant A as Adapter
+  participant H as Shibuya handler
+  K->>A: RecordedEvent N
+  Note over K: waits for the decision
+  A->>H: Envelope RecordedEvent
+  H-->>A: AckDecision
+  A-->>K: the Kiroku result
+  Note over K: acts on the result
+  K->>A: RecordedEvent N+1
+```
+
+The table maps each decision to its Kiroku result:
 
 | shibuya decision | Kiroku result |
 | --- | --- |
@@ -101,6 +117,14 @@ trace context is lifted into `traceContext`.
 `kirokuConsumerGroupProcessors` builds a size-`N` group as `N` shibuya
 processors named `<subscriptionName>-member-<m>`. Each member has its own Kiroku
 checkpoint under `(subscriptionName, member)`.
+
+The diagram shows an example group of three members.
+
+<Diagram
+  src="integrations/kiroku-consumer-group"
+  alt="Five originating streams route to three group members. Two streams go to member 0, two go to member 1, and one goes to member 2. Each member runs serially and writes its own Kiroku checkpoint."
+  caption="Each stream maps to one member, which preserves per-stream order. Each member has its own checkpoint."
+/>
 
 The adapter validates policy before opening subscriptions. Each member must run
 serially, and the group is presented as `PartitionedInOrder`: events from the

@@ -56,6 +56,18 @@ decide CloseOrder (Open _) = Right [OrderClosed]
 decide _          _        = Left "invalid command for current state"
 ```
 
+The state diagram shows the same rules. Each arrow is a command and the event that `decide` returns.
+
+```mermaid
+stateDiagram-v2
+  [*] --> NoOrder
+  NoOrder --> Open: PlaceOrder / OrderPlaced
+  Open --> Open: AddItem / ItemAdded
+  Open --> Closed: CloseOrder / OrderClosed
+```
+
+Any other command gets `Left`, and the state does not change.
+
 ## The command loop
 
 Now wire the pure functions to the store. The loop is always the same shape:
@@ -66,6 +78,29 @@ Now wire the pure functions to the store. The loop is always the same shape:
 3. **Decide** which new events the command produces.
 4. **Append** them under `ExactVersion currentVersion` — so a concurrent writer that advanced
    the stream in the meantime fails with `WrongExpectedVersion`, which you re-read and retry.
+
+The flowchart shows the loop and its retry path.
+
+```mermaid
+flowchart TD
+  Cmd["command arrives"]
+  Read["readStreamForward"]
+  Fold["fold events with evolve"]
+  Decide["decide cmd state"]
+  Reject["Left: reject, append nothing"]
+  Append["appendToStream with ExactVersion"]
+  Done["events stored"]
+  Retry["WrongExpectedVersion: retry"]
+
+  Cmd --> Read
+  Read -->|"events and current version"| Fold
+  Fold --> Decide
+  Decide -->|"Left"| Reject
+  Decide -->|"Right events"| Append
+  Append -->|"success"| Done
+  Append -->|"conflict"| Retry
+  Retry -.->|"re-read"| Read
+```
 
 ```haskell
 import Kiroku.Store

@@ -181,6 +181,31 @@ step loan (loan1State, loan1Regs) loanCmd'
 -- == Just (LoanLinked, _, [LegacyLoanIdAssigned ...])
 ```
 
+The sequence shows the three hops. Each arrow into an aggregate is a separate step that the runtime drives.
+
+```mermaid
+sequenceDiagram
+  participant App as loanApplication
+  participant RT as runtime adapter
+  participant Sync as coreBankingSync
+  participant Loan as loan
+  participant Leg as legacy system
+  App->>RT: ApplicationApproved
+  Note over RT: loanEventToSyncInput
+  RT->>Sync: LoanCreatedIn
+  Note over Sync: SyncRequested
+  Sync-->>RT: SyncToLegacyRequested
+  RT->>Leg: legacy call
+  Leg-->>RT: callback, later
+  RT->>Sync: LegacyCallbackReceivedIn
+  Note over Sync: SyncSettled
+  Sync-->>RT: LegacyAssignmentCommanded
+  Note over RT: syncOutputToLoanCmd
+  RT->>Loan: AssignLegacyLoanId
+  Note over Loan: LoanLinked
+  Loan-->>RT: LegacyLoanIdAssigned
+```
+
 The durable, async loop that strings these jumps together across separate streams and transactions
 is owned by keiro. keiki's job is the per-aggregate logic and honest per-stream replay contract;
 keiro's job is to run the cross-context choreography.

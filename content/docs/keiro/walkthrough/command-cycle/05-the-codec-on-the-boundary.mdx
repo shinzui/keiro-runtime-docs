@@ -151,6 +151,23 @@ A payload already at or beyond `schemaVersion` is returned unchanged; a version 
 a *later* rung exists the chain has a hole, so it is `GapInUpcasterChain version nextVersion`; if none
 exists at all it is `UnknownVersion`. The chain must therefore be ascending and contiguous.
 
+The flowchart traces one call of `migrateToCurrent`:
+
+```mermaid
+flowchart TD
+  In["payload at sourceVersion"] --> Cur["version >= schemaVersion?"]
+  Cur -- "yes" --> Done["Right payload"]
+  Cur -- "no" --> Low["version < 1?"]
+  Low -- "yes" --> UV["Left UnknownVersion"]
+  Low -- "no" --> Rung["rung keyed by this version?"]
+  Rung -- "found" --> Apply["apply the rung"]
+  Apply -- "Left" --> UE["Left UpcasterError"]
+  Apply -- "Right" --> Next["version + 1"]
+  Next --> Cur
+  Rung -- "missing, a later rung exists" --> Gap["Left GapInUpcasterChain"]
+  Rung -- "missing, no later rung" --> UV
+```
+
 <Callout type="warn">
 There is no "skip unknown event" path. An `UnknownEventType` (or any other `CodecError`) on read aborts
 the whole hydrate replay as `HydrationDecodeFailed` — the single decode error we traced in
@@ -181,6 +198,14 @@ upcastOrderPlacedV1 value =
       pure (object [ "kind" .= ("OrderPlaced" :: Text), "orderId" .= (orderId :: Text)
                    , "sku" .= maybe "UNKNOWN" id (sku :: Maybe Text), "quantity" .= (quantity :: Int) ])
 ```
+
+The diagram maps each v1 field to its v2 form.
+
+<Diagram
+  src="keiro/walkthrough/command-cycle/order-placed-upcast"
+  alt="A stored version 1 OrderPlaced payload has orderId, qty and an optional sku. The version 2 payload has kind OrderPlaced, the same orderId, quantity with the qty value, and sku with the stored value or UNKNOWN."
+  caption="The rung renames qty, defaults sku and adds kind. It runs on read and does not change the stored bytes."
+/>
 
 Contrast the paging codec: `pageCodec` has `schemaVersion = 1` and `upcasters = []` — a codec with no
 migration history, the common starting point. The cost of evolution is paid lazily on read: an old

@@ -11,6 +11,23 @@ application's embedded plan.
   writers whenever the reviewed SQL or predecessor cutover requires it.
 </Callout>
 
+The deployment has one gate before `up` and one gate after it.
+
+```mermaid
+flowchart TD
+  Pre["plan, status, verify as JSON"] --> Suffix{"Only the reviewed pending suffix?"}
+  Suffix -->|no| Stop["Stop and classify the issue"]
+  Suffix -->|yes| Up["up on the complete plan"]
+  Up --> Ok{"Successful report?"}
+  Ok -->|no| Triage["Keep writers quiesced and classify"]
+  Ok -->|"yes, with cleanupIssues"| Cleanup["Handle cleanup issues; do not rerun"]
+  Ok -->|yes| Post["status and strict verify"]
+  Cleanup --> Post
+  Post --> Empty{"No issues and no pending rows?"}
+  Empty -->|yes| Start["Start the new application version"]
+  Empty -->|no| Stop
+```
+
 ## 1. Capture the pre-deploy evidence
 
 Record the release identity, database, role, start time, and complete JSON results:

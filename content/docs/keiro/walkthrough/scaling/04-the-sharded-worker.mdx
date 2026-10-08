@@ -115,6 +115,18 @@ Retry on the final allowed delivery
 If the atomic dead-letter statement fails, Kiroku throws and leaves the checkpoint unadvanced. The
 reader may die and be restarted, but the event was not silently skipped.
 
+The flowchart adds the exception paths to the same ladder.
+
+```mermaid
+flowchart TD
+  H["handler outcome"] -- "ShardAckOk" --> C["Continue: save checkpoint at batch tail"]
+  H -- "ShardAckRetry or sync exception" --> Last{"final allowed delivery?"}
+  Last -- "no" --> Re["Retry: checkpoint stays, redeliver with attempt + 1"]
+  Last -- "yes" --> DL["insert kiroku.dead_letters and advance checkpoint in one statement"]
+  H -- "ShardAckDeadLetter" --> DL
+  H -- "async exception" --> None["no reply: no checkpoint, the next owner redelivers"]
+```
+
 Successful events before a batch tail may replay after a crash. That is expected at-least-once
 behavior, so application effects still need event-ID idempotency even when no rebalance occurs.
 
@@ -123,6 +135,14 @@ behavior, so application effects still need event-ID idempotency even when no re
 When reconciliation sheds a bucket, `stopReader` cancels the Kiroku subscription and kills its drain
 thread. If its handler had not replied, there is no acknowledgment. The new owner starts from the
 member checkpoint and sees that event again.
+
+The timeline shows one shed bucket during a handler call.
+
+<Diagram
+  src="keiro/walkthrough/scaling/rebalance-redelivery"
+  alt="Worker A runs the handler for event E when its bucket is shed. The reader is cancelled with an asynchronous exception and sends no acknowledgment, so the checkpoint stays before event E. Worker B starts from that checkpoint, runs the handler for event E again, and ShardAckOk moves the checkpoint past event E."
+  caption="Cancellation never acknowledges. The new owner redelivers the event from the member checkpoint."
+/>
 
 A stale worker can also miss renewals and keep reading after its lease expires. The new owner may
 then deliver the same event concurrently. Kiroku checkpoint updates are monotonic, so the stale

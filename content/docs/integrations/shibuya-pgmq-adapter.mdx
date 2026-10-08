@@ -83,6 +83,14 @@ a final ack.
 Use the adapter directly when you want the raw PGMQ payload and queue semantics.
 Use `keiro-pgmq` when the queue is a typed keiro background-job queue.
 
+The diagram compares a handler that acks within its lease with a slow handler.
+
+<Diagram
+  src="integrations/pgmq-visibility-lease"
+  alt="Two timelines start at a read. In the first, the handler finishes before the visibility lease ends and AckOk deletes the message. In the second, the lease ends while the handler runs. PGMQ makes the message visible, and a new read delivers it with readCount 2."
+  caption="A lease that expires before the ack makes PGMQ deliver the message again. Size the lease for the slowest handler."
+/>
+
 ## Configuration
 
 Start with `defaultConfig` and override the fields that match your queue:
@@ -148,7 +156,23 @@ redelivered. They are not lost.
 
 ## Ack Mapping
 
-PGMQ's lease model maps cleanly onto shibuya's four ack decisions:
+PGMQ's lease model maps cleanly onto shibuya's four ack decisions.
+The state diagram shows how each decision changes the leased row:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Visible: sendMessage
+  Visible --> Leased: read, readCount + 1
+  Leased --> Visible: AckRetry, AckHalt, or lease expiry
+  Leased --> Deleted: AckOk
+  Leased --> Archived: AckDeadLetter without DLQ config
+  Leased --> InDLQ: AckDeadLetter with DLQ config
+  Deleted --> [*]
+  Archived --> [*]
+  InDLQ --> [*]
+```
+
+The table lists the PGMQ operation for each decision:
 
 | shibuya decision | PGMQ operation |
 | --- | --- |

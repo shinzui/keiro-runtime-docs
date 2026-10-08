@@ -423,6 +423,25 @@ The consequence is strong and worth stating plainly: **the handler for event _N+
 event _N_ has been handled and finalized** — even under `Async`. Ordering does not depend on the user
 remembering to pick a serial policy; the ack-coupling enforces it mechanically.
 
+The sequence shows one event round trip. The worker cannot enqueue event N+1 until the handler finalizes event N.
+
+```mermaid
+sequenceDiagram
+  participant W as kiroku worker
+  participant Q as ack TBQueue
+  participant S as Streamly step
+  participant H as shibuya handler
+  W->>Q: writeTBQueue AckItem N
+  Note over W: blocks on takeTMVar reply
+  S->>Q: readTBQueue
+  Q-->>S: AckItem N
+  S->>H: Ingested N, via toIngestedAck
+  H->>H: return AckDecision
+  H->>W: finalize, tryPutTMVar reply
+  Note over W: unblocks and acts on the result
+  W->>Q: writeTBQueue AckItem N+1
+```
+
 **shibuya's policy makes the intent explicit and is what the consumer-group case needs.** The runner
 maps the declared `Concurrency` onto a Streamly combinator:
 

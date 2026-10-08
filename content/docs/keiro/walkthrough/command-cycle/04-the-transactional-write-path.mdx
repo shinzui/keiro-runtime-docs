@@ -113,6 +113,14 @@ so an inline projection can write a row keyed by the event's real `streamVersion
 PostgreSQL row lock until the callback completes. Keep callback work small, batch SQL, and avoid
 network calls or unnecessary round trips inside the serialization window.
 
+The diagram marks what runs inside the one transaction, and where a conflict and a commit lead.
+
+<Diagram
+  src="keiro/walkthrough/command-cycle/sql-transaction-scope"
+  alt="enrichEventsIO and prepareEventsIO run before the transaction. Inside one Hasql transaction, appendToStreamTx either succeeds and flows to reconstructRecorded and the afterAppend callback, or returns a conflict that calls Tx.condemn. The $all row lock is held until the callback ends. A rollback leaves no events and no callback rows and goes to retryOrFail. A commit goes to verifyAndSnapshot and appendedResult."
+  caption="The append and the callback commit together or roll back together."
+/>
+
 After the transaction commits, control returns to the effect, where `verifyAndSnapshot` and
 `appendedResult` run exactly as in the append-only runner. A replay divergence or snapshot failure is
 post-commit telemetry evidence and does not rewrite the successful result. The no-op branch
@@ -146,5 +154,13 @@ of each event's identity cheap — no second query inside the hot transaction. T
 [projection reference](/docs/keiro/reference/projection) is the inline-projection consumer of this
 pairing; [Run a command in a transaction](/docs/keiro/how-to/run-a-command-in-a-transaction) is the
 recipe.
+
+The example below derives the identities of a three-event batch.
+
+<Diagram
+  src="keiro/walkthrough/command-cycle/reconstruct-recorded"
+  alt="An AppendResult reports stream version 7 and global position 42 for the last event of a batch of 3. The first stream version is 5 and the first global position is 40. Events 0, 1 and 2 get stream versions 5, 6 and 7 and global positions 40, 41 and 42."
+  caption="The store returns only the last coordinates. Each earlier event gets the first value plus its index."
+/>
 
 Next: [05 — The codec on the boundary](/docs/keiro/walkthrough/command-cycle/05-the-codec-on-the-boundary).

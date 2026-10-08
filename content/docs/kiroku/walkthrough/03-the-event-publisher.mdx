@@ -115,6 +115,14 @@ at-least-once delivery with bounded latency. After waking, `drainTicks` non-bloc
 other queued tick so a burst of appends collapses into a single fetch rather than one pass per
 notification.
 
+The timeline shows three wake-ups: a burst of ticks, a single tick, and a safety poll after a lost notification.
+
+<Diagram
+  src="kiroku/walkthrough-publisher-wakeups"
+  alt="A time axis with two lanes. Four close NOTIFY ticks lead to one drainTicks and fetchAndBroadcast pass. One later tick leads to a second pass. A lost notification causes no tick, so the 30 second safety poll runs the next pass."
+  caption="drainTicks folds a burst of ticks into one pass. The safety poll covers a lost notification."
+/>
+
 ### Fetch once, deliver per subscriber
 
 ```haskell
@@ -187,6 +195,14 @@ deliverBatch events sub = atomically $ do
       DropSubscription -> writeTVar (subStatus sub) Overflowed  -- terminal: worker will error out
       DropOldest       -> tryReadTBQueue (subQueue sub) *> writeTBQueue (subQueue sub) events  -- evict oldest, enqueue
 ```
+
+The diagram compares what each policy does when a new batch reaches a full queue.
+
+<Diagram
+  src="kiroku/walkthrough-overflow-policies"
+  alt="Three rows, one for each overflow policy. Each row shows a full queue of four batches and a new fifth batch. PauseAndResume does not push the batch and sets the status to Paused. DropSubscription does not push the batch and sets the terminal status Overflowed. DropOldest evicts the first batch and enqueues the new one."
+  caption="Only DropOldest loses a batch. PauseAndResume recovers the missed events from the database."
+/>
 
 Read it against the three policies the [explanation](/docs/kiroku/explanation/subscriptions-and-consumer-groups#backpressure-without-loss)
 names:

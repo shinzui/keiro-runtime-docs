@@ -109,6 +109,22 @@ after `maxAttempts`). The claim below moves `pending`/`failed` rows into `publis
 read rows back. `OutboxRejected` is a terminal, intentional refusal retained with its timestamp
 and bounded code/detail; it releases ordered successors and is excluded from sent-row GC.
 
+The state diagram shows these transitions. The claim, the publish marks, and the maintenance pass each move a row.
+
+```mermaid
+stateDiagram-v2
+  [*] --> pending: enqueueOutboxTx
+  pending --> publishing: claim
+  failed --> publishing: claim when due
+  publishing --> sent: broker acknowledged
+  publishing --> rejected: PublishRejected
+  publishing --> failed: fail or stale, attempts left
+  publishing --> dead: fail or stale, no attempts left
+  sent --> [*]
+  rejected --> [*]
+  dead --> [*]
+```
+
 ## `claimOutboxBatch`: the claim CTE
 
 ```sql
@@ -186,6 +202,14 @@ Note both head-of-line predicates exclude only `('sent', 'dead', 'rejected')`, s
 non-terminal** — a row mid-publish blocks its key. That is intended while a worker is healthy, and
 stale rows are reclaimed before the next claim pass. For picking a policy, see [Choose an outbox
 ordering policy](/docs/keiro/how-to/choose-an-outbox-ordering-policy).
+
+The example compares one claim pass under the three claim predicates.
+
+<Diagram
+  src="keiro/walkthrough/integration/outbox-ordering-policies"
+  alt="Five outbox rows in one source. r1 with key A is publishing and is never a claim candidate. Under PerKeyHeadOfLine, r2 with key B and r4 with a null key are claimed. r3 and r5 wait behind earlier rows with the same key. Under PerSourceStream, r1 blocks every later row. Under BestEffort, r2 to r5 are all claimed."
+  caption="A publishing row still counts as non-terminal. It blocks its key or its whole source, depending on the policy."
+/>
 
 ## Stale `publishing` recovery
 

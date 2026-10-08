@@ -64,6 +64,14 @@ stream named `wf:<name>-<id>`) plus **replay**.
   `runWorkflow` of the same instance **replays**: each finished step short-circuits to its recorded
   result, the now-resolved wait returns immediately, and only the un-journaled tail runs for real.
 
+The diagram shows the parts that take part in one resume.
+
+<Diagram
+  src="keiro/concepts/workflow-journal-and-wake"
+  alt="A wake source, such as a timer row, an awakeable, or a child, journals its completion in the wf stream. The resume worker discovers the instance in keiro_workflows and claims a lease. The application registry rebuilds the workflow body. The body runs from the top, reuses journaled step results, and appends new results."
+  caption="The journal and the instance table live in PostgreSQL. The workflow body lives in your application."
+/>
+
 So "resume" is not a special code path — it is *the same function, run again*. The journal is what
 makes re-running it cheap and safe. A `runWorkflow` returns one of five [outcomes](/docs/keiro/reference/durable-workflows#running-a-workflow):
 `Completed a`, `Suspended`, `Cancelled`, `Failed`, or `ContinuedAsNew` (the run rotated its journal —
@@ -252,6 +260,14 @@ Read the seed back at the top of the body with `restoreSeed`. The *logical* iden
 rotates underneath it (`wf:<name>-<id>` for generation 0, `wf:<name>-<id>#<g>` after) — so the resume
 worker keeps driving it transparently. Snapshots compact *within* a generation; rotation bounds the
 history *across* generations.
+
+The diagram shows two rotations of one workflow instance.
+
+<Diagram
+  src="keiro/concepts/continue-as-new-generations"
+  alt="One logical identity, WorkflowName and WorkflowId, owns three journal streams. Generation 0 is wf name-id, and generations 1 and 2 add the suffixes #1 and #2. Each closed generation ends with continueAsNew, and its seed starts the next generation together with the active patch set."
+  caption="The logical identity stays the same. Each rotation starts a fresh journal from an explicit seed."
+/>
 
 Rotation is also the moment two lifecycle facts must be pinned. The generation that opens records the
 deployment's **active patch set atomically with the carried seed**, so an asynchronous append racing

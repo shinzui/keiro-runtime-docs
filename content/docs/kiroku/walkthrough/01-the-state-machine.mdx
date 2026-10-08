@@ -94,6 +94,24 @@ step st input = case st of
     ...
 ```
 
+The diagram shows how `step` moves a worker between states. It omits transitions that stay in the same state, such as `BatchFetched`. Every driving state also goes to `Stopped` on `Cancelled` or `HandlerStopped`.
+
+```mermaid
+stateDiagram-v2
+  [*] --> CatchingUp
+  CatchingUp --> Live: FetchEmpty, CaughtUp
+  Live --> Paused: QueueBackpressured
+  Paused --> CatchingUp: QueueDrained
+  CatchingUp --> Reconnecting: ConnectionLost
+  Live --> Reconnecting: ConnectionLost, FetchFailed
+  Reconnecting --> CatchingUp: BatchFetched, CaughtUp
+  Reconnecting --> Live: FetchEmpty
+  Live --> Stopped: QueueOverflowed, Cancelled, HandlerStopped
+  Stopped --> [*]
+```
+
+`Retrying` is not in the diagram. The worker sets it only for observability while a redelivery waits, and `step` never drives it.
+
 Read two clauses closely:
 
 - In `CatchingUp`, a `BatchFetched` advances the cursor to the batch's last position, **resets the

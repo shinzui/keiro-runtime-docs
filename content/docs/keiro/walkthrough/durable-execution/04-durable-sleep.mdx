@@ -8,6 +8,24 @@ description: "Keiro.Workflow.Sleep: the payload discriminator that routes a keir
 schema change. The arm schedules a timer and suspends; the timer worker's fire journals the sleep's
 completion; a later run replays past it.
 
+The sequence below shows one durable sleep from arm to replay.
+
+```mermaid
+sequenceDiagram
+  participant R as workflow run
+  participant DB as keiro_timers and keiro_workflows
+  participant T as timer worker
+  participant W as resume worker
+  R->>DB: arm with scheduleTimerOnceTx, set wake_after only if inserted
+  R->>R: throw WorkflowSuspend, outcome Suspended
+  T->>DB: claimDueTimer when fire_at is due
+  T->>DB: workflowSleepFireAction appends the sleep step and clears wake_after
+  T->>DB: markTimerFired
+  W->>DB: findUnfinishedWorkflowIds
+  W->>R: run the workflow again
+  R->>R: awaitStep hits the sleep step and returns
+```
+
 ## Routing without a schema change
 
 A workflow sleep and an ordinary process-manager timer are both rows in `keiro_timers`. They are

@@ -174,6 +174,14 @@ short-circuits everything between the wait and `runWorkflowWith`, and the `catch
 `Suspended`. No code after the wait runs, and nothing is half-committed — each completed `step` already
 committed its own journal append in its own transaction.
 
+The diagram follows one workflow body through a suspension and a later run.
+
+<Diagram
+  src="keiro/walkthrough/durable-execution/same-function-run-twice"
+  alt="Two runs of the same body over steps a, b, awaitStep c, and d. Run 1 executes a and b, arms c, and ends Suspended. A wake source journals step c. Run 2 replays a and b, hits c, executes d, and ends Completed."
+  caption="Resume is the same function run again. Recorded steps replay, and only the unjournaled tail runs."
+/>
+
 ## Completion and the idempotent terminal append
 
 When the body returns, the `Completed` arm appends the terminal marker — but only if it is not already
@@ -209,6 +217,20 @@ prepareJournalAppend name wid gen event = do
         appendToStreamTx (workflowGenerationStreamName name wid gen) AnyVersion prepared now >>= \case
           Right appendResult -> JournalAppended appendResult <$ recordStepTx row <* upsertInstanceTx ...
           Left err           -> pure (JournalAppendConflict err)
+```
+
+The flowchart shows the three possible results of that one transaction.
+
+```mermaid
+flowchart TD
+  subgraph Tx["one transaction"]
+    Lock["lockWorkflowStepTx lockKey"] --> Look{"lookupStepResultTx"}
+    Look -- "found" --> Present["JournalAlreadyPresent"]
+    Look -- "missing" --> Append["appendToStreamTx under entryId"]
+    Append -- "Right" --> Index["recordStepTx + upsertInstanceTx"]
+    Index --> Appended["JournalAppended"]
+    Append -- "Left" --> Conflict["JournalAppendConflict"]
+  end
 ```
 
 Two things commit together: the journal event (appended under `entryId`) and the

@@ -133,6 +133,14 @@ carry the tag and no upcaster is needed.
 
 The helper `patchStepName :: PatchId -> Text` is `patchStepPrefix <> unPatchId`.
 
+The diagram shows one logical workflow after one rotation, and the index rows that each journal append writes.
+
+<Diagram
+  src="keiro/guides/workflow-generations"
+  alt="One logical workflow, orderFulfillment ord-42, has two journal streams. Generation 0 ends with WorkflowContinuedAsNew 1. Generation 1, with the #1 suffix, starts with the __workflow_seed__ step. The keiro_workflow_steps table has one row per step, keyed by generation."
+  caption="The logical identity stays the same. Each rotation opens a new physical stream, and the step index keys every row by generation."
+/>
+
 ```haskell
 type WorkflowState = Map Text Value   -- the accumulated step-name -> result map a run folds
 ```
@@ -879,6 +887,18 @@ workflow status, so a rotated, still-running workflow remains discoverable on it
 
 - its status is `running`; or
 - its status is `suspended` **and** its `wake_after` hint is due.
+
+The flowchart shows the two discovery arms as one decision.
+
+```mermaid
+flowchart LR
+  Row["keiro_workflows row"] --> S{"status"}
+  S -- "running" --> Yes["Discovered"]
+  S -- "suspended" --> H{"wake_after due?"}
+  H -- "Yes" --> Yes
+  H -- "No, or NULL" --> No["Invisible: parked on a wake source"]
+  S -- "any other status" --> Out["Not discovered"]
+```
 
 A `suspended` instance with no due hint is parked on a wake source and is **deliberately invisible**.
 A workflow waiting on an awakeable, on a child, or on a future-dated sleep is no longer re-claimed,

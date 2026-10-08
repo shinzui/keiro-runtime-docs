@@ -109,6 +109,14 @@ the closed generation's work. Both appends are existence-guarded with determinis
 ids, so the whole rotation is idempotent. The seed map is snapshotted unconditionally (rotation is
 exactly when a fresh snapshot earns its keep), so the next generation hydrates in O(1).
 
+The diagram shows the order of the two writes across the two generation streams.
+
+<Diagram
+  src="keiro/walkthrough/durable-execution/generation-rotation"
+  alt="Generation 0 uses stream wf:name-id and holds steps a and b, then the continued-as-new marker. Generation 1 uses stream wf:name-id#1. Its first transaction holds the seed step and the patch set step, if any. Write 1 is the generation 1 transaction. Write 2 is the generation 0 marker."
+  caption="The seed commits first and moves the current generation forward. The marker on the old generation comes second."
+/>
+
 ### Why the patch set rides along in the same transaction
 
 The seed is not the only thing a new generation needs before anyone else can touch it. It also needs
@@ -148,10 +156,13 @@ not an anti-join over step rows:
 
 ```sql
 SELECT workflow_id, workflow_name
-FROM keiro_workflows
-WHERE status NOT IN ('completed', 'cancelled', 'failed')
-  AND (wake_after IS NULL OR wake_after <= $1)
+FROM keiro.keiro_workflows
+WHERE status = 'running'
+   OR (status = 'suspended' AND wake_after IS NOT NULL AND wake_after <= $1)
+ORDER BY workflow_name, workflow_id
 ```
+
+This is the query from [chapter 03](/docs/keiro/walkthrough/durable-execution/03-the-step-index-and-discovery).
 
 `__workflow_continued_as_new__` is deliberately **not** a terminal workflow status. A rotation appends
 the next generation's seed step first, so `currentGeneration` moves forward while the `keiro_workflows`
@@ -203,6 +214,17 @@ the step index stay uniform — **no new journal-event constructor for patch**. 
 stored `Bool` and returns it verbatim, forever. That is the whole guarantee: an instance fresh at the
 generation start, with the patch id active, runs the new branch; one already in flight when the patch
 shipped keeps the old branch; and neither ever flip-flops across resumes.
+
+The flowchart summarizes the `patch` hit and miss paths.
+
+```mermaid
+flowchart TD
+  P["patch pid"] --> H{"patch:pid in map?"}
+  H -- "yes" --> R["return the recorded Bool"]
+  H -- "no" --> D["decision = pid in the recorded active patch set"]
+  D --> J["journal StepRecorded patch:pid"]
+  J --> Ret["return the decision"]
+```
 
 The replay consequence is that a renamed step has no history under its new key and can execute
 another effect. It is not an automatic result-decoder migration. Keep versioned decoding or a

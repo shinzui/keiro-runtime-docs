@@ -55,6 +55,26 @@ runTimerWorker Nothing now fireTimeout
 
 ## How it works
 
+The sequence shows both cases: the order is confirmed in time, or the deadline passes first.
+
+```mermaid
+sequenceDiagram
+  participant O as Order stream
+  participant PM as order-timeout manager
+  participant T as keiro_timers
+  participant W as Timer worker
+  O->>PM: OrderSubmitted
+  PM->>T: TimerRequest for fireAt plus 15 minutes
+  Note over PM,T: one transaction with the manager append
+  O->>PM: OrderConfirmed, if it comes before the deadline
+  Note over PM: manager advances, schedules no timer
+  Note over T: fireAt passes
+  W->>T: claim the earliest due timer
+  W->>O: CancelOrder through runCommand
+  Note over O: open order gets OrderCancelled; confirmed order is a benign no-op
+  W->>T: return the event id, mark Fired
+```
+
 The `TimerRequest` is scheduled **inside the manager's append transaction**, so the timer and the
 state change commit together. `runTimerWorker` claims the earliest due timer (`FOR UPDATE SKIP
 LOCKED`), runs `fireTimeout`, and — only if it returns the produced event id — marks the timer

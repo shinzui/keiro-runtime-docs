@@ -54,6 +54,14 @@ because none of them checks everything.
 | 5 | `Keiro.ReplayAudit` | **real stored histories** under the candidate binary | anything not yet written |
 | 6 | Runtime witnesses | live hydration failures, sampled seed divergence | nothing, if you do not alert on the counters |
 
+The diagram places the six gates on the path from build to production.
+
+<Diagram
+  src="keiro/concepts/evolution-gates"
+  alt="Six gates appear in order. The compiler, keiro-dsl check and diff, and the generated harness run in build and CI, and the last two are DSL only. mkEventStream runs at startup. The replay audit runs before deploy against real stored histories. Runtime witnesses run in production. Evidence about stored data grows from left to right."
+  caption="Each gate sits at the earliest boundary with enough evidence. Only the replay audit and the runtime witnesses see stored data."
+/>
+
 Expanded:
 
 1. **The compiler.** Exhaustiveness of pattern matches. Nothing about stored data.
@@ -163,7 +171,18 @@ The failure modes of getting this half-right are, fortunately, asymmetric:
   `DeprecatedEventReplayHazard`; a hand-written service needs the old-log audit or an explicit
   regression test.
 
-The safe procedure is a **two-stage protocol**:
+The safe procedure is a **two-stage protocol**. The state diagram shows the event lifecycle:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Live: a live transition emits it
+  Live --> Retiring: mark retiring
+  Retiring --> Deprecated: cutover to replay-only
+  Deprecated --> Removed: no affected stream remains
+  Removed --> [*]
+```
+
+The steps are:
 
 1. Mark the event `retiring` while its original transition is still live and emitting. (The DSL
    *requires* that live emitter — `EventRetirementInProgress` is an error otherwise.)
@@ -199,6 +218,14 @@ prefix on the transition line, it lowers to a keiki `ReplayOnly` edge — never 
 but available to inversion when no live edge attributes a stored event. Inversion is **two-phase**:
 live edges are tried first, so a live edge always wins attribution and an imperfectly complemented
 twin cannot create ambiguity.
+
+The diagram shows what a twin covers after a guard is tightened.
+
+<Diagram
+  src="keiro/concepts/replay-only-twin"
+  alt="Left: the new guard region sits inside the old guard region. Stored events in the new region invert through the live edge. Stored events in the removed region, old and not new, invert through the replay-only twin. Right: inversion tries live edges first, then replay-only edges. If no edge matches, hydration fails with HydrationNoInvertingEdge."
+  caption="The twin covers only the removed region. New commands never take a replay-only edge."
+/>
 
 The procedure when you tighten a guard:
 

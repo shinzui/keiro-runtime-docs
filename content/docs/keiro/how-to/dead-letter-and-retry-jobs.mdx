@@ -75,6 +75,21 @@ operations:
 - `JobPayloadFromFuture` from a `keiroJobCodec` payload is retried with `defaultRetryDelay` so a
   rolling deploy can finish; `JobPayloadMalformed` is dead-lettered.
 
+The flowchart shows the checks that each delivery goes through, in order. A retried message comes back to the first check.
+
+```mermaid
+flowchart TD
+  Read["Adapter reads a message"] --> Max{"Delivered more than maxRetries times?"}
+  Max -- "Yes" --> DL1["Dead-letter it; the handler does not run"]
+  Max -- "No" --> Dec{"Codec decodes the payload?"}
+  Dec -- "No" --> DL2["Dead-letter as InvalidPayload"]
+  Dec -- "Yes" --> H{"Handler returns JobOutcome"}
+  H -- "Done" --> Del["Delete the message"]
+  H -- "Retry d" --> Wait["Visible again after d; next read adds one attempt"]
+  H -- "RetryDefault" --> Wait2["Visible again after defaultRetryDelay"]
+  H -- "Dead why" --> DL3["Dead-letter as PoisonPill why"]
+```
+
 ## Inspect the dead-letter queue
 
 The DLQ is an ordinary PGMQ queue named `<physical>_dlq`, stored in table

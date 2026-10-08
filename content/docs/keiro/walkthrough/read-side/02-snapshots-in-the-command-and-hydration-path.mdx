@@ -64,6 +64,14 @@ version covers every hidden event—equivalently, it is at least `truncate_befor
 first visible version is higher than expected and full replay returns
 `HydrationGapDetected expected observed`.
 
+The diagram compares a snapshot that covers the hidden prefix with one that does not.
+
+<Diagram
+  src="keiro/walkthrough/read-side/truncation-snapshot-coverage"
+  alt="A stream with versions v1 to v10. A truncation marker at 6 hides v1 to v5. A snapshot at v5 covers the hidden prefix, and replay continues at v6. A snapshot at v3 expects v4 but observes v6, so hydration fails with a gap."
+  caption="A retained snapshot must reach truncate_before minus 1. A lower seed leaves a gap."
+/>
+
 That failure is not a snapshot decode problem. Restore visibility with
 `clearStreamTruncateBefore`, or install a trusted covering snapshot as part of an operator-controlled
 repair.
@@ -121,6 +129,14 @@ For `Every n`, it fires when any positive multiple lies in `(preVersion, postVer
 append from version 2 to 4 therefore satisfies `Every 3`. `OnTerminal` and `Custom` see the final pair
 and terminality.
 
+The axis below shows that example span.
+
+<Diagram
+  src="keiro/walkthrough/read-side/every-n-policy-span"
+  alt="A version axis from 0 to 7. One command appends events at versions 3 and 4. The span from version 2 to 4 contains version 3, a multiple of 3, so the policy fires. Version 6 is the next multiple."
+  caption="Every n tests the whole appended span, not only the final version."
+/>
+
 This avoids missing a policy boundary simply because one accepted command emitted several events.
 
 ## Compatibility lookup and rollback-aware upsert
@@ -159,6 +175,19 @@ The first clause prevents version regression only for a fully compatible row. **
 changing permits a lower version to replace a higher one, which makes codec rollback possible.
 Incompatible binaries can therefore thrash the cache row during a mixed deployment; they cannot
 change event history.
+
+This flowchart traces the replacement decision for one write.
+
+```mermaid
+flowchart TD
+  W["snapshot write"] --> E{"row exists?"}
+  E -- "no" --> I["insert row"]
+  E -- "yes" --> D{"discriminants equal?"}
+  D -- "no" --> R1["replace, even at a lower version"]
+  D -- "yes" --> V{"stored version <= new?"}
+  V -- "yes" --> R2["replace"]
+  V -- "no" --> K["keep the newer row"]
+```
 
 `state_shape_hash` is the third column, added by
 `0019-keiro-snapshots-state-shape-hash.sql` with an empty-string default — so every pre-migration row

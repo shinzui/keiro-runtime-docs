@@ -8,6 +8,14 @@ exposes queue operations. shibuya runs supervised processors that consume a
 queue-like stream, call handlers, and translate handler outcomes into ack,
 retry, dead-letter, or halt decisions.
 
+The diagram stacks the layers from the job API down to PostgreSQL.
+
+<Diagram
+  src="pgmq/pgmq-shibuya-layers"
+  alt="Five stacked layers. keiro-pgmq owns typed jobs. shibuya owns handlers, AckDecision, ordering, supervision, and health. shibuya-pgmq-adapter bridges the two layers around it. pgmq-hs owns queue operations, topics, FIFO, configuration, and migration. PostgreSQL with the pgmq schema is at the bottom."
+  caption="Each layer adds worker or job meaning. The adapter is the only part that knows both shibuya and pgmq-hs."
+/>
+
 ## pgmq-hs owns queue mechanics
 
 pgmq-hs owns these concerns:
@@ -36,10 +44,23 @@ shibuya owns these concerns:
 
 The shibuya pgmq adapter bridges these layers. It reads messages from pgmq and
 turns them into shibuya envelopes. Handler decisions then become pgmq lifecycle
-operations: successful work deletes or archives, retries change visibility, and
+operations: successful work deletes the message, retries change visibility, and
 dead-letter decisions move the payload to the adapter's dead-letter path.
 
-`shibuya-pgmq-adapter 0.12` pairs with pgmq-hs 0.4. Schema deployment remains
+In the current adapter source, the finalizer maps each decision to these pgmq calls:
+
+```mermaid
+flowchart LR
+  Decision{"AckDecision"} -->|"AckOk"| Delete["deleteMessage"]
+  Decision -->|"AckRetry delay"| Retry["changeVisibilityTimeout delay"]
+  Decision -->|"AckDeadLetter"| DLQ{"DLQ set?"}
+  DLQ -->|"no"| Archive["archiveMessage"]
+  DLQ -->|"yes"| Move["delete and send to DLQ, one transaction"]
+  Decision -->|"AckHalt"| Park["changeVisibilityTimeout, processor stops"]
+```
+
+[`shibuya-pgmq-adapter 0.16.1.0`](/docs/integrations/shibuya-pgmq-adapter) pairs with the published
+`pgmq-* 0.6.1.1` packages. Schema deployment remains
 an application-owned `pg-migrate` plan; the adapter receives a runtime pool
 only after that plan succeeds. On shutdown, the adapter checks its stop gate
 before filtering an empty poll batch, so an idle source reaches end-of-stream

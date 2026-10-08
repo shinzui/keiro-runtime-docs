@@ -50,6 +50,23 @@ runTimerWorkerWith metrics options now fire = do
 runTimerWorker metrics = runTimerWorkerWith metrics defaultTimerWorkerOptions
 ```
 
+The flowchart shows the branches of one pass before the line-by-line reading.
+
+```mermaid
+flowchart TD
+  S["requeue stale Firing rows (if requeueStuckAfter)"] --> G["record backlog and stuck gauges"]
+  G --> C{"claimDueTimer now"}
+  C -- "Nothing" --> N["return Nothing"]
+  C -- "Just timer" --> M{"attempts above maxAttempts?"}
+  M -- "yes" --> D["deadLetterTimer, no fire"]
+  M -- "no, or no ceiling" --> F{"fire timer"}
+  F -- "Just eventId" --> K["markTimerFired"]
+  F -- "Nothing" --> L["row stays Firing"]
+  D --> R["return Just timer"]
+  K --> R
+  L --> R
+```
+
 The signatures:
 
 ```haskell
@@ -113,6 +130,14 @@ The `Just`-marks-fired rule (step 8) is exactly what gives **at-least-once** sem
 - if `fire` returns `Nothing`, the row stays `firing` and is never marked `fired`;
 - if the process **crashes** after the claim but before `markTimerFired`, the row is left `firing`
   too.
+
+The timeline follows one timer through a crash and a second claim.
+
+<Diagram
+  src="keiro/walkthrough/workflow/timer-at-least-once"
+  alt="A status band over time. A claim sets the row to firing with attempts 1. The process crashes before markTimerFired. After requeueStuckAfter, 300 seconds by default, the sweep sets the row back to scheduled. A second claim sets attempts 2, and markTimerFired then sets the row to fired."
+  caption="A crash leaves the row firing until the sweep requeues it, so the timer fires again."
+/>
 
 In both cases the work was not durably completed, so the configured stale-row sweep (five minutes by
 default) puts the row back to `scheduled` and it becomes claimable again — the timer fires again

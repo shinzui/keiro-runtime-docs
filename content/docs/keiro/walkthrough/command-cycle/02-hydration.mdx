@@ -39,6 +39,19 @@ from `initialState`, `initialRegisters`, and `StreamVersion 0`. That does not hi
 problem: if full replay encounters it too, that typed error is returned. It only prevents a stale or
 incorrect cache entry from becoming authoritative.
 
+The flowchart shows both doors and the fallback from a failed seed.
+
+```mermaid
+flowchart TD
+  C["stateCodec?"] -- "Nothing" --> Full["hydrateFull from v0"]
+  C -- "Just codec" --> L["lookupSnapshotSeed"]
+  L -- "SnapshotUnavailable" --> Full
+  L -- "SnapshotHit" --> Seeded["hydrateSeeded"]
+  Seeded -- "Left" --> Full
+  Seeded -- "Right" --> OK["Hydrated"]
+  Full --> Out["Hydrated or typed error"]
+```
+
 ## Decode contiguous pages, then replay the valid prefix
 
 `hydrateSeeded` reads forward after the seed in bounded pages. `pageSize` is clamped to at least one,
@@ -73,6 +86,14 @@ version than expected and hydration returns `HydrationGapDetected expected obser
 visibility with `clearStreamTruncateBefore`, or provide a retained snapshot at least as new as the
 last hidden event. Truncation hides events from per-stream reads; it does not delete them from `$all`
 or category/subscription reads.
+
+The diagram shows paged replay after a seed, and the gap that a truncation marker causes when no seed covers it.
+
+<Diagram
+  src="keiro/walkthrough/command-cycle/hydration-pages-and-gaps"
+  alt="Top: a seed at version 4 is followed by events v5 to v13, read in pages of four. The replay ends Settled. Bottom: from the initial state at version 0, events v1 to v4 are hidden by truncation, so the first visible event is v5. Hydration returns HydrationGapDetected 1 5."
+  caption="Replay needs contiguous versions. A seed or the initial state must cover every hidden event."
+/>
 
 <Callout type="warn">
 A truncation marker above the current stream head can make the per-stream read appear empty. A later

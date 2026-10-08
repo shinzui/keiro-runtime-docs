@@ -130,6 +130,14 @@ checks the token:
   (its key was removed in `cleanup`), was never started, or has been **superseded** by a newer worker
   registered under the same `(name, member)` key (the token no longer matches).
 
+The diagram shows a superseded worker. Two workers share one key, and the token in the entry decides the owner.
+
+<Diagram
+  src="kiroku/walkthrough-registry-token"
+  alt="The subscription registry maps the key name and member to the pair t2 and cell B. Worker A is older and holds token t1. Its lookup does not match, so currentState returns Nothing and its cleanup keeps the entry. Worker B is newer and holds token t2. Its currentState returns Just s, and its cleanup removes the entry."
+  caption="An older worker cannot read or delete the entry of a newer worker with the same key."
+/>
+
 <Callout type="info">
   `Stopped` is **never** observed through `currentState`. The FSM never writes `Stopped` into the
   cell — a stopped worker is removed from the registry instead — so a not-live subscription is always
@@ -199,3 +207,25 @@ consumer-group members. Only all-stream group members select `LiveFromGroupPolli
 The category loop wakes on its category generation or the existing safety reconciliation path;
 the SQL fetch applies the member partition predicate. Unrelated category appends do not trigger
 that member's live fetch.
+
+The flowchart shows how `subscribe` selects the live source from the group and target shape.
+
+```mermaid
+flowchart TD
+  Start["subscribe"]
+  Group{"consumerGroup?"}
+  TargetN{"target?"}
+  TargetG{"target?"}
+  Queue["LiveFromPublisherQueue<br/>publisher queue"]
+  CatN["LiveFromCategoryNotify<br/>no partition"]
+  CatG["LiveFromCategoryNotify<br/>partition filter"]
+  Poll["LiveFromGroupPolling<br/>partition filter"]
+
+  Start --> Group
+  Group -->|"Nothing"| TargetN
+  Group -->|"Just member"| TargetG
+  TargetN -->|"AllStreams"| Queue
+  TargetN -->|"Category"| CatN
+  TargetG -->|"Category"| CatG
+  TargetG -->|"AllStreams"| Poll
+```

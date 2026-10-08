@@ -208,6 +208,27 @@ case step loan (loan1State, loan1Regs) loanCmd' of
     d.legacyLoanId `shouldBe` "LEG-42"
 ```
 
+The sequence diagram shows the same flow as the runtime runs it: separate steps on separate streams, joined by the adapter functions.
+
+```mermaid
+sequenceDiagram
+  participant App as LoanApplication
+  participant RT as Runtime
+  participant Sync as CoreBankingSync
+  participant Legacy as Legacy core banking
+  participant Loan as Loan
+  App->>RT: EmploymentChecked, ApplicationApproved
+  RT->>Sync: LoanCreatedIn, from loanEventToSyncInput
+  Sync->>RT: SyncToLegacyRequested, now SyncRequested
+  RT->>Legacy: legacy call from the audit event
+  RT->>Loan: CreateLoan, now LoanAwaiting
+  Legacy-->>RT: callback
+  RT->>Sync: LegacyCallbackReceivedIn
+  Sync->>RT: LegacyAssignmentCommanded, now SyncSettled
+  RT->>Loan: AssignLegacyLoanId, from syncOutputToLoanCmd
+  Loan->>RT: LegacyLoanIdAssigned, now LoanLinked
+```
+
 The adapter functions and the individual aggregates together produce the expected end-to-end output;
 the composite stands beside them as the proof that the wiring is sound.
 

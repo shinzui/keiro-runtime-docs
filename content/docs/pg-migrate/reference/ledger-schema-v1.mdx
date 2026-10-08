@@ -7,6 +7,45 @@ description: "The durable metadata, migration, import-audit, and repair-audit co
 advisory-lock key. `ledgerConfig` accepts another validated PostgreSQL schema identifier and signed
 64-bit lock key.
 
+The four tables live in the configured ledger schema. Audit rows refer to a migration by
+`(component, migration)`.
+
+```mermaid
+erDiagram
+  ledger_metadata {
+    boolean singleton PK
+    integer schema_version
+    timestamptz updated_at
+    text runner_version
+  }
+  migrations {
+    text component PK
+    text migration PK
+    integer position
+    bytea checksum
+    text kind
+    text transaction_mode
+    text status
+  }
+  history_imports {
+    text component FK
+    text migration FK
+    text source
+    jsonb source_evidence
+    text reason
+  }
+  repairs {
+    bigint id PK
+    text component FK
+    text migration FK
+    text operation
+    text old_status
+    text new_status
+  }
+  migrations ||--o| history_imports : "imported with"
+  migrations ||--o{ repairs : "repaired by"
+```
+
 ## `ledger_metadata`
 
 The singleton metadata row stores a positive schema version, update time, and runner version.

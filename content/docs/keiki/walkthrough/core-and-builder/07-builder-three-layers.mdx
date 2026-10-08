@@ -172,6 +172,20 @@ case B.buildTransducerEither A emptyR (const False) malformedBody of
   Right _ -> expectationFailure "expected structured builder defects"
 ```
 
+The flowchart shows the order of the checks in `finalizeEdge`.
+
+```mermaid
+flowchart TD
+  PE["PartialEdge after the body runs"] --> T{"goto count"}
+  T -- "0" --> D1["Left DefectMissingGoto"]
+  T -- "2 or more" --> D2["Left (DefectMultipleGoto n)"]
+  T -- "1" --> C{"emitWith ctor matches?"}
+  C -- "no" --> D3["Left constructor-mismatch defect"]
+  C -- "yes" --> O{"output decided?"}
+  O -- "no" --> D4["Left DefectMissingOutputIntent"]
+  O -- "yes" --> OK["Right Edge"]
+```
+
 ## Layer 3: `EdgeBuilder`, the indexed monad
 
 The innermost layer is where the type system earns its keep. `EdgeBuilder` is **not** a plain monad —
@@ -255,6 +269,14 @@ builder just inherits it through the index. The module header summarizes it:
 --   the 'Keiki.Internal.Slots.Disjoint' 'GHC.TypeError.TypeError',
 --   which names the duplicated slot.
 ```
+
+The diagram traces the index through one edge body, statement by statement.
+
+<Diagram
+  src="keiki/walkthrough/core-and-builder/edgebuilder-write-set-threading"
+  alt="The write-set index starts as the empty list. Writing slot email makes it the list email. Writing slot confirmCode makes it confirmCode and email. An emit statement leaves it unchanged. A second write to slot email needs Disjoint of email and the current set, which fails and gives a TypeError that names email."
+  caption="Each slot write adds its name to w. A second write to the same name fails on its own line."
+/>
 
 <Callout type="info">
 This is a genuine *compile-time* guarantee, not a runtime check. Two writes to distinct slots

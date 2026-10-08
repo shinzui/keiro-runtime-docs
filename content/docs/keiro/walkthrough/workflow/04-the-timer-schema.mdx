@@ -146,6 +146,14 @@ The `due` CTE:
   moment never claim the *same* timer, and neither **blocks** waiting on the other — they grab
   disjoint rows and proceed. The `keiro_timers_due_idx` keeps the lock-and-skip cheap.
 
+The picture shows two workers that run the claim at the same moment.
+
+<Diagram
+  src="keiro/walkthrough/workflow/timer-claim-skip-locked"
+  alt="Four keiro_timers rows in fire_at order. Worker A locks the first scheduled row. Worker B skips that locked row and locks the second one. A firing row is not a candidate, and a row with fire_at after now is not due."
+  caption="SKIP LOCKED gives concurrent workers disjoint rows without a wait."
+/>
+
 The outer `UPDATE … FROM due` then atomically transitions the claimed row to `status = 'firing'`,
 bumps `attempts`, and `RETURNING …` hands back the full row, decoded by `timerRowDecoder`. Because
 the select-lock and the update are one statement in one transaction, the claim is atomic: a row is
@@ -271,6 +279,14 @@ WHERE timer_id = $1 AND status IN ('scheduled', 'firing')
 
 Each `UPDATE` returns `rowsAffected > 0` as a `Bool`, so the wrapper reports whether a row actually
 changed.
+
+The diagram collects the status transitions that the statements on this page make.
+
+<Diagram
+  src="keiro/walkthrough/workflow/timer-status-lifecycle"
+  alt="Scheduled and Firing sit inside one group. A claim moves Scheduled to Firing, and a requeue moves Firing back. A re-arm keeps a row Scheduled. markTimerFired moves Firing to Fired. cancelTimer and deadLetterTimer move either state to Cancelled or Dead."
+  caption="Fired, Cancelled and Dead are terminal. The claim never selects them."
+/>
 
 ## The remaining gap: no backoff
 

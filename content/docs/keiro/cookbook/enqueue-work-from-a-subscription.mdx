@@ -28,6 +28,14 @@ Split the *decision* from the *side effect*. The subscription decides "this need
 and enqueues a job describing it; the job carries its own [`RetryPolicy`](/docs/keiro/reference/pgmq-jobs#retrypolicy)
 and dead-letter queue, so back-off and failure isolation belong to the queue, not the event log.
 
+The diagram shows where the decision runs and where the retries run.
+
+<Diagram
+  src="keiro/guides/subscription-to-job-split"
+  alt="The subscription member receives OrderConfirmed, decides, and enqueues once by key, then returns ShardAckOk. A job worker takes the message from the fulfillment.notify_shipper queue and makes the HTTP POST. Its outcome is Done, Retry, or Dead. A note warns that ShardAckRetry redelivers the source event and re-runs every effect."
+  caption="The subscription only decides and enqueues. The job queue owns the slow call and its retries."
+/>
+
 ```haskell
 -- The subscription handler: decide + enqueue, then ack fast.
 handleEvent :: (Pgmq :> es) => RecordedEvent -> OrderEvent -> Eff es ()

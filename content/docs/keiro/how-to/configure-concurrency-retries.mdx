@@ -35,6 +35,20 @@ Override `retryLimit` and `pageSize`, and react correctly to `RetryExhausted`.
    kept losing the race until the budget ran out; `StoreFailed err` is a *non-retryable* store error
    that is surfaced immediately.
 
+The flowchart shows where each failure shape comes from in the command loop.
+
+```mermaid
+flowchart TD
+  H["Hydrate the stream in pageSize batches"] --> R["Run the command"]
+  R --> A["Append at the expected version"]
+  A -- "Committed" --> OK["Right result"]
+  A -- "Retryable conflict" --> B{"Retries left in retryLimit?"}
+  B -- "Yes" --> W["Back off, then rehydrate"]
+  W --> H
+  B -- "No" --> E["Left RetryExhausted limit lastErr"]
+  A -- "Non-retryable store error" --> S["Left StoreFailed err"]
+```
+
 <Callout type="warn">
 `RetryExhausted` carries the configured `retryLimit` and the **last** store error. Persistent
 exhaustion on one stream is a signal that the aggregate is too hot — model it as several streams

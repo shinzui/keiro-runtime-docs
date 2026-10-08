@@ -19,6 +19,20 @@ you have the raw record **with its headers** in hand.
 Drive the inbox from a Kafka consumer loop, decoding each record and acking only when the effect is
 durably recorded (or provably a duplicate).
 
+The flowchart shows the path of one record from the broker to an ack, retry, or dead-letter decision.
+
+```mermaid
+flowchart TD
+  R["Broker record with keiro headers"] --> T["toInbound"]
+  T --> D{"integrationEventFromKafka"}
+  D -- "KafkaDecodeError" --> DL["Dead-letter"]
+  D -- "event and delivery ref" --> I{"runInboxTransaction"}
+  I -- "InboxProcessed or InboxDuplicate" --> A["Commit the offset"]
+  I -- "InboxPreviouslyFailed" --> AA["Commit the offset and alert"]
+  I -- "InboxInProgress" --> RT["Retry"]
+  I -- "DedupePolicyUnsatisfied" --> DL
+```
+
 ## Steps
 
 1. **Bridge the broker record into `KafkaInboundRecord`.** `keiro` does not depend on a broker

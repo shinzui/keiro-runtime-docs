@@ -129,6 +129,28 @@ attempt <-
 `AdvLeaseLost` increments `leaseSkipped` and **consumes no crash attempt** — another worker legitimately
 owns the instance now, which is not a workflow bug and must not spend the retry budget.
 
+The flowchart combines the claim outcomes and the advance outcomes for one candidate.
+
+```mermaid
+flowchart TD
+  C["discovered candidate"] --> Reg{"registered name?"}
+  Reg -- "no" --> Unk["unknownName, log"]
+  Reg -- "yes" --> Cl{"claimInstance"}
+  Cl -- "ClaimLeaseHeld or ClaimUnavailable" --> LS["leaseSkipped"]
+  Cl -- "ClaimPaced" --> Pa["paced"]
+  Cl -- "ClaimAcquired" --> Ch{"child link row?"}
+  Ch -- "yes" --> RC["runChildWorkflow"]
+  Ch -- "no" --> RW["runWorkflowWith"]
+  RC --> Out{"attempt"}
+  RW --> Out
+  Out -- "AdvOk" --> Bump["bumpForOutcome"]
+  Out -- "AdvTransient" --> TE["transientErrors"]
+  Out -- "AdvLeaseLost" --> LS
+  Out -- "AdvCrashed" --> Cr{"below maxAttempts?"}
+  Cr -- "yes" --> Back["recordCrashTx sets next_attempt_at"]
+  Cr -- "no" --> Fail["append WorkflowFailed, count failed"]
+```
+
 ```haskell
 bumpForOutcome outcome acc = case outcome of
   Completed _ -> acc { resumed = resumed acc + 1, completed = completed acc + 1 }
@@ -143,6 +165,14 @@ Synchronous exceptions are isolated per instance. `recordCrashTx` increments `at
 capped; below `maxAttempts` the worker releases the lease and leaves the instance for a later pass. At
 the ceiling it appends `WorkflowFailed` and counts `failed`. Store errors while advancing are counted
 as `transientErrors` without marking the workflow failed.
+
+The chart shows how the crash delay grows and then stops at the cap.
+
+<Diagram
+  src="keiro/walkthrough/durable-execution/crash-backoff"
+  alt="Seven bars show the delay before next_attempt_at after each crash. The delays are 2, 4, 8, 16, 32, and 64 seconds. Later crashes stay at the 64 second cap."
+  caption="Each crash doubles the delay until it reaches 64 seconds. At maxAttempts the instance fails."
+/>
 
 A failing **child** additionally records its terminal reason on the link row and wakes the parent:
 

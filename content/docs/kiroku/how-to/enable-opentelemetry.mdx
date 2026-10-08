@@ -18,6 +18,24 @@ the **append** path and a span-emitting handler on the **subscription lifecycle*
 Events carry W3C `traceparent`/`tracestate` in their metadata, and subscription state transitions
 become OpenTelemetry spans.
 
+The sequence shows where the trace context moves from the producer to the consumer.
+
+```mermaid
+sequenceDiagram
+  participant P as Producer
+  participant S as Store append path
+  participant DB as PostgreSQL
+  participant W as Subscription worker
+  participant C as Consumer handler
+  P->>S: appendToStream in an active span
+  S->>S: enrichEvent runs injectTraceContext
+  S->>DB: event with traceparent in metadata
+  DB-->>W: event read by the subscription
+  W->>C: RecordedEvent
+  C->>C: extractTraceContext, start child span
+  W-->>W: eventHandler turns transitions into spans
+```
+
 ## Steps
 
 1. **Inject trace context on append** via the `enrichEvent` hook on `StoreSettings`. It runs on

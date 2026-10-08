@@ -63,3 +63,21 @@ first attempt writes the event; any later attempt with the same id is rejected w
 `DuplicateEvent`, which you read as "already done". See
 [Optimistic concurrency](/docs/kiroku/explanation/optimistic-concurrency) for how this differs
 from the `ExpectedVersion` guard.
+
+The sequence shows a retry after the first reply is lost.
+
+```mermaid
+sequenceDiagram
+  participant C as Command handler
+  participant K as kiroku
+  participant PG as PostgreSQL
+  C->>K: append, eventId = Just eid
+  K->>PG: insert event eid
+  PG-->>K: commit
+  K--xC: reply lost (timeout)
+  C->>K: retry with the same eid
+  K->>PG: insert event eid
+  PG-->>K: 23505 on events_pkey
+  K-->>C: Left DuplicateEvent
+  Note over C: treat as success, the event is stored
+```

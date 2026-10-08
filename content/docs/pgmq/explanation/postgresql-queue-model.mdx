@@ -27,6 +27,20 @@ visibility timeout. pgmq sets those rows invisible until the timeout expires.
 The consumer then archives, deletes, changes the visibility timeout, or lets the
 timeout expire so the message is retried.
 
+The state diagram shows the same lifecycle:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Visible: send
+  Visible --> Leased: read with visibility timeout
+  Leased --> Visible: timeout expires
+  Leased --> Leased: change visibility timeout
+  Leased --> Archived: archive
+  Leased --> Deleted: delete
+  Archived --> [*]
+  Deleted --> [*]
+```
+
 This lifecycle is visible in `Pgmq.Types.Message`:
 
 ```haskell
@@ -70,6 +84,14 @@ notification throttle state. pgmq-hs maps these to `listQueues`,
 The most operationally useful metric distinction is total queue length versus
 visible queue length. Total length includes leased messages. Visible length is
 what another reader can get now.
+
+The diagram counts both metrics over the same queue rows.
+
+<Diagram
+  src="pgmq/queue-depth-total-vs-visible"
+  alt="A queue table with eight rows. Rows 2, 4, and 7 are leased, because their vt is in the future. The other five rows have vt at or before now and carry a green dot. A bracket over all eight rows is labeled queueLength. The green dots are labeled queueVisibleLength, with a count of five."
+  caption="queueLength counts every row. queueVisibleLength counts only rows that a reader can lease now."
+/>
 
 ## Notifications are a wake-up signal
 

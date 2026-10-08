@@ -272,6 +272,18 @@ The three constructors are exactly the three ways `delta`'s `[single]` match can
 - **`AmbiguousEdges s [MatchedEdgeSummary s]`** — two or more guards matched, a runtime witness of
   the single-valuedness violation that the symbolic determinism check proves cannot occur.
 
+The decision that `stepEither` makes for one command is a short tree.
+
+```mermaid
+flowchart TD
+  S["stepEither t (s, regs) ci"] --> E{"edges out of s?"}
+  E -- "no" --> N1["Left (NoOutgoingEdges s)"]
+  E -- "yes" --> M{"guards that hold"}
+  M -- "0" --> N2["Left (NoMatchingEdge s summaries)"]
+  M -- "1" --> R["Right (target e, regs', outs)"]
+  M -- "2 or more" --> N3["Left (AmbiguousEdges s summaries)"]
+```
+
 The two summary records locate each edge by an `EdgeRef` (a `(source vertex, zero-based index)`
 pair) and, deliberately, carry **no register values** — diagnostics summarize, they do not dump
 state:
@@ -355,6 +367,18 @@ outright. Only when there are **zero** live candidates is the replay-only phase 
 critically, ambiguity is judged *within the phase that produced candidates*: two live candidates fail
 immediately without ever consulting the replay-only arms.
 
+The flowchart shows the same order for one stored event. A candidate is an edge whose output head inverts the event and whose guard holds on the recovered input.
+
+```mermaid
+flowchart TD
+  Ev["stored event co at vertex s"] --> L{"Live candidates"}
+  L -- "exactly 1" --> W1["replay through that Live edge"]
+  L -- "2 or more" --> F1["Nothing: ambiguous"]
+  L -- "0" --> R{"ReplayOnly candidates"}
+  R -- "exactly 1" --> W2["replay through the ReplayOnly twin"]
+  R -- "0, or 2 or more" --> F2["Nothing"]
+```
+
 The consequence is the property that makes the mechanism safe to deploy: **an event attributable under
 the current rules always attributes there.** Only genuinely unattributable history — an event from the
 region a guard-tightening removed — falls through to a replay-only twin. Adding a twin cannot change
@@ -407,6 +431,14 @@ applyEventStreamingEither _ (InFlight s queue) regs co = case queue of
 
 This is where the `Eq co` constraint on the replay functions comes from: the in-flight queue is
 matched by event equality. Most aggregate event types derive `Eq`.
+
+The diagram replays the start of the User Registration log, where the entrance edge emits two events.
+
+<Diagram
+  src="keiki/walkthrough/core-and-builder/inflight-replay-timeline"
+  alt="Replay starts at Settled PotentialCustomer. Event 0, RegistrationStarted, inverts the head of a two-event edge, applies the update, and gives InFlight RequiresConfirmation with ConfirmationEmailSent in the queue. Event 1, ConfirmationEmailSent, equals the queue head, leaves the registers unchanged, and gives Settled RequiresConfirmation. Event 2, AccountConfirmed, is a letter edge and gives Settled Confirmed."
+  caption="Registers change once, on the head event. Tail events only pop the queue until the wrapper is Settled again."
+/>
 
 ### Located replay failures
 

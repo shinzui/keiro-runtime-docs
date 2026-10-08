@@ -48,6 +48,14 @@ pgmq.send($1, $2)`), and `claimGitSyncEnqueueStmt` inserts into a small dedupe t
 (key) DO NOTHING RETURNING true`. The two `INSERT`s and your domain write commit or roll back
 together.
 
+The diagram compares the two transaction boundaries.
+
+<Diagram
+  src="keiro/guides/transactional-enqueue-boundaries"
+  alt="Before: saveNote commits in a domain transaction, and enqueue commits later in its own PGMQ transaction. A crash between the two commits leaves the row without a job. After: one enqueueNoteGitSyncTx transaction runs upsertNoteStmt, claimGitSyncEnqueueStmt, and pgmq.send, then commits once."
+  caption="One transaction removes the gap between the domain write and the enqueue."
+/>
+
 <Callout type="info">
 Reuse the job's own codec for the body — `encodeJob gitSyncJob.jobCodec payload` — so the bytes on
 the queue are identical to what `enqueue` would have written, and the consumer (built from the same

@@ -134,6 +134,14 @@ feed st inp = do
       _         -> loop st'             -- otherwise drive the next iteration
 ```
 
+The diagram shows the four steps of one cycle and the three paths out of the act step.
+
+<Diagram
+  src="kiroku/walkthrough-driver-cycle"
+  alt="Four boxes in a loop inside the impure driver. Publish writes the state. Sense calls nextInput and can block. Decide calls the pure step function. Act runs the effects. Act loops back to Publish, feeds a follow-up input back to Decide, or exits when the new state is Stopped."
+  caption="The driver performs I/O around one pure call. Only step decides the next state."
+/>
+
 Read the cycle as **publish → sense → decide → act**:
 
 1. **Publish** (`writeTVar stateVar st`). The state is written _at loop entry_, before the worker
@@ -288,6 +296,24 @@ case result of
   Left (e :: SomeException)  -> do
     emit (KirokuEventSubscriptionStopped subName pos (classifyStopReason e) groupCtx)  -- classify: overflow / cancel / crash
     throwIO e                                     -- re-raise so Async.waitCatch surfaces it on the handle
+```
+
+The flowchart shows the two paths out of `try body`. Both paths emit one `Stopped` event.
+
+```mermaid
+flowchart TD
+  Body["try body"]
+  Clean["Right ()"]
+  Exc["Left e"]
+  Classify["classifyStopReason e"]
+  StopClean["emit Stopped · StopHandlerRequested"]
+  StopExc["emit Stopped · reason"]
+  Rethrow["throwIO e"]
+  WaitR["wait returns Right ()"]
+  WaitL["wait returns Left e"]
+
+  Body --> Clean --> StopClean --> WaitR
+  Body --> Exc --> Classify --> StopExc --> Rethrow --> WaitL
 ```
 
 A handler `Stop` lets `body` return `()` and emits `StopHandlerRequested`. Any exception —

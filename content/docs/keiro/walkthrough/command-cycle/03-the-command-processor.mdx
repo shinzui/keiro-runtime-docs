@@ -221,6 +221,14 @@ encoding is forced by `encodeSnapshotStrict`; encode and store failures are coun
 the same post-commit reason. The detailed cache behavior belongs to the
 [snapshot reference](/docs/keiro/reference/snapshot).
 
+The diagram splits the run at the moment the append commits.
+
+<Diagram
+  src="keiro/walkthrough/command-cycle/commit-boundary"
+  alt="Left of the commit line: hydrate, evaluateCommand, encodeEvents and appendToStream. A failure in these steps returns Left, and an append conflict can retry. Right of the line: applyEventsEither, shouldSnapshotSpan, encodeSnapshotStrict and writeSnapshotEncoded. Their failures increment the apply.divergence, encode.failures and write.failures counters. The result is Right CommandResult."
+  caption="After the append commits, no failure can turn the result into Left. Post-commit failures only increment counters."
+/>
+
 Both exits return a `CommandResult` through one of two constructors — `appendedResult` after an append,
 `noOpResult` for the `CommandNoOp` branch above:
 
@@ -252,7 +260,20 @@ A retryable conflict with budget left re-enters `attempt` (which re-hydrates and
 current head); a retryable conflict with no budget becomes `RetryExhausted` carrying the attempts made
 and the last error; anything else is `StoreFailed`. If a `StreamAlreadyExists` retry rehydrates to the
 same stream version as the previous attempt, the runner stops with `ConflictFixpoint` rather than
-looping on an invisible conflict. The retryable set is the sharp part:
+looping on an invisible conflict. The flowchart shows the decision:
+
+```mermaid
+flowchart TD
+  E["store error from the append"] --> R["isRetryableConflict?"]
+  R -- "no" --> SF["Left StoreFailed"]
+  R -- "yes, no budget left" --> RE["Left RetryExhausted"]
+  R -- "yes, budget left" --> A["attempt again: rehydrate"]
+  A --> F["same stream version as the last conflict?"]
+  F -- "yes" --> CF["Left ConflictFixpoint"]
+  F -- "no" --> P["transduce, encode, append again"]
+```
+
+The retryable set is the sharp part:
 
 ```haskell
 isRetryableConflict = \case

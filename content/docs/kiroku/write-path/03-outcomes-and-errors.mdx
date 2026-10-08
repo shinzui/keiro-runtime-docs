@@ -31,6 +31,32 @@ Before this branch runs, the interpreter has already rejected invalid stream nam
 `$all` becomes `ReservedStreamName`, names over 512 UTF-8 bytes become `StreamNameTooLong`, and `[]`
 becomes `EmptyAppendBatch`. Those are caller errors caught before PostgreSQL work.
 
+The flowchart shows every path from a call to a typed result.
+
+```mermaid
+flowchart TD
+  Call["AppendToStream name expected events"]
+  Name["check stream name"]
+  Batch["check batch size"]
+  Run["Pool.use runs one append CTE"]
+  Res["match the result shape"]
+  Usage["mapUsageError: SQLSTATE and constraint"]
+  Empty["emptyResultError: chosen by ExpectedVersion"]
+  Ok["AppendResult"]
+  E1["ReservedStreamName or StreamNameTooLong"]
+  E2["EmptyAppendBatch"]
+
+  Call --> Name
+  Name -->|"invalid"| E1
+  Name -->|"valid"| Batch
+  Batch -->|"empty"| E2
+  Batch -->|"non-empty"| Run
+  Run --> Res
+  Res -->|"Left usageErr"| Usage
+  Res -->|"Right Nothing"| Empty
+  Res -->|"Right (Just r)"| Ok
+```
+
 The middle branch is the subtle one and the reason the CTE was designed the way it was. A precondition
 failure is **not** a database error — the statement ran fine, it just matched zero rows ([part 02's
 optimistic check](/docs/kiroku/write-path/02-the-append-cte)). So there is nothing to parse from the

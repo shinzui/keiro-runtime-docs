@@ -41,6 +41,14 @@ Separately, `enable_notify_insert('MyQueue')` inserts a throttle row keyed
 `pgmq.acquire_queue_lock` hashes the raw name, so the two casings do not even
 serialize against each other while mutating the same table.
 
+The diagram shows the state that `create('MyQueue')` and `create('myqueue')` leave behind.
+
+<Diagram
+  src="pgmq/mixed-case-aliasing"
+  alt="Two pgmq.meta rows, MyQueue and myqueue, both point to one physical table, pgmq.q_myqueue. The insert trigger on that table looks up myqueue, so it never matches the throttle row keyed MyQueue. Below, pgmq.acquire_queue_lock hashes each raw name, so the two names take two different locks for one table."
+  caption="The metadata disagrees with the physical table, the trigger, and the lock."
+/>
+
 Rejection was chosen over silent normalization: normalizing would re-introduce
 aliasing against pre-existing mixed-case metadata, and would make
 `queueNameToText` disagree with what the caller wrote.
