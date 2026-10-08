@@ -122,35 +122,50 @@ parsed value. The encode side cannot fail; only decode can.
 ## The wire mapping: `integrationHeaders`
 
 ```haskell
+-- keiro-core/src/Keiro/Integration/Event.hs
 integrationHeaders :: IntegrationEvent -> [(Text, Text)]
 integrationHeaders event =
   concat
-    [ [ (headerMessageId, event ^. #messageId)
-      , (headerSource, event ^. #source)
-      , (headerDestination, event ^. #destination)
-      , (headerEventType, event ^. #eventType)
-      , (headerSchemaVersion, Text.pack (show (event ^. #schemaVersion)))
-      , (headerContentType, contentTypeText (event ^. #contentType))
-      ]
-    , case event ^. #schemaReference of
+    [ [ (headerMessageId, event ^. #messageId),
+        (headerSource, event ^. #source),
+        (headerDestination, event ^. #destination),
+        (headerEventType, event ^. #eventType),
+        (headerSchemaVersion, Text.pack (show (event ^. #schemaVersion))),
+        (headerContentType, contentTypeText (event ^. #contentType))
+      ],
+      case event ^. #schemaReference of
         Nothing -> []
-        Just ref -> concat [ maybeHeader headerSchemaRegistry (ref ^. #registry), … ]
-    , maybeHeader headerSourceEventId (fmap (UUID.toText . eventIdToUuid) (event ^. #sourceEventId))
-    , maybeHeader headerSourceGlobalPosition (fmap globalPositionText (event ^. #sourceGlobalPosition))
-    , maybeHeader headerCausationId (fmap (UUID.toText . eventIdToUuid) (event ^. #causationId))
-    , maybeHeader headerCorrelationId (fmap (UUID.toText . eventIdToUuid) (event ^. #correlationId))
-    , case event ^. #traceContext of
+        Just ref ->
+          concat
+            [ maybeHeader headerSchemaRegistry (ref ^. #registry),
+              maybeHeader headerSchemaSubject (ref ^. #subject),
+              maybeHeader headerSchemaVersionRef (fmap (Text.pack . show) (ref ^. #version)),
+              maybeHeader headerSchemaId (fmap (Text.pack . show) (ref ^. #schemaId)),
+              maybeHeader headerSchemaFingerprint (ref ^. #fingerprint)
+            ],
+      maybeHeader headerSourceEventId (fmap (UUID.toText . eventIdToUuid) (event ^. #sourceEventId)),
+      maybeHeader headerSourceGlobalPosition (fmap globalPositionText (event ^. #sourceGlobalPosition)),
+      maybeHeader headerCausationId (fmap (UUID.toText . eventIdToUuid) (event ^. #causationId)),
+      maybeHeader headerCorrelationId (fmap (UUID.toText . eventIdToUuid) (event ^. #correlationId)),
+      case event ^. #traceContext of
         Nothing -> []
-        Just tc -> (headerTraceParent, tc ^. #traceparent) : maybeHeader headerTraceState (tc ^. #tracestate)
+        Just tc ->
+          (headerTraceParent, tc ^. #traceparent)
+            : maybeHeader headerTraceState (tc ^. #tracestate),
+      [(headerOccurredAt, Text.pack (iso8601Show (event ^. #occurredAt)))],
+      maybeHeader headerAttributes (fmap (TextEncoding.decodeUtf8 . Lazy.toStrict . Aeson.encode) (event ^. #attributes))
     ]
   where
     maybeHeader name = maybe [] (\value -> [(name, value)])
 ```
 
-This is the rule a transport relies on: the **first six headers are always emitted**; every optional
-header is emitted via `maybeHeader` only when its source field is populated. A service that captures
-no trace context, causation, or schema reference pays no header for it. The header *names* are the
-canonical `keiro-*` constants (each a `Text`):
+This is the rule a transport relies on. Seven headers are always emitted: the first six in the list,
+and `keiro-occurred-at`. The function writes `occurredAt` as ISO 8601 text with `iso8601Show`.
+
+Every other header is emitted only when its source field is populated. `maybeHeader` applies this
+rule. `keiro-attributes` carries `attributes` as compact JSON text, and only when `attributes` has a
+value. A service that captures no trace context, causation, or schema reference pays no header for
+it. The header *names* are the canonical `keiro-*` constants (each a `Text`):
 
 ```haskell
 headerMessageId            = "keiro-message-id"
@@ -170,18 +185,20 @@ headerCausationId          = "keiro-causation-id"
 headerCorrelationId        = "keiro-correlation-id"
 headerTraceParent          = "traceparent"
 headerTraceState           = "tracestate"
+headerOccurredAt           = "keiro-occurred-at"
+headerAttributes           = "keiro-attributes"
 ```
 
 `traceparent` / `tracestate` keep their standard W3C names; everything else is `keiro-`-prefixed.
 This is the function [05 — Kafka mapping](/docs/keiro/walkthrough/integration/05-kafka-mapping)
 builds on when it UTF-8-encodes these pairs into a `KafkaProducerRecord`.
 
-The table maps each of the sixteen fields, grouped by role, to its wire name.
+The table maps each of the sixteen fields, grouped by role, to its wire name. It also shows when each header is sent.
 
 <Diagram
   src="keiro/walkthrough/integration/envelope-fields-and-headers"
-  alt="A table of the sixteen IntegrationEvent fields in six role groups. Six fields always become headers: messageId, source, destination, eventType, schemaVersion, and contentType. schemaReference, the four provenance fields, and traceContext become headers only when set. key and payloadBytes become Kafka record fields. occurredAt and attributes are not sent."
-  caption="Six headers are always present. Every other header appears only when its field has a value."
+  alt="A table of the sixteen IntegrationEvent fields in six role groups. Seven fields always become headers: messageId, source, destination, eventType, schemaVersion, contentType, and occurredAt. schemaReference, the four provenance fields, traceContext, and attributes become headers only when set. key and payloadBytes become Kafka record fields."
+  caption="Seven headers are always present. Every other header appears only when its field has a value."
 />
 
 ## Content-type round-trip
@@ -197,11 +214,11 @@ parseContentType raw
   | normalized == "application/json" = ApplicationJson
   | otherwise = OtherContentType raw
   where
-    normalized = Text.toLower (Text.strip raw)
+    normalized = Text.toLower (Text.strip (Text.takeWhile (/= ';') raw))
 ```
 
-`application/json` round-trips to `ApplicationJson` case- and space-insensitively (the input is
-lower-cased and stripped before comparison); anything else is preserved verbatim as
+`application/json` round-trips to `ApplicationJson`. The comparison ignores case, surrounding spaces,
+and any parameters after `;`, such as `; charset=utf-8`. Anything else is preserved verbatim as
 `OtherContentType` — the open door for future binary formats.
 
 ## The producer message id

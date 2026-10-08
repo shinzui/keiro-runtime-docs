@@ -208,7 +208,8 @@ case step loan (loan1State, loan1Regs) loanCmd' of
     d.legacyLoanId `shouldBe` "LEG-42"
 ```
 
-The sequence diagram shows the same flow as the runtime runs it: separate steps on separate streams, joined by the adapter functions.
+The sequence diagram shows the end-to-end flow in the order of the test. Each hop is a separate step, and the adapter functions join the hops.
+The test simulates the legacy callback. It also issues `CreateLoan` itself, after the callback. Its comment says that the `SyncToLegacyRequested` audit handler issues it in practice.
 
 ```mermaid
 sequenceDiagram
@@ -221,10 +222,11 @@ sequenceDiagram
   RT->>Sync: LoanCreatedIn, from loanEventToSyncInput
   Sync->>RT: SyncToLegacyRequested, now SyncRequested
   RT->>Legacy: legacy call from the audit event
-  RT->>Loan: CreateLoan, now LoanAwaiting
   Legacy-->>RT: callback
   RT->>Sync: LegacyCallbackReceivedIn
   Sync->>RT: LegacyAssignmentCommanded, now SyncSettled
+  RT->>Loan: CreateLoan, issued by the test
+  Loan->>RT: LoanCreated, now LoanAwaiting
   RT->>Loan: AssignLegacyLoanId, from syncOutputToLoanCmd
   Loan->>RT: LegacyLoanIdAssigned, now LoanLinked
 ```

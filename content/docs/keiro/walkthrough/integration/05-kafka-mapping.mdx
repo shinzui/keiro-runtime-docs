@@ -1,6 +1,6 @@
 ---
 title: "05 — Kafka mapping"
-description: "Reading the pure, broker-free boundary between a keiro envelope and a Kafka record: KafkaProducerRecord out, KafkaInboundRecord and the decode helpers in, the occurredAt = receivedAt asymmetry, and the poison-message rule."
+description: "Reading the broker-free boundary between a keiro envelope and a Kafka record: the record mapping, the occurredAt and attributes headers, and poison messages."
 ---
 
 This final chapter reads the pure boundary between a keiro envelope and a Kafka record:
@@ -36,8 +36,9 @@ treats both as opaque bytes, so a future binary-key transport can populate `key`
 payload is passed through unchanged via `integrationPayload`. `outboxRowToKafkaRecord` is just the
 row's event fed through the same function. Recall from [chapter
 01](/docs/keiro/walkthrough/integration/01-the-integration-event-envelope) that `integrationHeaders`
-emits the six required headers always and every optional header only when its field is populated — so
-the record carries exactly the metadata the envelope had.
+emits seven headers always and every optional header only when its field is populated. The seven are
+the six required headers and `keiro-occurred-at`. So the record carries exactly the metadata the
+envelope had.
 
 ## In: `KafkaInboundRecord`, `KafkaDecodeError`, `integrationEventFromKafka`
 
@@ -48,9 +49,17 @@ data KafkaInboundRecord = KafkaInboundRecord
   , key :: !(Maybe Text), payload :: !ByteString, headers :: ![(Text, Text)], receivedAt :: !UTCTime }
   deriving stock (Generic, Eq, Show)
 
-data KafkaDecodeError = MissingHeader !Text | InvalidIntHeader !Text !Text | InvalidUuidHeader !Text !Text
+data KafkaDecodeError
+  = MissingHeader !Text
+  | InvalidIntHeader !Text !Text
+  | InvalidUuidHeader !Text !Text
+  | InvalidTimeHeader !Text !Text
+  | InvalidJsonHeader !Text !Text
   deriving stock (Generic, Eq, Show)
 
+integrationEventFromKafka ::
+  KafkaInboundRecord ->
+  Either KafkaDecodeError (IntegrationEvent, KafkaDeliveryRef)
 integrationEventFromKafka record = do
   let hs = record ^. #headers
   source <- requireHeader hs headerSource
@@ -62,7 +71,40 @@ integrationEventFromKafka record = do
   messageId <- requireHeader hs headerMessageId
   schemaReference <- buildSchemaReference hs
   sourceEventId <- traverseLookup hs headerSourceEventId (fmap EventId . parseUuid headerSourceEventId)
-  …
+  sourceGlobalPosition <-
+    traverseLookup hs headerSourceGlobalPosition (fmap GlobalPosition . parseInt headerSourceGlobalPosition)
+  causationId <- traverseLookup hs headerCausationId (fmap EventId . parseUuid headerCausationId)
+  correlationId <- traverseLookup hs headerCorrelationId (fmap EventId . parseUuid headerCorrelationId)
+  occurredAt <- fromMaybe (record ^. #receivedAt) <$> traverseLookup hs headerOccurredAt (parseTimeHeader headerOccurredAt)
+  attributes <- traverseLookup hs headerAttributes (parseJsonHeader headerAttributes)
+  let traceContext = case Prelude.lookup headerTraceParent hs of
+        Nothing -> Nothing
+        Just tp -> Just (TraceContext tp (Prelude.lookup headerTraceState hs))
+      event =
+        IntegrationEvent
+          { messageId,
+            source,
+            destination,
+            key = record ^. #key,
+            eventType,
+            schemaVersion,
+            contentType = parseContentType contentTypeRaw,
+            schemaReference,
+            sourceEventId,
+            sourceGlobalPosition,
+            payloadBytes = record ^. #payload,
+            occurredAt,
+            causationId,
+            correlationId,
+            traceContext,
+            attributes
+          }
+      kafka =
+        KafkaDeliveryRef
+          { topic = record ^. #topic,
+            partition = record ^. #partition,
+            offset = record ^. #offset
+          }
   pure (event, kafka)
 ```
 
@@ -76,6 +118,10 @@ The decode is the mirror image of the encode, and it is total in its error repor
   whole string);
 - UUID headers (`source-event-id`, `causation-id`, `correlation-id`) go through `parseUuid`, yielding
   `InvalidUuidHeader name raw`;
+- `keiro-occurred-at` goes through `parseTimeHeader`, an ISO 8601 parse that yields
+  `InvalidTimeHeader name raw` on malformed input;
+- `keiro-attributes` goes through `parseJsonHeader`, yielding `InvalidJsonHeader name raw` when the
+  value is not valid JSON;
 - optional headers use `traverseLookup`, which returns `Right Nothing` when absent (no error);
 - `buildSchemaReference` reconstructs the `SchemaReference` from the five `keiro-schema-*` headers,
   returning `Nothing` when all are absent.
@@ -84,16 +130,19 @@ The diagram puts the outbound and inbound mappings side by side.
 
 <Diagram
   src="keiro/walkthrough/integration/kafka-record-mapping"
-  alt="Outbound, destination becomes topic, key is UTF-8 encoded, payloadBytes passes through as payload, and integrationHeaders produces the headers. Inbound, decoded headers fill the envelope fields, payload becomes payloadBytes, and receivedAt is copied as occurredAt. Topic, partition, and offset go to a separate KafkaDeliveryRef."
+  alt="Outbound, destination becomes topic, key is UTF-8 encoded, payloadBytes passes through as payload, and integrationHeaders produces the headers. Inbound, decoded headers fill the envelope fields, including occurredAt and attributes. Payload becomes payloadBytes. receivedAt becomes occurredAt only when keiro-occurred-at is absent. Topic, partition, and offset go to a separate KafkaDeliveryRef."
   caption="Topic, partition, and offset travel beside the envelope as delivery metadata. They are not the dedupe key."
 />
 
-## The `occurredAt = receivedAt` asymmetry
+## `occurredAt` and `attributes` on the way in
 
-The producer does **not** emit `occurredAt` as a canonical header, so the decoder cannot recover the
-producer's wall-clock from headers. It sets `occurredAt = record ^. #receivedAt` and `attributes =
-Nothing`; a receiver that needs the producer's original timestamp re-derives it from the payload.
-(Inbox storage still keeps the field, so a future header convention can add one without a migration.)
+The producer always emits `keiro-occurred-at`, so the decoder recovers the producer's timestamp from
+the header. `receivedAt` is only a fallback: `fromMaybe (record ^. #receivedAt)` applies it when the
+header is absent, for example when a non-keiro producer wrote the record. A header that is present
+but not ISO 8601 is an error, not a fallback.
+
+`attributes` comes from `keiro-attributes` when that header is present. When the header is absent,
+`attributes` is `Nothing`.
 
 ## The poison-message rule
 

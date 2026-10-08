@@ -7,11 +7,12 @@ This guide connects a real Kafka consumer to the inbox: turn each delivered reco
 `KafkaInboundRecord`, decode it to an `IntegrationEvent`, run it through `runInboxTransaction`, and
 translate the outcome into a broker ack / retry / dead-letter decision.
 
-<Callout type="warn">
-**The current shibuya Kafka adapter drops the `keiro-*` headers the inbox decoder needs**, so there
-is no turn-key shibuya→inbox path. Consume with `kafka-effectful` directly (the approach keiro's own
-cross-context test uses), or extend the adapter to preserve headers. The rest of this guide assumes
-you have the raw record **with its headers** in hand.
+<Callout type="info">
+The [shibuya Kafka adapter](/docs/integrations/shibuya-kafka-adapter) keeps every Kafka header on
+`Envelope.headers`, in order and with duplicates. A shibuya handler can therefore build the
+`KafkaInboundRecord` from the envelope. A direct `kafka-effectful` consumer, as in keiro's own
+cross-context test, also works. The rest of this guide assumes you have the raw record **with its
+headers** in hand.
 </Callout>
 
 ## Goal
@@ -79,7 +80,7 @@ flowchart TD
    | `InboxPreviouslyFailed _` | ack + alert operator | a prior attempt recorded a permanent failure |
    | `InboxInProgress` | retry | transient; only reachable from async paths |
    | `Left (DedupePolicyUnsatisfied _)` | dead-letter | poison: redelivery will not add the missing field |
-   | `KafkaDecodeError` (`MissingHeader`/`InvalidIntHeader`/`InvalidUuidHeader`) | dead-letter | poison: malformed/absent headers |
+   | `KafkaDecodeError` (`MissingHeader`/`InvalidIntHeader`/`InvalidUuidHeader`/`InvalidTimeHeader`/`InvalidJsonHeader`) | dead-letter | poison: malformed/absent headers |
 
    Commit the offset only after the inbox has committed. Because the dedupe key is the stable
    `messageId`, committing late (and thus risking a redelivery on a crash) is safe — the redelivery

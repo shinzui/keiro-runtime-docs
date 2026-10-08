@@ -350,7 +350,12 @@ data KafkaInboundRecord = KafkaInboundRecord
   , key :: !(Maybe Text), payload :: !ByteString
   , headers :: ![(Text, Text)], receivedAt :: !UTCTime }
 
-data KafkaDecodeError = MissingHeader !Text | InvalidIntHeader !Text !Text | InvalidUuidHeader !Text !Text
+data KafkaDecodeError
+  = MissingHeader !Text
+  | InvalidIntHeader !Text !Text
+  | InvalidUuidHeader !Text !Text
+  | InvalidTimeHeader !Text !Text
+  | InvalidJsonHeader !Text !Text
 
 integrationEventFromKafka :: KafkaInboundRecord -> Either KafkaDecodeError (IntegrationEvent, KafkaDeliveryRef)
 ```
@@ -358,7 +363,9 @@ integrationEventFromKafka :: KafkaInboundRecord -> Either KafkaDecodeError (Inte
 `integrationEventFromKafka` reconstructs the envelope from the [canonical
 headers](/docs/keiro/reference/integration-event#canonical-header-names): a missing required header
 → `MissingHeader`; a malformed numeric/UUID header → `InvalidIntHeader` / `InvalidUuidHeader`.
-Optional headers are silently absent. See [Wire a Kafka consumer to the
+A malformed `keiro-occurred-at` → `InvalidTimeHeader`; a malformed `keiro-attributes` →
+`InvalidJsonHeader`. Optional headers are silently absent. `occurredAt` comes from
+`keiro-occurred-at`, or from `receivedAt` when that header is absent. See [Wire a Kafka consumer to the
 inbox](/docs/keiro/how-to/wire-a-kafka-consumer-to-the-inbox).
 
 ## The `keiro_inbox` table
