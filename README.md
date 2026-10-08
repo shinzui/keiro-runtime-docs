@@ -19,9 +19,12 @@ Historical plans and source-review records remain under `docs/`.
 
 ## Local development
 
-Use Node 22 and pnpm. The Nix development environment also supplies oxlint and oxfmt.
+Enter the Nix environment before running project commands. The shared flake-parts
+module supplies Bun 1.4.2, TypeScript 7.0.2, oxlint, and oxfmt. The project-owned
+`flake.module.nix` retains Node 22 and pnpm; `packageManager` selects pnpm 11.4.0.
 
 ```bash
+nix develop
 pnpm install
 pnpm dev
 ```
@@ -46,6 +49,9 @@ Open <http://127.0.0.1:5214>.
 | `pnpm check`                | Run the complete release gate.                                     |
 
 Run `pnpm check` before a push.
+
+The [module migration report](docs/fumadocs-module-upgrade-2026-10-08.md) records
+the tested versions, preserved customizations, and future update procedure.
 
 ## Authoring
 
