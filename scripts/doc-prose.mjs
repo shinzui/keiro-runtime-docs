@@ -37,7 +37,9 @@ export function proseBlocks(source) {
     }
   }
   const descriptions = (text, line) => {
-    for (const match of text.matchAll(/\b(?:description|title)\s*(?:=|:)\s*"((?:\\.|[^"\\])*)"/g)) {
+    for (const match of text.matchAll(
+      /\b(?:description|title|caption|alt)\s*(?:=|:)\s*"((?:\\.|[^"\\])*)"/g,
+    )) {
       const location = line + text.slice(0, match.index).split("\n").length - 1
       blocks.push({ line: location, text: match[1].replace(/\\"/g, '"'), procedural: false })
     }

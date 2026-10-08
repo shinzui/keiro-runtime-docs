@@ -62,3 +62,16 @@ test("sentence boundaries allow lowercase product names and protect abbreviation
   const words = Array.from({ length: 18 }, () => "word").join(" ")
   assert.equal(analyzeMdx(`${words}. keiro-dsl supports this operation, e.g. a query.`).length, 0)
 })
+
+test("diagram alt and caption text are checked as prose", () => {
+  const source =
+    '<Diagram\n  src="kiroku/x"\n  alt="It\'s a stream."\n  caption="Events don\'t move."\n/>'
+  const findings = analyzeMdx(source).filter((item) => item.rule === "contraction")
+  assert.deepEqual(
+    findings.map((item) => [item.line, item.detail]),
+    [
+      [3, "It's"],
+      [4, "don't"],
+    ],
+  )
+})
