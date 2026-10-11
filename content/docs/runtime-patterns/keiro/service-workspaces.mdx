@@ -1,0 +1,147 @@
+---
+title: "Composable service workspaces"
+description: "Defaulting Keiro DSL services to a versioned workspace so aggregates and shared declarations remain readable and single-owner"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/keiro-service-workspaces"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/keiro-service-workspaces" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/keiro-service-workspaces`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/keiro/service-workspaces.md`. Type: **Standard**. Status: **current**.
+
+Material timestamp: 2026-09-01T15:35:02Z. Source actor: `human:nadeem`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved keiro checkout (0.4.0.1 tags plus post-release workspace commits), keiki 0.4.0.0, kiroku-store source, and Hackage release state; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-29T19:40:01Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Composable service workspaces
+
+**Default every Keiro DSL service to one versioned `.keiro-workspace` manifest. Use a bare `.keiro` service input only when the domain is trivial and has exactly one aggregate.**
+
+A workspace is one service contract, not a collection of independently generated specs. It preserves per-aggregate source ownership while composing shared declarations, validation, generated modules, scaffold history, compatibility findings, replay impact, and coverage into one deterministic service graph.
+
+## Start with the growth-friendly layout
+
+Create `domain/<service>.keiro-workspace` when the DSL is introduced, even if the first version contains only one aggregate. Keep its members under `domain/<service>/`: give each aggregate one complete, single-owner `.keiro` file, and put declarations shared across aggregates in an explicitly owned member such as `shared.keiro`. Group non-aggregate nodes into cohesive members instead of allowing one service file to grow without a clear review boundary.
+
+This layout makes the next aggregate an additive source change: add its member and register that path in the manifest. The service already has stable workspace identity, workspace-keyed scaffold history, and one whole-service command target, while each aggregate remains readable and reviewable in isolation.
+
+A bare `domain/<service>.keiro` is the exception. Use it only when all of the domain contract fits comfortably in one file, it declares exactly one aggregate, and it has no shared declarations or additional node family that deserves a separate owner. A non-trivial single-aggregate domain still uses a workspace. Convert the exception to a workspace as soon as a second aggregate or a meaningful source boundary appears.
+
+The layouts are semantically equivalent. A bare `.keiro` input remains supported as a one-member service. Splitting whole aggregates into members later is a source-ownership move; it does not create a new wire identity or justify renaming generated modules.
+
+Do not scaffold same-context members independently. Context-keyed legacy records overwrite one another, each invocation sees only a partial graph, and each may rewrite a context-level facade from incomplete information.
+
+## Make the manifest the service authority
+
+Version the manifest at the domain root and list every member relative to the manifest directory:
+
+```text
+service demo-project
+module Demo.Modules.Project
+layout collocated
+runtime-package demo-project-service
+spec demo-project/project-artifact.keiro
+spec demo-project/project.keiro
+spec demo-project/shared.keiro
+```
+
+The rules are strict:
+
+* `service` is the stable workspace identity and the key for scaffold history and reports.
+* `runtime-package` names the Cabal package that compiles the generated service runtime. It is optional in the manifest and overridable per run with `scaffold --runtime-package`, but it is never inferred, and a configured service needs it to scaffold its conformance package. The value is checked against Cabal's package-name grammar. At most one clause may appear. See [the generated compilation contract](/docs/runtime-patterns/architecture/generated-compilation-contract).
+* Every member is a complete, independently parseable `.keiro` spec and declares the same `context`.
+* Every member selects the same effective language version. Composition compares versions before merging the graph and refuses a disagreement with `WorkspaceLanguageVersionMismatch`; move the whole workspace across a version in one change. See [Keiro DSL language versions](/docs/runtime-patterns/keiro/language-versions).
+* Aggregates are never split across members. Shared ids, enums, rules, and mapped declarations have exactly one owning member; even textually identical duplicates are refused.
+* A manifest `module` or `layout` clause is authoritative. A member may omit that clause or repeat it exactly, but may not disagree. Without a manifest clause, declared member values must agree unanimously.
+* Member paths are relative `.keiro` paths with no absolute or `..` segments, nested manifests, duplicates, or case-fold collisions. Membership is a set: canonical path order, not manifest order, determines composition and generated bytes.
+
+Put shared declarations in a clearly owned member such as `domain/<service>/shared.keiro`. Do not copy declarations into every aggregate file and do not introduce textual includes.
+
+## Operate on the composed service
+
+Pass the manifest anywhere the CLI accepts a file:
+
+```bash
+keiro-dsl parse domain/service.keiro-workspace
+keiro-dsl check domain/service.keiro-workspace --explain-bindings \
+  --coverage-report build/keiro-coverage.json
+keiro-dsl scaffold domain/service.keiro-workspace --out service-core/src
+keiro-dsl diff domain/service.keiro-workspace --since HEAD^ --explain \
+  --report-out build/keiro-diff.json \
+  --replay-impact-out build/replay-impact.json
+```
+
+`parse` and `check` resolve cross-member references and report diagnostics at the original member path, line, and column. Workspace composition keeps the semantic graph separate from its exact source index and rejects duplicate, missing, unexpected, or file-mismatched semantic subjects. `scaffold` plans the complete member set before writing, emits context-level modules such as `StructuralProjections`, `StructuralConformance`, `BehaviorSourceMap`, and replay-audit assembly exactly once, and refuses any parse, validation, lowering, provenance, collision, cycle, or banner failure before the first output byte changes.
+
+Reordering `spec` lines and repeating an unchanged scaffold must produce byte-identical output. Generated modules are reported as `unchanged`; create-once holes and bindings are `skipped`.
+
+## Keep workspace-keyed, attributable history
+
+A workspace scaffold writes:
+
+```text
+keiro-dsl-ledger.workspace.<service>.txt
+keiro-dsl-cabal-fragment.workspace.<service>.txt
+keiro-dsl-conformance-ledger.txt
+```
+
+The ledger attributes aggregate-owned modules to their member, marks service-wide modules as context-level, and persists the source-independent semantic-impact snapshot. Moving an aggregate or declaration between members is an ownership move, not stale/new churn. Moving unchanged source may rewrite `BehaviorSourceMap`; it must not change stable behavior keys, semantic impact, or aggregate contracts.
+
+A workspace still holding the pre-0.11 `keiro-dsl-scaffold-record.workspace.*` and `keiro-dsl-manifest.workspace.*` names refuses to scaffold until `scaffold --apply-name-migrations` renames them. The single-file forms were renamed in the same change; see [specification and scaffolding](/docs/runtime-patterns/architecture/spec-and-scaffolding) for the full table and the migration mechanics.
+
+Stale reports are advisory and Keiro never deletes files. Review stale generated files, hand-owned holes, and unclaimed files separately; delete or rename only after a human establishes ownership.
+
+## Adopt existing output without weakening the firewall
+
+To adopt one existing multi-aggregate file, create a one-member manifest and scaffold it. Split whole aggregates later, moving each shared declaration to exactly one owner.
+
+To adopt output produced by independent same-context scaffolds, keep the existing tree and run one workspace scaffold. On the first run, Keiro claims only attributable generated output:
+
+* `record` evidence means the file appears in the surviving legacy context record;
+* `banner` evidence means an orphaned planned Generated file carries the exact generated banner;
+* holes, unrelated hand-written files, and likely-stale paths remain unclaimed.
+
+The run writes `keiro-dsl-migration-report.workspace.<service>.txt`, appends a forward-compatible `superseded-by:` marker to the legacy record, and records claim provenance. It deletes and renames nothing. A bannerless file at a planned Generated path refuses the whole run without changing the tree.
+
+Consolidate golden payloads under one workspace root before adoption. Golden paths are aggregate-keyed, so moving an aggregate between members must not move or silently replace its historical fixtures.
+
+## Diff the historical workspace, not today's member list
+
+`diff` reconstructs both the old manifest and its old member set from Git. It emits one compatibility stream, one coverage report, and one replay-impact verdict for the service. A shared declaration change is classified at every aggregate use site with both the declaration owner and the consuming member cited.
+
+Moving unchanged declarations or aggregates between members emits `OwnershipMoved` and requires a whole-workspace rescaffold; it is not wire evolution. Changes to service, context, module, or layout authority emit `WorkspaceAuthorityChanged` beside any actual persisted-identity findings. Automation branches on diagnostic codes, never rendered wording.
+
+## Related Patterns
+
+* [Keiro-dsl adoption](/docs/runtime-patterns/keiro/dsl-adoption)
+* [Brownfield Keiro adoption](/docs/runtime-patterns/keiro/brownfield-adoption)
+* [Evolution gates and rollout ordering](/docs/runtime-patterns/keiro/evolution-and-rollout)
+* [Keiro DSL language versions](/docs/runtime-patterns/keiro/language-versions)
+* [Specification and scaffolding](/docs/runtime-patterns/architecture/spec-and-scaffolding)
+* [Vertical-slice modules](/docs/runtime-patterns/architecture/vertical-slice-modules)
+* [Semantic-local Keiro DSL regeneration](/docs/runtime-patterns/keiro/dsl-semantic-locality)
+* [Mapped consumer surfaces](/docs/runtime-patterns/keiro/mapped-consumer-surfaces)

@@ -1,0 +1,162 @@
+---
+title: "Test Layout"
+description: "The per-package test-suite standard, including structural mapping conformance and brownfield codec evidence"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/architecture-test-layout"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/architecture-test-layout" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/architecture-test-layout`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/architecture/test-layout.md`. Type: **Standard**. Status: **current**.
+
+Material timestamp: 2026-09-18T13:41:24Z. Source actor: `process:codex`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved danwa and keiro-runtime-jitsurei reference applications and the keiro-dsl scaffolder at HEAD; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-29T02:53:40Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Targeted reference-suite review against mori://shinzui/danwa at 79d1c3934f93944aa6e8074130828e540983804d, project-relative danwa-core/danwa-core.cabal and danwa-core/test-domain/Danwa/BehaviorSpec.hs; source artifact-level URIs pending. The domain driver now includes behaviorAssertions and focusedGuardAssertions as well as generated harnessAssertions; its dependencies include aeson, keiki, keiro-core, and text, so the claimed base-plus-core-only dependency surface is stale. The suite remains database-free. Other suite claims were not exhaustively reverified.",
+  "document_timestamp": "2026-09-18T04:48:47Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "gpt-6",
+  "outcome": "changes-requested",
+  "provider": "openai",
+  "reviewed_at": "2026-09-18T13:31:31Z",
+  "reviewer": "codex",
+  "scope": "technical-accuracy"
+}
+```
+
+Review (matches material revision):
+
+```json
+{
+  "context": "Approved the targeted domain-suite correction against mori://shinzui/danwa at 79d1c3934f93944aa6e8074130828e540983804d: project-relative danwa-core/danwa-core.cabal and danwa-core/test-domain/Danwa/BehaviorSpec.hs; source artifact-level URIs pending. The three assertion collections, six direct dependencies, and database-free execution match the reference driver. Other suite claims were not exhaustively reverified.",
+  "document_timestamp": "2026-09-18T13:41:24Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "gpt-6",
+  "outcome": "approved",
+  "provider": "openai",
+  "reviewed_at": "2026-09-18T13:41:24Z",
+  "reviewer": "codex",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Test Layout
+
+**Tests mirror vertical source modules, and every package owns the suites that prove its responsibility.**
+
+The baseline comes from danwa's six-package structure; services using keiro-dsl's extended node vocabulary add the focused suites demonstrated by keiro-runtime-jitsurei. Database tests always provision isolated PostgreSQL through the migrations package's public `test-support` sublibrary and never use a developer database.
+
+## Start With Domain Scenarios
+
+Derive tests from [invariants and workflow outcomes](/docs/runtime-patterns/architecture/domain-design) before
+assigning them to package suites. Cover accepted commands, business rejections,
+no-ops, competing commands, and replay of the resulting domain events. For
+cross-context processes, cover duplicate delivery, timeout, compensation, and
+recovery after interruption. Generated conformance complements these business
+scenarios; it does not choose or prove the completeness of the domain model.
+
+Server suites must exercise the
+[business request retry contract](/docs/runtime-patterns/keiro/command-cycle-and-errors#make-business-request-retries-explicit),
+including a committed operation whose response is lost, concurrent duplicates,
+and the declared treatment of silent outcomes. Assert query freshness separately
+from command acceptance.
+
+## Core Owns Four Baseline Suites
+
+`<service>-core-test`, under `test/`, is the ordinary core smoke and unit suite.
+
+`<service>-core-domain`, under `test-domain/`, is a deliberately small executable driver rather than a Tasty tree. Combine each aggregate's generated `harnessAssertions` with application-owned behavior and focused guard assertions, print each result, and exit with failure if any assertion is false. The reference driver in `mori://shinzui/danwa` combines `harnessAssertions`, `behaviorAssertions`, and `focusedGuardAssertions`; its direct dependencies are `aeson`, `base`, `danwa-core`, `keiki`, `keiro-core`, and `text`. Declare the dependencies the driver uses and keep this suite database-free, so domain validation never waits for PostgreSQL.
+
+When structural mappings exist, those harness assertions also cover both `StructuralBinding` laws, deterministic fixture labels and branch coverage, declared missing/default/null/unknown-field policy, generated field-witness agreement, and forward-versus-replay equality over the final vertex and every register. Opaque mappings receive boundary round trips only; never label them structurally covered.
+
+`<service>-core-diagrams`, under `test-diagrams/`, uses Tasty to assert that the generated Mermaid lifecycle documentation has no stale diagrams and that every rendered diagram passes keiki's structural validation. This suite keeps documentation derived from transducers in sync with executable behavior.
+
+`<service>-core-postgres`, under `test-postgres/`, provisions an ephemeral migrated database through `<service>-migrations:test-support`. It round-trips a real event through kiroku and exercises read-model writes and queries against PostgreSQL.
+
+## Migrations, Server, And Workers Own Their Boundaries
+
+`<service>-migrations-test` verifies migration filename and slug rules, generated templates, the composed schemas and ledger, and an idempotent second migration run. The migrations package publishes a visible `test-support` sublibrary with a service-specific wrapper such as `withDanwaMigratedDatabase`; every call creates an isolated migrated database and tears it down afterward.
+
+`<service>-server-test` drives real handlers against an ephemeral migrated database and observes their external effect. Danwa's suite calls the StartConversation handler and then reads kiroku to prove that one `ConversationStarted` event was appended.
+
+`<service>-workers-test` has `test/Main.hs` as a Tasty aggregator. Its other modules mirror the source verticals and export `tests :: TestTree`:
+
+```text
+src/<Service>/Conversation/Worker.hs
+test/<Service>/Conversation/WorkerSpec.hs
+
+src/<Service>/Integration/AddressedMessageWorker.hs
+test/<Service>/Integration/AddressedMessageWorkerSpec.hs
+
+src/<Service>/Workers/Registry.hs
+test/<Service>/Workers/RegistrySpec.hs
+```
+
+Every worker module gets a corresponding `*Spec`; danwa's missing `Embellishment/WorkerSpec.hs` is a known reference gap, not permission to omit coverage. Use Tasty and tasty-hunit for the package suites unless a specialized driver, such as the generated domain harness, has a narrower dependency surface.
+
+## Extended Suites For Richer Services
+
+Keiro-runtime-jitsurei's hospital-capacity package demonstrates six focused suite roles. In a six-package service, attach each role to the package that owns the tested surface:
+
+* `test` is the baseline unit suite.
+* `dsl-test` checks scaffolded modules, harnesses, and specification conformance; attach it to `<service>-core`. It is hand-owned and separate from the generated conformance package a configured service scaffolds — that package is generated output, so do not add tests to it. See [the generated compilation contract](/docs/runtime-patterns/architecture/generated-compilation-contract).
+* `contract-test` checks integration-event contracts; attach it to `<service>-workers`.
+* `migration-test` checks the pg-migrate plan; attach it to `<service>-migrations`.
+* `kafka-integration` runs real-broker integration tests; attach it to `<service>-workers` and keep it operationally distinct from unit tests.
+* `symbolic-test` is an optional additive keiki/SBV suite for transducer proofs; attach it to `<service>-core` and document that it requires `z3` on `PATH`.
+
+Use the service name as the cabal prefix, for example `<service>-dsl-test` and `<service>-contract-test`. Specialized suites augment the four core baselines and the package suites; they do not justify collapsing the six package boundaries.
+
+## Keep Brownfield Codec Evidence Out Of Production Modules
+
+A brownfield migration adds a temporary or retained `<service>-codec-migration` test or executable owned by core. Generate its comparison module explicitly with `--codec-comparison TYPE --comparison-out FILE`, compile it beside an explicit historical codec, and feed it sanitized production goldens. Require canonical JSON parity, matching decode outcomes, and complete historical/typed branch coverage; otherwise add a schema version and upcaster.
+
+The comparison module is excluded from ordinary production manifests and scaffold records. It proves only the sampled historical corpus and must not become a runtime codec selector or fallback. Keep the captured goldens and report provenance as long-lived compatibility evidence even if the executable is later retired.
+
+## Reuse the published PostgreSQL fixture
+
+`keiro-test-support` is published in the lockstep Keiro cohort from 0.14. Use `Keiro.Test.Postgres.withMigratedSuiteWith` behind the service migration test-support wrapper: it migrates one suite template with Kiroku, Keiro, and the supplied application/transport components, then `withFreshDatabase` or `withFreshStore` clones an isolated database for each example. Supply the complete extra component list before cloning; applying a partial plan against a ledger that already records omitted components fails strict verification. Keep `Fixture` abstract and acquire it through the suite function. Use `withFreshStoreWith` when tests need application schema search-path settings, and `withFreshResourceStore` when the code under test needs the resource-aware store runner. Use `withFreshResourceStorePrepared` when a test must first create roles or grants as the privileged fixture user: its preparation store is closed before the application store opens with the modified settings, so the test exercises the application's real privileges. This fixture reuses migration work without sharing mutable test databases.
+
+## Database Isolation Rule
+
+No test opens a developer or shared database. Core, server, and worker integration suites receive their connection string only from `<service>-migrations:test-support`, which installs the same complete migration plan used by the service. This makes schema ownership executable and ensures tests fail when the runtime and migration package disagree.
+
+## Related Patterns
+
+* [Service packages](/docs/runtime-patterns/architecture/service-packages)
+* [Vertical-slice modules](/docs/runtime-patterns/architecture/vertical-slice-modules)
+* [Migration testing](/docs/runtime-patterns/migrations/testing)
+* [Keiki build-time validation](/docs/runtime-patterns/keiki/build-time-validation)
+* [Kiroku transactions and projections](/docs/runtime-patterns/kiroku/transactions-and-projections)
+* [Brownfield Keiro adoption](/docs/runtime-patterns/keiro/brownfield-adoption)

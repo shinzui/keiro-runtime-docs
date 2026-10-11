@@ -1,0 +1,156 @@
+---
+title: "Domain Design And Runtime Choices"
+description: "Design bounded contexts, invariants, aggregates, domain events, and workflows before service layout and runtime mechanisms"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/architecture-domain-design"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/architecture-domain-design" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/architecture-domain-design`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/architecture/domain-design.md`. Type: **Standard**. Status: **current**.
+
+Material timestamp: 2026-10-11T21:13:17Z. Source actor: `process:codex-cli`.
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Domain Design And Runtime Choices
+
+**Start with the business model: define the bounded context's language, invariants, aggregates, domain events, and workflows before choosing packages, generators, or transports.**
+
+These standards govern one microservice platform with isolated DDD bounded
+contexts. A bounded context owns its model, vocabulary, and private persistence.
+Its public integration contracts connect it to other contexts without sharing
+aggregate implementations or private database tables. Use the platform's
+six application-package and DSL-first conventions after establishing that model.
+
+## Establish The Context And Business Scenarios
+
+Name the capability, its domain owner, and the terms that have a precise meaning
+inside the context. Describe representative business scenarios in that language:
+the initiating intent, prerequisites, accepted result, rejection, and later work.
+Record which facts this context owns and which it learns from other contexts.
+Translate incoming integration contracts into local domain concepts at the boundary.
+
+Do not infer one aggregate per database table, screen, endpoint, or noun. A
+bounded context can contain several aggregates. Choose deployment and package
+boundaries to serve the context's ownership and operational needs.
+
+## Assign Every Invariant An Owner
+
+Write each invariant as a business statement, such as "a closed Conversation
+cannot accept a message." Identify the authoritative state needed to decide it,
+the aggregate that owns the decision, and the conflicting commands that could
+violate it under concurrency.
+
+An aggregate is one consistency boundary: one identity, one stream version,
+and one validated transducer. Compose behaviors inside that boundary only when
+they share its identity and atomic decision. Keep the state required for the
+decision in that boundary; an asynchronously updated view cannot enforce a
+strict invariant about current state.
+
+If a rule spans independent aggregates, decide explicitly whether it requires
+a redesigned boundary, a reservation owned by an aggregate, or an eventual
+business process with compensation. A workflow or process manager does not
+make independent stream commits atomic. A pure guard cannot enforce uniqueness
+across unrelated streams by inspecting one stream's state.
+
+Keep aggregates as small as their atomic invariants allow. Review contention,
+history growth, and lifecycle together; package layout is not a reason to merge
+independent identities into one stream. Follow
+[transducer best practices](/docs/runtime-patterns/keiki/transducer-best-practices) and
+[checked composition](/docs/runtime-patterns/keiki/checked-composition) when implementing the model.
+
+## Specify Commands, Outcomes, And Domain Events
+
+Commands express intent and may be refused. Domain events record accepted facts
+in the context's language and carry the data needed to reproduce durable state.
+Define each command's prerequisites, guards, state changes, emitted events,
+business rejection, and no-op behavior before selecting its generated surface.
+
+Keep decision logic deterministic. Capture relevant external facts, time, and
+allocated identifiers as explicit inputs or recorded facts; do not consult a
+network service during pure decision or replay. Reevaluate aggregate guards
+after an optimistic-concurrency conflict.
+
+Distinguish retrying the same intent from issuing a new command. Define its
+[request identity and receipt policy](/docs/runtime-patterns/keiro/command-cycle-and-errors#make-business-request-retries-explicit)
+at the application boundary. Use [typed command outcomes](/docs/runtime-patterns/keiro/command-cycle-and-errors)
+so business rejections and no-ops do not become infrastructure failures.
+
+Private domain events support this context's replay and evolution. Publish only
+the selected facts other contexts need through separately versioned
+[integration contracts](/docs/runtime-patterns/messaging/integration-events); a private event is
+not automatically a public contract. Use the [outbox](/docs/runtime-patterns/messaging/outbox)
+and [inbox](/docs/runtime-patterns/messaging/inbox) at those delivery boundaries.
+
+## Design The Business Workflow Before Selecting A Runner
+
+Describe the process from intent to a business terminal outcome. Name its owner,
+correlation identity, participating aggregates and contexts, pending states,
+deadlines, cancellation rules, and compensation. Specify what happens when a
+participant refuses, delivery repeats, or execution stops between effects.
+Compensation is a new business action and may itself fail; it does not erase
+committed history.
+
+Choose the smallest mechanism that preserves those rules:
+
+| Business responsibility                                               | Runtime choice                                              |
+| --------------------------------------------------------------------- | ----------------------------------------------------------- |
+| One atomic decision over one identity                                 | Validated aggregate stream                                  |
+| Derived query state                                                   | Subscription projection by default, with explicit freshness |
+| Event-driven coordination with durable state, timers, or compensation | Process manager                                             |
+| A durable sequence with named steps, waits, callbacks, or child work  | Durable workflow                                            |
+| Stateless event fan-out to selected targets                           | Router                                                      |
+| Retryable operational work such as rendering or notification delivery | Work queue                                                  |
+
+Use [process managers](/docs/runtime-patterns/messaging/process-managers) and
+[durable workflows](/docs/runtime-patterns/keiro/durable-workflows) according to process shape.
+Both require idempotent external effects; neither grants exactly-once delivery.
+Coordinate across bounded contexts through their public contracts, not by
+dispatching directly into their private streams.
+
+## Define What A Caller May Observe
+
+Specify whether the caller needs immediate command acceptance, an updated local
+view, or the eventual completion of a cross-context process. These are different
+business promises.
+
+Return the command result directly when sufficient. Default query models to
+subscription delivery, including local aggregate views. For read-your-write,
+use a bounded post-commit position wait through the
+[read-model freshness policy](/docs/runtime-patterns/keiro/read-models-and-projections).
+A timeout means committed with view pending; retry the query, not the command.
+Keep only minimum state needed by a specified atomic invariant synchronous,
+such as an identity-to-winning-aggregate index. Rich views stay asynchronous.
+Measure unrelated-writer latency because inline SQL extends the store-wide
+append lock interval. Expose
+pending workflow state when completion requires other participants; do not
+present local acceptance as completion of the entire process.
+
+## Prove The Model, Then Arrange Its Implementation
+
+Before scaffolding, retain a small set of named business scenarios covering each
+invariant, rejection, no-op, concurrent conflict, and workflow failure path.
+Use them as acceptance examples for [behavior conformance](/docs/runtime-patterns/keiro/behavior-conformance)
+and application tests. Prove replay produces the same durable state and that
+redelivery does not repeat a protected business effect.
+
+Then apply [DSL adoption](/docs/runtime-patterns/keiro/dsl-adoption), declare nominal
+[domain values](/docs/runtime-patterns/architecture/domain-newtypes-and-typeids), and record the model in a
+[service workspace](/docs/runtime-patterns/keiro/service-workspaces). On Language 6,
+generate expressible aggregate decisions and keep explicit holes for the
+behavior the language cannot express. Choose [vertical modules](/docs/runtime-patterns/architecture/vertical-slice-modules),
+[application packages](/docs/runtime-patterns/architecture/service-packages), and
+[test layout](/docs/runtime-patterns/architecture/test-layout) around those responsibilities.
+Select a [transport](/docs/runtime-patterns/messaging/transport-selection) only after deciding
+the interaction's ownership, durability, ordering, and replay requirements.
+
+The [Conversation vertical](/docs/runtime-patterns/architecture/worked-example-conversation) demonstrates this
+order with an illustrative aggregate and asynchronous follow-up work.

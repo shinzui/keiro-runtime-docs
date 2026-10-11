@@ -1,0 +1,141 @@
+---
+title: "Worked Conversation Vertical"
+description: "Conversation vertical illustrating domain-first design and current generated/hand-owned ownership"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/architecture-worked-example-conversation"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/architecture-worked-example-conversation" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/architecture-worked-example-conversation`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/architecture/worked-example-conversation.md`. Type: **Pattern**. Status: **current**.
+
+Material timestamp: 2026-10-11T21:13:17Z. Source actor: `process:codex-cli`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved danwa and keiro-runtime-jitsurei reference applications and the keiro-dsl scaffolder at HEAD; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-22T18:54:19Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Worked Conversation Vertical
+
+**Design the Conversation aggregate's invariants and events first, then map its responsibilities into the current workspace and vertical layout.**
+
+The original example described the legacy Conversation slice in
+`mori://shinzui/danwa`, with a bare service source and a whole transducer in
+`Holes`. That historical layout explains existing code; it is not the
+replication template for a new Language 5 service. The design below is an
+illustrative current-language adaptation, not a claim about that repository's
+present files or business rules.
+
+## State The Business Rules
+
+Suppose a Conversation may be started, receive messages while open, and close.
+State the rules before writing a specification:
+
+* one Conversation identity owns its lifecycle and message-acceptance decisions;
+* appending a message to a closed Conversation is rejected;
+* closing an open Conversation emits a domain event; closing an already closed
+  Conversation is an explicitly modeled no-op;
+* summary generation may finish later and does not determine whether a message
+  was accepted.
+
+Name commands in the context's language: `StartConversation`, `AppendMessage`,
+and `CloseConversation`. Name private domain facts in the past tense:
+`ConversationStarted`, `MessageAppended`, and `ConversationClosed`.
+Record the data needed to reproduce each accepted decision during replay.
+These are example modeling choices; establish the real domain's rules with its
+owners before adopting them.
+
+## Declare The Model And Its Ownership
+
+Use `domain/<service>.keiro-workspace` with a complete Conversation member
+under `domain/<service>/`. Declare Language 6 in each member, collocated
+placement in the manifest, and `runtime-package <service>-core`.
+
+Declare the expressible guards, updates, emitted events, rejection reasons,
+and no-op reasons in the aggregate member. Let the generated transducer own
+them. Use `implementation hole` for a specific behavior the language cannot
+express, then provide its implementation and conformance witnesses. Never
+copy an entire legacy hand-written transducer over generated ownership.
+
+Keep command/event types, codecs, transducer assembly, and behavior contracts
+in the generated ring. Fill only the create-once hooks, bindings, and witnesses
+reported by scaffolding. Query SQL, API DTOs, request orchestration, and worker
+implementations remain application-owned. The emitted manifest and
+[vertical-slice standard](/docs/runtime-patterns/architecture/vertical-slice-modules) determine the actual files.
+
+## Execute Commands And Serve Their Results
+
+The API handler translates a request into a domain command, establishes its
+[retry contract](/docs/runtime-patterns/keiro/command-cycle-and-errors#make-business-request-retries-explicit),
+and invokes the generated domain handler through a validated stream. Handle
+accepted, rejected, and no-op outcomes separately.
+
+```text
+Request → application handler → validated aggregate → decision → atomic event append
+```
+
+Default the Conversation query view to a subscription projection with an
+explicit freshness policy. Return the command result directly where sufficient.
+Use inline catalog projections only for minimum state required by an explicit
+atomic invariant, with a measured append-throughput budget. When the caller must observe its accepted write through an
+asynchronous model, return its committed position and use a supported position
+wait. A timeout after commit does not undo acceptance or justify issuing a new
+business command.
+
+## Coordinate Work Outside The Aggregate
+
+Project a queryable Conversation view from private domain events. Projection
+handlers must reproduce the same rows on replay and tolerate redelivery.
+
+Treat summary generation as a job if it is independent operational work. If
+the business process instead has deadlines, durable decisions, and compensation,
+model that process explicitly with a process manager or durable workflow.
+Keep the Conversation aggregate authoritative for its own invariants.
+
+If another bounded context needs a Conversation fact, map it to an explicitly
+owned integration contract and publish through the outbox. Do not share private
+event types or read the Conversation tables from that context.
+
+## Prove The Vertical
+
+Test acceptance, rejection after closure, repeated close, and replay. Race
+message acceptance with closure and assert that the final history obeys the
+chosen invariant. Test a retry after a lost response, projection redelivery,
+and the declared query freshness behavior. For summary work, test duplicate
+delivery and failure recovery.
+
+Run the generated conformance package against `<service>-core`; keep these
+application-level scenarios in the owning core, server, and worker suites.
+The six application packages remain the deployment structure, with generated
+conformance tooling additional.
+
+## Related Patterns
+
+* [Domain design and runtime choices](/docs/runtime-patterns/architecture/domain-design)
+* [Specification and scaffolding](/docs/runtime-patterns/architecture/spec-and-scaffolding)
+* [Aggregate transition ownership](/docs/runtime-patterns/keiro/aggregate-expressions)
+* [Test layout](/docs/runtime-patterns/architecture/test-layout)
+* [Read models and projections](/docs/runtime-patterns/keiro/read-models-and-projections)
+* [Process managers](/docs/runtime-patterns/messaging/process-managers)

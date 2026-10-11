@@ -9,6 +9,7 @@ import type { MDXComponents } from "mdx/types"
 
 import { Diagram } from "@/components/diagram"
 import { Mermaid } from "@/components/mermaid"
+import { PatternProvenance } from "@/components/pattern-provenance"
 
 // Central MDX-to-React component map. `getMDXComponents` merges fumadocs'
 // defaults with any overrides.
@@ -24,6 +25,7 @@ export function getMDXComponents(components?: MDXComponents) {
     ...defaultMdxComponents,
     // Plan C — interactive, zoomable Mermaid diagrams (see src/components/mermaid.tsx).
     Mermaid,
+    PatternProvenance,
     // Hand-authored, theme-aware SVG diagrams (see src/components/diagram.tsx).
     Diagram,
     // Plan D — shared fumadocs-ui authoring components used across the templates.

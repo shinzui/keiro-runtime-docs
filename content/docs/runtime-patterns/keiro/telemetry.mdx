@@ -1,0 +1,126 @@
+---
+title: "Telemetry"
+description: "Keiro tracing, command-decision and position-distance metrics, W3C propagation, Kiroku bridging, and logging seams"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/keiro-telemetry"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/keiro-telemetry" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/keiro-telemetry`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/keiro/telemetry.md`. Type: **Standard**. Status: **current**.
+
+Material timestamp: 2026-09-18T13:41:24Z. Source actor: `process:codex`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved keiro checkout (0.4.0.1 tags plus post-release workspace commits), keiki 0.4.0.0, kiroku-store source, and Hackage release state; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-22T17:49:54Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Targeted logging-seam review against mori://shinzui/keiro at 9fb54d56db4f, project-relative keiro/src/Keiro/Workflow/GC.hs (runWorkflowGcWorkerWith); source artifact-level URI pending. The claim that there are only two available runtime logging seams omits the workflow GC hook for failed and partial passes. Document that hook alongside shard and resume logging. Metric and tracing claims were not exhaustively reverified.",
+  "document_timestamp": "2026-09-18T04:30:00Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "gpt-6",
+  "outcome": "changes-requested",
+  "provider": "openai",
+  "reviewed_at": "2026-09-18T13:31:31Z",
+  "reviewer": "codex",
+  "scope": "technical-accuracy"
+}
+```
+
+Review (matches material revision):
+
+```json
+{
+  "context": "Approved the targeted logging inventory correction against mori://shinzui/keiro at 9fb54d56db4f: project-relative keiro/src/Keiro/Workflow/GC.hs (runWorkflowGcWorker, runWorkflowGcWorkerWith); source artifact-level URI pending. The Text callback reports failed and partial passes, the convenience runner logs to stderr, and failed passes retry on the next tick. Metric and tracing claims were not exhaustively reverified.",
+  "document_timestamp": "2026-09-18T13:41:24Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "gpt-6",
+  "outcome": "approved",
+  "provider": "openai",
+  "reviewed_at": "2026-09-18T13:41:24Z",
+  "reviewer": "codex",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Telemetry
+
+**Use `Keiro.Telemetry` as the OTel seam, preserve W3C context across tables, and bring the service's logger.**
+
+This standard covers keiro's opt-in traces, metrics, propagation, and the logging hooks applications must own.
+
+## Supply telemetry through options
+
+The rule is one sentence: create telemetry instruments once at startup, before the store opens, and deliver them through both the runtime's option records and the Kiroku connection's `eventHandler`.
+
+`Keiro.Telemetry` is keiro's sole dependency seam to `hs-opentelemetry-api`. Supply a `Tracer` to enable `withProducerSpan`, `withConsumerSpan`, `withCommandSpan`, and `withWorkflowSpan`; a missing tracer makes each helper a pass-through. These spans carry standard messaging/database attributes and bounded `keiro_*` runtime attributes.
+
+Call `newKeiroMetrics meter` once to construct `KeiroMetrics`, whose instruments cover commands, snapshots, projection rebuilds and position distance, inbox/outbox, timers, dispatch, and workflows. Thread `Maybe KeiroMetrics` through `#metrics` on command, worker, and workflow options as shown in [runtime assembly](/docs/runtime-patterns/keiro/runtime-assembly).
+
+The preferred projection gauge is `keiro.projection.global_position_distance`, recorded with `recordProjectionGlobalPositionDistance`. It subtracts the slowest durable member checkpoint from the newest **visible** store head, in `{position}` units. It is an opaque cursor distance, not event lag or backlog, and it returns zero when no visible work remains. `keiro.projection.lag` and `recordProjectionLag` remain only as deprecated compatibility aliases carrying the same value; do not use their historical name in new dashboards. See [Kiroku durable checkpoint inventory](/docs/runtime-patterns/kiroku/checkpoint-inventory).
+
+Command decisions have their own bounded surface. The `keiro.command.decision` span attribute and the `keiro.command.decisions` counter take exactly `accepted`, `rejected`, or `no_op`; application rejection and no-op payloads must never reach a label or an error description. See [command cycle and errors](/docs/runtime-patterns/keiro/command-cycle-and-errors).
+
+Projection rebuilds export starts, resumes, committed pages and events, failures, promotions, and page duration under `keiro.projection.rebuild.*`. Alert on failures and on a promotion that never arrives, not on page counts.
+
+Option records carry most of those instruments, but not all of them. `keiro.subscription.deadlettered` has no internal recorder anywhere in Keiro: its only source is `kirokuEventBridge metrics delegate`, composed into the Kiroku connection's `eventHandler`. It increments the counter only for `KirokuEventSubscriptionDeadLettered`, then invokes the delegate synchronously; keep that delegate fast. Query the durable dead-letter table for current depth rather than treating the counter as a gauge.
+
+Contrast that with its siblings: `keiro.outbox.deadlettered` and `keiro.dispatch.deadlettered` are recorded inside Keiro's own outbox and process-manager paths, so for those two the option threading above is sufficient. A service that threads `KeiroMetrics` only into command, worker, and workflow options therefore exports subscription retry exhaustion permanently at zero — the failure is invisible precisely where it looks covered.
+
+Because the bridge is installed on `ConnectionSettings`, `newKeiroMetrics` must run before the store opens, earlier than the option records it also feeds. Build it with the service's other telemetry instruments at startup, and expect to share `eventHandler` with `kiroku-metrics` and `kiroku-otel`; [Kiroku observability](/docs/runtime-patterns/kiroku/observability) shows the composed chain.
+
+## Propagate the remote parent
+
+The rule is one sentence: inject `traceparent` and `tracestate` before persistence and restore them when consuming.
+
+Thread the publisher metrics handle through `publishClaimedOutbox`. `keiro.outbox.rejected` counts only rejection transitions committed by batch finalization; callback refusals whose transaction failed do not increment it. Use `newKeiroMetrics` or initialize the new `outboxRejected` field in a custom record. Never attach rejection detail or message payloads as metric labels.
+
+`keiro.outbox.identity.conflict` counts producer enqueues refused because a retained row under the same deterministic identity has different content. It is unlabelled and has no internal recorder: call `recordProducerEnqueueOutcome` with the `ProducerEnqueueOutcome` once, after the transaction runner returns, so SQL serialization retries and the deliberate checkpoint rollback do not multiply or lose it. A custom `KeiroMetrics` record must initialize `outboxIdentityConflict`. Alert on any non-zero rate; it means a producer mapping changed under a frozen identity.
+
+Use `traceContextFromCurrentSpan`, `injectTraceContext`, and `traceContextFromHeaders` rather than parsing headers ad hoc. Keiro persists W3C context in outbox and inbox columns so producer and consumer spans can remain one trace across asynchronous publication and delivery.
+
+## Wire the application logger
+
+Keiro intentionally ships no structured-logging framework and no request logger. Production services must connect the logging hooks for each runtime worker they deploy to their chosen logger:
+
+* Set subscription shard `onShardError` to record `ShardWorkerError`; the default is no hook. It is the signal behind a shard intervention: inspect ownership with `shard status`, and use `shard relinquish` only for a worker known dead, because releasing a live worker's buckets produces concurrent processing. See the [operations console](/docs/runtime-patterns/keiro/operations-console).
+* Set workflow resume `logEvent` to record `ResumeLogEvent`; its default is a compact stderr renderer.
+* When running workflow garbage collection, use `runWorkflowGcWorkerWith policy pollMicros logPass` to route failed-pass and partial-pass diagnostics to the application logger. Its `logPass` hook receives `Text`; `runWorkflowGcWorker` supplies a compact stderr logger by default. A failed pass retries on the next tick, and a partial pass reports workflows that remain eligible for later collection.
+
+Metrics and traces do not replace these diagnostic events, and the hooks must remain non-blocking enough for their workers.
+
+## Related Patterns
+
+* [Runtime assembly](/docs/runtime-patterns/keiro/runtime-assembly)
+* [Command cycle and errors](/docs/runtime-patterns/keiro/command-cycle-and-errors)
+* [Durable workflows](/docs/runtime-patterns/keiro/durable-workflows)
+* [Kiroku observability](/docs/runtime-patterns/kiroku/observability)
+* [Kiroku durable checkpoint inventory](/docs/runtime-patterns/kiroku/checkpoint-inventory)

@@ -1,0 +1,120 @@
+---
+title: "Six Packages Per Deployed Service"
+description: "The six-package split standard for deployed keiro services and its dependency rules"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/architecture-service-packages"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/architecture-service-packages" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/architecture-service-packages`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/architecture/service-packages.md`. Type: **Standard**. Status: **current**.
+
+Material timestamp: 2026-09-18T04:48:47Z. Source actor: `process:codex`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved danwa and keiro-runtime-jitsurei reference applications and the keiro-dsl scaffolder at HEAD; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-29T02:53:40Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Six Packages Per Deployed Service
+
+**A deployed platform service has six application Cabal packages with explicit dependency budgets; generated conformance tooling is additional.**
+
+The package split keeps domain decisions, HTTP types, HTTP execution, background processing, schema installation, and client consumption independently buildable. Use the service's lowercase name in place of `<service>` and keep all six packages in one repository.
+
+## The Six Packages
+
+### `<service>-core`
+
+This package owns the domain. It contains the [domain newtypes and TypeIDs](/docs/runtime-patterns/architecture/domain-newtypes-and-typeids), custom `Prelude`, `App.Config`, each concept's generated ring, `Holes`, and `ReadModel`, generated structural wire shapes and projection witnesses, hand-owned structural bindings and fixtures, the shared `Postgres.Pool` and `Postgres.Runner`, public `Integration.*` contracts, and `Diagrams` support. It may depend on keiki, kiroku, keiro, hasql, and domain-level libraries named by mapped declarations, but it depends on no sibling `<service>-*` package. Every other service package may depend on core.
+
+Danwa realizes this boundary under `danwa-core/src/Danwa/` and exposes the lifecycle-diagram program as the `danwa-diagrams` executable.
+
+### `<service>-api`
+
+This package owns servant route records and wire data-transfer types. It depends on `<service>-core` and servant's type-level API library, but not `servant-server` or warp. Keep handler execution and resource acquisition out of it.
+
+Danwa realizes this boundary in `danwa-api/src/Danwa/Api.hs` and the per-concept `Danwa.<Concept>.Api` modules.
+
+### `<service>-server`
+
+This package owns the HTTP application: `Server.App`, `Server.Boot`, `Server.Config`, `Server.Seam`, per-concept `Handler` modules, and the `<service>-server` executable. It depends on `<service>-core`, `<service>-api`, servant-server, warp, and the runtime packages needed to execute commands and queries.
+
+### `<service>-workers`
+
+This package owns Shibuya-supervised background processing: `Workers.Config`, `Workers.Registry`, `Workers.Subscription`, per-concept workers, integration workers, and the `<service>-worker` executable. It depends on `<service>-core`, keiro, Shibuya, and the chosen queue adapters. It never depends on `<service>-api` or `<service>-server`; a worker must not acquire an HTTP-layer dependency merely to reuse application behavior.
+
+### `<service>-migrations`
+
+This package owns schema migrations, plan composition, the `new <description>` migration scaffold, and the `<service>-migrate` executable. New services use pg-migrate; danwa's codd package remains useful structural evidence but is not the current migration-tool choice. Migrations depend on the migration toolchain and no other `<service>-*` library, so operators can build and run them without building the domain or server.
+
+Publish a visible `test-support` sublibrary that provisions an ephemeral, fully migrated PostgreSQL database. The test suites in core, server, and workers depend on `<service>-migrations:test-support`; production libraries do not. Danwa's realization is `danwa-migrations/test-support/Danwa/Migrations/TestSupport.hs` with `visibility: public`.
+
+### `<service>-client`
+
+This package owns the typed Haskell client derived from `<service>-api`. It depends on the API package and servant-client, never on the server package. Other Haskell services can therefore call the API without linking server implementation or runtime resources.
+
+## Dependency Direction
+
+The allowed sibling dependencies form this graph:
+
+```text
+<service>-core        ← every application package may depend on it;
+   │                    it depends on no sibling package
+   ├── <service>-api            → core
+   │        ├── <service>-server → core, api
+   │        └── <service>-client → api
+   ├── <service>-workers        → core
+   └── <service>-migrations     → no sibling package
+                                  public test-support ← test suites only
+```
+
+Dependency arrows must not point back toward server or workers. In particular, migrations do not import core, workers do not import API or server, and client does not import server.
+
+## Production Ruling
+
+The six-package split is both the floor and the ceiling for application packages in a deployed fleet service. Do not create a seventh package merely to collect PostgreSQL, Kafka, or other technical code; danwa removed its former `danwa-postgres` package and kept the shared database wiring in core.
+
+Keiro-runtime-jitsurei's one-cabal-package-per-service shape is acceptable only for teaching and example repositories, where keeping a library, CLIs, and several test suites together makes a walkthrough easier to follow. A repository using that exception must say so in its README. It is not a production deployment template.
+
+## Generated Conformance Is Tooling
+
+A configured DSL service also generates a local `keiro-<service>-conformance`
+package. This build/test package is outside the six application-package budget;
+it is not another deployable service or a place for application behavior. Include
+it in the Cabal workspace and CI. The generated facade remains compiled in
+`<service>-core`, and the conformance runner depends on that package.
+
+Declare `runtime-package <service>-core` in the service workspace because core
+compiles the generated runtime and facade. For a ticket service, use
+`runtime-package ticket-core`. Follow the
+[generated compilation contract](/docs/runtime-patterns/architecture/generated-compilation-contract).
+
+## Related Patterns
+
+* [Vertical-slice modules](/docs/runtime-patterns/architecture/vertical-slice-modules)
+* [Domain newtypes and TypeIDs](/docs/runtime-patterns/architecture/domain-newtypes-and-typeids)
+* [Cross-cutting modules](/docs/runtime-patterns/architecture/cross-cutting-modules)
+* [Test layout](/docs/runtime-patterns/architecture/test-layout)
+* [Migration service package](/docs/runtime-patterns/migrations/service-package)

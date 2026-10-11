@@ -1,0 +1,150 @@
+---
+title: "Keiro runtime patterns"
+description: "Index of Keiro 0.18.0.0 standards: checked value mappings, fewer hand-owned holes, explicit ID admission, and replay-safe adoption"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/keiro-overview"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/keiro-overview" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/keiro-overview`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/keiro/overview.md`. Type: **Overview**. Status: **current**.
+
+Material timestamp: 2026-09-21T20:25:00Z. Source actor: `process:codex`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved keiro checkout (0.4.0.1 tags plus post-release workspace commits), keiki 0.4.0.0, kiroku-store source, and Hackage release state; changes requested: the Hackage-still-at-0.3.0.0 caveat is stale; 0.4.0.1 is published.",
+  "document_timestamp": "2026-07-29T19:40:01Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "changes-requested",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model re-review of the correction against Hackage and the keiro tags: release availability now states 0.4.0.1/0.4.0.0 and scopes workspaces to the post-0.4.0.1 source line.",
+  "document_timestamp": "2026-07-30T01:11:55Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T01:11:55Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Keiro runtime patterns
+
+**Prescriptive defaults for assembling reliable services on the released Keiro 0.18.0.0 set, Keiki 0.9.1, Kiroku Store 0.8, Shibuya 0.9, and pgmq-hs 0.6.**
+
+Use this area as the fleet standard for application wiring and operating boundaries; use the Keiro repo's `docs/user/README.md` as the long-form API reference. The 0.2 through 0.4 behavior remains foundational, while 0.5 through 0.11 add composable multi-file service workspaces, an explicit DSL language-version contract, consumer-owned nominal bindings, authoritative typed scalar aggregate expressions, an enforced identifier domain, complete aggregate behavior conformance, and an explicit compilation contract for the generated layer.
+
+Adopt the published Keiro 0.18.0.0 package set. Seven packages — `keiro`, `keiro-core`, `keiro-dsl`, `keiro-pgmq`, `keiro-migrations`, `keiro-ops`, and `keiro-test-support` — move together; keep every one the service consumes on that cohort. `keiro-test-support` has been published since 0.14 and supplies reusable isolated PostgreSQL fixtures; `jitsurei` remains internal. The runtime admits `keiki >=0.9 && <0.10`, `kiroku-store >=0.8 && <0.9`, and `shibuya-core ^>=0.9.0.0`; the migration package requires `kiroku-store-migrations ^>=0.4.0.0`. `keiro` and `keiro-pgmq` still bound `effectful`/`effectful-core` to `>=2.6 && <2.7`, so a Keiro service stays on effectful 2.6 even though Shibuya 0.9.0.1 and pgmq-hs 0.6.1.0 admit 2.7. Verify Hackage and upstream tags before changing bounds.
+
+Keiro 0.18.0.0 adds [checked bare containers, calendar dates, text sets, and refined base16 bytes](/docs/runtime-patterns/keiro/mapped-consumer-surfaces), [explicit UUIDv5/v7 admission](/docs/runtime-patterns/keiro/identifier-domains), and [cross-build replay evidence](/docs/runtime-patterns/keiro/evolution-and-rollout). Use these declarations to replace avoidable opaque codecs, and apply the [hole-minimization checklist](/docs/runtime-patterns/keiro/dsl-adoption) before implementing custom behavior. Language 6 remains candidate; its new capabilities require the 0.18 package cohort. No migration payload changed in this release.
+
+Apply the obligations introduced by each release when upgrading across it:
+
+* **0.5.0.0** released composable service workspaces.
+* **0.6.0.0** added the source-language contract, nominal bindings, and scalar aggregate expressions; `keiro-core` gained the public `Keiro.Codec.Nominal` binding and fixture API.
+* **0.7.0.0** added [language version 3](/docs/runtime-patterns/keiro/language-versions) with the enforced [TypeID-v7 identifier domain](/docs/runtime-patterns/keiro/identifier-domains), one deterministic `Generated.<Context>.Nominals` owner for every service-level ID and enum, the `CheckedService`/`EffectiveLanguageContract` semantic boundary, and complete [behavior conformance](/docs/runtime-patterns/keiro/behavior-conformance). `keiro-core` gained the public `Keiro.Codec.IdDomain` contract, re-exported from `keiro`.
+* **0.8.0.0** is a `keiro-dsl`-only cycle: the grammar moved behind the stable `Keiro.Dsl.Parser` facade, the located `Keiro.Dsl.Source`/`Syntax`/`Frontend` API was published, and every registry entry now selects its syntax profile and runtime-semantics identity explicitly instead of inheriting them from numeric version ordering. `keiro-core`, `keiro`, `keiro-pgmq`, and `keiro-migrations` are unchanged and move with the set.
+* **0.9.0.0** designates [language 4](/docs/runtime-patterns/keiro/language-versions) the sole stable authoring contract, closes the accepted-but-unenforced spec surfaces behind check-time diagnostics, extends the TypeID domain to public [contract fields](/docs/runtime-patterns/keiro/identifier-domains), widens aggregate fold fingerprints to FNV-1a-128, and removes the `Spec`-only fold, diff, and replay-impact wrappers in favour of `CheckedService` and `Either FoldSurfaceError`. Generated runtime surfaces close over `Text` into named sums and records. `keiro-core` gains `parseKindIdV7Text` and `parseKindIdV7Value`; `keiro` re-exports `RetryDelay` from `Shibuya.Core.Ack`.
+* **0.10.0.0** gives generated Haskell [an explicit compilation contract](/docs/runtime-patterns/architecture/generated-compilation-contract): a manifest-owned `GHC2024` baseline, module-local pragmas from a closed set, idiomatic consumer imports, an explicit runtime-package authority, and one generated conformance package per configured service behind a single facade.
+* **0.11.0.0** renames every scaffold sidecar to a role-bearing name and **refuses to scaffold a tree still holding the old names** until `scaffold --apply-name-migrations` runs; moves generated Haskell onto one checked UpperCamelCase naming edition; adds [field aliases](/docs/runtime-patterns/keiro/aggregate-expressions) on direct fields; makes `check` a real CI gate with `--min-language`, `--deny-warnings`, `--deny CODE`, and the `keiro-dsl/check-report/1` report; and starts warning on accepted-but-inert declarations.
+* **0.12.0.0** publishes [Language 5](/docs/runtime-patterns/keiro/language-versions) as the sole stable authoring contract and demotes Language 4 to an immutable compatibility contract. It adds [typed projection catalogs](/docs/runtime-patterns/keiro/projection-catalogs) with delivery-bound revisions, schema-versioned rebuilds, [guarded external read contracts](/docs/runtime-patterns/keiro/read-models-and-projections), [targeted stream repair](/docs/runtime-patterns/keiro/stream-scoped-repair), truthful [read-model freshness](/docs/runtime-patterns/keiro/read-models-and-projections), [typed domain command outcomes](/docs/runtime-patterns/keiro/command-cycle-and-errors), opaque [awakeable allocation](/docs/runtime-patterns/keiro/durable-workflows), [semantic-local regeneration](/docs/runtime-patterns/keiro/dsl-semantic-locality), [mapped consumer surfaces](/docs/runtime-patterns/keiro/mapped-consumer-surfaces), and the new mountable [keiro-ops console](/docs/runtime-patterns/keiro/operations-console). `Keiro.version` is now derived from Cabal package metadata rather than a hand-maintained literal, so diagnostics and telemetry follow each release automatically.
+
+The runtime requires `keiki >=0.9 && <0.10`, `kiroku-store >=0.8 && <0.9`, and `shibuya-core ^>=0.9.0.0`; `keiro` also requires `keiki-codec-json >=0.9 && <0.10`, migration consumers require `kiroku-store-migrations ^>=0.4.0.0`, and `keiro-pgmq` requires the `pgmq-*` 0.6 family (`>=0.6 && <0.7`, PGMQ schema 1.13 through `pgmq-migration` 0.6) with `shibuya-pgmq-adapter ^>=0.16.0.0`, and every `Job` must declare `jobOrdering`. Kiroku 0.7 supplies the explicit checkpoint lifecycle, the visible global head, and the [renewable history-retention lease](/docs/runtime-patterns/kiroku/history-retention) that protects schema-versioned replay; Shibuya 0.9 adds [application-defined dead-letter reasons](/docs/runtime-patterns/messaging/shibuya-processing). That bound carries a behavioral consequence: Keiki 0.9 seals `InCtor` and `WireCtor` construction and classifies replay head identity structurally, so `validateEventStream`, `mkEventStream`, generated validation harnesses, and any consumer inspecting Keiki warnings may report a different conservative warning set after recompilation. Keiro's generated aggregates already use the trusted Template Haskell path; hand-written boundary constructors must move to Keiki's `Via` producers. See [trusted constructor evidence](/docs/runtime-patterns/keiki/constructor-evidence). Runtime event execution and the `keiki-codec-json` wire format are unchanged.
+
+The 0.4 line changed three runtime surfaces incompatibly and those rules still apply: `scheduleTimerOnceTx` returns `Bool`, `markChildFailedTx` takes a failure reason, and `StateCodec` gains `stateShapeHash`.
+
+Migrations `0019` and `0020` accompany the last two of those, and snapshot-enabled code requires Keiki 0.4 or later.
+
+The 0.13 release adopts [typed transient transaction failures](/docs/runtime-patterns/keiro/command-cycle-and-errors) and schema-qualified Kiroku UUIDv7 migrations. The 0.14 release adds [terminal outbox rejection](/docs/runtime-patterns/messaging/outbox), atomic batch finalization, migration `0031`, and the published [test fixture package](/docs/runtime-patterns/architecture/test-layout). The 0.15 release changes package record APIs and requires explicit [generated-edition adoption](/docs/runtime-patterns/keiro/generated-haskell-editions); it preserves Language 5, wire formats, and runtime meaning. The 0.16 release makes `Dead` timers resumable through a guarded claim and adds migration `0032` with an ordered writer rollout ([dead timer resume](/docs/runtime-patterns/keiro/dead-timer-resume)). The 0.17 release derives [producer outbox identities](/docs/runtime-patterns/messaging/outbox) deterministically from the recorded source event — `enqueueProducerEventTx` takes the event and an emission index, message IDs become opaque `<namespace>_v1_<sha256-hex>` text, and historical random IDs need a drained cutover, with no schema migration — requires `jobOrdering` on every [PGMQ job](/docs/runtime-patterns/messaging/pgmq-jobs) and adds `FifoHeads`, guards DLQ purge, and adds the [process-manager reaction runner](/docs/runtime-patterns/messaging/process-managers) and [delegated inbox intake](/docs/runtime-patterns/messaging/inbox). From Keiro 0.17.0.0 onward, use Language 6 for every new or upgraded service. The released toolchain still labels it `candidate` and emits version 5 skeletons; set the preamble explicitly and enforce the adopted version in CI. See [language versions](/docs/runtime-patterns/keiro/language-versions).
+
+## Start here
+
+Start with [domain design and runtime choices](/docs/runtime-patterns/architecture/domain-design): bounded contexts, invariants, aggregates, domain events, and workflows. Apply the DSL adoption convention to that model, then read runtime assembly and the schema arrangement. Runtime wiring implements the business boundaries already chosen.
+
+* [Domain design and runtime choices](/docs/runtime-patterns/architecture/domain-design) — model the business before selecting mechanisms.
+
+* [Runtime assembly](/docs/runtime-patterns/keiro/runtime-assembly) — acquire resources, validate event streams, and configure options.
+
+* [Two-schema arrangement](/docs/runtime-patterns/keiro/two-schema-arrangement) — keep the kiroku store, keiro framework, and application schemas distinct.
+
+* [Keiro-dsl adoption](/docs/runtime-patterns/keiro/dsl-adoption) — decide when checked specifications and the evolution gate pay off.
+
+* [Generated Haskell editions](/docs/runtime-patterns/keiro/generated-haskell-editions) — migrate pre-v2 ledgers and hand-owned record consumers, reconcile the build, and recover interrupted adoption.
+
+* [Keiro DSL language versions](/docs/runtime-patterns/keiro/language-versions) — declare the source language, use Language 6 from Keiro 0.17.0.0 onward, and carry the checked contract through tooling.
+
+* [Aggregate scalar expressions and transition ownership](/docs/runtime-patterns/keiro/aggregate-expressions) — declare guards and writes that generate the transducer, and mark what stays hand-owned.
+
+* [Consumer-owned nominal bindings](/docs/runtime-patterns/keiro/nominal-bindings) — keep existing ID, enum, and scalar-wrapper types in checked aggregate fields.
+
+* [Enforced identifier domains](/docs/runtime-patterns/keiro/identifier-domains) — put prefix-bearing aggregate IDs and public contract fields on the frozen TypeID-v7 contract, and roll each adoption out in its own direction.
+
+* [Domain newtypes and TypeIDs](/docs/runtime-patterns/architecture/domain-newtypes-and-typeids) — use TypeID-backed nominal types for service-owned IDs and dedicated wrappers for every key domain scalar.
+
+* [TypeID prefix naming](/docs/runtime-patterns/keiro/typeid-prefix-naming) — use full ubiquitous-language type labels by default and treat renaming as a durable identity migration.
+
+* [Behavior conformance and obligations](/docs/runtime-patterns/keiro/behavior-conformance) — inventory every transition, rejection, and replay-only edge, and prove each with an executed witness.
+
+* [Composable service workspaces](/docs/runtime-patterns/keiro/service-workspaces) — split complete aggregates across single-owner members while keeping one atomic scaffold and evolution boundary.
+
+* [Brownfield Keiro adoption](/docs/runtime-patterns/keiro/brownfield-adoption) — keep existing types and historical wire values while moving to one generated codec authority and a replay-audited cutover.
+
+* [Command cycle and errors](/docs/runtime-patterns/keiro/command-cycle-and-errors) — classify command failures, give silent decisions a type, and reject ambiguity as a definition bug.
+
+* [Read models and projections](/docs/runtime-patterns/keiro/read-models-and-projections) — declare freshness truthfully, honor group fences, publish external reads through the guarded surface, and rebuild deterministically and resumably.
+
+* [Typed projection catalogs and rebuild groups](/docs/runtime-patterns/keiro/projection-catalogs) — own every query, target, handler, source, reset, replay, revision delivery, and operator action through one validated inventory.
+
+* [Targeted stream-scoped projection repair](/docs/runtime-patterns/keiro/stream-scoped-repair) — repair one stream's rows under an admission limit instead of fencing the whole group.
+
+* [Mapped consumer surfaces](/docs/runtime-patterns/keiro/mapped-consumer-surfaces) — carry mapped types through queues, query contracts, and aggregate-sourced projections with explicit rollout consequences.
+
+* [Semantic-local DSL regeneration](/docs/runtime-patterns/keiro/dsl-semantic-locality) — separate semantic consumer impact, generated-file churn, and movable source provenance.
+
+* [Durable workflows](/docs/runtime-patterns/keiro/durable-workflows) — journal side effects and deploy the progress mechanisms each workflow uses.
+
+* [Workflow reliability and recovery](/docs/runtime-patterns/keiro/workflow-reliability) — size leases, budget failures, and resurrect terminal instances.
+
+* [Keiro operations console](/docs/runtime-patterns/keiro/operations-console) — mount code-dependent hooks, preview every mutation, and operate through public APIs.
+
+* [Dead timer resume](/docs/runtime-patterns/keiro/dead-timer-resume) — inspect parked timers, resume one under an expiring guarded claim, and roll migration `0032` out behind stopped writers.
+
+* [Evolution gates and rollout ordering](/docs/runtime-patterns/keiro/evolution-and-rollout) — pass every gate before deploying a change to a service that holds data.
+
+* [Telemetry](/docs/runtime-patterns/keiro/telemetry) — connect tracing, metrics, propagation, and application logging hooks.
+
+* [Gotchas](/docs/runtime-patterns/keiro/gotchas) — avoid shared-stream, global-lock, resource-effect, silent-failure, Kafka integration, timer-rollout, and language-registry metadata traps.
+
+## Related Patterns
+
+* [Kiroku event-store patterns](/docs/runtime-patterns/kiroku/overview)
+* [Kiroku replay-history retention](/docs/runtime-patterns/kiroku/history-retention)
+* [Keiki transducer patterns](/docs/runtime-patterns/keiki/overview)
+* [Typed field projections](/docs/runtime-patterns/keiki/typed-field-projections)
+* [Exact projection domains](/docs/runtime-patterns/keiki/exact-projection-domains)

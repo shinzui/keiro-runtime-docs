@@ -64,7 +64,11 @@ const clientLoader = browserCollections.docs.createClientLoader({
           <MarkdownCopyButton markdownUrl={markdownUrl} />
           <ViewOptionsPopover
             markdownUrl={markdownUrl}
-            githubUrl={`https://github.com/${gitConfig.user}/${gitConfig.repo}/blob/${gitConfig.branch}/content/docs/${path}`}
+            githubUrl={
+              path.startsWith("runtime-patterns/")
+                ? undefined
+                : `https://github.com/${gitConfig.user}/${gitConfig.repo}/blob/${gitConfig.branch}/content/docs/${path}`
+            }
           />
         </div>
         <DocsBody>

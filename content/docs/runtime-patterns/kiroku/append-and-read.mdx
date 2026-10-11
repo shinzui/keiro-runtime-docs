@@ -1,0 +1,110 @@
+---
+title: "Kiroku Append and Read Patterns"
+description: "ExpectedVersion semantics, idempotent retries via supplied event ids, and streaming reads"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/kiroku-append-and-read"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/kiroku-append-and-read" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/kiroku-append-and-read`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/kiroku/append-and-read.md`. Type: **Standard**. Status: **current**.
+
+Material timestamp: 2026-09-06T21:22:15Z. Source actor: `process:codex`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved kiroku-project checkout (kiroku-store, adapters, otel, metrics) and the keiro consumer's Connection API; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-22T16:52:58Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Kiroku Append and Read Patterns
+
+**Choose the strictest `ExpectedVersion` you can, supply event ids for retries, and never trust the version inside `WrongExpectedVersion`.**
+
+Use this guide when appending to or reading from a Kiroku stream. It covers optimistic concurrency, idempotent retry, cursor semantics, and bounded-memory reads.
+
+## Declare the strongest honest expectation
+
+Every append declares an `ExpectedVersion`. Prefer the strongest constructor the caller can prove:
+
+* `NoStream`: the stream must not exist. Use it to create an aggregate.
+* `StreamExists`: the stream must exist, but its current version is irrelevant.
+* `ExactVersion version`: the stream must be at exactly the version that was read.
+* `AnyVersion`: create or append without checking the current version. Reserve it for deliberately unordered writers.
+
+Stream versions are local to one stream and one-based: the first event is version 1, and a stream containing N events is at version N. `StreamVersion 0` represents the empty or absent starting point.
+
+## Make retries idempotent
+
+Set `EventData.eventId = Just eventId` before any append that may be retried. `Nothing` asks Kiroku to mint a UUIDv7; `Just` gives every attempt the same identity. If the first attempt committed but its response was lost, the retry returns `DuplicateEvent`. Treat that duplicate as successful completion of the intended write after confirming it is the supplied id.
+
+Kiroku automatically retries SQLSTATE `40001` and `40P01` once. This is safe because event ids are prepared before retrying. Application-level retries must preserve those same ids too.
+
+```haskell
+-- WRONG: each retry can become a distinct persisted event.
+event = EventData { eventId = Nothing, eventType, payload, metadata, causationId, correlationId }
+
+-- CORRECT: generate once and retain it across every attempt.
+event = EventData { eventId = Just commandEventId, eventType, payload, metadata, causationId, correlationId }
+```
+
+If the bounded internal retry is exhausted by another `40001` or `40P01`, Store 0.8 surfaces `TransientTransactionFailure code message`. Classify it as retryable, preserve the same event IDs, and back off at the application boundary. Multi-stream pre-locking does not exclude fresh-stream deadlocks; see [transactions and projections](/docs/runtime-patterns/kiroku/transactions-and-projections).
+
+## Re-read after a version conflict
+
+Never use the third field of `WrongExpectedVersion` as the live stream version. It is always the placeholder `StreamVersion 0`; Kiroku deliberately avoids an extra read on the rejected append. Call `getStream` to learn the current version, then reload or reject the command according to the domain policy.
+
+```haskell
+-- WRONG: "actual" is a placeholder, not the database value.
+Left (WrongExpectedVersion stream expected actual) -> retryFrom actual
+
+-- CORRECT: perform an explicit read before deciding what to do.
+Left (WrongExpectedVersion stream _ _) -> do
+  current <- getStream stream
+  reloadOrReject current
+```
+
+## Treat cursors as exclusive
+
+Kiroku read cursors are exclusive. `readStreamForward name (StreamVersion 0) limit` starts at the first event; subsequent pages pass the last returned version. The same rule applies to forward and backward reads and to `$all` cursors.
+
+Use `readStreamForward` when the caller wants one bounded page. Use `readStreamForwardStream name cursor 256` for an unbounded replay: it pages through Streamly in constant memory. Adjust the recommended page size of 256 only when event width or measured round-trip cost justifies it.
+
+Treat `GlobalPosition` as an opaque `$all` cursor. Kiroku promises only a strictly increasing, total order. Positions need not be contiguous, so never add one or infer event counts from position differences.
+
+## Separate the append frontier from the visible head
+
+Two different "heads" exist and they answer different questions.
+
+* The authoritative append frontier is monotonic. It is the right basis for operator reporting and for describing how far the store has ever advanced.
+* `visibleGlobalHeadPosition` returns the greatest global position **still visible** in `$all`, or zero when no event remains. It is a payload-free scalar query: no event payload is read and the configured decode hook is not invoked.
+
+Hard deletion of the visible tail can make the visible head regress while the append frontier does not. Anything that waits for a consumer to catch up — a read-model freshness wait, a projection distance gauge — must use the visible head, or it will wait forever for a position no reader can ever reach. Anything that reports how far the store has advanced should use the frontier and say so. Never subtract one from the other and call the result a backlog.
+
+Use `eventExistsInStream` for a cheap event-id membership check. For fan-in reads, batch the distinct `RecordedEvent.originalStreamId` values and resolve them with `lookupStreamNames`; do not query Kiroku’s internal tables or add a stream-name lookup per event.
+
+## Related Patterns
+
+* [Transactions and Projections](/docs/runtime-patterns/kiroku/transactions-and-projections)
+* [Subscriptions](/docs/runtime-patterns/kiroku/subscriptions)
+* [Operational Invariants](/docs/runtime-patterns/kiroku/operational-invariants)

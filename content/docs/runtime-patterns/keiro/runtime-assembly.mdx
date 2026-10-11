@@ -1,0 +1,149 @@
+---
+title: "Runtime assembly"
+description: "Store acquisition, validated event streams and projection catalogs, structural mapping evidence, resources, options, and startup order"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/keiro-runtime-assembly"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/keiro-runtime-assembly" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/keiro-runtime-assembly`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/keiro/runtime-assembly.md`. Type: **Standard**. Status: **current**.
+
+Material timestamp: 2026-09-18T05:30:00Z. Source actor: `process:claude-code`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved keiro checkout (0.4.0.1 tags plus post-release workspace commits), keiki 0.4.0.0, kiroku-store source, and Hackage release state; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-29T02:53:40Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Runtime assembly
+
+**Acquire the store once with `withKirokuStore`, validate every event stream and the projection catalog at startup, and thread options through lenses.**
+
+This standard defines the process-level wiring shared by command handlers, projections, and workers; the keiro repo's `jitsurei/app/Main.hs` is the executable reference.
+
+## Acquire one store resource
+
+The rule is one sentence: bracket the service with `withKirokuStore`, then run store effects through the resource interpreter it provides.
+
+```haskell
+type ServiceEffects =
+  '[ StoreEffect.Store
+   , Error StoreError
+   , StoreResource.KirokuStoreResource
+   , IOE
+   ]
+
+withServiceStore connString appSchema action =
+  runEff $
+    StoreResource.withKirokuStore
+      (keiroConnectionSettings connString appSchema) $
+      withEffToIO SeqUnlift \unlift ->
+        action
+          (unlift . runErrorNoCallStack . StoreEffect.runStoreResource)
+```
+
+Use `runCommand` when only the event append must commit. `runCommandWithSql`, `runCommandWithSqlEvents`, and `runCommandWithProjections` add work to the append transaction and therefore require `KirokuStoreResource`; plain `runCommand` does not. Keep transactional callbacks short because they retain kiroku's `$all` row lock until commit.
+
+## Validate definitions once
+
+A **validated event stream** is an `EventStream` admitted by `mkEventStream` after every enabled keiki and keiro replay-safety check passes. Construct these values at startup and give only the `ValidatedEventStream` results to runtime components.
+
+```haskell
+validatedOrderStream <-
+  case mkEventStream "order" orderStreamDefinition of
+    Right stream -> pure stream
+    Left warnings -> failStartup warnings
+```
+
+Warnings—including head-recoverability, inversion ambiguity, unguarded input reads, state-changing silent edges, unsupported field-projection results, ordered projections over unsupported types, and projections outside guards—mean the transducer must be corrected. `mkEventStreamOrThrow` is reserved for generated definitions or fixtures with a colocated validation proof. `mkEventStreamUnchecked` skips the durable boundary entirely and is permitted only in tests or emergency forensics, never production wiring.
+
+Validation now covers the **event codec** as well as the transducer. Construction is refused when the codec's schema version, event tags, or upcaster chain fail `mkCodec`, so a missing rung or a pair of conflicting sources is caught at startup rather than at the first hydration of an old stream. Hand-written streams get the same fail-fast treatment as generated ones; the generator's own checks are defense in depth, not the only gate.
+
+See [build-time validation](/docs/runtime-patterns/keiki/build-time-validation) for the transducer checks and [evolution gates and rollout ordering](/docs/runtime-patterns/keiro/evolution-and-rollout) for how this boundary relates to the specification-level gates.
+
+## Compile And Prove Structural Bindings Before Startup
+
+`mkEventStream` validates the assembled codec contract, not the semantic honesty of a consumer-owned `StructuralBinding`. For each `mapped structural` type, compilation and the generated harness must first exercise both binding round trips over deterministic fixtures, the declared JSON policies, projection-witness agreement, and forward-versus-replay equality.
+
+The generated event codec is the sole private-event wire authority. A consumer `ToJSON` or `FromJSON` instance may delegate one way through `encodeViaBinding` or `decodeViaBinding`, but Keiro never delegates structural event encoding back to that instance. Mapped register snapshots remain a separate consumer-JSON cache boundary and are invalidated by the mapping/fold fingerprint when their executable shape changes.
+
+Treat this as pre-startup evidence, not another runtime interpreter. See [brownfield Keiro adoption](/docs/runtime-patterns/keiro/brownfield-adoption) for the binding and historical-codec gates.
+
+## Extend defaults through lenses
+
+The rule is one sentence: begin with the runtime's `default*` options and change named fields through lenses.
+
+```haskell
+-- CORRECT: inherits new defaults when the library adds fields.
+commandOptions metrics =
+  defaultRunCommandOptions & #metrics .~ metrics
+
+-- WRONG: positional or exhaustive reconstruction couples startup to record shape.
+commandOptions metrics =
+  RunCommandOptions 3 256 [] (pure ()) 5000 metrics True Nothing Nothing
+```
+
+Apply the same pattern to subscription, projection, and workflow options.
+
+## Validate one projection catalog
+
+Construct and validate the complete projection catalog after event streams and application-owned handlers are available. Refuse startup on catalog diagnostics or persisted fingerprint drift. Register the validated catalog before serving queries or starting projection workers, and derive live inline/async handlers and operator rebuild operations from that same value.
+
+Do not keep separate registration, worker, rebuild, and operations inventories. They drift precisely where correctness matters: target ownership, foreign-key rebuild groups, source codecs, subscription resets, and replay-only behavior. See [typed projection catalogs and rebuild groups](/docs/runtime-patterns/keiro/projection-catalogs).
+
+## Startup order
+
+The rule is one sentence: migrate as a deployment job, prove the migration handshake in every replica, construct telemetry instruments, acquire the store, validate event streams and the projection catalog, register the catalog, then start only the workers the service uses.
+
+Telemetry instruments come before store acquisition, not after it, because `ConnectionSettings` closes over them. `newKirokuMetrics`, the `Tracer`, and `newKeiroMetrics` all feed `eventHandler` or `observationHandler` callbacks that can only be installed at construction time. A service that builds `KeiroMetrics` later, alongside the worker options it also feeds, silently loses every instrument sourced from those callbacks. See [telemetry](/docs/runtime-patterns/keiro/telemetry) and [Kiroku observability](/docs/runtime-patterns/kiroku/observability).
+
+Applying migrations from a deployment job keeps schema ownership deterministic, but it does not stop a replica from starting before that job reaches its database. Close the gap by refusing to serve until the handshake passes:
+
+```haskell
+guardMigrations provider plan = do
+  result <- missingMigrations defaultRunOptions provider plan
+  case result of
+    Right handshake | handshakePassed handshake -> pure ()
+    Right handshake -> fail ("refusing startup: " <> show handshake)
+    Left err -> fail ("migration handshake failed: " <> show err)
+```
+
+`missingMigrations` is a read-only status query, so every replica may call it at boot. `StartupHandshake` reports `pendingMigrations` and `ledgerIssues`; `handshakePassed` requires both to be empty. Open Kiroku with schema initialization disabled afterwards.
+
+Every timer worker pass recovers expired guarded timer claims, whatever `requeueStuckAfter` says. A host that resumes `Dead` timers in the foreground without running a timer worker must call `recoverExpiredTimerResumes` before discovery and periodically afterwards; see [dead timer resume](/docs/runtime-patterns/keiro/dead-timer-resume).
+
+Catalog registration and worker startup should fail the process rather than leave a partially assembled runtime alive. Before starting any worker against a populated event store, resolve its missing-checkpoint policy explicitly; the read-only [durable checkpoint inventory](/docs/runtime-patterns/kiroku/checkpoint-inventory) can prove what exists but cannot choose or mutate that lifecycle.
+
+## Related Patterns
+
+* [The two-schema arrangement](/docs/runtime-patterns/keiro/two-schema-arrangement)
+* [Telemetry](/docs/runtime-patterns/keiro/telemetry)
+* [Command cycle and errors](/docs/runtime-patterns/keiro/command-cycle-and-errors)
+* [Keiro gotchas](/docs/runtime-patterns/keiro/gotchas)
+* [Read models and projections](/docs/runtime-patterns/keiro/read-models-and-projections)
+* [Typed projection catalogs and rebuild groups](/docs/runtime-patterns/keiro/projection-catalogs)
+* [Keiro operations console](/docs/runtime-patterns/keiro/operations-console)
+* [Migration Operations](/docs/runtime-patterns/migrations/operations)
+* [Brownfield Keiro adoption](/docs/runtime-patterns/keiro/brownfield-adoption)

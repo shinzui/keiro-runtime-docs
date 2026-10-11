@@ -1,0 +1,118 @@
+---
+title: "Mapped consumer surfaces"
+description: "Carrying mapped declarations through private events, snapshots, work queues, query contracts, and aggregate-sourced projections"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/keiro-mapped-consumer-surfaces"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/keiro-mapped-consumer-surfaces" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/keiro-mapped-consumer-surfaces`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/keiro/mapped-consumer-surfaces.md`. Type: **Standard**. Status: **current**.
+
+Material timestamp: 2026-09-21T20:25:00Z. Source actor: `process:codex`.
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Mapped consumer surfaces
+
+**Treat every mapped occurrence as a typed consumer with its own persisted or operational rollout consequence.**
+
+The base surface was introduced in [Language 5](/docs/runtime-patterns/keiro/language-versions), released in Keiro 0.12.0.0 and fixed by `mori://shinzui/keiro/masterplans/34-make-keiro-dsl-regeneration-semantically-local-and-source-stable-before-wide-adoption` and `mori://shinzui/keiro/masterplans/35-make-mapped-types-first-class-across-queues-read-models-and-projections-before-fleet-adoption`. A service still on Language 4 keeps its released meaning, but the surface below is not available to it; move the service rather than emulating the surface locally.
+
+## Declare the complete private consumer graph
+
+Language 5 carries mapped type expressions through these checked roots:
+
+| Surface                                     | Generated authority                                       | Standing consequence                                                                         |
+| ------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Aggregate command or private event          | Aggregate types, codec, and harness                       | Consumer build; incompatible event bytes need a schema bump and upcaster.                    |
+| Aggregate register                          | Transducer and structural conformance                     | Snapshot hydration may miss and full-replay.                                                 |
+| Workqueue payload field                     | `Queue`, `QueueCodec`, and `QueuePolicy`                  | Persisted queued jobs need a backward-reading decoder, a drain, or a transitional codec.     |
+| Read-model query input/result               | Generated `QueryContract` aliases                         | Callers and the hand-owned query body must recompile; no SQL or table migration is inferred. |
+| Aggregate-sourced inline/catalog projection | Derived handler relation and aggregate-source fingerprint | Named handlers require review; replayable catalog owners may require a fenced group rebuild. |
+
+A nested mapped declaration inherits every checked consumer path that reaches it. Unused declarations still retain service-level structural law and ledger evidence; they do not become aggregate consumers.
+
+## Preserve one codec authority per boundary
+
+Use `mapped structural` only when the DSL owns the exact private JSON shape and the hand-owned binding is total both ways. Use `mapped opaque` when the consumer `ToJSON`/`FromJSON` implementation remains authoritative or shape-to-domain conversion can reject. Do not make both a generated structural codec and a consumer codec current writers for one event boundary.
+
+Queue payloads keep the schema-version-1 envelope contract while their typed fields use the generated mapped codec plan. Query contracts are Haskell aliases only. Projection consumers derive from the authoritative aggregate event source; category and all-history sources remain heterogeneous decoder boundaries and are not inferred.
+
+## Keep nominal leaves nominal under version 6
+
+[Language 6](/docs/runtime-patterns/keiro/language-versions) adds `StructuralNominalLeaves`: a declared `id`, `enum`, or `mapped nominal` scalar may appear inside structural records, unions, `Optional`/`List`/`Map` containers, typed workqueue fields, and read-model query input/results. Use Language 6 from Keiro 0.17.0.0 onward; the rules below govern that baseline.
+
+* **Name the declaration, not an opaque twin.** The generated private shape carries the nominal domain type, not its `KindID` or primitive. One context-owned `Structural.NominalLeaves` module applies the declared binding and Keiro-owned ID or scalar admission wherever a generated codec meets the leaf. Replace the pre-6 workaround — a `mapped opaque` twin of a consumer-bound ID, or an opaque `Maybe` wrapper — rather than keeping both.
+* **Treat that replacement as a mapped type change.** `diff` reports opaque-or-`Text`-to-nominal replacement conservatively as `MappedFieldTypeChanged` at every affected root. Generate the historical codec comparison, run the old codec against committed missing/null/present samples, and require byte parity plus rejection of malformed IDs. That evidence does not waive event versioning, queue drain, or snapshot rules.
+* **Enum leaves are exact.** A nominal enum leaf codec accepts and emits only the declaration's declared wire spellings; an optional enum leaf may default to one of its constructors with `on-missing`.
+* **Key maps only by IDs.** `Map[DeclaredId] T` admits JSON object keys through the ID codec and generates `Map DeclaredId T`. The key must be an `id`; enums, nominal scalars, and mapped declarations are rejected. A consumer-bound key type must declare a checked law that its `Ord` agrees with canonical TypeID text ordering; generated conformance checks it over every pair of fixtures, so supply fixtures that exercise ordering.
+* **Nested leaves enter the aggregate fold.** A nominal leaf inside a structural declaration that an aggregate's persisted event payload or snapshot register contains contributes a `nested-nominal-use` segment — path, name, representation (ID prefix, enum constructor-to-wire pairs, or scalar kind), and for a consumer binding its canonical type, binding, and binding version — to that aggregate's fold fingerprint. Introducing such a leaf, or changing its prefix, enum wire spelling, or binding version, moves the fingerprint and follows the [evolution gates](/docs/runtime-patterns/keiro/evolution-and-rollout). Declaring version 6 alone does not.
+* **Read nominal findings per path.** Nominal prefix, domain, representation, binding, fixture, and canonical-type diffs name every affected structural event, snapshot, workqueue, command, and query path with its own surface context; key position is recorded separately from map values. Coverage report schema 1 appends `nominalBoundaries` and classifies nominal-only queue and query roots as structural rather than opaque.
+
+Aggregate guards and declarative router selection may traverse required structural paths down to these leaves; see [aggregate scalar expressions](/docs/runtime-patterns/keiro/aggregate-expressions).
+
+## Replace avoidable codec holes with checked values
+
+Use Keiro 0.18.0.0 and Language 6 for these declarations. Prefer a checked policy whenever it describes the complete admitted domain; do not write an opaque codec merely to preserve an existing Haskell wrapper.
+
+| Value                                     | Declaration wire clause                                                                        | Generated policy                                                                                                                                                                                                                                              |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Optional, list, or text-keyed map wrapper | `mapped structural value` with `wire Optional Text`, `wire List Text`, or `wire Map Text Text` | A bare JSON value, without an artificial object wrapper.                                                                                                                                                                                                      |
+| Calendar date                             | `mapped structural value` with `wire Day` (also usable inside containers and records)          | Proleptic Gregorian dates; historical signed years and redundant year zeroes are accepted without a year-width cap; invalid dates fail. The canonical writer has no positive sign or redundant year zeroes beyond four-digit padding. No timezone conversion. |
+| Text set                                  | `mapped structural value` with `wire Set Text`                                                 | Accept array permutations and duplicates; emit distinct strings in Unicode code-point order. No case folding or Unicode normalization. Only `Set Text` is supported.                                                                                          |
+| Unrestricted bytes                        | `mapped refined` with `wire base16-bytes`                                                      | Decode even-length ASCII hex of either case, including empty input and leading zeroes; emit lowercase. Reject prefixes, whitespace, odd lengths, and non-hex digits.                                                                                          |
+
+For example, keep an optional domain label without a custom JSON codec:
+
+```text
+mapped structural value MaybeLabel {
+  haskell package=orders-domain module=Orders.Values type=MaybeLabel
+  binding = "Orders.Bindings.maybeLabelBinding"
+  binding-version = "1"
+  canonical-type = "orders.MaybeLabel.v1"
+  fixtures = "Orders.Bindings.maybeLabelFixtures"
+  wire Optional Text
+}
+```
+
+Supply only the total `StructuralBinding MaybeLabel (Maybe Text)`, deterministic labelled fixtures, and `CanonicalTypeName`; add an initial when used as a register. A `mapped refined` byte binding likewise crosses the decoded `ByteString`, not hex text. Admission and normalization belong to the frozen Keiro policy before the binding runs. A fixed-length digest or rejecting smart constructor is not a total binding over unrestricted bytes; retain an explicit opaque boundary if no supported policy describes it.
+
+Nullability is transitive through named bare mappings. Do not hide `Optional (Optional ...)`, optional `Json`, or an optional opaque null-capable value behind an alias; `MappedNonInjectiveNullability` rejects the ambiguous encoding. A direct private-event mapped field whose bare root is `Optional` accepts an omitted key exactly as explicit `null`. A required field inside a structural record remains required even when its value can be null.
+
+Carry these mappings through aggregate values, queues, query aliases, and typed process reaction inputs. Keep process source-event decoding and workflow result codecs application-owned. Dates, sets, and refined bytes do not gain symbolic arithmetic, comparisons, or map-key support merely by acquiring checked codecs. Use declared IDs for typed map keys. Public contract fields do not acquire general mapped codecs.
+
+Scaffold creates binding skeletons only when absent; regeneration preserves filled bindings. Run generated binding laws, fixture coverage, historical codec comparison, and [replay compatibility](/docs/runtime-patterns/keiro/evolution-and-rollout) before retiring an opaque implementation. Preserve old readers even when the current writer becomes generated.
+
+## Establish a service baseline before changing a mapping
+
+Move the whole source or workspace to the required Language 6 baseline, declare the complete queue/query/catalog authority, run `check` with binding and coverage evidence, and resolve every opaque or unsupported boundary. Use Keiro 0.18.0.0 for the checked value policies above. Scaffold once, fill the new create-once obligations, compile the runtime package, and run the generated service conformance target.
+
+Persist the new semantic-impact baseline, then run `diff` against the deployed revision. A preamble-only edit is not adoption, and a green repository qualification does not authorize a queue drain, schema migration, projection rebuild, or fleet rollout.
+
+## Act on every reported consequence independently
+
+* `private-event-history`: deploy a contiguous upcaster and run the real-log replay audit.
+* `snapshot-hydration`: budget full replay and bump an explicit fold token for semantic changes invisible to shape.
+* `workqueue-history`: deploy a backward reader before producers; otherwise stop producers and drain, or use a temporary dual-shape codec.
+* `query-api`: recompile callers and the hand-owned query implementation; make application DDL decisions separately.
+* `projection-handler-review`: review every named live and replay handler; no SQL change is inferred from the mapped event edit.
+* `projection-rebuild`: finish or abandon incompatible active runs, deploy the matching catalog and holes, then rebuild the named group under its fence.
+* `consumer-build`: rebuild the exact named consumer even when no durable history changes.
+
+Do not clear one consequence with evidence for another. A compatible query build says nothing about queued payloads; a green projection replay says nothing about an external public contract.
+
+## Related Patterns
+
+* [Semantic-local Keiro DSL regeneration](/docs/runtime-patterns/keiro/dsl-semantic-locality)
+* [Projection catalogs](/docs/runtime-patterns/keiro/projection-catalogs)
+* [Brownfield Keiro adoption](/docs/runtime-patterns/keiro/brownfield-adoption)
+* [Evolution gates and rollout ordering](/docs/runtime-patterns/keiro/evolution-and-rollout)
+* [Typed PGMQ jobs](/docs/runtime-patterns/messaging/pgmq-jobs)

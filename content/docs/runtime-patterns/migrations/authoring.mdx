@@ -1,0 +1,92 @@
+---
+title: "Migration Authoring"
+description: "Authoring rules: append-only migrations, the three-file review diff, the no-transaction directive, and manifest v1 strictness"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/migrations-authoring"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/migrations-authoring" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/migrations-authoring`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/migrations/authoring.md`. Type: **Standard**. Status: **current**.
+
+Material timestamp: 2026-09-06T21:22:15Z. Source actor: `process:codex`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved keiro-migrations, kiroku-store-migrations, and pg-migrate source and CLIs; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-23T23:55:16Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Migration Authoring
+
+**Append a new immutable migration for every change; never rewrite history that any environment may have applied.**
+
+Use this guide when creating or reviewing a pg-migrate SQL file and its manifest entry. It defines the append-only rule, transaction directive, manifest-v1 format, and safe authoring workflow.
+
+Use the [release-specific recovery runbook](/docs/runtime-patterns/migrations/operations) when upgrading a database that applied Kiroku’s withdrawn `0010`. Its guarded producer fixup is an exceptional recovery protocol; do not reproduce it for ordinary application migrations.
+
+## Keep applied history immutable
+
+Never edit an applied component name, migration basename, manifest position, SQL byte—including comments or whitespace—kind, or transaction mode. Append a corrective migration instead. If there is any chance another environment applied the file, treat it as immutable.
+
+Use the service CLI’s `new` command to create the next file and append its manifest entry atomically:
+
+```console
+my-service-migrate new \
+  --manifest migrations/application/manifest \
+  --name 0003-add-status \
+  --description "Add status"
+```
+
+Review and fill in the SQL, run `check`, rebuild the embedding module, then inspect `plan` and `list`.
+
+## Review all three files together
+
+A component that maintains a lockfile makes every new migration a **three-file review diff**: the immutable SQL file, its appended `manifest` line, and its appended lockfile SHA-256 line — in the same order. Reject a change where the three disagree. The test suite names which of the three is at fault, so a mismatch is a fast fix rather than a hunt.
+
+Qualify every object as `<schema>.<object>` and never manipulate `search_path` inside a migration; a body lint enforces both in the default build.
+
+## Prefer transactional SQL
+
+SQL is transactional by default and may contain multiple statements. Do not write `BEGIN`, `COMMIT`, other transaction control, psql meta-commands, or `COPY FROM STDIN`; the runner owns the transaction boundary.
+
+Use nontransactional mode only when PostgreSQL prohibits the command in a transaction. The exact directive must occur in the leading line-comment region, and the file must contain exactly one SQL statement:
+
+```sql
+-- pg-migrate: no-transaction
+CREATE INDEX CONCURRENTLY accounts_email_idx ON accounts (email);
+```
+
+Unknown or duplicate `pg-migrate:` directives and directives placed after SQL begins are rejected. Codd-specific comments are ordinary inert SQL comments; they do not select pg-migrate transaction mode.
+
+## Keep manifest v1 deliberately plain
+
+The `manifest` contains exactly one relative, top-level, lowercase `.sql` filename per line. It has no comments, blank lines, header, nested paths, or duplicate entries. Validation rejects a UTF-8 BOM, invalid UTF-8, leading or trailing whitespace, missing listed files, and unlisted sibling SQL files.
+
+Keep zero-padded numeric prefixes at one consistent width. Automatic numbering refuses irregular manifests or a next number that no longer fits the established width; choose the next explicit naming strategy rather than silently changing conventions.
+
+## Related Patterns
+
+* [The pg-migrate Model](/docs/runtime-patterns/migrations/pg-migrate-model)
+* [Service Migration Packages](/docs/runtime-patterns/migrations/service-package)
+* [Migration Testing](/docs/runtime-patterns/migrations/testing)

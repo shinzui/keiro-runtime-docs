@@ -1,0 +1,110 @@
+---
+title: "Messaging Gotchas"
+description: "Consolidated messaging gotcha catalogue across Shibuya, pgmq-hs 0.6, Kafka, Kiroku, and Keiro"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/messaging-gotchas"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/messaging-gotchas" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/messaging-gotchas`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/messaging/gotchas.md`. Type: **Gotcha**. Status: **current**.
+
+Material timestamp: 2026-09-30T21:30:00Z. Source actor: `process:claude-code`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved shibuya 0.8.0.1, shibuya-{kafka,pgmq,kiroku,message-db} adapters, keiro 0.4.0.1, and kiroku source; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-22T18:27:32Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# Messaging Gotchas
+
+**Twenty-nine ways the messaging stack will bite you, and the rule that prevents each.**
+
+Treat these as design-review checks, not trivia.
+
+1. **Kafka dead letters are dropped from the consumer group's recoverable path.** The adapter has no DLQ producer: `AckDeadLetter` warns on stderr and stores the offset. Wire a durable DLQ publisher or do not use dead-letter acknowledgment on Kafka. See [transport selection](/docs/runtime-patterns/messaging/transport-selection).
+
+2. **Run the Kafka adapter with `Serial`; nothing enforces it.** `Ahead` or `Async` can store a later offset after an earlier delivery failed because librdkafka has no gap-tracking commit layer here. See [Shibuya processing](/docs/runtime-patterns/messaging/shibuya-processing).
+
+3. **Kafka never supplies `Envelope.attempt`.** It is always `Nothing`, so retry-by-count needs external durable bookkeeping or an `AckHalt` policy. See [transport selection](/docs/runtime-patterns/messaging/transport-selection).
+
+4. **PGMQ crash redelivery follows visibility timeout, not retry delay.** Every VT expiry increments `read_ct` toward the attempt ceiling. Put VT above worst-case handler time or extend the lease. See [PGMQ jobs](/docs/runtime-patterns/messaging/pgmq-jobs).
+
+5. **Raw PGMQ `maxRetries = 0` skips every handler.** First delivery already has `readCount = 1`, so the adapter dead-letters it immediately. Construct job policies with `mkRetryPolicy`. See [PGMQ jobs](/docs/runtime-patterns/messaging/pgmq-jobs).
+
+6. **Know which PGMQ DLQ boundary you use.** The supervised adapter's direct/topic DLQ send plus source delete is transactional in `shibuya-pgmq-adapter` 0.14.0.0 and later; Keiro's `runJobOnce*` sends and deletes separately, so a crash can leave both copies. Keep one-shot handlers idempotent and reconcile duplicates. See [PGMQ jobs](/docs/runtime-patterns/messaging/pgmq-jobs).
+
+7. **PGMQ prefetch can delay messages after shutdown.** It does not lose them; buffered, undispatched messages reappear only after VT. Keep `bufferSize * batchSize * average processing time` below visibility timeout. See [PGMQ jobs](/docs/runtime-patterns/messaging/pgmq-jobs).
+
+8. **Finalizers must be idempotent.** Shibuya retries the same decision after 10 ms, 50 ms, and 250 ms when finalization throws, then halts the processor. See [Shibuya processing](/docs/runtime-patterns/messaging/shibuya-processing).
+
+9. **A throwing handler becomes `AckRetry 0`.** An always-throwing handler can produce an immediate redelivery storm. Decode, validate, and convert expected poison or permanent failures to explicit decisions. See [Shibuya processing](/docs/runtime-patterns/messaging/shibuya-processing).
+
+10. **Guard Kiroku handlers to avoid zero-delay spins.** On Shibuya 0.9.0.0 a throw is finalized, so it does not block forever; `guardKirokuHandler` improves the fallback from `AckRetry 0` to `AckRetry 1`, and group helpers install it automatically. See [Kiroku subscriptions](/docs/runtime-patterns/messaging/kiroku-subscriptions).
+
+11. **Do not validate a dead-letter code per message.** `mkDeadLetterCode` is a startup-time gate; calling it inside a handler turns a naming mistake into a per-delivery failure on the exact path that is already failing. Validate the finite code set once and keep it in configuration. See [Shibuya processing](/docs/runtime-patterns/messaging/shibuya-processing).
+
+12. **PGMQ worker envelopes do not expose arbitrary headers.** JSONB headers are unordered, so the continuous adapter sets `Envelope.headers = Nothing`; raw headers are available only in the one-shot `JobContext`. See [PGMQ jobs](/docs/runtime-patterns/messaging/pgmq-jobs).
+
+13. **`QueueRef` sanitization is lossy.** `a.b` and `a_b` collide, long or `_dlq`-ending names are hashed, and a rename can point workers at a new empty queue while messages remain in the old one. Freeze logical names and drain before migration. See [PGMQ jobs](/docs/runtime-patterns/messaging/pgmq-jobs).
+
+14. **PGMQ retries only a statement-error whitelist, and a mid-statement disconnect is outside it.** In pgmq-hs 0.5 and 0.6, `Pgmq.Effectful.isTransient` retries acquisition, networking, connection-session failures, SQLSTATE 40001, 40P01, 55P03, 57P01/02/03, and class 53. Authentication, compatibility, decode/row-count, script, missing-type, driver, and every other statement failure are permanent. A connection lost while a statement is in flight arrives as a statement error (an empty SQLSTATE, or `UnexpectedRowCountStatementError 1 1 1`), so in 0.6.1.1 the adapter does not retry the first in-flight failure and the polling stream fails; tracked as `mori://shinzui/pgmq-hs/okf/bug-reports/concepts/BUG-1`. Size budgets and keep enqueues idempotent with [PGMQ connection faults](/docs/runtime-patterns/messaging/pgmq-connection-faults); see also [PGMQ queue lifecycle](/docs/runtime-patterns/messaging/pgmq-queue-reconciliation).
+
+15. **`CommandAmbiguous` is never success.** Multiple matching edges are an aggregate-definition defect; process-manager workers halt, and the DSL rejects an ambiguity outcome of `Fired`. See [process managers](/docs/runtime-patterns/messaging/process-managers) and the [command error standard](/docs/runtime-patterns/keiro/command-cycle-and-errors).
+
+16. **Schema-qualify framework SQL.** Kiroku keeps the event store and LISTEN/NOTIFY contract in `kiroku`; Keiro owns `keiro.keiro_outbox`, `keiro.keiro_inbox`, `keiro.keiro_timers`, and `keiro.keiro_dead_letters`; application projections have a separate owner. Bare `keiro_*` names depend on the wrong search-path assumption. See the [schema arrangement](/docs/runtime-patterns/keiro/two-schema-arrangement).
+
+17. **Keiro supplies messaging contracts and primitives, not complete broker wiring.** Applications own the Kafka producer and consumer around `Keiro.Outbox.Kafka` and `Keiro.Inbox.Kafka`. `IntegrationProducer` also does not own a source checkpoint. `enqueueProducerEventTx` derives deterministic identities from the source event and returns `ProducerIdentityConflict` when a retained row differs; roll back the checkpoint transaction on conflict, record it after the runner returns, and plan a drained cutover from pre-0.17 random message IDs. See [transactional outbox](/docs/runtime-patterns/messaging/outbox).
+
+18. **Transactional Keiro runners require `KirokuStoreResource`.** `runCommandWithSql`, `runCommandWithSqlEvents`, and `runCommandWithProjections` need the resource acquired with `withKirokuStore`; plain `runCommand` does not. The outbox and inbox transactional continuations live inside the same resource-backed boundary. See [runtime assembly](/docs/runtime-patterns/keiro/runtime-assembly).
+
+19. **Keep transactional continuations minimal.** An appending transaction retains Kiroku's global `$all` row lock until commit. Slow outbox mapping, inline projections, timer scheduling, or unrelated SQL inside that window stalls every writer. See [transactional outbox](/docs/runtime-patterns/messaging/outbox) and [process managers](/docs/runtime-patterns/messaging/process-managers).
+
+20. **PGMQ reconciliation is additive, not destructive repair.** A queue-type mismatch reports `DetectedQueueTypeDrift` and preserves the queue; partition interval, retention, and premake are not checked at all. Fail startup and resolve the drift deliberately. See [PGMQ queue lifecycle](/docs/runtime-patterns/messaging/pgmq-queue-reconciliation).
+
+21. **A visibility-timeout update can lose a race.** `changeVisibilityTimeout` and `setVisibilityTimeoutAt` return `Nothing` when the row was already deleted, archived, or popped. Settle that as a lost race rather than retrying it as infrastructure failure. See [PGMQ queue lifecycle](/docs/runtime-patterns/messaging/pgmq-queue-reconciliation).
+
+22. **PGMQ notifications are hints.** They are fire-and-forget and throttled, and the missing throttle means 250 ms. Use `notifyChannelName`, keep a poll fallback, and install the native `pgmq-migration` component for crash-safe notification recovery and serialized enablement. See [PGMQ queue lifecycle](/docs/runtime-patterns/messaging/pgmq-queue-reconciliation).
+
+23. **Terminal publication rejection releases ordering.** `PublishRejected` is durable audit truth, does not retry, and does not stop `StopTheLine`. Keep temporary broker failures on `PublishFailed`, retain rejected rows, and install migration `0031` before deploying the new readers. See [transactional outbox](/docs/runtime-patterns/messaging/outbox).
+
+24. **Legacy FIFO strategies are not a failure barrier.** `FifoThroughput`/`FifoRoundRobin` (adapter `ThroughputOptimized`/`RoundRobin`) can lease a group's successor before its predecessor settles; Keiro 0.17 rejects them with batch size above one (`UnsafeLegacyFifoBatch`). Use `FifoHeads` (`HeadPerGroup`, PGMQ 1.12+), where `batchSize` bounds groups, not members. See [PGMQ jobs](/docs/runtime-patterns/messaging/pgmq-jobs).
+
+25. **Inspecting a DLQ hides its rows.** `readDlq`, `redriveDlq`, and `archiveDlq` hide each row they read for 30 seconds, and `purgeDlq` then returns `PurgeDlqBlocked` instead of deleting. Archive inspected ids with `archiveDlqEntries`, check the returned set, and handle the result; `purgeDlqForce` deletes hidden rows too. See [PGMQ jobs](/docs/runtime-patterns/messaging/pgmq-jobs).
+
+26. **Partition retention drops unprocessed work.** Retention drops whole active and archive partitions whether or not their messages were processed. Size it above the worst outage plus backlog age, build specs with `mkPartitionSpec`, and never read `defaultPartitionLength = Nothing` as zero. See [PGMQ queue lifecycle](/docs/runtime-patterns/messaging/pgmq-queue-reconciliation).
+
+27. **Producer identity is frozen.** Renaming a producer's source or name, or reassigning emission indices, republishes every replayed event under new IDs; after `garbageCollectSent`, a replay republishes the same wire `messageId` and only inbox retention suppresses it. See [transactional outbox](/docs/runtime-patterns/messaging/outbox).
+
+28. **Moving a process manager to the reaction runner is an identity migration.** `Keiro.ProcessManager.Reaction` uses a target-keyed command-id family. Drain source deliveries, incomplete fan-out, pending timers, and permitted replays first, or a retained legacy saga witness duplicates the action. See [process managers](/docs/runtime-patterns/messaging/process-managers).
+
+29. **Delegated inbox intake has no inbox rows.** It has no backlog, failed-row, retention, or `keiro-ops inbox` surface. The caller owns attempt counting and must durably dead-letter before acknowledging. Switching between table and delegated intake needs a drain and a replay boundary. See [inbox](/docs/runtime-patterns/messaging/inbox).
+
+## Related Patterns
+
+* [Messaging standards index](/docs/runtime-patterns/messaging/overview)
+* [Shibuya processing](/docs/runtime-patterns/messaging/shibuya-processing)
+* [Transport selection](/docs/runtime-patterns/messaging/transport-selection)
+* [Keiro gotchas](/docs/runtime-patterns/keiro/gotchas)
+* [PGMQ queue lifecycle and reconciliation](/docs/runtime-patterns/messaging/pgmq-queue-reconciliation)

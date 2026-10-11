@@ -47,7 +47,18 @@ export function markdownPathToSlugs(segs: string[]) {
 // future llms.txt routes). Relies on `includeProcessedMarkdown` in
 // source.config.ts.
 export async function getLLMText(page: (typeof source)["$inferPage"]) {
-  const processed = await page.data.getText("processed")
+  let processed = await page.data.getText("processed")
+  if (page.path.startsWith("runtime-patterns/")) {
+    processed = await page.data.getText("raw")
+    processed = processed
+      .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
+      .replace(/<PatternProvenance\b[^>]*\/>/g, "")
+      .replace(/<Diagram\b[^>]*\/>/g, (markup) => {
+        const alt = markup.match(/alt=("(?:[^"\\]|\\.)*")/)?.[1]
+        const caption = markup.match(/caption=("(?:[^"\\]|\\.)*")/)?.[1]
+        return `Diagram explanation: ${alt ? JSON.parse(alt) : ""}${caption ? ` ${JSON.parse(caption)}` : ""}`
+      })
+  }
 
   return `# ${page.data.title} (${page.url})
 

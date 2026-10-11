@@ -16,6 +16,11 @@ provenance:
       at: 2026-10-11T23:07:58Z
       mode: "update"
       note: "Link the user-supplied intention and its implementation commit trailer"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-11T23:27:58Z
+      mode: "implement"
+      note: "Implement the committed catalog projection, audit presentation, maintained diagrams, and incremental sync"
 ---
 
 # Publish the runtime pattern catalog with SVG diagrams and incremental synchronization
@@ -36,8 +41,8 @@ The site reveals the standards agents can use. It does not prove that an agent f
 ## Progress
 
 
-- [ ] Establish ownership and release-scope decisions; inventory the committed catalog, profile, and scoped logs.
-- [ ] Implement deterministic snapshot import, generation, coverage checks, and meaningful failure tests.
+- [x] (2026-10-11 23:40Z) Establish ownership and release-scope decisions; inventory the committed catalog, profile, and scoped logs.
+- [x] (2026-10-11 23:40Z) Implement deterministic snapshot import, generation, coverage checks, and meaningful failure tests.
 - [ ] Publish every concept with navigation, search, provenance, supplied criteria, Markdown export, and audit guidance.
 - [ ] Assess the complete catalog for visual explanations and record diagram or text-only decisions.
 - [ ] Add at least 18 useful SVG explanations in three batches and enforce their relationship to reviewed source content.
@@ -48,7 +53,9 @@ The site reveals the standards agents can use. It does not prove that an agent f
 ## Surprises & Discoveries
 
 
-(None yet.)
+The committed owner check confirms 88 concepts, despite the smaller registered DocRef listing. Validation runs in a temporary tree because the owner regenerates indexes. Owner ADR-6 changed in commit `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e`; it is the selected publication target.
+
+Markdown stringification initially escaped entity markers, which would display entities literally. The compilation fixture exposed this. A text handler now emits inert literals after Markdown escaping; seven fixture tests pass.
 
 
 ## Decision Log
@@ -70,7 +77,7 @@ On 2026-10-11, include doc-sync changes as implementation work. Do not register 
 ## Outcomes & Retrospective
 
 
-(To be filled during and after implementation.)
+Ownership and deterministic import are implemented. Publication review records committed inventory, scoped evidence, profile digest, and source qualification gaps. Remaining work is the complete visual review, doc-sync integration, and release/browser validation.
 
 
 ## Context and Orientation
@@ -278,3 +285,5 @@ Creation note (2026-10-11): Created a five-milestone plan for complete pattern p
 Revision note (2026-10-11): Linked the user-supplied intention in frontmatter and required its trailer on implementation commits.
 
 Revision note (2026-10-11): Expanded visual scope from six to at least 18 SVG explanations in three batches, added a full-catalog visual-needs review with text-only decisions, and updated synchronization, progress, and acceptance requirements. The user requested broader useful coverage without a diagram for every pattern.
+
+Revision note (2026-10-11): Implemented ownership and committed-tree import, recorded inventory evidence, and added failure and incremental synchronization fixtures.

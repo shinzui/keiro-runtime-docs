@@ -24,6 +24,8 @@ Generate the site glossary and `docs/writing/technical-terms.json` from the cano
 
 Keep automated editorial checks separate from verified standard compliance. Fail on unsupported DSL declarations, retired paths, selected prose problems, and inconsistent glossary output. Report sentence and paragraph findings for contextual review. Do not hide them behind a grandfathered baseline.
 
+The generated runtime pattern catalog is an audit quotation of a pinned canonical source. Verified source bodies may retain historical language declarations and upstream wording, with visible qualification. Locally authored audit guidance and diagram explanations retain the release policy. See [ADR 2](0002-publish-the-canonical-runtime-pattern-catalog.md).
+
 ## Consequences
 
 Readers have one DSL language and one source of technical definitions. Deprecated term entries remain available for lookup, while new prose uses their replacements.

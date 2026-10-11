@@ -1,0 +1,93 @@
+---
+title: "The pg-migrate Model"
+description: "The pg-migrate model: components, manifests, exact-byte embedding, the ledger, the RecompilePlugin, and its layered integrity gates"
+patternResource: "mori://shinzui/keiro-runtime-patterns/docs/migrations-pg-migrate-model"
+---
+
+<PatternProvenance resource="mori://shinzui/keiro-runtime-patterns/docs/migrations-pg-migrate-model" commit="2102ba1cce26d0f7ccfee775f5fc8bc60fada58e" />
+
+## Source and assessment evidence
+
+Canonical resource: `mori://shinzui/keiro-runtime-patterns/docs/migrations-pg-migrate-model`.
+
+Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00).
+
+Concept path: `runtime-patterns/migrations/pg-migrate-model.md`. Type: **Guide**. Status: **current**.
+
+Material timestamp: 2026-09-21T20:25:00Z. Source actor: `human:nadeem`.
+
+Review (historical; does not match material revision):
+
+```json
+{
+  "context": "Model technical-accuracy review against the mori-resolved keiro-migrations, kiroku-store-migrations, and pg-migrate source and CLIs; verified exported symbols, signatures, version claims, and links.",
+  "document_timestamp": "2026-07-23T23:55:16Z",
+  "effort": "unspecified",
+  "kind": "model",
+  "model": "claude-fable-5",
+  "outcome": "approved",
+  "provider": "anthropic",
+  "reviewed_at": "2026-07-30T00:43:08Z",
+  "reviewer": "claude-code",
+  "scope": "technical-accuracy"
+}
+```
+
+## Canonical source quotation
+
+This is a versioned source quotation. Historical examples and candidate claims retain their original qualification.
+
+# The pg-migrate Model
+
+**Libraries export stable migration components; applications compose and run one compile-time plan.**
+
+Use this guide to understand the pg-migrate 1.1/1.2 model before authoring service migrations. Version 1.2 preserves production APIs, ledger behavior, and migration payloads; its coordinated release changes the [test-support configuration](/docs/runtime-patterns/migrations/testing). Kiroku migrations 0.5 follows pg-migrate 1.2 without changing SQL or checksums. Keiro 0.18 still requires Kiroku migrations 0.4 and pg-migrate 1.1: keep that compatible cohort until its bounds are updated rather than forcing the independent latest versions together.
+
+## Model ownership as components
+
+A `MigrationComponent` has a stable name, a `Set` of component-name dependencies, and a non-empty ordered migration list. Migration identity is the component name plus the local migration name, such as `accounts/0001-create-accounts`.
+
+For embedded SQL, the local name is the manifest filename without `.sql`. That basename is durable history: renaming the file changes identity. Never rename, reorder, remove, or modify an applied entry.
+
+Use `migrationPlan` when the application lists components in authoritative order; it validates that every dependency is present and precedes its consumer. Use `resolveMigrationPlan` only for a registration layer that genuinely receives an unordered collection; it performs a stable topological sort.
+
+## Embed exact bytes from a manifest
+
+Each component owns a plain `manifest` file containing one SQL filename per line in execution order. `embedMigrationManifest` validates membership at compile time and embeds the exact bytes. `migrationComponentFromEmbeddedSql` removes `.sql`, validates each migration, determines transaction mode, and hashes the exact payload with SHA-256.
+
+Every embedding module on GHC 9.12 must carry the plugin pragma so adding an unlisted sibling file forces the membership audit to run:
+
+```haskell
+{-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -fplugin=Database.PostgreSQL.Migrate.Embed.RecompilePlugin #-}
+```
+
+Production binaries execute embedded bytes. They do not discover migration files at runtime.
+
+## Layer the integrity gates
+
+The plugin has an explicit limit: it reruns the membership check whenever Cabal invokes GHC, and it can do nothing when Cabal decides the package is already up to date and never invokes the compiler. Do not treat it as the only defense.
+
+Three independent layers cover the gap, each at a different time:
+
+| When    | Gate                                                  | What it proves                                                                                       |
+| ------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Compile | `embedMigrationManifest` plus `RecompilePlugin`       | Order, directory membership, and exact SQL payloads — whenever GHC actually runs.                    |
+| Review  | Default test suite reading the lockfile and directory | The lockfile, manifest, membership, and every SHA-256 payload agree, independent of build staleness. |
+| Deploy  | The `pgmigrate` ledger                                | Applied history is keyed by checksum and fails closed on divergence.                                 |
+
+No layer replaces another. See [Migration Testing](/docs/runtime-patterns/migrations/testing) for the review-time suite and [Migration Operations](/docs/runtime-patterns/migrations/operations) for the deploy-time gates.
+
+## Run the complete plan under one lock
+
+`up` holds a session advisory lock for the complete plan. Transactional SQL and its applied ledger row commit atomically; rerunning an already applied plan produces `AlreadyApplied` results. Nontransactional work uses a durable state machine and has a stricter recovery procedure.
+
+The default ledger lives in schema `pgmigrate`. Migration rows are keyed by `(component, migration)`, carry a 32-byte SHA-256 checksum, kind, transaction mode, position, and status. Repair and history-import evidence is append-only. A binary that supports an older ledger schema refuses a database with a newer one.
+
+pg-migrate is forward-only and supports PostgreSQL 17 and 18. A service owns one connection source—normally `DATABASE_URL`—and one complete plan. It does not maintain separate per-library runners.
+
+## Related Patterns
+
+* [Migration Authoring](/docs/runtime-patterns/migrations/authoring)
+* [Service Migration Packages](/docs/runtime-patterns/migrations/service-package)
+* [Migration Operations](/docs/runtime-patterns/migrations/operations)

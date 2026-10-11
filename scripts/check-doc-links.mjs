@@ -76,7 +76,7 @@ for (const file of files) {
   for (const raw of extractTargets(src)) {
     const target = raw.trim()
     // Skip externals, protocol-relative, mailto/tel, pure anchors, and template placeholders.
-    if (/^(https?:|mailto:|tel:|#|\/\/)/.test(target)) continue
+    if (/^(https?:|mori:|mailto:|tel:|#|\/\/)/.test(target)) continue
     if (target.startsWith("[") || target.includes("](")) continue // nested/garbage
     const noAnchor = target.split("#")[0]
     if (noAnchor === "") continue
