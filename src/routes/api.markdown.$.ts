@@ -2,9 +2,9 @@ import { createFileRoute, notFound } from "@tanstack/react-router"
 
 import { getLLMText, markdownPathToSlugs, source } from "@/lib/source"
 
-// Serves the raw processed markdown for a docs page at /docs/<slug>.md. This
+// Serves the raw processed markdown for a docs page at /api/markdown/<slug>.txt. This
 // backs the "copy markdown" / "view as markdown" controls on the docs page.
-export const Route = createFileRoute("/docs/{$}.md")({
+export const Route = createFileRoute("/api/markdown/$")({
   server: {
     handlers: {
       GET: async ({ params }) => {
@@ -14,7 +14,7 @@ export const Route = createFileRoute("/docs/{$}.md")({
 
         return new Response(await getLLMText(page), {
           headers: {
-            "Content-Type": "text/markdown",
+            "Content-Type": "text/plain; charset=utf-8",
           },
         })
       },

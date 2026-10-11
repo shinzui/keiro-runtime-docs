@@ -2,7 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join, relative, resolve } from "node:path"
 
 import { analyzeMdx } from "./doc-prose.mjs"
-import { generate, base } from "./lib/runtime-patterns.mjs"
+import { patternProse } from "./lib/pattern-prose.mjs"
+import { generate } from "./lib/runtime-patterns.mjs"
 
 const root = resolve(import.meta.dirname, "..")
 const docs = join(root, "content/docs")
@@ -28,29 +29,9 @@ const generated = snapshot ? generate(snapshot, presentation) : new Map()
 for (const path of files) {
   let prose = readFileSync(path, "utf8")
   const key = relative(root, path)
-  const concept = snapshot?.concepts.find((c) => key === base + c.path.replace(/\.md$/, ".mdx"))
-  if (concept) {
-    if (generated.get(key) !== prose) {
-      findings.push({
-        file: key,
-        line: 1,
-        rule: "source-quotation-integrity",
-        severity: "error",
-        detail: "Source quotation differs from verified generation.",
-      })
-    } else {
-      // Only proven source fields are exempt. Site-owned captions, alt text, and links retain normal checks.
-      prose = Object.values(presentation.diagrams ?? {})
-        .filter((d) => d.placement.resource === concept.resource)
-        .map((d) => `${d.alt}\n\n${d.caption}`)
-        .join("\n\n")
-      prose +=
-        "\n" +
-        (presentation.assessments[concept.resource]?.relatedPages ?? [])
-          .map((x) => x.label)
-          .join("\n")
-    }
-  }
+  const quotation = patternProse(key, prose, snapshot, presentation, generated)
+  findings.push(...quotation.findings)
+  prose = quotation.prose
   for (const finding of analyzeMdx(prose)) {
     findings.push({ file: relative(root, path), ...finding })
   }

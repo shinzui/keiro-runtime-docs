@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react"
+import { type CSSProperties, useEffect, useId, useState } from "react"
 
 import { prepareDiagramSvg } from "@/lib/diagram-svg.mjs"
 
@@ -68,7 +68,12 @@ export function Diagram({ src, alt, caption }: { src: string; alt: string; capti
         {prepared ? (
           <div
             className="svg-diagram-frame"
-            style={prepared.width && !expanded ? { maxWidth: `${prepared.width}px` } : undefined}
+            style={
+              {
+                "--diagram-width": `${prepared.width ?? 660}px`,
+                ...(prepared.width && !expanded ? { maxWidth: `${prepared.width}px` } : {}),
+              } as CSSProperties
+            }
             dangerouslySetInnerHTML={{ __html: prepared.svg }}
           />
         ) : (

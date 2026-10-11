@@ -15,6 +15,7 @@ Catalog commit: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-
 Concept path: `runtime-patterns/messaging/pgmq-connection-faults.md`. Type: **Standard**. Status: **current**.
 
 Material timestamp: 2026-09-30T21:30:00Z. Source actor: `process:claude-code`.
+Related product pages: [Processing guide](/docs/shibuya).
 
 ## Canonical source quotation
 
@@ -35,6 +36,11 @@ A connection lost while a statement is in flight does not arrive as a connection
 Do not write service code against the unreleased classifier or its planned `isAmbiguousReply` companion. This standard will be revised to cite the released version when it ships; until then the rules below hold for both the released and the fixed behaviour.
 
 ## Size the adapter budgets to the outage you plan to survive
+
+Supplementary explanation: A lost enqueue reply requires bounded reconciliation by producer identity.
+
+<Diagram src="runtime-patterns/messaging/connection-fault-retry-budget" alt="Released classification can refuse the first in-flight disconnect. Transient poll and ack failures have separate five-attempt defaults with 1.5 seconds of backoff. Exhaustion fails the worker." caption="A lost enqueue reply requires bounded reconciliation by producer identity." />
+
 
 `PgmqAdapterConfig` carries two independent budgets, `pollRetry` and `ackRetry`, both of type `PollRetryConfig` with `maxAttempts` (total attempts, including the first), `initialBackoff`, and `maxBackoff`. The adapter retries while `isTransient` holds and attempts remain, doubling the delay from `initialBackoff` and capping it at `maxBackoff`. `defaultPollRetryConfig` is five attempts, 0.1 s, and 5 s, which waits 0.1 + 0.2 + 0.4 + 0.8 = 1.5 s in total before giving up. The cumulative wait is the sum of `min(initialBackoff * 2^k, maxBackoff)` for `k` from 0 to `maxAttempts - 2`; compute it and write it beside the configuration.
 

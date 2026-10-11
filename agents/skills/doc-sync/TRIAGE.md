@@ -1,5 +1,10 @@
 # Triage: upstream change → documentation action
 
+## Generated patterns: branch before library admission
+
+Use PATTERNS.md for committed catalog changes. Every authoritative new concept gets a generated page (ADD); rule, criterion, applicability, status, or material prose changes refresh it and invalidate affected visual decisions (UPDATE). Rename preserves canonical identity and an old route. Retirement follows owner intent and records history (RETIRE). Profile, scoped-log, and watermark changes refresh evidence with explicit outcomes. A reasoned NO-OP must account for the actual diff; canonical prose is not automatically NO-OP. Review related site explanations and diagrams. Do not apply the library-only admission tests below to exclude a canonical concept.
+
+
 Every upstream change gets exactly one of four actions: **ADD** a page, **UPDATE** existing pages,
 **RETIRE** a page, or **NO-OP** with a stated reason. Default to UPDATE — the doc set is mature, and
 most source changes belong in a page that already exists. A new page is a claim that no existing page

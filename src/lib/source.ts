@@ -17,28 +17,28 @@ export const source = loader({
   plugins: [lucideIconsPlugin()],
 })
 
-// Map a docs slug array to the `.md` path used for raw-markdown links.
+// Use a plain-text extension so Vite does not intercept Markdown as a source module.
 export function slugsToMarkdownPath(slugs: string[]) {
   const segments = [...slugs]
   if (segments.length === 0) {
-    segments.push("index.md")
+    segments.push("index.txt")
   } else {
-    segments[segments.length - 1] += ".md"
+    segments[segments.length - 1] += ".txt"
   }
 
   return {
     segments,
-    url: `${docsRoute}/${segments.join("/")}`,
+    url: `/api/markdown/${segments.join("/")}`,
   }
 }
 
-// Inverse of slugsToMarkdownPath: strip the trailing `.md` and drop a bare
+// Inverse of slugsToMarkdownPath: strip the text/Markdown extension and drop a bare
 // `index` so the raw-markdown route can look the page up.
 export function markdownPathToSlugs(segs: string[]) {
   if (segs.length === 0) return []
 
   const out = [...segs]
-  out[out.length - 1] = out[out.length - 1].replace(/\.md$/, "")
+  out[out.length - 1] = out[out.length - 1].replace(/\.(md|txt)$/, "")
   if (out.length === 1 && out[0] === "index") out.pop()
   return out
 }

@@ -17,6 +17,12 @@ Language 6 is the only supported Keiro DSL language in the release documentation
 Obsolete Keiro upgrade guides and the older example-app tour are retired.
 Historical plans and source-review records remain under `docs/`.
 
+The [runtime catalog](content/docs/runtime-patterns/index.mdx) publishes all 88 concepts from a fixed committed revision of `mori://shinzui/keiro-runtime-patterns/okf/runtime-patterns`. Historical and candidate source examples remain qualified quotations. Local product guidance remains Language 6. Source rules are maintained in the owner; site explanations and SVGs are maintained here.
+
+Refresh with `nix develop -c pnpm run sync:patterns -- --ref FULL_COMMIT_SHA`. Do not edit generated MDX. Review the snapshot diff, all invalidated concept visual assessments and diagram bindings in `docs/patterns/presentation.json`, and coupled product pages. Render changed drawings in both themes and inspect desktop/mobile expansion. Complete the [pattern sync procedure](agents/skills/doc-sync/PATTERNS.md) before advancing [the reviewed pointer](docs/runtime-patterns-source-sync.md).
+
+`pnpm run lint:patterns` checks offline generation, coverage, visual bindings, and pointer agreement. `node scripts/runtime-patterns.mjs --check-upstream` separately reports owner drift. `node agents/skills/doc-sync/status.mjs runtime-patterns --json` distinguishes imported output from completed review. Import does not advance the owner's library review ledger or certify that an agent complied with a pattern.
+
 ## Local development
 
 Enter the Nix environment before running project commands. The shared flake-parts
@@ -37,6 +43,9 @@ Open <http://127.0.0.1:5214>.
 | --------------------------- | ------------------------------------------------------------------ |
 | `pnpm run lint:docs`        | Check release scope and common prose problems.                     |
 | `pnpm run review:prose`     | Report sentence and paragraph findings for editorial review.       |
+| `pnpm run test:patterns`    | Verify committed import, failure recovery, and incremental review. |
+| `pnpm run lint:patterns`    | Check catalog output and completed visual/source bindings.         |
+| `pnpm run lint:diagrams`    | Check SVG structure and placement.                                 |
 | `pnpm run test:docs`        | Verify the documentation checker.                                  |
 | `pnpm run sync:terminology` | Refresh the glossary from Keiro's terminology bundle through Mori. |
 | `pnpm run lint:terminology` | Verify the glossary against its canonical snapshot.                |

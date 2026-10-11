@@ -54,7 +54,11 @@ Parse source Markdown with the parser versions already supplied by `mori://fuma-
 
 ## Visual review
 
-Pending the three diagram batches and full per-concept assessment.
+All 88 concepts have current semantic-hash-bound visual decisions in `presentation.json`, including specific text-only reasons. Nineteen new assets cover every subject: three six-diagram batches as planned, plus configuration source order, malformed-winner behavior, and secret sensitivity. Two equivalent site drawings are reused with explicit bindings for evolution gates and event-envelope upcasting; they do not count toward the new baseline.
+
+Every selected SVG was rendered and inspected in light and dark themes. Reviews checked boundaries, labels, arrows, clipping, contrast, and source qualification. Outbox grouping, post-commit waiting, and timer park/expiry arrows were corrected after inspection. Each batch was checked in the browser at desktop and 390-pixel width; narrow expanded drawings scroll at native size. The asset hashes additionally invalidate reviews when the drawing itself changes. Shared drawings link from related concepts to their actual placement.
+
+The new drawings intentionally distinguish offline fenced rebuild from beside-serving generations, honest unverified conformance from proof strength, and the released PGMQ classifier defect from its unreleased fix.
 
 ## Incremental proof and release gates
 

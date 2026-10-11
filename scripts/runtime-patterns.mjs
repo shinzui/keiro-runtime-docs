@@ -124,7 +124,10 @@ function validateOwner(repo, commit) {
     rmSync(temp, { recursive: true, force: true })
   }
 }
-export function check(directory = root, { requireReview = true } = {}) {
+export function check(
+  directory = root,
+  { requireReview = true, minimumDiagrams = directory === root ? 18 : 0 } = {},
+) {
   const snapshot = readSnapshot(directory),
     presentation = readPresentation(directory)
   const outputs = generate(snapshot, presentation)
@@ -141,9 +144,15 @@ export function check(directory = root, { requireReview = true } = {}) {
       throw new Error(`Edited generated output: ${path}`)
   }
   const issues = reviewIssues(snapshot, presentation)
-  for (const id of Object.keys(presentation.diagrams ?? {}))
-    if (!existsSync(join(directory, `content/diagrams/runtime-patterns/${id}.svg`)))
-      issues.push(`Missing diagram asset: ${id}`)
+  const newDiagrams = Object.entries(presentation.diagrams ?? {}).filter(([, d]) => !d.asset)
+  if (newDiagrams.length < minimumDiagrams)
+    issues.push(`Pattern diagram baseline requires ${minimumDiagrams} new assets`)
+  for (const [id, d] of Object.entries(presentation.diagrams ?? {})) {
+    const path = join(directory, `content/diagrams/${d.asset ?? `runtime-patterns/${id}`}.svg`)
+    if (!existsSync(path)) issues.push(`Missing diagram asset: ${id}`)
+    else if (d.assetHash && hash(readFileSync(path)) !== d.assetHash)
+      issues.push(`Diagram asset review stale: ${id}`)
+  }
   const sha = pointerSha(directory)
   if (
     existsSync(join(directory, "docs/runtime-patterns-source-sync.md")) &&

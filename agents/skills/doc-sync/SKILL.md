@@ -1,24 +1,22 @@
 ---
 name: doc-sync
 description: >
-  Refresh this documentation set after an underlying library changes. Walks the tracked upstream
+  Refresh manually ported library documentation and the generated runtime pattern publication. Walks the tracked upstream
   repos (keiro, keiki, kiroku, shibuya + adapters, pgmq-hs, pg-migrate, keiro-runtime-jitsurei) from
   each one's pinned "last reviewed commit", classifies every upstream change into a documentation
   action — add a new page, update an existing one, retire a stale one, or explicitly no-op — applies
   the edits, runs the gates, and bumps the pointer so the next round only reads new commits.
   TRIGGER when: a framework/library under the docs changed, the docs need to catch up with source,
-  the user asks what upstream drift is un-documented, or a new upstream library must be tracked.
-argument-hint: <status|sync|register> [library …]
+  the user asks what upstream drift is un-documented, a committed runtime catalog changed, its publication needs refresh, or a new upstream library must be tracked.
+argument-hint: <status|sync|register> [library|runtime-patterns …]
 user-invocable: true
 ---
 
 # Doc sync skill
 
-`content/docs/` is **ported and cross-checked** against upstream Haskell source — it is not
-generated from it. Correctness therefore depends entirely on a disciplined review boundary: for each
-upstream repo, `docs/<library>-source-sync.md` pins the exact commit the docs were last reviewed
-against. A round of work means: read the diff from that pin, decide what documentation each change
-implies, do it, then move the pin.
+Most `content/docs/` pages are ported and cross-checked against upstream Haskell source. `content/docs/runtime-patterns/` is a generated presentation of the normative owner `mori://shinzui/keiro-runtime-patterns/okf/runtime-patterns`. Both need completed review boundaries; they use different editing workflows. Read **PATTERNS.md** for any pattern sync or registration, then follow its procedure instead of the library-only phases below. `status` stays read-only for both.
+
+Library-only sync must report potentially affected catalog subjects and its separate source/published boundaries, as described in PATTERNS.md. It must not imply that moving a library pointer reviewed the catalog.
 
 Three modes:
 
@@ -30,6 +28,7 @@ Three modes:
 
 Companion files (read on demand, not up front):
 
+- **`PATTERNS.md`** — committed catalog publication, visual review, independent source directions, and recovery.
 - **`TRIAGE.md`** — the change → documentation-action matrix. The admission tests for adding a new
   guide / how-to / walkthrough chapter / cookbook recipe, the update ordering, and the retirement
   rules. **Read this before writing or deleting any page.**
@@ -44,6 +43,8 @@ Companion files (read on demand, not up front):
 ```bash
 node agents/skills/doc-sync/status.mjs            # every tracked upstream
 node agents/skills/doc-sync/status.mjs keiro keiki   # just these
+node agents/skills/doc-sync/status.mjs runtime-patterns --json # imported and completed review
+# Invocations: $doc-sync sync runtime-patterns; $doc-sync register runtime-patterns
 ```
 
 For each library it prints the pinned SHA, upstream `HEAD`, commits behind, changed-file stats, and

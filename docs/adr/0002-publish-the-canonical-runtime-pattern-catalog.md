@@ -14,7 +14,7 @@ Generate every concept from one validated committed Git tree. Keep raw bytes, co
 
 Keep normative corrections in the owner. Source controls show its canonical identity and full commit; offer a repository link only when actual metadata supplies one. Treat imported Markdown as data, never executable JSX. Convert Markdown syntax through its parsed tree, retaining code and literal text.
 
-Supplementary diagrams and product links are site-owned. Bind visual assessments and diagram reviews to material concept hashes. Include the body, applicability, assessment criteria, and status; exclude review-only metadata and the importing commit. A changed material hash requires an actual review. Unrelated commits must not invalidate drawings.
+Supplementary diagrams and product links are site-owned. Bind visual assessments and diagram reviews to material concept hashes. Include the body, applicability, assessment criteria, and status; exclude review-only metadata and the importing commit. A changed material hash requires an actual review. Unrelated commits must not invalidate drawings. Record the reviewed asset hash as well, so an edited drawing requires renewed inspection. Maintain at least 18 new useful pattern drawings; equivalent existing assets may be explicitly reused without counting toward that baseline. Narrow expanded diagrams retain readable native size with horizontal scrolling.
 
 Keep historical and candidate source claims visible and qualified. The Language 6 product policy in [ADR 1](0001-initial-release-scope-and-technical-writing.md) still applies to local guidance. Only source bodies verified against deterministic snapshot generation may retain historical examples and upstream editorial wording. Flags alone cannot exempt prose.
 
@@ -22,7 +22,7 @@ The completed publication pointer must match the imported commit after all sourc
 
 ## Consequences
 
-Every committed concept is discoverable through navigation, search, and Markdown export. Source gaps and stale upstream reviews remain evidence rather than implied approval. Review records distinguish faithful publication from source release certification.
+Every committed concept is discoverable through navigation, search, and Markdown export. Export uses a dedicated splat endpoint and plain-text artifact extension, avoiding executable MDX and development-server Markdown module interception. Source gaps and stale upstream reviews remain evidence rather than implied approval. Review records distinguish faithful publication from source release certification.
 
 Generated files are outputs. Refresh validates staged coverage and links before replacement, rejects human collisions or edited output, and removes only recorded generated files. Renames retain identity and a route stub; removed concepts retain a labeled historical route when previously published.
 

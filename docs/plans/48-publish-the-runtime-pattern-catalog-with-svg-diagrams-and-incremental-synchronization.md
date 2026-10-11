@@ -44,13 +44,17 @@ The site reveals the standards agents can use. It does not prove that an agent f
 - [x] (2026-10-11 23:40Z) Establish ownership and release-scope decisions; inventory the committed catalog, profile, and scoped logs.
 - [x] (2026-10-11 23:40Z) Implement deterministic snapshot import, generation, coverage checks, and meaningful failure tests.
 - [ ] Publish every concept with navigation, search, provenance, supplied criteria, Markdown export, and audit guidance.
-- [ ] Assess the complete catalog for visual explanations and record diagram or text-only decisions.
-- [ ] Add at least 18 useful SVG explanations in three batches and enforce their relationship to reviewed source content.
+- [x] (2026-10-11 23:53Z) Assess the complete catalog for visual explanations and record diagram or text-only decisions.
+- [x] (2026-10-11 23:53Z) Add at least 18 useful SVG explanations in three batches and enforce their relationship to reviewed source content.
 - [ ] Extend doc-sync and its companions, register the initial reviewed pointer, and demonstrate incremental synchronization.
 - [ ] Pass the release gate, inspect browser and diagram previews, and distill durable decisions into ADRs.
 
 
 ## Surprises & Discoveries
+
+Browser review exposed an existing nested Markdown export 404: `{$}.md` is not a splat route. A dedicated `/api/markdown/$` route handles nested paths. Vite intercepts `.md` source requests even with a valid route; `.txt` with a plain-text MIME type works for the browser view and copy controls and preserves Markdown content. No dependency change was needed.
+
+Phone-width expansion originally shrank SVG labels too far. Expanded diagrams now retain native SVG width with horizontal scrolling on narrow screens. Desktop expansion remains bounded to the viewport.
 
 
 The committed owner check confirms 88 concepts, despite the smaller registered DocRef listing. Validation runs in a temporary tree because the owner regenerates indexes. Owner ADR-6 changed in commit `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e`; it is the selected publication target.
@@ -75,6 +79,10 @@ On 2026-10-11, include doc-sync changes as implementation work. Do not register 
 
 
 ## Outcomes & Retrospective
+
+Visual review covers all 88 canonical resources. The three six-asset batches plus configuration precedence provide 19 new SVGs; two existing evolution/upcaster diagrams are explicitly bound and reused without counting toward the new baseline. Every selected drawing was rendered in both themes; timer park/expiry and outbox boundaries were rerouted after clipping/arrow review. Desktop and phone expansion were inspected for each batch. Per-concept text-only reasons, source hashes, actor/time, and diagram asset hashes are recorded in `docs/patterns/presentation.json`.
+
+Twelve focused fixtures pass: committed-only deterministic import, unknown metadata and supplied criteria, nested logs, inventory integrity, inert MDX including imports/exports, staging preservation, human collisions, material-change review invalidation, unrelated/review-only retention, complete-section retirement, prose quotation integrity, pointer status, unavailable sources, and divergent or failed Git comparisons. Full gate and final pointer remain pending.
 
 
 Ownership and deterministic import are implemented. Publication review records committed inventory, scoped evidence, profile digest, and source qualification gaps. Remaining work is the complete visual review, doc-sync integration, and release/browser validation.
@@ -287,3 +295,5 @@ Revision note (2026-10-11): Linked the user-supplied intention in frontmatter an
 Revision note (2026-10-11): Expanded visual scope from six to at least 18 SVG explanations in three batches, added a full-catalog visual-needs review with text-only decisions, and updated synchronization, progress, and acceptance requirements. The user requested broader useful coverage without a diagram for every pattern.
 
 Revision note (2026-10-11): Implemented ownership and committed-tree import, recorded inventory evidence, and added failure and incremental synchronization fixtures.
+
+Revision note (2026-10-11 23:53Z): complete the visual assessment inventory, add configuration and equivalent reused illustrations, record responsive and Markdown-export findings, and implement independent generated-source synchronization/status fixtures.

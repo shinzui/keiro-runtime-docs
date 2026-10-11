@@ -167,13 +167,15 @@ test("Markdown-sensitive literals compile as inert text, with code, tables, link
     f.repo,
     "runtime-patterns/test/rule.md",
     concept(
-      "# Rule\n\n## Boundary\n\nLiteral {danger()} and <Type<T>>.\n\n<script>alert(1)</script>\n\n```haskell\nx = {field = 1}\n```\n\n| Name | Meaning |\n| --- | --- |\n| x | literal |\n\n[Self](#boundary) [History](log.md) [Subject](index.md)\n",
+      "# Rule\n\n## Boundary\n\nLiteral {danger()} and <Type<T>>.\n\nimport danger from 'bad'\n\nexport const dangerous = {run: danger()}\n\n<script>alert(1)</script>\n\n```haskell\nx = {field = 1}\n```\n\n| Name | Meaning |\n| --- | --- |\n| x | literal |\n\n[Self](#boundary) [History](log.md) [Subject](index.md)\n",
     ),
   )
   const s = f.get(commit(f.repo))
   const page = generate(s, { assessments: {}, diagrams: {} }).get(base + "test/rule.mdx")
   await compile(page.replace(/^---\n[\s\S]*?\n---\n/, ""))
   assert.ok(page.includes("&#123;danger()&#125;"))
+  assert.ok(page.includes("&#105;mport danger"))
+  assert.ok(page.includes("&#101;xport const"))
   assert.ok(page.includes("&lt;script&gt;"))
   assert.ok(page.includes("x = {field = 1}"))
   assert.ok(page.includes("/docs/runtime-patterns/test/rule#boundary"))
@@ -273,7 +275,7 @@ test("rename retains identity and prior route; deletion cleans normative output 
   rmSync(join(f.repo, "runtime-patterns/test/renamed.md"))
   file(
     f.repo,
-    "runtime-patterns/test/remaining.md",
+    "runtime-patterns/remaining.md",
     concept("# Remaining\n", "mori://shinzui/keiro-runtime-patterns/docs/remaining"),
   )
   const removed = f.get(commit(f.repo))
@@ -281,4 +283,31 @@ test("rename retains identity and prior route; deletion cleans normative output 
   refresh(f.site, removed)
   assert.match(readFileSync(join(f.site, base, "test/renamed.mdx"), "utf8"), /owner removed/)
   assert.equal(check(f.site).issues.length, 0)
+})
+
+test("quotation exemptions require verified bytes and leave local captions subject to prose rules", async (t) => {
+  const { patternProse } = await import("./lib/pattern-prose.mjs")
+  const { analyzeMdx } = await import("./doc-prose.mjs")
+  const f = fixture(t),
+    s = f.get(),
+    p = approve(f.site, s, { diagram: true })
+  p.diagrams["test/boundary"].caption = "See the gotchas."
+  const outputs = generate(s, p),
+    key = base + "test/rule.mdx",
+    original = outputs.get(key)
+  const good = patternProse(key, original, s, p, outputs)
+  assert.equal(good.findings.length, 0)
+  assert.ok(analyzeMdx(good.prose).some((x) => x.severity === "error"))
+  const forged = patternProse(key, original + "\nsourceQuotation: true\n", s, p, outputs)
+  assert.equal(forged.findings[0].rule, "source-quotation-integrity")
+  const ordinary = patternProse(
+    "content/docs/local.mdx",
+    "sourceQuotation: true\n\nSee the gotchas.",
+    s,
+    p,
+    outputs,
+  )
+  assert.ok(analyzeMdx(ordinary.prose).some((x) => x.severity === "error"))
+  refresh(f.site, s)
+  assert.throws(() => check(f.site, { minimumDiagrams: 18 }), /baseline requires/)
 })

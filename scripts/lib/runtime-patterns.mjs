@@ -139,6 +139,7 @@ export function reviewIssues(snapshot, presentation) {
   }
   for (const [id, d] of Object.entries(presentation.diagrams ?? {})) {
     safePath(id)
+    if (d.asset) safePath(d.asset)
     if (
       !d.alt ||
       !d.caption ||
@@ -219,6 +220,10 @@ export function markdownData(raw, path, snapshot) {
           return state
             .safe(node.value, info)
             .replace(
+              /^(import|export)(?=\s)/gm,
+              (word) => `&#${word.charCodeAt(0)};${word.slice(1)}`,
+            )
+            .replace(
               /\\?[{}<>]/g,
               (ch) => ({ "{": "&#123;", "}": "&#125;", "<": "&lt;", ">": "&gt;" })[ch.at(-1)],
             )
@@ -243,7 +248,7 @@ export function provenanceText(snapshot, c) {
       result += `- **${k.id}** (${k.severity}; evidence: ${k.evidenceKind}): ${k.statement}\n`
     result += "\n"
   }
-  return result
+  return markdownData(result, c.path, snapshot)
 }
 export function conceptMarkdown(snapshot, c, presentation) {
   let body = markdownData(c.raw, c.path, snapshot)
@@ -255,11 +260,21 @@ export function conceptMarkdown(snapshot, c, presentation) {
     )
     if (!heading) throw new Error(`Diagram placement unavailable: ${id}`)
     const at = heading.position.end.offset
-    body = `${body.slice(0, at)}\n\nSupplementary explanation: ${d.caption}\n\n<Diagram src="runtime-patterns/${id}" alt=${JSON.stringify(d.alt)} caption=${JSON.stringify(d.caption)} />\n${body.slice(at)}`
+    body = `${body.slice(0, at)}\n\nSupplementary explanation: ${d.caption}\n\n<Diagram src="${d.asset ?? `runtime-patterns/${id}`}" alt=${JSON.stringify(d.alt)} caption=${JSON.stringify(d.caption)} />\n${body.slice(at)}`
   }
-  const links = presentation.assessments?.[c.resource]?.relatedPages ?? []
+  const assessment = presentation.assessments?.[c.resource]
+  const shared = (assessment?.diagrams ?? [])
+    .map((id) => [id, presentation.diagrams[id]])
+    .filter(([, d]) => d && d.placement.resource !== c.resource)
+    .map(([, d]) => {
+      const target = snapshot.concepts.find((x) => x.resource === d.placement.resource)
+      const anchor = headings(target.raw).find((h) => h.title === d.placement.heading).id
+      return `[${d.caption}](${route(target.path)}#${anchor})`
+    })
+  const links = assessment?.relatedPages ?? []
   return (
     provenanceText(snapshot, c) +
+    (shared.length ? `Related supplementary explanations: ${shared.join(", ")}.\n\n` : "") +
     (links.length
       ? `Related product pages: ${links.map((x) => `[${x.label}](${x.route})`).join(", ")}.\n\n`
       : "") +
@@ -294,6 +309,14 @@ export function generate(snapshot, presentation) {
       const parent = posix.dirname(dir) === "." ? "" : posix.dirname(dir)
       if (!dirs.has(parent)) dirs.set(parent, [])
       dir = parent
+    }
+  }
+  // Historical stubs keep their navigation even when an entire subject is removed.
+  for (const old of Object.keys(presentation.retiredRoutes ?? {})) {
+    let dir = posix.dirname(safePath(old))
+    while (dir !== ".") {
+      if (!dirs.has(dir)) dirs.set(dir, [])
+      dir = posix.dirname(dir)
     }
   }
   for (const [dir, pages] of [...dirs].sort()) {

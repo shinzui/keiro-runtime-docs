@@ -109,3 +109,7 @@ git -C "$REPO" status --porcelain                        # dirty? note it
 4. Add a row to `LIBRARIES.md`.
 5. `status.mjs` picks it up automatically — it globs `docs/*source-sync.md` and parses the mori name
    and SHA. Confirm with `node agents/skills/doc-sync/status.mjs <library>`.
+
+## Generated catalog boundary
+
+For `docs/runtime-patterns-source-sync.md`, retain the exact **Qualified name (mori)** and **Last reviewed commit** headings above. The full completed-review SHA must equal `docs/patterns/catalog.json`'s imported commit. Describe generated publication rather than manually ported source. Use full fixed SHAs in update commands. Review includes the complete concept inventory, scoped logs, graph, profile, declared owner watermarks and source gaps, every visual assessment, bound diagrams, and coupled product explanations. Only advance after the complete round and gates; an imported target with pending review leaves the old pointer intact and status reports it as unreviewed. Follow PATTERNS.md. This boundary does not advance the owner's library watermarks.
