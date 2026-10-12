@@ -1,20 +1,14 @@
-export function PatternProvenance({ resource, commit }: { resource: string; commit: string }) {
+import type { ReactNode } from "react"
+
+export function PatternProvenance({ children }: { children: ReactNode }) {
   return (
-    <aside
-      aria-label="Canonical source"
-      className="rounded-lg border bg-fd-muted/40 p-4 mb-6 text-sm"
-    >
-      <p className="font-medium">Versioned canonical source</p>
-      <p className="break-all">
-        <code>{resource}</code>
-      </p>
-      <p className="break-all">
-        Catalog revision: <code>{commit}</code>
-      </p>
-      <p>
-        Rules are maintained by the catalog owner. Supplementary explanations are maintained on this
-        site.
-      </p>
-    </aside>
+    <details className="pattern-provenance mb-6 rounded-lg border text-sm">
+      <summary className="cursor-pointer rounded-lg px-4 py-3 text-fd-muted-foreground hover:text-fd-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fd-ring">
+        Source details
+      </summary>
+      <div className="border-t px-4 py-3 wrap-anywhere [&>p:first-child]:mt-0 [&>p:last-child]:mb-0">
+        {children}
+      </div>
+    </details>
   )
 }

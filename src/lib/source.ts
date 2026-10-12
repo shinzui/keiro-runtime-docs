@@ -52,7 +52,7 @@ export async function getLLMText(page: (typeof source)["$inferPage"]) {
     processed = await page.data.getText("raw")
     processed = processed
       .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
-      .replace(/<PatternProvenance\b[^>]*\/>/g, "")
+      .replace(/<\/?PatternProvenance\b[^>]*>/g, "")
       .replace(/<Diagram\b[^>]*\/>/g, (markup) => {
         const alt = markup.match(/alt=("(?:[^"\\]|\\.)*")/)?.[1]
         const caption = markup.match(/caption=("(?:[^"\\]|\\.)*")/)?.[1]

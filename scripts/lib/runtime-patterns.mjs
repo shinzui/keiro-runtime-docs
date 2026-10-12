@@ -237,18 +237,47 @@ function fm(title, description, extra = "") {
 }
 export function provenanceText(snapshot, c) {
   const m = c.metadata
-  let result = `## Source and assessment evidence\n\nCanonical resource: \`${c.resource}\`.\n\nCatalog commit: \`${snapshot.commit}\` (${snapshot.commitDate}).\n\nConcept path: \`runtime-patterns/${c.path}\`. Type: **${m.type}**. Status: **${m.status}**.\n\nMaterial timestamp: ${m.timestamp ?? m.generated?.at ?? "not supplied"}. Source actor: \`${m.generated?.by ?? "not supplied"}\`.\n\n`
+  let result = `Catalog date: ${snapshot.commitDate}.\n\nConcept path: \`runtime-patterns/${c.path}\`. Type: **${m.type}**. Status: **${m.status}**.\n\nMaterial timestamp: ${m.timestamp ?? m.generated?.at ?? "not supplied"}. Source actor: \`${m.generated?.by ?? "not supplied"}\`.\n\n`
   for (const r of m.reviews ?? [])
-    result += `Review (${r.document_timestamp === m.timestamp ? "matches material revision" : "historical; does not match material revision"}):\n\n\`\`\`json\n${JSON.stringify(r, null, 2)}\n\`\`\`\n\n`
+    result += `**Review (${r.document_timestamp === m.timestamp ? "matches material revision" : "historical; does not match material revision"})**\n\n${evidenceFields(r)}\n`
   if (m.applicability)
-    result += `### Supplied applicability\n\n\`\`\`json\n${JSON.stringify(m.applicability, null, 2)}\n\`\`\`\n\n`
+    result += `**Supplied applicability**\n\n${evidenceFields(m.applicability)}\n`
   if (m.criteria?.length) {
-    result += `### Supplied assessment criteria\n\nPattern ID: \`${m.patternId}\`.\n\n`
+    result += `**Supplied assessment criteria**\n\nPattern ID: \`${m.patternId}\`.\n\n`
     for (const k of m.criteria)
       result += `- **${k.id}** (${k.severity}; evidence: ${k.evidenceKind}): ${k.statement}\n`
     result += "\n"
   }
-  return markdownData(result, c.path, snapshot) + (m.criteria?.length ? "\n" : "")
+  result +=
+    "\nThis is a versioned source quotation. Historical examples and candidate claims retain their original qualification. Rules are maintained by the catalog owner. Supplementary explanations are maintained on this site.\n"
+  return sourceDetails(snapshot, c.resource, markdownData(result, c.path, snapshot))
+}
+function evidenceFields(value, depth = 0) {
+  const indent = "  ".repeat(depth)
+  if (value && typeof value === "object") {
+    const entries = Array.isArray(value) ? value.map((item) => [null, item]) : Object.entries(value)
+    if (!entries.length) return `${indent}- None\n`
+    return entries
+      .map(([key, item], index) => {
+        const label =
+          key === null
+            ? item && typeof item === "object"
+              ? `**${item.project ?? `Entry ${index + 1}`}**:`
+              : ""
+            : `**${key
+                .replace(/([a-z])([A-Z])/g, "$1 $2")
+                .replace(/[_-]/g, " ")
+                .replace(/^./, (ch) => ch.toUpperCase())}**:`
+        if (item && typeof item === "object")
+          return `${indent}- ${label}\n${evidenceFields(item, depth + 1)}`
+        return `${indent}- ${label}${label ? " " : ""}${String(item ?? "Not supplied").replace(/\n/g, `\n${indent}  `)}\n`
+      })
+      .join("")
+  }
+  return `${indent}- ${String(value ?? "Not supplied")}\n`
+}
+function sourceDetails(snapshot, resource, body = "") {
+  return `<PatternProvenance>\n\nCanonical resource: \`${resource}\`.\n\nCatalog commit: \`${snapshot.commit}\`.\n\n${body}\n</PatternProvenance>\n\n`
 }
 export function conceptMarkdown(snapshot, c, presentation) {
   let body = markdownData(c.raw, c.path, snapshot)
@@ -278,7 +307,7 @@ export function conceptMarkdown(snapshot, c, presentation) {
     (links.length
       ? `Related product pages: ${links.map((x) => `[${x.label}](${x.route})`).join(", ")}.\n\n`
       : "") +
-    `## Canonical source quotation\n\nThis is a versioned source quotation. Historical examples and candidate claims retain their original qualification.\n\n${body}`
+    body
   )
 }
 export function generate(snapshot, presentation) {
@@ -298,9 +327,7 @@ export function generate(snapshot, presentation) {
         c.metadata.title,
         c.metadata.description,
         `patternResource: ${JSON.stringify(c.resource)}\n`,
-      ) +
-        `<PatternProvenance resource=${JSON.stringify(c.resource)} commit=${JSON.stringify(snapshot.commit)} />\n\n` +
-        conceptMarkdown(snapshot, c, presentation),
+      ) + conceptMarkdown(snapshot, c, presentation),
     )
     let dir = posix.dirname(path) === "." ? "" : posix.dirname(path)
     if (!dirs.has(dir)) dirs.set(dir, [])
@@ -330,7 +357,14 @@ export function generate(snapshot, presentation) {
     const prefix = base + (dir ? `${dir}/` : "")
     const title = dir ? dir.charAt(0).toUpperCase() + dir.slice(1) : "Runtime patterns"
     let body = fm(title, "Versioned canonical runtime standards, guides, and source evidence.")
-    body += `Read the canonical catalog at \`${bundle}\`. This presentation uses commit \`${snapshot.commit}\`.\n\n`
+    const evidence = !dir
+      ? markdownData(
+          `**Declared source review watermarks**\n\nThese are the owner's review declarations. They do not establish current dependency freshness. Import does not advance them.\n\n${evidenceFields(JSON.parse(snapshot.watermarks.raw))}`,
+          "index.md",
+          snapshot,
+        )
+      : ""
+    body += sourceDetails(snapshot, bundle, evidence)
     if (!dir)
       body += `The catalog contains **${snapshot.concepts.length} concepts**. Publication preserves source claims; it does not certify agent compliance.\n\nRead [the audit procedure](/docs/runtime-pattern-audit) and [scoped change history](/docs/runtime-patterns/history).\n\n`
     for (const s of sections)
@@ -344,8 +378,6 @@ export function generate(snapshot, presentation) {
         )
         .join("\n") +
       "\n"
-    if (!dir)
-      body += `\n## Declared source review watermarks\n\nThese are the owner's review declarations. They do not establish current dependency freshness. Import does not advance them.\n\n\`\`\`json\n${JSON.stringify(JSON.parse(snapshot.watermarks.raw), null, 2)}\n\`\`\`\n`
     put(prefix + "index.mdx", body)
     put(
       prefix + "meta.json",
