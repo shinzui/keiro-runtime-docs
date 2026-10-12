@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
 intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro overview, getting started, and the jitsurei example spine
@@ -42,7 +49,7 @@ site finds a real, accurate **foundation** for the **keiro** documentation set �
   repo.
 
 You can see the result by running the docs dev server from the repo root
-`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`: `pnpm dev` (which runs `vite dev`) and
+`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`: `bun run dev` (which runs `vite dev`) and
 browsing `http://localhost:3000/docs/keiro`. The keiro landing renders without the "coming
 soon" callout, shows a `<Cards>` index of the six sections, and renders a `mermaid` diagram
 of the stack and the command cycle; the sidebar carries a "What is keiro" essay, a "The
@@ -70,10 +77,10 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] M0. Preconditions verified — Node 22 + pnpm on PATH, `node_modules` present, the keiro
-      stub tree under `content/docs/keiro/` present, baseline `pnpm typecheck` clean,
-      `pnpm build` exits 0 on the current tree, and the keiro source is readable at the
-      pinned commit `3f5dc9c` (keiro `0.1.0.0`). _(2026-06-01: node v22.22.3, pnpm 11.4.0;
+- [x] M0. Preconditions verified — Node 22 + legacy package manager on PATH, `node_modules` present, the keiro
+      stub tree under `content/docs/keiro/` present, baseline `bun run typecheck` clean,
+      `bun run build` exits 0 on the current tree, and the keiro source is readable at the
+      pinned commit `3f5dc9c` (keiro `0.1.0.0`). _(2026-06-01: node v22.22.3, legacy-manager 11.4.0;
       baseline typecheck clean and build exits 0 with no crawler warnings; keiro `HEAD` =
       `3f5dc9c1…`, `keiro.cabal` version `0.1.0.0`.)_
 - [x] M1. Landing overwritten (`content/docs/keiro/index.mdx`, "in progress" callout
@@ -92,10 +99,10 @@ This section must always reflect the actual current state of the work.
       slugs appended. Shared conventions fixed (restated in this plan). _(2026-06-01: hub
       `<Cards>` ship without `href`s and `walkthrough/meta.json` lists only `index` — see
       Surprises & Discoveries / Decision Log for why the forward-links are deferred to EP-12.)_
-- [x] Final. `pnpm typecheck` clean; `pnpm build` exits 0 prerendering all new pages with
+- [x] Final. `bun run typecheck` clean; `bun run build` exits 0 prerendering all new pages with
       zero crawler warnings; every Haskell name in a snippet cross-checked against the pinned
       source; no relative `./`/`../` cross-links in the keiro tree. _(2026-06-01: typecheck
-      clean; build exits 0, no `unhandledRejection`/`Failed to fetch`; `pnpm lint:links` OK,
+      clean; build exits 0, no `unhandledRejection`/`Failed to fetch`; `bun run lint:links` OK,
       80 files, no broken internal links; relative-link grep clean; all Haskell names verified
       against the pinned source.)_
 
@@ -112,7 +119,7 @@ implementation. Provide concise evidence.
   EP-8 … EP-11 and do not exist yet. Building the hub that way exits 0 **but** the prerender
   crawler follows the `<Card href>`s and emits four `[unhandledRejection] Error: Failed to fetch
   …/00-start-here` lines, which violates EP-7's own Final acceptance ("zero crawler warnings").
-  Evidence: `pnpm build` log on 2026-06-01 showed exactly those four `Failed to fetch` lines; after
+  Evidence: `bun run build` log on 2026-06-01 showed exactly those four `Failed to fetch` lines; after
   dropping the `href`s and trimming `walkthrough/meta.json` to `["index"]`, the rebuild logged
   `OK: no crawler warnings`. Resolution (see Decision Log): EP-7 ships the hub `<Cards>` **without
   `href`s** and `walkthrough/meta.json` as `["index"]`; each Phase-2 plan appends its own subdir
@@ -209,8 +216,8 @@ Against the Purpose:
 - The Code Walkthrough hub exists; `docs/keiro-source-sync.md` pins commit `3f5dc9c`; the six shared
   authoring conventions are restated in this plan for EP-8 … EP-12 to cite.
 
-**Validation:** `pnpm typecheck` clean; `pnpm build` exits 0 prerendering every new page with zero
-`unhandledRejection`/`Failed to fetch` lines; `pnpm lint:links` OK (80 files, no broken internal
+**Validation:** `bun run typecheck` clean; `bun run build` exits 0 prerendering every new page with zero
+`unhandledRejection`/`Failed to fetch` lines; `bun run lint:links` OK (80 files, no broken internal
 links); no relative `./`/`../` cross-links under `content/docs/keiro/`; every `just jitsurei-*`
 target named is real in the keiro Justfile; every Haskell signature transcribed in §Context matches
 the source at `3f5dc9c`.
@@ -241,9 +248,9 @@ You are writing MDX content files under `content/docs/keiro/` in **this** reposi
 (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) plus one Markdown file at the repo-root
 docs directory (`docs/keiro-source-sync.md`). The site is a **fumadocs** documentation app
 (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static SPA** (React 19 + MDX,
-TypeScript, Tailwind, bundled with **Vite**), built and served with **pnpm** on **Node 22**.
-`pnpm dev` runs `vite dev` (port 3000); `pnpm build` runs `vite build` and emits a static SPA
-under `.output/public`; `pnpm typecheck` runs `fumadocs-mdx && tsc --noEmit`; `pnpm lint:links`
+TypeScript, Tailwind, bundled with **Vite**), built and served with **legacy package manager** on **Node 22**.
+`bun run dev` runs `vite dev` (port 3000); `bun run build` runs `vite build` and emits a static SPA
+under `.output/public`; `bun run typecheck` runs `fumadocs-mdx && tsc --noEmit`; `bun run lint:links`
 is the repo's link checker. MDX is compiled by fumadocs-mdx and rendered client-side.
 
 Content lives under `content/docs/`. Each directory has a `meta.json` whose `pages` array lists
@@ -615,8 +622,8 @@ runs the full acceptance checks.
 
 **M0 — Preconditions.** Confirm the toolchain and that the keiro stub tree is present, that the
 baseline builds, and that the keiro source is readable at the pinned commit. At the end you can
-run `pnpm dev` and browse the (placeholder) `/docs/keiro`. Acceptance: `pnpm typecheck` clean and
-`pnpm build` exits 0 *before* you add any content; `git -C <keiro> rev-parse HEAD` shows
+run `bun run dev` and browse the (placeholder) `/docs/keiro`. Acceptance: `bun run typecheck` clean and
+`bun run build` exits 0 *before* you add any content; `git -C <keiro> rev-parse HEAD` shows
 `3f5dc9c…`.
 
 **M1 — Landing + the two stack/positioning explanations.** Overwrite
@@ -656,8 +663,8 @@ slugs to `explanation/meta.json` and `tutorials/meta.json` (keeping `"index"`). 
 sidebar shows the new pages in the right sections, the walkthrough hub explains the ordered tours,
 and the source pointer exists. Acceptance: see Validation.
 
-**Final — Whole-set acceptance.** `pnpm typecheck` clean; `pnpm build` exits 0 prerendering the
-new pages with **zero** crawler warnings; `pnpm lint:links` passes; no relative `./`/`../`
+**Final — Whole-set acceptance.** `bun run typecheck` clean; `bun run build` exits 0 prerendering the
+new pages with **zero** crawler warnings; `bun run lint:links` passes; no relative `./`/`../`
 cross-link anywhere in `content/docs/keiro/`; every Haskell name used appears in the keiro
 source at the pinned commit.
 
@@ -665,21 +672,21 @@ source at the pinned commit.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The docs toolchain is **pnpm** on **Node 22**.
+stated otherwise. The docs toolchain is **legacy package manager** on **Node 22**.
 
 ### M0 — Preconditions
 
 ```bash
 node --version    # expect v22.x
-pnpm --version    # expect a pnpm 9/10/11 line
-test -d node_modules || pnpm install
+bun --version    # expect a legacy-manager 9/10/11 line
+test -d node_modules || bun install
 
 # the keiro stub tree must already exist (scaffolded by an earlier plan)
 test -f content/docs/keiro/index.mdx && test -f content/docs/keiro/meta.json && echo "keiro stubs present"
 
 # baseline must be green BEFORE you add content
-pnpm typecheck
-pnpm build
+bun run typecheck
+bun run build
 ```
 
 Expected (abridged):
@@ -1018,9 +1025,9 @@ reorder existing entries — EP-12 finalizes ordering):
 Then build and preview:
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm dev    # browse http://localhost:3000/docs/keiro
+bun run typecheck
+bun run build
+bun run dev    # browse http://localhost:3000/docs/keiro
 ```
 
 
@@ -1028,8 +1035,8 @@ pnpm dev    # browse http://localhost:3000/docs/keiro
 
 Exercise the system and observe specific behaviors:
 
-1. **The set builds and typechecks.** From the repo root, `pnpm typecheck` exits 0 (so the
-   generated `.source/` collection picks up the new pages) and `pnpm build` exits 0, emitting the
+1. **The set builds and typechecks.** From the repo root, `bun run typecheck` exits 0 (so the
+   generated `.source/` collection picks up the new pages) and `bun run build` exits 0, emitting the
    static SPA under `.output/public`. Expected tail (abridged):
 
    ```text
@@ -1041,7 +1048,7 @@ Exercise the system and observe specific behaviors:
    fetch` lines (those indicate a broken/relative cross-link):
 
    ```bash
-   pnpm build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: broken links" || echo "OK: no crawler warnings"
+   bun run build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: broken links" || echo "OK: no crawler warnings"
    ```
 
 3. **No relative cross-links in the keiro tree.** Every cross-page link is absolute:
@@ -1050,7 +1057,7 @@ Exercise the system and observe specific behaviors:
    grep -rnE "\]\(\.\.?/" content/docs/keiro && echo "FAIL: relative link present" || echo "OK: links absolute"
    ```
 
-4. **Renders in the sidebar.** Run `pnpm dev`, open `http://localhost:3000/docs/keiro`. The
+4. **Renders in the sidebar.** Run `bun run dev`, open `http://localhost:3000/docs/keiro`. The
    landing renders with **no** "in progress" callout, shows the six-section `<Cards>` index, and
    renders at least one `mermaid` diagram. The sidebar shows, under Explanation:
    "What is keiro?", "The keiro stack", "The jitsurei example"; under Tutorials: "Get started with
@@ -1093,8 +1100,8 @@ Exercise the system and observe specific behaviors:
 
 ## Idempotence and Recovery
 
-All steps are file authoring and are safe to repeat: re-running `pnpm typecheck`/`pnpm build`/
-`pnpm dev` is idempotent; editing or recreating an `.mdx`/`meta.json`/`.md` file simply overwrites
+All steps are file authoring and are safe to repeat: re-running `bun run typecheck`/`bun run build`/
+`bun run dev` is idempotent; editing or recreating an `.mdx`/`meta.json`/`.md` file simply overwrites
 it. No database, no app code, and no keiro source is modified by this plan (the keiro tree is
 opened read-only for cross-checking only).
 
@@ -1132,9 +1139,9 @@ Recovery:
 **Tooling / app (TypeScript, the docs site — TanStack Start static SPA):** fumadocs
 (`fumadocs-core`, `fumadocs-ui`, `fumadocs-mdx`) — MDX content + sidebar from `meta.json`;
 built-in components `Callout`, `Steps`, `Step`, `Cards`, `Card`, `Tabs`, `TypeTable`, `Mermaid`
-registered in `src/components/mdx.tsx`. TanStack Start + Vite — `pnpm dev` = `vite dev`;
-`pnpm build` = `vite build`; `pnpm typecheck` = `fumadocs-mdx && tsc --noEmit`; `pnpm lint:links`
-= the link checker. pnpm + Node 22.
+registered in `src/components/mdx.tsx`. TanStack Start + Vite — `bun run dev` = `vite dev`;
+`bun run build` = `vite build`; `bun run typecheck` = `fumadocs-mdx && tsc --noEmit`; `bun run lint:links`
+= the link checker. legacy package manager + Node 22.
 
 **Files this plan creates:**
 
@@ -1170,8 +1177,8 @@ lists the six sections + faq — leave it), `content/docs/keiro/{how-to,referenc
 
 **Postconditions / interfaces that must exist at the end:**
 
-- All five created files and all five overwritten files exist; the site builds (`pnpm build` exits
-  0) and typechecks (`pnpm typecheck` exits 0).
+- All five created files and all five overwritten files exist; the site builds (`bun run build` exits
+  0) and typechecks (`bun run typecheck` exits 0).
 - The keiro subtree renders in the sidebar with the new Explanation pages, the getting-started
   tutorial, and the Code Walkthrough hub.
 - Every Haskell name in a snippet is present in the keiro source at `3f5dc9c` (verified per
@@ -1181,3 +1188,5 @@ lists the six sections + faq — leave it), `content/docs/keiro/{how-to,referenc
 - `docs/keiro-source-sync.md` exists and pins `3f5dc9c` (step 7).
 - The six shared conventions (Context → "The shared conventions EP-7 fixes") are stated in this
   plan so EP-8 … EP-12 can cite EP-7.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

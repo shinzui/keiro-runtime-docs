@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-07-14T15:14:31Z
 intention: "intention_01kxgjsgnse1z9r0w141akd9g2"
 master_plan: "docs/masterplans/6-prepare-keiro-runtime-documentation-for-wider-announcement.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Refresh keiro orchestration delivery and operations reliability documentation
@@ -53,7 +60,7 @@ workflow snapshot failure does not undo durable journal progress.
   dispatch, Kiroku subscriptions, inbox, outbox, and timers. Formatting, MDX/types, production
   build/prerender, the 451-file internal-link scan, and focused stale-term scans passed.
 - [x] (2026-07-14T17:44:55Z) Run final EP-3 validation and record EP-4/EP-7 handoffs. The full
-  `pnpm run check` gate passed: MDX/types, lint (four pre-existing warnings), format, production
+  `bun run check` gate passed: MDX/types, lint (four pre-existing warnings), format, production
   build/prerender, and the 451-file internal-link scan. Focused rejection, sharding, replay,
   dead-letter telemetry, and post-commit snapshot scans covered reference, task, explanation,
   cookbook, FAQ, and walkthrough surfaces. EP-4 must emit the same disposition/store-error
@@ -269,9 +276,9 @@ rg -n 'replaySubscriptionDeadLetters|continueAsNew|snapshot.*failure|kirokuEvent
 After each milestone run:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 node scripts/check-doc-links.mjs
 git diff --check
 ```
@@ -298,7 +305,7 @@ rg -n 'post-commit|advisory snapshot|snapshot.write.failures' content/docs/keiro
 ```
 
 At least one task-oriented page, one reference page, and one explanation or walkthrough must cover
-each major delivery surface. Run `pnpm run typecheck`, `pnpm build`,
+each major delivery surface. Run `bun run typecheck`, `bun run build`,
 `node scripts/check-doc-links.mjs`, and `git diff --check`. Record the reviewed SHA, affected pages,
 and handoffs to EP-4 and EP-7 in the living sections; do not advance `docs/keiro-source-sync.md`.
 
@@ -328,3 +335,5 @@ for command error terminology. Its worker policies are consumed by
 source-pointer updates belong to plans 45 and 46. The completed documentation interface is a
 consistent set of task and reference pages where delivery outcomes, durable records, acknowledgement
 points, retries, and telemetry use the same names everywhere.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

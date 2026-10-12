@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-05-30T20:05:53Z
 intention: "intention_01ksx5mf7qe2ht659e4kr9w2t0"
 master_plan: "docs/masterplans/1-keiro-runtime-docs-infrastructure-and-kiroku-foundation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Documentation information architecture and authoring system
@@ -58,8 +65,8 @@ recipes), **Code Walkthrough** (an ordered tour that reads the real source code)
 **FAQ** (frequently asked questions), and **Theory** (deeper conceptual/mathematical
 essays, which live inside Explanation).
 
-You can **see it working** by running the Vite dev server (`pnpm dev`) — or by building
-the static SPA (`pnpm build`) and serving it (`pnpm start`) — and opening
+You can **see it working** by running the Vite dev server (`bun run dev`) — or by building
+the static SPA (`bun run build`) and serving it (`bun run start`) — and opening
 `http://localhost:3000/docs` in a browser. MDX is compiled at build time and rendered
 **client-side** (the docs route hydrates and renders the page through
 `useMDXComponents()`). The left sidebar shows the products (getting-started, kiroku,
@@ -92,7 +99,7 @@ This section must always reflect the actual current state of the work.
 - [x] Milestone 7 — Create the templates library under `content/docs/_templates/` (one MDX per doc type) and exclude it from navigation. Eight templates; absent from every `meta.json` `pages`, so 0 nav pages prerendered. _(2026-05-30)_
 - [x] Milestone 8 — Write the authoring/style/contribution guide page under `getting-started/contributing.mdx`. Full guide incl. per-type voice, naming, where-each-type-lives table, code/diagram conventions, and the ordered "how to add a new page" checklist. _(2026-05-30)_
 - [x] Milestone 9 — Add the top-level navigation taxonomy (`links`) to `baseOptions()` in `src/lib/layout.shared.tsx` (now that the target sections exist). Six `{ text, url }` items; all targets resolve, so the prerender crawl succeeds. _(2026-05-30)_
-- [x] Milestone 10 — Run the full verification (`pnpm build` + `pnpm start` sidebar and nav inspection) and record evidence. `pnpm typecheck` clean; `pnpm build` prerenders 86 pages (42 docs HTML) with no errors and no dead-link crawl failures; `pnpm start` serves 12/12 representative routes 200; `_templates` produces 0 nav pages. Visual sidebar/nav ordering confirmation is a light browser pass (see Surprises). _(2026-05-30)_
+- [x] Milestone 10 — Run the full verification (`bun run build` + `bun run start` sidebar and nav inspection) and record evidence. `bun run typecheck` clean; `bun run build` prerenders 86 pages (42 docs HTML) with no errors and no dead-link crawl failures; `bun run start` serves 12/12 representative routes 200; `_templates` produces 0 nav pages. Visual sidebar/nav ordering confirmation is a light browser pass (see Surprises). _(2026-05-30)_
 
 
 ## Surprises & Discoveries
@@ -103,7 +110,7 @@ implementation. Provide concise evidence.
 - **Unquoted frontmatter `description` containing `": "` breaks the YAML parse.** The
   first draft of the four `reference/index.mdx` files had
   `description: Information-oriented facts: the APIs, …`. The colon-space in "facts: the"
-  made js-yaml read it as a nested mapping → `pnpm build` failed with
+  made js-yaml read it as a nested mapping → `bun run build` failed with
   `YAMLException: bad indentation of a mapping entry (2:40)` on all four reference
   landings. Fix: reword to use an em-dash ("facts —") **and** quote the value. Lesson for
   #5's authors and #6's CI: frontmatter `title`/`description` should be quoted whenever
@@ -229,8 +236,8 @@ architecture plus a templates library and a written authoring guide — exactly 
 - **Navigation:** the top-level `links` taxonomy added to `baseOptions()` last, after every
   target landing existed, so the static-SPA `crawlLinks` prerender passes cleanly.
 
-**Evidence:** `pnpm typecheck` clean; `pnpm build` prerenders 86 pages (42 docs HTML) with no
-errors and no dead-link failures; `pnpm start` serves 12/12 representative routes 200;
+**Evidence:** `bun run typecheck` clean; `bun run build` prerenders 86 pages (42 docs HTML) with no
+errors and no dead-link failures; `bun run start` serves 12/12 representative routes 200;
 `_templates` yields 0 nav pages; all 8 templates compile (proving the component registration).
 
 **Gaps / follow-ups (for #6):** (1) templates are excluded from the *sidebar* but still appear
@@ -288,9 +295,9 @@ defaults — nothing breaks.
 - **TanStack Start / Vite / static SPA** — TanStack Start is the React framework hosting
   the app; Vite is its bundler and dev server. The app is configured as a **static SPA**
   (`vite.config.ts` → `tanstackStart({ spa: { enabled: true, prerender: { enabled: true,
-  crawlLinks: true } } })`): `pnpm build` emits a fully static site under
-  `.output/public` that needs no running server. The dev server is `pnpm dev`; the built
-  site is served with `pnpm start`. MDX pages are compiled at build time and rendered
+  crawlLinks: true } } })`): `bun run build` emits a fully static site under
+  `.output/public` that needs no running server. The dev server is `bun run dev`; the built
+  site is served with `bun run start`. MDX pages are compiled at build time and rendered
   **client-side** by the docs route `src/routes/docs/$.tsx`, which calls
   `useMDXComponents()` from `src/components/mdx.tsx`.
 
@@ -1146,7 +1153,7 @@ exist (a dead link would fail or produce empty prerendered HTML). Therefore add 
 (`/docs/getting-started`, `/docs/kiroku`, `/docs/keiro`, `/docs/keiki`,
 `/docs/shibuya`, `/docs/integrations`). Each `url` above must resolve to a real
 `index.mdx` by the time you add it — which is why this is Milestone 9, after the content
-tree is in place. If a `pnpm build` fails or warns about a link that cannot be crawled,
+tree is in place. If a `bun run build` fails or warns about a link that cannot be crawled,
 the corresponding `content/docs/<segment>/index.mdx` is missing; create it (or remove the
 link) and rebuild.
 
@@ -1224,7 +1231,7 @@ looks broken. Guidance per landing:
 inside any MDX page, the file still contains everything the scaffold and any Mermaid work
 added (the `...defaultMdxComponents` spread, the trailing `...components` override, the
 `useMDXComponents` re-export, and the `MDXProvidedComponents` global), and the site
-builds. Commands: from the repo root, `pnpm build` (or `pnpm dev` and load a page).
+builds. Commands: from the repo root, `bun run build` (or `bun run dev` and load a page).
 Acceptance: build succeeds; a page using `<Callout>` renders without an "unknown
 component" error.
 
@@ -1232,7 +1239,7 @@ component" error.
 `content/docs/index.mdx` and `content/docs/meta.json` with the family landing page and
 the root `meta.json` from the reference above. At the end the docs **sidebar** shows the
 seven top-level entries in order. (The top **navigation bar** links come later, in
-Milestone 9.) Acceptance: `pnpm dev`, open `http://localhost:3000/docs`, see the family
+Milestone 9.) Acceptance: `bun run dev`, open `http://localhost:3000/docs`, see the family
 landing and the seven-item sidebar.
 
 **Milestone 3 — getting-started.** Scope: create the `getting-started/` folder with its
@@ -1267,8 +1274,8 @@ the per-type voice rules.
 above). This must come after Milestones 2–6 so every `links` target
 (`/docs/getting-started`, `/docs/kiroku`, `/docs/keiro`, `/docs/keiki`,
 `/docs/shibuya`, `/docs/integrations`) resolves to a real `index.mdx` — otherwise the
-static-SPA prerenderer's `crawlLinks` would follow a dead link. Acceptance: `pnpm build`
-succeeds (no dead-link crawl failures); `pnpm start` (or `pnpm dev`), open
+static-SPA prerenderer's `crawlLinks` would follow a dead link. Acceptance: `bun run build`
+succeeds (no dead-link crawl failures); `bun run start` (or `bun run dev`), open
 `http://localhost:3000/docs`, and see the six links in the top navigation bar, each
 landing on its product/section.
 
@@ -1280,14 +1287,14 @@ inspect both the top navigation and the sidebar. Acceptance: see the Validation 
 
 All commands run from the repository root
 `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless stated. The package manager
-is **pnpm** and Node is **22**, both provided by the repo's **Nix dev shell**. Enter the
+is **legacy package manager** and Node is **22**, both provided by the repo's **Nix dev shell**. Enter the
 shell first so the toolchain is on `PATH`:
 
 ```bash
 nix develop
 ```
 
-Run all subsequent `pnpm` commands inside that shell.
+Run all subsequent `legacy package manager` commands inside that shell.
 
 1. Confirm the scaffold is present (this plan depends on it). Expect to see the files:
 
@@ -1301,8 +1308,8 @@ Run all subsequent `pnpm` commands inside that shell.
 2. Install dependencies if you have not already, then confirm the dev server runs:
 
    ```bash
-   pnpm install
-   pnpm dev
+   bun install
+   bun run dev
    ```
 
    Expected transcript (abridged; exact wording depends on the Vite/TanStack Start
@@ -1327,8 +1334,8 @@ Run all subsequent `pnpm` commands inside that shell.
 4. Verify Milestone 1 by type-checking and building:
 
    ```bash
-   pnpm run typecheck
-   pnpm build
+   bun run typecheck
+   bun run build
    ```
 
    Expected: `typecheck` (which runs `fumadocs-mdx && tsc --noEmit`) reports no errors,
@@ -1415,9 +1422,9 @@ Run all subsequent `pnpm` commands inside that shell.
 13. **Milestone 10.** Build the static SPA and verify (see Validation):
 
     ```bash
-    pnpm run typecheck
-    pnpm build
-    pnpm start
+    bun run typecheck
+    bun run build
+    bun run start
     ```
 
 
@@ -1429,7 +1436,7 @@ every template builds. Run these inside the Nix dev shell (`nix develop`).
 1. **The static SPA builds with the full tree.** From the repo root:
 
    ```bash
-   pnpm build
+   bun run build
    ```
 
    Expected: a successful `vite build` with no MDX parse errors and no "unknown
@@ -1444,10 +1451,10 @@ every template builds. Run these inside the Nix dev shell (`nix develop`).
    SPA (or use the dev server) and open the docs:
 
    ```bash
-   pnpm start
+   bun run start
    ```
 
-   (`pnpm start` serves `.output/public`; alternatively `pnpm dev` runs the Vite dev
+   (`bun run start` serves `.output/public`; alternatively `bun run dev` runs the Vite dev
    server. Either way the page is at `http://localhost:3000/docs`.) Then check:
 
    - The **top navigation bar** lists the six links added in Milestone 9: **Getting
@@ -1474,7 +1481,7 @@ every template builds. Run these inside the Nix dev shell (`nix develop`).
    cp content/docs/_templates/tutorial.mdx content/docs/kiroku/tutorials/sample.mdx
    ```
 
-   Add `"sample"` to `content/docs/kiroku/tutorials/meta.json` `pages`, run `pnpm dev`,
+   Add `"sample"` to `content/docs/kiroku/tutorials/meta.json` `pages`, run `bun run dev`,
    open `http://localhost:3000/docs/kiroku/tutorials/sample`, and confirm the `<Steps>`
    and `<Callout>` render. Then delete the copy and revert the `meta.json` line:
 
@@ -1489,7 +1496,7 @@ every template builds. Run these inside the Nix dev shell (`nix develop`).
    `typecheck` = `fumadocs-mdx && tsc --noEmit`):
 
    ```bash
-   pnpm run typecheck
+   bun run typecheck
    ```
 
    Expected: no type errors. (`fumadocs-mdx` regenerates the `.source/` collection from
@@ -1511,10 +1518,10 @@ names the duplicate and you remove the extra line; always keep the trailing
 any step, delete the files you created (or `git checkout -- <path>` to restore a tracked
 file). Because nothing here touches application data, a database, or any external
 service, there is no destructive operation to guard against. If the dev server shows a
-stale tree after large changes, stop it and restart `pnpm dev`; if the generated
+stale tree after large changes, stop it and restart `bun run dev`; if the generated
 fumadocs collection seems out of date, delete the generated `.source/` directory (it is
-regenerated by `fumadocs-mdx` on the next `pnpm install` postinstall, `pnpm run
-typecheck`, or `pnpm build`) and rebuild.
+regenerated by `fumadocs-mdx` on the next `bun install` postinstall, `bun run
+typecheck`, or `bun run build`) and rebuild.
 
 
 ## Interfaces and Dependencies
@@ -1567,10 +1574,9 @@ by path; do not assume their internal details beyond what is stated here.
   the "Shared MDX UI components" subsection; if a path differs in the installed version,
   resolve it against the installed package, not from memory.
 
-- **pnpm + Node 22 (Nix dev shell)** — the toolchain, provided by the repo's Nix dev
-  shell (enter with `nix develop`). Commands used here: `pnpm install`, `pnpm dev` (`vite
-  dev`), `pnpm build` (`vite build`, emits the static SPA to `.output/public`), `pnpm
-  start` (`serve .output/public`), and `pnpm run typecheck` (`fumadocs-mdx && tsc
+- **legacy package manager + Node 22 (Nix dev shell)** — the toolchain, provided by the repo's Nix dev
+  shell (enter with `nix develop`). Commands used here: `bun install`, `bun run dev` (`vite
+  dev`), `bun run build` (`vite build`, emits the static SPA to `.output/public`), `bun run start` (`serve .output/public`), and `bun run typecheck` (`fumadocs-mdx && tsc
   --noEmit`). This plan does not modify `package.json`. The build is a **static SPA**
   (`tanstackStart({ spa: … })` in `vite.config.ts`); there is no Next.js App Router and
   no `next build`.
@@ -1616,9 +1622,9 @@ templates, and the authoring/style guide are all unchanged). Key changes:
     (`tanstackStart({ spa: { prerender: { crawlLinks: true } } })` in `vite.config.ts`)
     crawls links — the scaffold intentionally shipped only the title to avoid crawling
     dead links. The old verification milestone is now Milestone 10.
-  - Commands: `next dev`/`next build` → **`pnpm dev`** (`vite dev`) / **`pnpm build`**
-    (`vite build`, static SPA in `.output/public`) / **`pnpm start`** (serve the built
-    SPA); type check is **`pnpm run typecheck`** (`fumadocs-mdx && tsc --noEmit`), not
+  - Commands: `next dev`/`next build` → **`bun run dev`** (`vite dev`) / **`bun run build`**
+    (`vite build`, static SPA in `.output/public`) / **`bun run start`** (serve the built
+    SPA); type check is **`bun run typecheck`** (`fumadocs-mdx && tsc --noEmit`), not
     `next typegen`. All commands run inside the Nix dev shell (`nix develop`).
   - Rendering note: MDX renders **client-side** via the docs route `src/routes/docs/$.tsx`
     (fumadocs client loader + `useMDXComponents()`).
@@ -1628,3 +1634,5 @@ templates, and the authoring/style guide are all unchanged). Key changes:
   - The `content/docs/**` tree, all `meta.json` files, the eight page templates' bodies,
     the landing-page guidance, and the authoring/style guide content are framework-
     agnostic and were left intact. The YAML frontmatter was preserved unchanged.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

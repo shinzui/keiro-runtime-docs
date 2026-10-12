@@ -5,6 +5,13 @@ title: "Document the keiro-runtime-jitsurei example application"
 kind: exec-plan
 created_at: 2026-06-08T04:21:29Z
 intention: "intention_01ksx5mf7qe2ht659e4kr9w2t0"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Document the keiro-runtime-jitsurei example application
@@ -47,7 +54,7 @@ Hospital Capacity drains reservation work through a `keiro-pgmq` job queue.
   individual subsystem pages (e.g. the pgmq job pages) into the place where that subsystem is
   used by a real service.
 
-**Observable outcome.** `pnpm run typecheck`, `pnpm run lint:links`, and `pnpm run build` all
+**Observable outcome.** `bun run typecheck`, `bun run lint:links`, and `bun run build` all
 pass with the new section in place; the new `example-app` entry appears in the top-level
 sidebar; every internal cross-link resolves; and the dev server renders each new page with its
 Haskell code blocks highlighted and its Mermaid diagrams interactive.
@@ -141,7 +148,7 @@ implementation. Provide concise evidence.
   (`oxfmt-mdx-baseline-not-clean`), `oxfmt --check` already fails across the existing MDX tree;
   do **not** run `oxfmt --write` over the docs to "fix" it (it would reflow neighbors). Match
   the formatting style of neighboring `content/docs/keiro/walkthrough/**` pages by hand. The
-  reliable gates for this work are `pnpm run typecheck`, `pnpm run lint:links`, and `pnpm run
+  reliable gates for this work are `bun run typecheck`, `bun run lint:links`, and `bun run
   build`. (See Validation and Acceptance.)
 
 
@@ -226,12 +233,12 @@ transcribed from the app at `04420ed`, at least one keiro cross-link, and (where
 state) embedded Keiki/Mermaid diagrams.
 
 **Final gate (M6).**
-- `pnpm run typecheck` — **pass**.
-- `pnpm run lint` (oxlint) — **pass** (only pre-existing warnings in `src/`, exit 0).
-- `pnpm run build` — **pass** (all new pages prerendered).
-- `pnpm run lint:links` (`check-doc-links.mjs` over 375 files + linkinator over the built site) —
+- `bun run typecheck` — **pass**.
+- `bun run lint` (oxlint) — **pass** (only pre-existing warnings in `src/`, exit 0).
+- `bun run build` — **pass** (all new pages prerendered).
+- `bun run lint:links` (`check-doc-links.mjs` over 375 files + linkinator over the built site) —
   **pass**, no broken internal links.
-- `pnpm run format:check` (oxfmt) — **fail, as expected**: 322 of 467 files report format issues.
+- `bun run format:check` (oxfmt) — **fail, as expected**: 322 of 467 files report format issues.
   This is the **pre-existing baseline** (repo memory `oxfmt-mdx-baseline-not-clean`), not a
   regression from this work — the hand-authored MDX tree already failed `oxfmt --check` before this
   plan, and per the plan it was deliberately not reformatted. The binding gates are typecheck,
@@ -372,7 +379,7 @@ M1 inserts `"example-app"` into this `pages` array (placement decided in M1 — 
 
 The work is six milestones. Milestones M2–M5 are independent (different directories) and may be
 done in any order after M1; M6 is last. Every milestone ends green on
-`pnpm run typecheck && pnpm run lint:links && pnpm run build` (run from the repo root). Commit
+`bun run typecheck && bun run lint:links && bun run build` (run from the repo root). Commit
 at the end of each milestone (and more often within) with an `ExecPlan:` and `Intention:`
 trailer (see Concrete Steps).
 
@@ -532,8 +539,8 @@ landing page and a four-page `overview/`. All directory links resolve (every dir
     procedure" (diff `04420ed..HEAD` in the app repo; the app keeps its own `docs/plans` +
     `docs/masterplans` — read those for intent).
 
-**Acceptance.** From repo root: `pnpm run typecheck && pnpm run lint:links && pnpm run build`
-all pass. `pnpm dev` shows `keiro-runtime-jitsurei` in the sidebar with Overview expanded to
+**Acceptance.** From repo root: `bun run typecheck && bun run lint:links && bun run build`
+all pass. `bun run dev` shows `keiro-runtime-jitsurei` in the sidebar with Overview expanded to
 four pages; the landing diagram renders; all `<Cards>` links resolve.
 
 ### Milestone 2 — Incident Command walkthrough
@@ -720,14 +727,14 @@ exists) a short expected transcript.
 3. **Source-sync cross-reference.** In `docs/keiro-source-sync.md`, where it already mentions
    `keiro-runtime-jitsurei` (the EP-3 hospital-capacity consumer migration note), add a pointer
    to the new `docs/keiro-runtime-jitsurei-source-sync.md`.
-4. **Full gate.** Run `pnpm run check` (typecheck → lint → format:check → build → lint:links).
+4. **Full gate.** Run `bun run check` (typecheck → lint → format:check → build → lint:links).
    Expect `format:check` (oxfmt) to report pre-existing failures across the MDX tree (see
    Surprises / repo memory) — that is the baseline, not a regression caused by this work; the
    binding gates are typecheck, lint:links, and build. Record the exact `format:check` outcome
    in Outcomes so the baseline is documented.
 5. Fill in **Outcomes & Retrospective**; flip all Progress boxes.
 
-**Acceptance.** `pnpm run typecheck`, `pnpm run lint:links`, `pnpm run build` all pass. The new
+**Acceptance.** `bun run typecheck`, `bun run lint:links`, `bun run build` all pass. The new
 section is reachable from the family/top page and from the pgmq pages. `git log` shows one
 commit per milestone (or finer), each with `ExecPlan:` + `Intention:` trailers.
 
@@ -760,17 +767,17 @@ transcribed Haskell block with a `-- services/.../X.hs` comment naming the sourc
 
 **3. Validate after each milestone** (fast inner loop):
 ```bash
-pnpm run typecheck     # fumadocs-mdx regen + tsc --noEmit
-pnpm run lint:links    # node scripts/check-doc-links.mjs + linkinator (build must exist for linkinator; see note)
-pnpm run build         # vite build -> .output/public
+bun run typecheck     # fumadocs-mdx regen + tsc --noEmit
+bun run lint:links    # node scripts/check-doc-links.mjs + linkinator (build must exist for linkinator; see note)
+bun run build         # vite build -> .output/public
 ```
-Note: `lint:links` runs `linkinator` over `.output/public`, so run `pnpm run build` first (or
+Note: `lint:links` runs `linkinator` over `.output/public`, so run `bun run build` first (or
 just run `node scripts/check-doc-links.mjs` for the source-level internal-link check during the
-inner loop, and the full `pnpm run lint:links` after a build).
+inner loop, and the full `bun run lint:links` after a build).
 
 **4. Preview visually** when a diagram or layout needs checking:
 ```bash
-pnpm dev   # then open the printed localhost URL and navigate to /docs/example-app
+bun run dev   # then open the printed localhost URL and navigate to /docs/example-app
 ```
 
 **5. Commit per milestone** (commit directly to `master` — no feature branch, per repo
@@ -794,7 +801,7 @@ Subsequent milestone commits use scopes like `docs(example-app)` /
 
 **6. Final gate (M6).**
 ```bash
-pnpm run check    # typecheck && lint && format:check && build && lint:links
+bun run check    # typecheck && lint && format:check && build && lint:links
 ```
 Record the `format:check` result (expected pre-existing oxfmt MDX failures) in Outcomes.
 
@@ -803,7 +810,7 @@ Record the `format:check` result (expected pre-existing oxfmt MDX failures) in O
 
 Acceptance is behavioral and link-exact, not "it compiled."
 
-1. **Navigation.** After M1, `pnpm dev` → the left sidebar shows a top-level
+1. **Navigation.** After M1, `bun run dev` → the left sidebar shows a top-level
    **`keiro-runtime-jitsurei`** entry (title from `meta.json`) at the end of the family list,
    expanding to Overview / Incident Command / Hospital Capacity / Cross-service integration /
    Running it. As M2–M5 land, each subsection expands to its chapters in the declared order.
@@ -811,9 +818,9 @@ Acceptance is behavioral and link-exact, not "it compiled."
    `/docs/example-app/...` and every cross-link to `/docs/keiro/...`, `/docs/keiki/...`,
    `/docs/pgmq/...`, `/docs/integrations/...` resolves to an existing `*.mdx` or `*/index.mdx`.
    This is the single most important gate (a typo in a doc path fails the build).
-3. **Build.** `pnpm run build` produces `.output/public` with each new page; `pnpm run
+3. **Build.** `bun run build` produces `.output/public` with each new page; `bun run
    lint:links` (linkinator over the built site) finds no broken links.
-4. **Types.** `pnpm run typecheck` passes (MDX frontmatter parses; no MDX/JSX syntax errors —
+4. **Types.** `bun run typecheck` passes (MDX frontmatter parses; no MDX/JSX syntax errors —
    e.g. unescaped `<`/`{` in prose, unclosed components).
 5. **Rendering (manual).** On the dev server: Haskell code blocks are syntax-highlighted;
    Mermaid diagrams render and are pan/zoom interactive; `<Callout>`, `<Cards>`, `<Steps>`,
@@ -826,7 +833,7 @@ Acceptance is behavioral and link-exact, not "it compiled."
    a canonical keiro doc, and (where it illustrates state) ≥1 diagram. `running-it/` commands are
    all real `just`/script recipes.
 
-**Known non-gate:** `pnpm run format:check` (oxfmt) fails on the pre-existing MDX baseline (repo
+**Known non-gate:** `bun run format:check` (oxfmt) fails on the pre-existing MDX baseline (repo
 memory `oxfmt-mdx-baseline-not-clean`). Do not reformat existing files to chase it; match
 neighbor style by hand. Document the baseline outcome rather than treating it as a regression.
 
@@ -905,3 +912,5 @@ scenarios: `mass-casualty-transfer`, `hospital-divert-reroute`, `supply-shortage
 **Build/validate dependencies** (already installed in this repo): `fumadocs-mdx`, `tsc`,
 `oxlint`, `oxfmt`, `vite`, `linkinator`, and `scripts/check-doc-links.mjs`. No new dependency is
 added by this plan.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

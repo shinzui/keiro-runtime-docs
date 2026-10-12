@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-15T19:08:21Z
 intention: intention_01kv6bpntyeh98ta4k2famkdm9
 master_plan: "docs/masterplans/4-refresh-keiro-and-kiroku-documentation-after-june-hardening.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Refresh Kiroku subscriptions adapter observability and metrics documentation
@@ -72,7 +79,7 @@ Compare the result against the original purpose.
 Draft docs now describe the current Kiroku subscription and adapter behavior: target-specific live
 sources, filter checkpointing, lossless adapter overflow, ack-coupled Shibuya checkpointing, guarded
 consumer-group handlers, websocket replay handoff, and the expanded integration page. Validation
-passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, and `git diff --check`.
+passed with `bun run typecheck`, `bun run format:check`, `bun run build`, and `git diff --check`.
 EP-6 still owns the final `docs/kiroku-source-sync.md` pointer update and any whole-site integration
 reconciliation after the Keiro plans complete.
 
@@ -140,9 +147,9 @@ rg "EventTypeFilter|SubscriptionTarget|OverflowPolicy|SubscriptionResult|Consume
 After edits:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
 
@@ -153,9 +160,9 @@ Acceptance requires that the edited Kiroku subscription docs match current sourc
 Run:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
 All commands should exit with status 0. If link validation is run later by EP-6, record any new anchors or pages added by this plan so EP-6 knows what to check.
@@ -171,3 +178,5 @@ The edits are documentation-only. Rerunning `rg`, `git log`, and docs validation
 Use `mori` to resolve `shinzui/kiroku` before reading source. This plan depends softly on `docs/plans/29-refresh-kiroku-write-path-schema-and-store-api-documentation.md` for stream/category and dead-letter schema terminology, but it can proceed independently by reading source.
 
 The source interfaces to document are `Kiroku.Store.Subscription`, `Kiroku.Store.Subscription.Types`, `Kiroku.Store.Subscription.Fsm`, `Kiroku.Store.Subscription.Worker`, `Kiroku.Store.Subscription.EventPublisher`, `Kiroku.Store.Subscription.Stream`, `Shibuya.Adapter.Kiroku`, `Kiroku.Metrics.*`, and `Kiroku.Otel.Subscription`. The docs should mention concrete public types such as `SubscriptionConfig`, `SubscriptionTarget`, `EventTypeFilter`, `SubscriptionResult`, `RetryPolicy`, `OverflowPolicy`, `SubscriptionHandle`, `ConsumerGroup`, and current metrics/tracing records where exposed.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

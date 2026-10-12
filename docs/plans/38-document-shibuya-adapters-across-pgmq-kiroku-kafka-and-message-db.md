@@ -5,6 +5,13 @@ title: "Document shibuya adapters across pgmq kiroku kafka and message db"
 kind: exec-plan
 created_at: 2026-06-24T18:04:14Z
 master_plan: "docs/masterplans/5-complete-shibuya-pgmq-and-adapter-documentation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Document shibuya adapters across pgmq kiroku kafka and message db
@@ -99,8 +106,8 @@ strategy across integrations.
 
 Validation passed:
 
-- `pnpm run typecheck`
-- `pnpm build`
+- `bun run typecheck`
+- `bun run build`
 - `node scripts/check-doc-links.mjs`
 - `rg -n "Documentation in progress|TODO|coming soon" content/docs/integrations content/docs/shibuya`
 
@@ -269,8 +276,8 @@ rg --files /Users/shinzui/Keikaku/work/libraries/haskell/shibuya-message-db-adap
 Validate:
 
 ```bash
-pnpm run typecheck
-pnpm build
+bun run typecheck
+bun run build
 node scripts/check-doc-links.mjs
 rg -n "Documentation in progress|TODO|coming soon" content/docs/integrations content/docs/shibuya
 ```
@@ -289,7 +296,7 @@ Acceptance:
 - A reader can compare pgmq, kiroku, Kafka, and Message DB adapters by source type, delivery model,
   ack mapping, retry/dead-letter semantics, ordering, observability, and example availability.
 - `docs/shibuya-pgmq-adapter-source-sync.md` no longer says only a skeleton has been authored.
-- `pnpm run typecheck`, `pnpm build`, and `node scripts/check-doc-links.mjs` pass.
+- `bun run typecheck`, `bun run build`, and `node scripts/check-doc-links.mjs` pass.
 
 
 ## Idempotence and Recovery
@@ -319,3 +326,5 @@ This plan depends on:
 The final page ordering, source-sync pointer consistency, landing-page language, and whole-site
 validation are owned by
 `docs/plans/39-reconcile-shibuya-pgmq-integrations-navigation-and-source-sync.md`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

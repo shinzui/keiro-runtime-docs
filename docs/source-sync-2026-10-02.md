@@ -175,7 +175,7 @@ No public Keiro DSL source changed in this range. The Language 6 requirement and
 
 ## Validation
 
-`nix develop -c pnpm check` passed after the final content edits:
+`nix develop -c bun run check` passed after the final content edits:
 
 - Six documentation-check tests passed.
 - Prose check: 508 pages/templates, zero blocking errors, 2,769 editorial review findings.
@@ -187,3 +187,5 @@ No public Keiro DSL source changed in this range. The Language 6 requirement and
 - The ledger includes every one of the 122 distinct upstream commits exactly once. Seven pointers advance only after the documentation gates pass.
 
 The prose checker is a review aid. Formal ASD-STE100 compliance remains unverified until the official dictionary and rules receive a complete review. Existing editorial findings remain visible; this sync does not waive them.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

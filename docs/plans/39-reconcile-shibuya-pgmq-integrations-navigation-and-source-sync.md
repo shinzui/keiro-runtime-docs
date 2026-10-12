@@ -5,6 +5,13 @@ title: "Reconcile shibuya pgmq integrations navigation and source sync"
 kind: exec-plan
 created_at: 2026-06-24T18:04:18Z
 master_plan: "docs/masterplans/5-complete-shibuya-pgmq-and-adapter-documentation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Reconcile shibuya pgmq integrations navigation and source sync
@@ -97,11 +104,11 @@ Final reviewed source pins:
 
 Validation passed:
 
-- `pnpm run typecheck`
-- `pnpm run lint` (exit 0 with existing warnings in `src/routes/docs/*` and
+- `bun run typecheck`
+- `bun run lint` (exit 0 with existing warnings in `src/routes/docs/*` and
   `src/lib/rehype-mermaid.ts`)
-- `pnpm run format:check`
-- `pnpm build`
+- `bun run format:check`
+- `bun run build`
 - `node scripts/check-doc-links.mjs`
 - stale-claim scan over `content/docs/shibuya`, `content/docs/pgmq`, `content/docs/integrations`,
   and `docs/*source-sync.md`
@@ -215,16 +222,16 @@ mori registry show shinzui/shibuya-message-db-adapter --full
 Validation:
 
 ```bash
-pnpm run typecheck
-pnpm run lint
-pnpm build
+bun run typecheck
+bun run lint
+bun run build
 node scripts/check-doc-links.mjs
 ```
 
 If the repository's known formatting baseline is clean at implementation time, also run:
 
 ```bash
-pnpm run format:check
+bun run format:check
 ```
 
 If `format:check` fails only on pre-existing unrelated MDX formatting, record that in Outcomes &
@@ -243,7 +250,7 @@ Acceptance:
 - Source-sync pointers identify the final reviewed upstream commits for shibuya, pgmq-hs,
   shibuya-pgmq-adapter, and any additional adapter repos documented by EP-4.
 - Top-level runtime family pages no longer contradict the completed shibuya/pgmq/adapter docs.
-- `pnpm run typecheck`, `pnpm run lint`, `pnpm build`, and `node scripts/check-doc-links.mjs`
+- `bun run typecheck`, `bun run lint`, `bun run build`, and `node scripts/check-doc-links.mjs`
   pass.
 - The MasterPlan registry marks EP-1 through EP-5 complete and records final outcomes.
 
@@ -280,3 +287,5 @@ Commits made while implementing this plan must include both trailers:
 MasterPlan: docs/masterplans/5-complete-shibuya-pgmq-and-adapter-documentation.md
 ExecPlan: docs/plans/39-reconcile-shibuya-pgmq-integrations-navigation-and-source-sync.md
 ```
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

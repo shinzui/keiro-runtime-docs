@@ -5,6 +5,13 @@ title: "Refresh keiro and kiroku documentation after June hardening"
 kind: master-plan
 created_at: 2026-06-15T19:07:48Z
 intention: intention_01kv6bpntyeh98ta4k2famkdm9
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Refresh keiro and kiroku documentation after June hardening
@@ -139,26 +146,26 @@ plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original vision.
 
-- EP-1 completed on 2026-06-15. It updated Kiroku store API, write-path, category, migration, and adjacent global-order docs against `shinzui/kiroku` commit `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a`; validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, and `git diff --check`. EP-6 still owns the final `docs/kiroku-source-sync.md` pointer update.
+- EP-1 completed on 2026-06-15. It updated Kiroku store API, write-path, category, migration, and adjacent global-order docs against `shinzui/kiroku` commit `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a`; validation passed with `bun run typecheck`, `bun run format:check`, `bun run build`, and `git diff --check`. EP-6 still owns the final `docs/kiroku-source-sync.md` pointer update.
 - EP-2 completed on 2026-06-15. It updated Kiroku subscription, Shibuya adapter, metrics websocket,
   and integration docs against `shinzui/kiroku` commit `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a`;
-  validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, and
+  validation passed with `bun run typecheck`, `bun run format:check`, `bun run build`, and
   `git diff --check`. EP-6 still owns the final source-sync pointer and cross-library reconciliation.
 - EP-3 completed on 2026-06-15. It updated Keiro command/core/read-side/schema docs against
   `shinzui/keiro` commit `f1d67a01b7457387a4861e7268d1c521ef82287d`; validation passed with
-  `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, `git diff --check`, and a stale-claim
+  `bun run typecheck`, `bun run format:check`, `bun run build`, `git diff --check`, and a stale-claim
   scan for superseded strong-consistency, codec, migration-count, and projection-dedup wording.
   EP-6 still owns the final source-sync pointer and cross-library reconciliation.
 - EP-4 completed on 2026-06-15. It updated Keiro messaging worker, telemetry, background-job,
   PGMQ, and adjacent walkthrough docs against `shinzui/keiro` commit
-  `f1d67a01b7457387a4861e7268d1c521ef82287d`; validation passed with `pnpm run typecheck`,
-  `pnpm run format:check`, `pnpm build`, `git diff --check`, and a stale-claim scan for superseded
+  `f1d67a01b7457387a4861e7268d1c521ef82287d`; validation passed with `bun run typecheck`,
+  `bun run format:check`, `bun run build`, `git diff --check`, and a stale-claim scan for superseded
   outbox, codec, PGMQ, and process-manager/router delivery wording. EP-6 still owns the final
   source-sync pointer and cross-library reconciliation.
 - EP-5 completed on 2026-06-15. It updated Keiro durable workflow reference, how-to, tutorial,
   cookbook, source-tour, schema, migration, and telemetry docs against `shinzui/keiro` commit
-  `f1d67a01b7457387a4861e7268d1c521ef82287d`; validation passed with `pnpm run typecheck`,
-  `pnpm run format:check`, `pnpm build`, `git diff --check`, and a stale-claim scan for superseded
+  `f1d67a01b7457387a4861e7268d1c521ef82287d`; validation passed with `bun run typecheck`,
+  `bun run format:check`, `bun run build`, `git diff --check`, and a stale-claim scan for superseded
   deterministic-awakeable, advisory-lock, step-row-discovery, step at-most-once, and patch
   classification wording. EP-6 still owns the final source-sync pointer and cross-library
   reconciliation.
@@ -167,5 +174,7 @@ Compare the result against the original vision.
   the Kiroku landing page, and both source-sync pointer ledgers. The final pins are Kiroku
   `4312aa8cc3e4f6ab0d19fc8bb12d0dd9f8cc164a` and Keiro
   `f1d67a01b7457387a4861e7268d1c521ef82287d`. Whole-site validation passed with
-  `pnpm run check`; `oxlint` reported only pre-existing warnings in `src/routes/docs/{$}[.]md.ts`,
+  `bun run check`; `oxlint` reported only pre-existing warnings in `src/routes/docs/{$}[.]md.ts`,
   `src/routes/docs/$.tsx`, and `src/lib/rehype-mermaid.ts`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

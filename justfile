@@ -6,21 +6,21 @@
 default:
     @just --list
 
-# Install dependencies with pnpm (runs the fumadocs-mdx postinstall)
+# Install the committed dependency set with Bun
 install:
-    pnpm install
+    bun install --frozen-lockfile
 
 # Start the dev server (http://127.0.0.1:5214); copies fonts first
 dev:
-    pnpm run dev
+    bun run dev
 
 # Build the static site into .output/public
 build:
-    pnpm run build
+    bun run build
 
 # Generate the MDX source map, then type-check without emitting
 typecheck:
-    pnpm run typecheck
+    bun run typecheck
 
 # Format sources in place (strips semicolons, sorts imports)
 format:
@@ -40,8 +40,8 @@ lint-fix:
 
 # Check source-level internal links and crawl the built site
 lint-links:
-    pnpm run lint:links
+    bun run lint:links
 
 # Run every documentation and application release gate
 check:
-    pnpm run check
+    bun run check

@@ -5,6 +5,13 @@ title: "Author pgmq hs queue substrate documentation"
 kind: exec-plan
 created_at: 2026-06-24T18:04:10Z
 master_plan: "docs/masterplans/5-complete-shibuya-pgmq-and-adapter-documentation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Author pgmq hs queue substrate documentation
@@ -40,7 +47,7 @@ This section must always reflect the actual current state of the work.
 - [x] Author how-to, explanation, and cookbook pages for common queue substrate workflows.
 - [x] Update pgmq `meta.json` files and `docs/pgmq-hs-source-sync.md`.
 - [x] Validate typecheck, build, link check, and stale-stub scan. (Completed 2026-06-24:
-  `pnpm run typecheck`, `pnpm build`, `node scripts/check-doc-links.mjs`, and stale-stub `rg`
+  `bun run typecheck`, `bun run build`, `node scripts/check-doc-links.mjs`, and stale-stub `rg`
   scan all passed.)
 
 
@@ -107,8 +114,8 @@ The source-sync pointer no longer describes the section as skeleton-only.
 Validation passed with:
 
 ```bash
-pnpm run typecheck
-pnpm build
+bun run typecheck
+bun run build
 node scripts/check-doc-links.mjs
 rg -n "Documentation for pgmq is in progress|Documentation in progress|Pages in this section are coming soon|TODO|coming soon" content/docs/pgmq docs/pgmq-hs-source-sync.md
 ```
@@ -254,8 +261,8 @@ sed -n '1,220p' content/docs/keiro/reference/pgmq-jobs.mdx
 Validate:
 
 ```bash
-pnpm run typecheck
-pnpm build
+bun run typecheck
+bun run build
 node scripts/check-doc-links.mjs
 rg -n "Documentation for pgmq is in progress|Documentation in progress|TODO|coming soon" content/docs/pgmq
 ```
@@ -276,7 +283,7 @@ Acceptance:
 - `/docs/pgmq/cookbook` contains reusable source-checked snippets.
 - `docs/pgmq-hs-source-sync.md` records the final reviewed commit and no longer describes the
   section as skeleton-only.
-- `pnpm run typecheck`, `pnpm build`, and `node scripts/check-doc-links.mjs` pass.
+- `bun run typecheck`, `bun run build`, and `node scripts/check-doc-links.mjs` pass.
 
 
 ## Idempotence and Recovery
@@ -319,3 +326,5 @@ Primary public modules:
 
 Final reconciliation of integration cards and whole-site source-sync language is owned by
 `docs/plans/39-reconcile-shibuya-pgmq-integrations-navigation-and-source-sync.md`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

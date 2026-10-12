@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-07-14T15:14:32Z
 intention: "intention_01kxgjsgnse1z9r0w141akd9g2"
 master_plan: "docs/masterplans/6-prepare-keiro-runtime-documentation-for-wider-announcement.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Author comprehensive pg-migrate usage and operations documentation
@@ -251,9 +258,9 @@ Use templates from `content/docs/_templates/` when adding each Diataxis page. Af
 run:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 node scripts/check-doc-links.mjs
 git diff --check
 ```
@@ -298,8 +305,8 @@ rg -n 'Codd|hasql-migration|history import|nontransactional|cleanupIssues|Cleanu
 rg -n 'PostgreSQL 17|PostgreSQL 18|GHC 9\.12|ledger.*v1|manifest.*v1|JSON.*v1' content/docs/pg-migrate
 ```
 
-Every category must appear in reference and at least one task-oriented page. `pnpm run typecheck`,
-`pnpm build`, `node scripts/check-doc-links.mjs`, and `git diff --check` must exit zero. Record the
+Every category must appear in reference and at least one task-oriented page. `bun run typecheck`,
+`bun run build`, `node scripts/check-doc-links.mjs`, and `git diff --check` must exit zero. Record the
 final page inventory and reviewed SHA for EP-6 and EP-7. EP-7 owns `docs/pg-migrate-source-sync.md`
 and the final mori/README registration.
 
@@ -327,3 +334,5 @@ This plan has no hard child dependency. Its completed terminology is a hard depe
 the ecosystem components, and of plan 46, which owns discovery and source pointers. The
 documentation interface is the complete `content/docs/pg-migrate/` tree, registered in navigation,
 with stable links that runtime-package pages can consume.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

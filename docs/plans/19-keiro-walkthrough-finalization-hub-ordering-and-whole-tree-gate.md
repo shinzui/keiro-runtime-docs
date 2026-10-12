@@ -5,6 +5,13 @@ title: "Keiro walkthrough finalization: hub, ordering, and whole-tree gate"
 kind: exec-plan
 created_at: 2026-06-02T04:47:38Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro walkthrough finalization: hub, ordering, and whole-tree gate
@@ -50,14 +57,14 @@ who lands on `/docs/keiro/walkthrough` can:
   it is cross-cutting), rather than the historical append order;
 - follow every cross-link the authoring plans left pointing at a now-existing tour and arrive
   at the precise page (not a generic landing);
-- and trust that the whole expanded tree builds and links cleanly: `pnpm build` prerenders
-  all six tours and their cross-links with **zero** crawler warnings, and `pnpm lint:links`
+- and trust that the whole expanded tree builds and links cleanly: `bun run build` prerenders
+  all six tours and their cross-links with **zero** crawler warnings, and `bun run lint:links`
   exits 0.
 
 You can see it working from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`:
-`pnpm build` exits 0 with no `[unhandledRejection]`/`Failed to fetch` line, `pnpm lint:links`
+`bun run build` exits 0 with no `[unhandledRejection]`/`Failed to fetch` line, `bun run lint:links`
 prints `✓ doc links OK …`, and browsing `http://localhost:3000/docs/keiro/walkthrough` (via
-`pnpm dev`, or `pnpm build && pnpm start`) shows six cards on the hub and six tours in the
+`bun run dev`, or `bun run build && bun run start`) shows six cards on the hub and six tours in the
 sidebar in the new order.
 
 This plan **owns** two shared artifacts — `content/docs/keiro/walkthrough/index.mdx` (the hub)
@@ -102,8 +109,8 @@ This section must always reflect the actual current state of the work.
       tour" voice; the snapshot/keiki-register story reads coherently across the foundation tour
       (register model) and read-side tour (snapshot persistence of **both** state and registers), with
       bidirectional cross-links and no contradiction. _(2026-06-02)_
-- [x] M5. WHOLE-TREE GATE green — `pnpm typecheck` clean; `pnpm build` prerenders the expanded tree
-      with **zero** crawler/`unhandledRejection` warnings; `pnpm lint:links` exits 0 over **166** files;
+- [x] M5. WHOLE-TREE GATE green — `bun run typecheck` clean; `bun run build` prerenders the expanded tree
+      with **zero** crawler/`unhandledRejection` warnings; `bun run lint:links` exits 0 over **166** files;
       no relative links anywhere under `content/docs/keiro/**`; no v2 API presented as shipped. _(2026-06-02)_
 
 
@@ -137,7 +144,7 @@ implementation. Provide concise evidence.
 - **The `^```$` "untagged fence" grep is noisy by design.** EP-19's own M4 check
   `grep -rnE '^```$' content/docs/keiro/walkthrough` matches every **closing** fence (closers are bare
   by definition), so it cannot distinguish a bare *opening* fence from a normal closer. The
-  authoritative checks are (a) `pnpm typecheck`/`pnpm build` parsing all MDX (an unbalanced or bare
+  authoritative checks are (a) `bun run typecheck`/`bun run build` parsing all MDX (an unbalanced or bare
   opening fence breaks the parse) and (b) the authoring agents' per-file "tagged-open count == bare-close
   count" balance check. Both passed; no genuinely untagged opening fence exists.
 
@@ -158,7 +165,7 @@ Record every decision made while working on the plan.
 - Decision: The two new hub `<Card href>`s are added **here, by EP-19**, not by EP-17/EP-18.
   Rationale: the prerender crawler follows `<Card href>`s (master plan Surprises), so a hub
   card pointing at `foundation/00-start-here` or `operations/00-start-here` before **both**
-  tours exist would make every intermediate `pnpm build` emit a `Failed to fetch` warning.
+  tours exist would make every intermediate `bun run build` emit a `Failed to fetch` warning.
   EP-17/EP-18 create their subdir, its `00-start-here.mdx`, and append the folder name to
   `walkthrough/meta.json` (so the tour is sidebar-navigable) but deliberately withhold the hub
   href; EP-19 adds both hrefs at once, after both tours exist, keeping every build clean.
@@ -206,9 +213,8 @@ bidirectional cross-links: foundation→read-side (4 files) and read-side→foun
 contradiction between the register *model* (foundation) and its *persistence* (read side). Five
 inbound links broken by Phase-4 renumbering were swept (see Surprises).
 
-**Gate (the acceptance):** `pnpm typecheck` clean; `pnpm build` exits 0 with **zero**
-`[unhandledRejection]`/`Failed to fetch` lines (all six tours and every cross-link prerender); `pnpm
-lint:links` prints `✓ doc links OK — checked 166 files, no broken internal links.`; no relative
+**Gate (the acceptance):** `bun run typecheck` clean; `bun run build` exits 0 with **zero**
+`[unhandledRejection]`/`Failed to fetch` lines (all six tours and every cross-link prerender); `bun run lint:links` prints `✓ doc links OK — checked 166 files, no broken internal links.`; no relative
 `./`/`../` links anywhere under `content/docs/keiro/**`; `grep` for `Keiro.Workflow`/`keiro_workflow_steps`
 in the walkthrough tree returns nothing (no v2 API presented as shipped). The 166-file count exceeds
 the Phase-3 baseline of 148 by the two new tours and the extra chapters in the four deepened tours
@@ -232,9 +238,9 @@ working tree can complete the work.
 You edit content files under `content/docs/keiro/walkthrough/` in **this** repository,
 `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`. The site is a **fumadocs** documentation
 app (fumadocs-ui 16.9.3, fumadocs-mdx 15.0.10) built on **TanStack Start as a static SPA**
-(React 19 + Vite, TypeScript), built and served with **pnpm** on **Node 22** inside the Nix dev
-shell (`nix develop`). `pnpm dev` runs `vite dev`; `pnpm build` runs `vite build` and emits a
-static SPA under `.output/public`; `pnpm start` serves it.
+(React 19 + Vite, TypeScript), built and served with **legacy package manager** on **Node 22** inside the Nix dev
+shell (`nix develop`). `bun run dev` runs `vite dev`; `bun run build` runs `vite build` and emits a
+static SPA under `.output/public`; `bun run start` serves it.
 
 This plan touches only **two** files directly — the hub `content/docs/keiro/walkthrough/index.mdx`
 and the top-level `content/docs/keiro/walkthrough/meta.json` — plus whichever chapter/prose files
@@ -312,8 +318,8 @@ array; it never adds or removes a folder name.)
 
 ### Why the hub hrefs were withheld until now (the crawler lesson)
 
-The site's `pnpm build` runs a **prerender crawler** that follows `<Card href>` links to
-discover routes. If a hub card points at a page that does not yet exist, `pnpm build` still
+The site's `bun run build` runs a **prerender crawler** that follows `<Card href>` links to
+discover routes. If a hub card points at a page that does not yet exist, `bun run build` still
 exits 0 **but** prints a warning line containing `[unhandledRejection]` and `Failed to fetch …`
 for that href — which the gate treats as a failure. This is exactly why EP-7 first shipped the
 hub with **href-less** cards and EP-12 added the four Phase-3 hrefs only after those four tours
@@ -327,15 +333,15 @@ made them sidebar-navigable via `meta.json`, but they did **not** add the hub `<
 These commands, run from the repo root, are the gate this plan must pass. They are defined in
 `package.json` (verified):
 
-- `pnpm typecheck` runs `fumadocs-mdx && tsc --noEmit`. The `fumadocs-mdx` step regenerates the
+- `bun run typecheck` runs `fumadocs-mdx && tsc --noEmit`. The `fumadocs-mdx` step regenerates the
   `.source/` collection so newly added pages and any `meta.json` reorder are picked up; `tsc
   --noEmit` type-checks the app. Expected tail: no errors.
-- `pnpm build` runs `vite build`. It prerenders every doc route and runs the crawler. Success
+- `bun run build` runs `vite build`. It prerenders every doc route and runs the crawler. Success
   ends with a Vite `✓ built in <N>s` line and writes `.output/public`. **Failure mode to
   watch:** any line containing `[unhandledRejection]` or `Failed to fetch` means a page links to
   a route that does not exist — for this plan, a premature/parked `<Card href>` or a parked
   prose link. Zero such lines is an acceptance criterion.
-- `pnpm lint:links` runs `node scripts/check-doc-links.mjs && linkinator .output/public …`. The
+- `bun run lint:links` runs `node scripts/check-doc-links.mjs && linkinator .output/public …`. The
   first script (read it: `scripts/check-doc-links.mjs`) scans every `content/docs/**/*.mdx`
   (skipping `_templates/`) for internal links and fails (exit 1, printing `✗ N broken internal
   doc link(s):` and each `file -> target`) if any points at a page that does not exist on disk;
@@ -346,7 +352,7 @@ These commands, run from the repo root, are the gate this plan must pass. They a
   prerendered HTML has **zero** static `<a>` tags (the SPA injects links client-side — the
   script's own header comment documents this), `linkinator` scans ~0 links and the **source
   scan is the meaningful check**.
-- `pnpm check` runs the whole chain (`typecheck`, `lint`, `format:check`, `build`, `lint:links`).
+- `bun run check` runs the whole chain (`typecheck`, `lint`, `format:check`, `build`, `lint:links`).
   You may run the chain or the individual steps.
 
 At Phase-3 completion EP-12's gate scanned **148** files. Phase 4 adds the foundation and
@@ -368,16 +374,15 @@ The six authoring plans already cross-checked every snippet against this source.
 The work is six milestones, run **in order**, all after the six authoring plans (EP-13 … EP-18)
 are Complete. M0 verifies that precondition. M1 adds the two hub cards. M2 orders the tours. M3
 upgrades parked links. M4 is the depth/consistency review. M5 is the whole-tree gate, which is
-the acceptance. Each milestone ends with `pnpm build` clean so failures are localized.
+the acceptance. Each milestone ends with `bun run build` clean so failures are localized.
 
 ### Milestones
 
-- **M0 — Preconditions (runs only after EP-13 … EP-18 are Complete).** Confirm Node 22 + pnpm on
+- **M0 — Preconditions (runs only after EP-13 … EP-18 are Complete).** Confirm Node 22 + legacy package manager on
   PATH and `node_modules` present. Confirm all six tour subdirectories exist with a
   `00-start-here.mdx` and at least one numbered chapter, that the two **new** subdirs
   (`foundation`, `operations`) are present, and that `walkthrough/meta.json` already lists all
-  six folder names (the authoring plans appended them). Baseline `pnpm typecheck` and `pnpm
-  build` clean on the unmodified tree. Acceptance: the precondition checks all print "present"
+  six folder names (the authoring plans appended them). Baseline `bun run typecheck` and `bun run build` clean on the unmodified tree. Acceptance: the precondition checks all print "present"
   and both commands exit 0. If any subdir is missing or `meta.json` lacks a folder name, an
   authoring plan is not Complete — **stop**; this plan's precondition is not met.
 
@@ -387,7 +392,7 @@ the acceptance. Each milestone ends with `pnpm build` clean so failures are loca
   `/docs/keiro/walkthrough/operations/00-start-here`), with titles and descriptions in the same
   voice as the existing four cards. Place foundation **first** in the card grid (it is the
   conceptual root) and operations **last** (cross-cutting), matching the M2 sidebar order so the
-  hub grid and the sidebar tell the same story. Acceptance: `pnpm build` exits 0 with **zero**
+  hub grid and the sidebar tell the same story. Acceptance: `bun run build` exits 0 with **zero**
   crawler warnings (both new hrefs resolve, because both tours now exist); the hub shows six
   cards.
 
@@ -395,8 +400,7 @@ the acceptance. Each milestone ends with `pnpm build` clean so failures are loca
   order `["index","foundation","command-cycle","read-side","workflow","integration","operations"]`.
   **Reorder only** — every folder name already in the array must remain; do not add or delete any
   (the array's membership is owned by the authoring plans; only its order is owned here).
-  Acceptance: the sidebar under "Code Walkthrough" shows the six tours in that order; `pnpm
-  build` still clean.
+  Acceptance: the sidebar under "Code Walkthrough" shows the six tours in that order; `bun run build` still clean.
 
 - **M3 — Upgrade parked forward-links.** The authoring plans, when they wrote a chapter that
   wanted to reference a tour that did not yet exist, **parked** the link on the walkthrough
@@ -409,7 +413,7 @@ the acceptance. Each milestone ends with `pnpm build` clean so failures are loca
   only the link target; do not rewrite the prose. Acceptance: the post-pass grep returns no
   landing-only `](/docs/keiro/walkthrough)` link that names a specific page in nearby prose
   (a bare "see the walkthrough section" link that genuinely means the landing may remain — judge
-  by the prose, exactly as EP-12 did for `](/docs/keiro/reference)`). `pnpm lint:links` clean.
+  by the prose, exactly as EP-12 did for `](/docs/keiro/reference)`). `bun run lint:links` clean.
 
 - **M4 — Depth/consistency review.** A read-through pass, not an edit pass (its output is a
   recorded judgment plus, if a gap is found, a note in Surprises and a hand-off to the owning
@@ -426,8 +430,7 @@ the acceptance. Each milestone ends with `pnpm build` clean so failures are loca
   the two cross-linking each other and **no contradiction**. Acceptance: the review checklist in
   Validation passes, or any gap is recorded in Surprises with the owning plan named.
 
-- **M5 — WHOLE-TREE GATE (the acceptance).** Run `pnpm typecheck`, `pnpm build`, `pnpm
-  lint:links` from the repo root over the **expanded** tree. Require: typecheck clean; build
+- **M5 — WHOLE-TREE GATE (the acceptance).** Run `bun run typecheck`, `bun run build`, `bun run lint:links` from the repo root over the **expanded** tree. Require: typecheck clean; build
   exits 0 with **zero** `[unhandledRejection]`/`Failed to fetch` lines (all six tours and every
   cross-link resolve); `lint:links` exits 0; no relative links anywhere under
   `content/docs/keiro/**`. Record the final `checked <N> files` count. Acceptance: see Validation
@@ -437,13 +440,13 @@ the acceptance. Each milestone ends with `pnpm build` clean so failures are loca
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The toolchain is **pnpm** on **Node 22** inside the Nix dev shell.
+stated otherwise. The toolchain is **legacy package manager** on **Node 22** inside the Nix dev shell.
 
 ### M0 — Preconditions
 
 ```bash
-nix develop                       # enter the dev shell (pnpm + Node 22)
-pnpm install
+nix develop                       # enter the dev shell (legacy package manager + Node 22)
+bun install
 
 # All six tour subdirs must exist with a start-here page. The two NEW ones
 # (foundation, operations) are the proof EP-17/EP-18 landed.
@@ -480,8 +483,8 @@ Confirm the keiro source pin (for the M4 review), then baseline the build:
 git -C /Users/shinzui/Keikaku/bokuno/keiro rev-parse HEAD
 # expect: 3f5dc9c1fa90f6358cebb9e85d92dde4c325db48
 
-pnpm typecheck
-pnpm build
+bun run typecheck
+bun run build
 ```
 
 Expected tail:
@@ -518,7 +521,7 @@ foundation tour (for example, "There is one tour per subsystem, plus a foundatio
 keiki↔keiro core and a cross-cutting operations tour."). Then:
 
 ```bash
-pnpm build
+bun run build
 ```
 
 Expected: `✓ built in <N>s` with no `Failed to fetch`. If a `Failed to fetch
@@ -539,11 +542,11 @@ Set the `pages` array to the pedagogical order. Reorder only — keep every fold
 Then regenerate the collection and rebuild:
 
 ```bash
-pnpm typecheck
-pnpm build
+bun run typecheck
+bun run build
 ```
 
-Expected: clean. Browsing `/docs/keiro/walkthrough` (via `pnpm dev`) the sidebar lists the six
+Expected: clean. Browsing `/docs/keiro/walkthrough` (via `bun run dev`) the sidebar lists the six
 tours in this order under "Code Walkthrough".
 
 ### M3 — Upgrade parked walkthrough-landing links
@@ -584,7 +587,7 @@ Expected: no remaining landing-only link that names a specific page in its prose
 empty, or contains only genuine "whole section" links you deliberately left). Then:
 
 ```bash
-pnpm lint:links
+bun run lint:links
 ```
 
 Expected: `✓ doc links OK — checked <N> files, no broken internal links.` (every upgraded slug
@@ -649,9 +652,9 @@ the owning plan too; EP-19's job is to *detect and route* depth gaps, not to aut
 Run the full gate over the expanded tree:
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm lint:links
+bun run typecheck
+bun run build
+bun run lint:links
 ```
 
 Expected (abridged):
@@ -661,7 +664,7 @@ Expected (abridged):
 ✓ doc links OK — checked <N> files, no broken internal links.
 ```
 
-The `pnpm build` output must contain **no** `[unhandledRejection]` and **no** `Failed to fetch`
+The `bun run build` output must contain **no** `[unhandledRejection]` and **no** `Failed to fetch`
 line. Record the `checked <N> files` count (it will exceed the Phase-3 baseline of 148). Final
 relative-link sweep across the whole keiro tree:
 
@@ -677,10 +680,10 @@ Expected: `no relative links`.
 Exercise the system and observe specific behaviors. Acceptance is the **green whole-tree gate**.
 
 1. **The hub shows six cards, all hrefs resolve.** After M1, browsing
-   `http://localhost:3000/docs/keiro/walkthrough` (via `pnpm dev`) shows six `<Card>`s —
+   `http://localhost:3000/docs/keiro/walkthrough` (via `bun run dev`) shows six `<Card>`s —
    foundation, command-cycle, read-side, workflow, integration, operations — and clicking each
    opens that tour's `00-start-here` page without a 404. Evidence: the hub file contains six
-   `<Card href=…/00-start-here>` entries, and `pnpm build` prerenders with no `Failed to fetch`:
+   `<Card href=…/00-start-here>` entries, and `bun run build` prerenders with no `Failed to fetch`:
 
    ```bash
    grep -c "00-start-here" content/docs/keiro/walkthrough/index.mdx   # expect 6
@@ -696,7 +699,7 @@ Exercise the system and observe specific behaviors. Acceptance is the **green wh
    names a specific page in nearby prose; every such link now points at a precise tour/chapter
    slug that exists on disk.
 
-4. **The whole expanded tree builds with zero crawler warnings.** `pnpm build` exits 0 and its
+4. **The whole expanded tree builds with zero crawler warnings.** `bun run build` exits 0 and its
    output contains no `[unhandledRejection]` and no `Failed to fetch` line. **Interpreting
    failure:** a `Failed to fetch …/<path>` line means some `<Card href>` or prose link points at
    a route that does not exist — i.e. a **parked or premature href**. The path in the message is
@@ -708,7 +711,7 @@ Exercise the system and observe specific behaviors. Acceptance is the **green wh
    ✓ built in <N>s
    ```
 
-5. **Link-check passes.** `pnpm lint:links` prints `✓ doc links OK — checked <N> files, no
+5. **Link-check passes.** `bun run lint:links` prints `✓ doc links OK — checked <N> files, no
    broken internal links.` and exits 0; record `<N>` (greater than the Phase-3 baseline of 148).
    The `linkinator` crawl reports no broken links (it scans ~0 links on the SPA — expected, per
    the script header; the source scan is the meaningful check). No relative `./`/`../` links
@@ -744,7 +747,7 @@ Exercise the system and observe specific behaviors. Acceptance is the **green wh
 ## Idempotence and Recovery
 
 All steps are file authoring (two files plus parked-link target edits) and command runs, all
-safe to repeat. Re-running `pnpm typecheck`/`pnpm build`/`pnpm lint:links` is idempotent.
+safe to repeat. Re-running `bun run typecheck`/`bun run build`/`bun run lint:links` is idempotent.
 Editing `walkthrough/index.mdx`, `walkthrough/meta.json`, or a parked link overwrites the same
 text; re-running a milestone simply rewrites the same files. No database, no keiro source, and
 no tour **chapter content** is modified (the keiro tree is opened read-only for the M4 review;
@@ -752,11 +755,11 @@ the `meta.json` reorder and the parked-link target edits never delete or rename 
 pages).
 
 Recovery:
-- If `pnpm build` emits `[unhandledRejection]`/`Failed to fetch`, read the path in the message.
+- If `bun run build` emits `[unhandledRejection]`/`Failed to fetch`, read the path in the message.
   A `…/00-start-here` under a tour means that tour is missing — an authoring plan did not land;
   return to M0 and do not proceed. A chapter slug means an M3 link upgrade pointed at the wrong
   filename; fix the target to the real chapter (check `ls content/docs/keiro/walkthrough/<tour>/`).
-- If `pnpm lint:links` fails, it prints each broken `file -> target`; fix the link to an existing
+- If `bun run lint:links` fails, it prints each broken `file -> target`; fix the link to an existing
   `/docs/keiro/...` page (absolute, never relative) and re-run.
 - If the M0 precondition check shows a missing tour subdir or a folder name absent from
   `walkthrough/meta.json`, stop — an authoring plan (EP-13 … EP-18) is not Complete. Do not add
@@ -805,10 +808,10 @@ since this plan makes only additive/reordering content edits.
 - fumadocs (`fumadocs-core`/`fumadocs-ui` 16.9.3, `fumadocs-mdx` 15.0.10) — renders MDX and the
   sidebar from `meta.json`; `Cards`/`Card` are registered globally in `src/components/mdx.tsx`
   (use bare, no imports).
-- TanStack Start + Vite — `pnpm dev`/`pnpm build`/`pnpm start`; `pnpm typecheck` =
-  `fumadocs-mdx && tsc --noEmit`; `pnpm lint:links` = `node scripts/check-doc-links.mjs &&
-  linkinator .output/public …`; `pnpm check` runs the whole chain.
-- pnpm + Node 22 inside the Nix dev shell (`nix develop`).
+- TanStack Start + Vite — `bun run dev`/`bun run build`/`bun run start`; `bun run typecheck` =
+  `fumadocs-mdx && tsc --noEmit`; `bun run lint:links` = `node scripts/check-doc-links.mjs &&
+  linkinator .output/public …`; `bun run check` runs the whole chain.
+- legacy package manager + Node 22 inside the Nix dev shell (`nix develop`).
 
 ### Dependencies on other plans
 
@@ -833,9 +836,11 @@ since this plan makes only additive/reordering content edits.
   `["index","foundation","command-cycle","read-side","workflow","integration","operations"]`.
 - No `](/docs/keiro/walkthrough)` landing-only link in `content/docs/keiro/**` names a specific
   page in nearby prose (all such links upgraded to precise slugs).
-- `pnpm typecheck` clean; `pnpm build` exits 0 with **zero** `[unhandledRejection]`/`Failed to
-  fetch` lines; `pnpm lint:links` exits 0 over the recorded file count (greater than 148).
+- `bun run typecheck` clean; `bun run build` exits 0 with **zero** `[unhandledRejection]`/`Failed to
+  fetch` lines; `bun run lint:links` exits 0 over the recorded file count (greater than 148).
 - No relative `./`/`../` links anywhere under `content/docs/keiro/**`.
 - The M4 review judgment is recorded (each tour covers its surface; voice/depth consistent; the
   snapshot/register thread coherent and bidirectionally cross-linked), with any gap routed to its
   owning authoring plan in Surprises.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

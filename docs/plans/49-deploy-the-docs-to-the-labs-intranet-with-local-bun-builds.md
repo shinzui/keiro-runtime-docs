@@ -16,6 +16,11 @@ provenance:
       at: 2026-10-11T23:36:13Z
       mode: "other"
       note: "Complete the initial Bun-based local-runner deployment plan with release and access compatibility gates"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:14:43Z
+      mode: "implement"
+      note: "Implement the user-authorized Bun toolchain migration and remove legacy package-manager references"
 ---
 
 
@@ -31,13 +36,14 @@ Publish this repository at `https://keiro-docs.labs.topagentnetwork.net` on the 
 
 Build with Bun on a local machine using the repository's Nix development shell. After a successful push to `master`, GitHub Actions will dispatch a deployment job to a self-hosted runner: the GitHub Actions agent running on the local build machine. That job checks out the exact pushed commit, checks and builds the docs, and invokes Nagare to deploy the resulting container. Provide `just deploy` for the same operation manually. No Kotei installation, new platform provisioning, custom webhook service, or Nix derivation for the site is required. The local runner must be online for automatic deployments; an offline runner leaves jobs queued and the previous site serving.
 
-The user's instruction that this project uses Bun is authoritative. Existing pnpm files and instructions are migration work, not a reason to retain pnpm in the new deployment flow. This document is a plan only; its creation does not deploy a site or register a runner.
+The user's instruction that this project uses Bun is authoritative. The command-path migration in milestone 1 is being implemented separately at the user's request. Deployment and runner registration remain planned work.
 
 
 ## Progress
 
 
-Implementation has not started. Add timestamped implementation entries and milestone checkboxes when execution begins.
+- [ ] Milestone 1: finish the user-authorized Bun command-path migration, fresh frozen install, and release gate.
+- [ ] Milestones 2–6: deployment preflight, packaging, protected deployment, automatic runner setup, and live acceptance remain unimplemented.
 
 
 ## Surprises & Discoveries
@@ -47,6 +53,10 @@ Implementation has not started. Add timestamped implementation entries and miles
 
 
 ## Decision Log
+
+- Decision: Complete only the toolchain migration in the current user-authorized task, including archived reference cleanup. Preserve historical verification scope and keep deployment milestones pending.
+  Rationale: The user requested removal of every trace of the retired package manager; deployment is a separate operation.
+  Date: 2026-10-12.
 
 
 - Decision: Use Bun for installation and script orchestration, with a committed `bun.lock` and frozen installs. Retain Node 22 where dependencies and existing check scripts require it.
@@ -79,11 +89,11 @@ Implementation has not started. Add timestamped implementation entries and miles
 ## Context and Orientation
 
 
-`content/docs/` contains the published Markdown with embedded components, called MDX. `src/routes/`, `src/lib/source.ts`, `source.config.ts`, and `vite.config.ts` define the Fumadocs site and its TanStack Start/Vite build. `vite.config.ts` enables a prerendered static application, producing `.output/public/`. It seeds `/docs` and `/api/search`; `src/routes/api/search.ts` produces static search data. `src/routes/docs/{$}[.]md.ts` implements Markdown export. A static host cannot execute that handler at request time: acceptance must prove that required exports are actually emitted, or extend the prerender/build to emit them. Do not assume a successful HTML build proves search or Markdown export works.
+`content/docs/` contains the published Markdown with embedded components, called MDX. `src/routes/`, `src/lib/source.ts`, `source.config.ts`, and `vite.config.ts` define the Fumadocs site and its TanStack Start/Vite build. `vite.config.ts` enables a prerendered static application, producing `.output/public/`. It seeds `/docs` and `/api/search.json`; `src/routes/api/search[.]json.ts` produces static search data. `src/routes/api.markdown.$.ts` implements nested plain-text Markdown export at `/api/markdown/$`. A static host cannot execute that handler at request time: acceptance must prove that required exports are actually emitted, or extend the prerender/build to emit them. Do not assume a successful HTML build proves search or Markdown export works.
 
-`package.json` defines the release checks and a `check` script that already builds the site. It currently declares pnpm 11.4.0, invokes pnpm internally, and uses `predev` and `prebuild` to call `scripts/copy-fonts.mjs`. `justfile`, `README.md`, `.github/workflows/ci.yml`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, and `flake.module.nix` also retain pnpm wiring. The shared `nix/bun.nix` module already supplies Bun, TypeScript, oxlint, and oxfmt. Project-owned `flake.module.nix` supplies Node 22 and pnpm. Use the Bun version actually supplied by the committed flake; the bare shell reported Bun 1.3.13 during planning, while README reports a different shell version. Do not infer the runtime version from either description.
+`package.json` defines the release checks and a `check` script that builds the site. It selects Bun 1.4.2, matching the committed Nix shell. `justfile`, README, and CI use Bun orchestration with a committed `bun.lock`; `flake.module.nix` supplies only Node 22 alongside the shared Bun/Oxc/compiler module. Font preparation is explicit in `dev` and `build`; the historical lifecycle aliases are removed. Native install permission is restricted to the actual `esbuild` dependency.
 
-Bun's lifecycle and dependency-script behavior must be checked rather than assumed identical to pnpm. Make the font preparation an explicit step in the Bun build/dev commands so it happens exactly once. The optional licensed font helper currently attempts a registry-based Nix build. Provide a deterministic skip option for unattended builds and use system-font fallback by default there; do not depend on a workstation font alias or copy licensed assets into a production image without an established deployment entitlement. Existing Node scripts can keep their Node shebangs and `node --test` usage.
+Bun's lifecycle and dependency-script behavior must be checked rather than assumed identical to legacy package manager. Make the font preparation an explicit step in the Bun build/dev commands so it happens exactly once. The optional licensed font helper currently attempts a registry-based Nix build. Provide a deterministic skip option for unattended builds and use system-font fallback by default there; do not depend on a workstation font alias or copy licensed assets into a production image without an established deployment entitlement. Existing Node scripts can keep their Node shebangs and `node --test` usage.
 
 `.github/workflows/ci.yml` currently runs verification on pull requests and pushes to `master` on GitHub-hosted Ubuntu runners. It has no deployment job. Keep pull-request verification on those hosted runners. Only the trusted `master` push path and an explicit manual dispatch of `master` may reach the local deployment runner.
 
@@ -115,11 +125,11 @@ An OCI image is the packaged container filesystem stored in the registry. Its di
 ### Milestone 1: Make Bun the reproducible project command path
 
 
-Convert active commands in `package.json`, `justfile`, `README.md`, `.github/workflows/ci.yml`, and `flake.module.nix` to Bun. Remove pnpm from project-owned shell packages while preserving Node 22. Generate and commit `bun.lock`, migrate the existing lock where the selected Bun supports it, and inspect the resolved dependency diff so this work does not silently upgrade application libraries. Remove `pnpm-lock.yaml` and `pnpm-workspace.yaml` only after Bun's lock and native-package installation work from an empty dependency directory. Translate only actually needed dependency build permissions to Bun's `trustedDependencies`; do not grant broad script trust. Do not rewrite historical plans or source-review transcripts merely because they mention pnpm.
+Use Bun for active commands in `package.json`, `justfile`, `README.md`, CI, and `flake.module.nix`, retaining Node 22 for dependency executables. Commit `bun.lock` migrated from the previous lock and prove every resolved package identity is preserved. Remove the obsolete lock and build-permission files only after a fresh frozen Bun install works. Restrict `trustedDependencies` to packages whose install scripts are actually required. The user also explicitly requested removal of every project-owned reference to the retired manager, including archived plans, skill instructions, and generated ignore baselines. Normalize command examples while qualifying historical verification results; never claim older runs executed with Bun.
 
-Keep the release gate equivalent to today's checks, including diagram checks and terminology verification. Use `bun run` for orchestration and retain the shared shell's compiler/Oxc tools. Make `copy-fonts` explicit in `build` and `dev`, eliminating duplicate or silently skipped lifecycle behavior; add a documented skip mode to `scripts/copy-fonts.mjs` for the deployment runner. Verify source-map generation for Fumadocs during typecheck. Update CI to use `bun install --frozen-lockfile` and `bun run check` or the equivalent individually reported steps.
+Keep the release gate equivalent to today's checks, including diagram checks and terminology verification. Use `bun run` for orchestration and retain the shared shell's compiler/Oxc tools. Make `copy-fonts` explicit in `build` and `dev`, eliminating duplicate or silently skipped lifecycle behavior; use `KEIRO_DOCS_SKIP_FONTS=1` in unattended builds to skip optional licensed fonts before any lookup. Verify source-map generation for Fumadocs during typecheck. Update CI to use `bun install --frozen-lockfile` and `bun run check` or the equivalent individually reported steps.
 
-Acceptance is a fresh dependency install and full release check inside `nix develop`, with no pnpm executable required and no lockfile modification. The static output must exist. Bun install, typecheck, and build failures must remain failing commands.
+Acceptance is a fresh frozen dependency install and full release check inside `nix develop`, using only Bun orchestration with no lockfile modification. A case-insensitive scan of project-owned text and filenames finds no retired-manager reference. The static output must exist. Bun install, typecheck, and build failures must remain failing commands.
 
 ### Milestone 2: Establish the version-matched Labs deployment contract
 
@@ -254,7 +264,7 @@ Replace `PREVIOUS_TAG` with an actual prior receipt's `git-<full-SHA>` tag. Both
 ## Validation and Acceptance
 
 
-The project must install and pass all existing release checks using Bun and the committed lockfile from a clean checkout. The optional font helper must have a deterministic unattended path. Active scripts and CI must not execute pnpm, and the check command must still exercise terminology, prose, navigation, diagrams, typecheck, lint, formatting, build, and links.
+The project must install and pass all existing release checks using Bun and the committed lockfile from a clean checkout. The optional font helper must have a deterministic unattended path. Active scripts and CI must not execute legacy package manager, and the check command must still exercise terminology, prose, navigation, diagrams, typecheck, lint, formatting, build, and links.
 
 The local image must pass concrete HTTP checks for HTML, deep routes, assets, diagrams, search JSON, and Markdown exports. Verify content and media types, not just HTTP 200. A JS/JSON request returning the HTML shell is a failure. Test emitted Markdown for a retained docs page and, once present in the committed candidate, a runtime-pattern catalog page. Ensure the image architecture matches the Labs node.
 
@@ -292,4 +302,6 @@ Bun and Node are build tools; Nginx is the static runtime; Nix supplies the alre
 ## Creation Note
 
 
-Created on 2026-10-11 from the current working tree, local Mori registry, selected Nagare release sources, and the user's instructions. The plan corrects the earlier pnpm assumption and distinguishes current Nagare checkout APIs from the installed CLI and Labs release. No implementation, runner registration, platform upgrade, or production deployment was performed while creating it.
+Created on 2026-10-11 from the current working tree, local Mori registry, selected Nagare release sources, and the user's instructions. The plan corrects the earlier legacy package manager assumption and distinguishes current Nagare checkout APIs from the installed CLI and Labs release. No implementation, runner registration, platform upgrade, or production deployment was performed while creating it.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

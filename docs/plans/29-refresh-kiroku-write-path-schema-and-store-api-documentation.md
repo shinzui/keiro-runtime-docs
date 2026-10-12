@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-15T19:08:17Z
 intention: intention_01kv6bpntyeh98ta4k2famkdm9
 master_plan: "docs/masterplans/4-refresh-keiro-and-kiroku-documentation-after-june-hardening.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Refresh Kiroku write path schema and store API documentation
@@ -76,9 +83,9 @@ The `0a39598..4312aa8` range refreshed Kiroku's write/read/schema surface after 
 Validation completed on 2026-06-15:
 
 ```text
-pnpm run typecheck     PASS
-pnpm run format:check  PASS
-pnpm build             PASS
+bun run typecheck     PASS
+bun run format:check  PASS
+bun run build             PASS
 git diff --check       PASS
 ```
 
@@ -114,7 +121,7 @@ Milestone 3 updates the write-path walkthrough. Update `content/docs/kiroku/writ
 
 Milestone 4 updates schema and migration guidance. Update the migration/how-to pages that mention schema setup to include the dedicated `kiroku` schema, the embedded `kiroku-store-migrate` runner, and the June 11 migration intent: notification trigger append guard, dead-letter event-id index, index/fillfactor hygiene, and stream-name length check. Acceptance is that docs do not imply public-schema installation or editable historical migrations.
 
-Milestone 5 validates and records the source-sync summary. If this plan directly updates `docs/kiroku-source-sync.md`, replace the Last reviewed commit block with current `HEAD` and move `0a39598` into Previous pointers with a concise summary. If EP-6 owns that edit, add the exact summary text to this plan's Outcomes & Retrospective so EP-6 can apply it. Acceptance is that `pnpm run typecheck`, `pnpm run format:check`, and `pnpm build` pass, or any failure is recorded with the exact failing output.
+Milestone 5 validates and records the source-sync summary. If this plan directly updates `docs/kiroku-source-sync.md`, replace the Last reviewed commit block with current `HEAD` and move `0a39598` into Previous pointers with a concise summary. If EP-6 owns that edit, add the exact summary text to this plan's Outcomes & Retrospective so EP-6 can apply it. Acceptance is that `bun run typecheck`, `bun run format:check`, and `bun run build` pass, or any failure is recorded with the exact failing output.
 
 
 ## Concrete Steps
@@ -146,9 +153,9 @@ rg "appendMultiStream|eventExistsInStream|streamNameInCategory|AppendConflict|Re
 After edits, validate the docs site:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
 
@@ -159,12 +166,12 @@ Acceptance is source agreement plus site validation. Every Kiroku write/read/sch
 Run:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
-The commands should exit with status 0. If formatting changes are needed, run `pnpm run format`, inspect the diff, then rerun `pnpm run format:check`.
+The commands should exit with status 0. If formatting changes are needed, run `bun run format`, inspect the diff, then rerun `bun run format:check`.
 
 
 ## Idempotence and Recovery
@@ -174,7 +181,7 @@ All edits are documentation-only and can be repeated safely. If a validation com
 
 ## Interfaces and Dependencies
 
-Use `mori` to resolve `shinzui/kiroku`; do not hard-code the source path without first confirming it. The docs site depends on Fumadocs MDX and is validated with `pnpm`.
+Use `mori` to resolve `shinzui/kiroku`; do not hard-code the source path without first confirming it. The docs site depends on Fumadocs MDX and is validated with `legacy package manager`.
 
 The interfaces to document are the current Kiroku store public modules: `Kiroku.Store`, `Kiroku.Store.Types`, `Kiroku.Store.Append`, `Kiroku.Store.Read`, `Kiroku.Store.Error`, `Kiroku.Store.Transaction`, and `Kiroku.Store.Effect`. The concrete functions and types that must be represented are `appendToStream`, `appendMultiStream`, `readStreamForward`, `readStreamBackward`, `readAllForward`, `readAllBackward`, `readCategory`, `eventExistsInStream`, `StreamName`, `CategoryName`, `categoryName`, `streamNameInCategory`, `ExpectedVersion`, `AppendResult`, `StoreError`, `AppendConflict`, `runTransactionAppending`, and `runTransactionAppendingNoRetry`.
 
@@ -183,3 +190,5 @@ The schema dependency is `kiroku-store-migrations`, especially `/Users/shinzui/K
 ## Revision Notes
 
 - 2026-06-15: Implemented EP-1, recorded current `shinzui/kiroku` source evidence and validation, and left the final source-sync pointer update to EP-6 per the MasterPlan integration point.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

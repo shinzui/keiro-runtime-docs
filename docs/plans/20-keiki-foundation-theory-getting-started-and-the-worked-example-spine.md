@@ -5,6 +5,13 @@ title: "Keiki foundation: theory, getting started, and the worked-example spine"
 kind: exec-plan
 created_at: 2026-06-07T04:53:26Z
 master_plan: "docs/masterplans/3-keiki-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiki foundation: theory, getting started, and the worked-example spine
@@ -51,7 +58,7 @@ Concretely, after this plan a reader can:
 - navigate the **Code Walkthrough hub** that introduces the five (still-unauthored) source tours.
 
 You can see the result by running the docs dev server from the repo root
-`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`: `pnpm dev` (which runs `vite dev`) and
+`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`: `bun run dev` (which runs `vite dev`) and
 browsing `http://localhost:3000/docs/keiki`. The keiki landing renders without the "in progress"
 callout, shows a `<Cards>` index of the sections, and renders a `mermaid` diagram of the keiro
 family; the sidebar carries seven theory essays under Explanation, a "Your first aggregate"
@@ -80,8 +87,8 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] M0. Preconditions verified (2026-06-06) — Node v22.22.3 + pnpm 11.4.0 on PATH, `node_modules`
-      present, keiki stub tree present, baseline `pnpm typecheck` clean and `pnpm build` exits 0 with
+- [x] M0. Preconditions verified (2026-06-06) — Node v22.22.3 + legacy-manager 11.4.0 on PATH, `node_modules`
+      present, keiki stub tree present, baseline `bun run typecheck` clean and `bun run build` exits 0 with
       zero crawler warnings, keiki source readable at pinned commit `344c4ca` (keiki `0.1.0.0`,
       keiki-codec-json `0.1.0.0`).
 - [x] M1. Landing overwritten (`content/docs/keiki/index.mdx`, "in progress" callout removed,
@@ -98,8 +105,8 @@ This section must always reflect the actual current state of the work.
       (`content/docs/keiki/walkthrough/index.mdx`, href-LESS `<Cards>`) + `walkthrough/meta.json`
       left at `["index"]`; the canonical jitsurei module map + shared conventions + the
       page-to-plan `meta.json` assignment summary fixed in this plan. (2026-06-06)
-- [x] Final. `pnpm typecheck` clean; `pnpm build` exits 0 prerendering all new pages (60 keiki
-      routes) with zero crawler warnings; `pnpm lint:links` exits 0 (204 files, no broken links);
+- [x] Final. `bun run typecheck` clean; `bun run build` exits 0 prerendering all new pages (60 keiki
+      routes) with zero crawler warnings; `bun run lint:links` exits 0 (204 files, no broken links);
       Haskell names cross-checked against pinned source `344c4ca`; no relative `./`/`../` cross-links
       in the keiki tree. (2026-06-06)
 
@@ -145,7 +152,7 @@ Record every decision made while working on the plan.
   `content/docs/keiki/walkthrough/meta.json` to `["index"]` only.
   Rationale: the prerender crawler follows `<Card href>`s; a hub that forward-links to the five
   not-yet-authored tour pages (`walkthrough/core-and-builder/00-start-here`, etc.) makes
-  `pnpm build` emit `[unhandledRejection] Failed to fetch …` crawler warnings even though the
+  `bun run build` emit `[unhandledRejection] Failed to fetch …` crawler warnings even though the
   build exits 0, violating this plan's own "zero crawler warnings" gate — the hard-won lesson
   recorded in MasterPlan #2 (keiro EP-7) and in MasterPlan #3 Integration Point 2. The hub still
   ships as a `<Cards>` structure (titles + descriptions) so EP-26's finalization is a minimal diff
@@ -182,7 +189,7 @@ Compare the result against the original purpose.
 overview (positioning paragraph, keiro-family `mermaid`, "A taste" snippet, section `<Cards>`), the
 Explanation sidebar carries the seven theory essays in foundations order, Tutorials carries "Your
 first aggregate", and the Code Walkthrough hub introduces the five tours with href-less cards. The
-repo-root `docs/keiki-source-sync.md` pins `344c4ca`. The whole keiki tree builds clean (`pnpm build`
+repo-root `docs/keiki-source-sync.md` pins `344c4ca`. The whole keiki tree builds clean (`bun run build`
 exit 0, zero crawler warnings, 60 keiki routes prerendered), typechecks, and link-checks (204 files,
 no broken internal links).
 
@@ -210,10 +217,10 @@ You are writing MDX content files under `content/docs/keiki/` in **this** reposi
 (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) plus one Markdown file at the repo-root docs
 directory (`docs/keiki-source-sync.md`). The site is a **fumadocs** documentation app
 (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static SPA** (React 19 + MDX,
-TypeScript, Tailwind, bundled with **Vite**), built and served with **pnpm** on **Node 22**.
-`pnpm dev` runs `vite dev` (port 3000); `pnpm build` runs `vite build` and emits a static SPA
-that is prerendered by a crawler; `pnpm typecheck` runs `fumadocs-mdx && tsc --noEmit`;
-`pnpm lint:links` is the repo's internal link checker (must exit 0). MDX is compiled by
+TypeScript, Tailwind, bundled with **Vite**), built and served with **legacy package manager** on **Node 22**.
+`bun run dev` runs `vite dev` (port 3000); `bun run build` runs `vite build` and emits a static SPA
+that is prerendered by a crawler; `bun run typecheck` runs `fumadocs-mdx && tsc --noEmit`;
+`bun run lint:links` is the repo's internal link checker (must exit 0). MDX is compiled by
 fumadocs-mdx and rendered client-side.
 
 Content lives under `content/docs/`. Each directory has a `meta.json` whose `pages` array lists
@@ -665,13 +672,13 @@ The work is three milestones plus a final acceptance pass. Each milestone is ind
 verifiable by building the site and viewing the affected pages. Author the pages in reading order;
 the final pass wires the sidebar slugs, the walkthrough hub, and the source pointer, and runs the
 full acceptance checks. Each milestone's acceptance is the same shape: after authoring that
-milestone's pages and appending their slugs to the relevant section `meta.json`, `pnpm build`
-exits 0 with **zero** crawler warnings and `pnpm lint:links` exits 0.
+milestone's pages and appending their slugs to the relevant section `meta.json`, `bun run build`
+exits 0 with **zero** crawler warnings and `bun run lint:links` exits 0.
 
 **M0 — Preconditions.** Confirm the toolchain and that the keiki stub tree is present, that the
 baseline builds, and that the keiki source is readable at the pinned commit. At the end you can run
-`pnpm dev` and browse the (placeholder) `/docs/keiki`. Acceptance: `pnpm typecheck` clean and
-`pnpm build` exits 0 with zero crawler warnings *before* you add any content;
+`bun run dev` and browse the (placeholder) `/docs/keiki`. Acceptance: `bun run typecheck` clean and
+`bun run build` exits 0 with zero crawler warnings *before* you add any content;
 `git -C <keiki> rev-parse HEAD` shows `344c4ca…`; `keiki.cabal` shows `version: 0.1.0.0`.
 
 **M1 — Overview + the seven theory essays.** Overwrite `content/docs/keiki/index.mdx` (remove the
@@ -737,30 +744,30 @@ section — M3 simply ensures they are authoritative. At the end: the sidebar sh
 the walkthrough hub introduces the ordered tours, and the source pointer exists. Acceptance: see
 Validation.
 
-**Final — Whole-set acceptance.** `pnpm typecheck` clean; `pnpm build` exits 0 prerendering the new
-pages with **zero** crawler warnings; `pnpm lint:links` exits 0; no relative `./`/`../` cross-link
+**Final — Whole-set acceptance.** `bun run typecheck` clean; `bun run build` exits 0 prerendering the new
+pages with **zero** crawler warnings; `bun run lint:links` exits 0; no relative `./`/`../` cross-link
 anywhere in `content/docs/keiki/`; every Haskell name used appears in the keiki source at `344c4ca`.
 
 
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The docs toolchain is **pnpm** on **Node 22**.
+stated otherwise. The docs toolchain is **legacy package manager** on **Node 22**.
 
 ### M0 — Preconditions
 
 ```bash
 node --version    # expect v22.x
-pnpm --version    # expect a pnpm 9/10/11 line
-test -d node_modules || pnpm install
+bun --version    # expect a legacy-manager 9/10/11 line
+test -d node_modules || bun install
 
 # the keiki stub tree must already exist (scaffolded by an earlier plan)
 test -f content/docs/keiki/index.mdx && test -f content/docs/keiki/meta.json && echo "keiki stubs present"
 
 # baseline must be green BEFORE you add content
-pnpm typecheck
-pnpm build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: baseline crawler warnings" || echo "OK: baseline clean"
-pnpm lint:links
+bun run typecheck
+bun run build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: baseline crawler warnings" || echo "OK: baseline clean"
+bun run lint:links
 ```
 
 Expected (abridged):
@@ -856,8 +863,8 @@ exists — see Idempotence). Keep `why-smt` an EXPLANATION (no CI wiring). Then 
 Build and check:
 
 ```bash
-pnpm build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: broken links" || echo "OK: no crawler warnings"
-pnpm lint:links
+bun run build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: broken links" || echo "OK: no crawler warnings"
+bun run lint:links
 ```
 
 ### M2 — `content/docs/keiki/tutorials/your-first-aggregate.mdx`
@@ -948,7 +955,7 @@ teach how each capability is built. There is one tour per capability; the chapte
 authored by that capability's documentation plan.
 
 {/* The cards below are intentionally href-less. The prerender crawler follows <Card href>s; linking
-    to a not-yet-authored tour page makes `pnpm build` emit "Failed to fetch" crawler warnings. The
+    to a not-yet-authored tour page makes `bun run build` emit "Failed to fetch" crawler warnings. The
     finalization plan (EP-26) adds the hrefs once every tour exists. */}
 
 <Cards>
@@ -973,10 +980,10 @@ appends its own subdir folder name when it creates its subdir):
 Then build and preview:
 
 ```bash
-pnpm typecheck
-pnpm build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: broken links" || echo "OK: no crawler warnings"
-pnpm lint:links
-pnpm dev    # browse http://localhost:3000/docs/keiki
+bun run typecheck
+bun run build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: broken links" || echo "OK: no crawler warnings"
+bun run lint:links
+bun run dev    # browse http://localhost:3000/docs/keiki
 ```
 
 
@@ -984,8 +991,8 @@ pnpm dev    # browse http://localhost:3000/docs/keiki
 
 Exercise the system and observe specific behaviors (phrase acceptance as observable behavior):
 
-1. **The set builds and typechecks.** From the repo root, `pnpm typecheck` exits 0 (so the
-   generated `.source/` collection picks up the new pages) and `pnpm build` exits 0, emitting the
+1. **The set builds and typechecks.** From the repo root, `bun run typecheck` exits 0 (so the
+   generated `.source/` collection picks up the new pages) and `bun run build` exits 0, emitting the
    static SPA. Expected tail (abridged):
 
    ```text
@@ -997,10 +1004,10 @@ Exercise the system and observe specific behaviors (phrase acceptance as observa
    page):
 
    ```bash
-   pnpm build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: broken links" || echo "OK: no crawler warnings"
+   bun run build 2>&1 | grep -iE "unhandledRejection|Failed to fetch" && echo "FAIL: broken links" || echo "OK: no crawler warnings"
    ```
 
-3. **Link check passes.** `pnpm lint:links` exits 0 (no broken internal links).
+3. **Link check passes.** `bun run lint:links` exits 0 (no broken internal links).
 
 4. **No relative cross-links in the keiki tree.** Every cross-page link is absolute:
 
@@ -1008,7 +1015,7 @@ Exercise the system and observe specific behaviors (phrase acceptance as observa
    grep -rnE "\]\(\.\.?/" content/docs/keiki && echo "FAIL: relative link present" || echo "OK: links absolute"
    ```
 
-5. **Renders in the sidebar.** Run `pnpm dev`, open `http://localhost:3000/docs/keiki`. The landing
+5. **Renders in the sidebar.** Run `bun run dev`, open `http://localhost:3000/docs/keiki`. The landing
    renders with **no** "in progress" stub, shows the section `<Cards>` index, and renders the keiro
    family `mermaid`. Under **Explanation** the sidebar shows the seven essays in foundations order:
    "why one formalism", "event sourcing and the decider", "finite automata and transducers",
@@ -1053,8 +1060,8 @@ Exercise the system and observe specific behaviors (phrase acceptance as observa
 
 ## Idempotence and Recovery
 
-All steps are file authoring and are safe to repeat: re-running `pnpm typecheck`/`pnpm build`/
-`pnpm lint:links`/`pnpm dev` is idempotent; editing or recreating an `.mdx`/`meta.json`/`.md` file
+All steps are file authoring and are safe to repeat: re-running `bun run typecheck`/`bun run build`/
+`bun run lint:links`/`bun run dev` is idempotent; editing or recreating an `.mdx`/`meta.json`/`.md` file
 simply overwrites it. No database, no app code, and no keiki source is modified by this plan (the
 keiki tree is opened read-only for cross-checking only).
 
@@ -1065,7 +1072,7 @@ Recovery:
 - If the sidebar order or a group is wrong, edit the relevant `meta.json` `pages` array; no rebuild
   of other pages is needed. Never remove the existing `"index"` entry; only append.
 - **The forward links to EP-21's not-yet-authored pages** (`the-symtransducer`,
-  `registers-vs-state`) are the one crawler hazard in EP-20. If `pnpm build` emits a `Failed to
+  `registers-vs-state`) are the one crawler hazard in EP-20. If `bun run build` emits a `Failed to
   fetch` line for either, you wrote them as a live `<Card href>` or a link the crawler follows;
   resolve by phrasing them as plain prose ("EP-21's *the-symtransducer* page continues here") with
   the link target deferred until that page exists, exactly as the walkthrough hub defers its tour
@@ -1096,9 +1103,9 @@ Recovery:
 **Tooling / app (TypeScript, the docs site — TanStack Start static SPA):** fumadocs
 (`fumadocs-core`, `fumadocs-ui`, `fumadocs-mdx`) — MDX content + sidebar from `meta.json`; built-in
 components `Callout`, `Steps`, `Step`, `Cards`, `Card`, `Tabs`, `TypeTable`, `Mermaid` registered in
-`src/components/mdx.tsx`. TanStack Start + Vite — `pnpm dev` = `vite dev`; `pnpm build` =
-`vite build`; `pnpm typecheck` = `fumadocs-mdx && tsc --noEmit`; `pnpm lint:links` = the link
-checker. pnpm + Node 22.
+`src/components/mdx.tsx`. TanStack Start + Vite — `bun run dev` = `vite dev`; `bun run build` =
+`vite build`; `bun run typecheck` = `fumadocs-mdx && tsc --noEmit`; `bun run lint:links` = the link
+checker. legacy package manager + Node 22.
 
 **Files this plan creates** (full repo-relative path + slug + scope line + source/jitsurei anchor):
 
@@ -1174,9 +1181,9 @@ lists the sections + faq — leave it); `content/docs/keiki/{how-to,reference,co
 
 **Postconditions / interfaces that must exist at the end:**
 
-- All nine created files and all five overwritten targets exist; the site builds (`pnpm build`
-  exits 0 with zero crawler warnings), typechecks (`pnpm typecheck` exits 0), and link-checks
-  (`pnpm lint:links` exits 0).
+- All nine created files and all five overwritten targets exist; the site builds (`bun run build`
+  exits 0 with zero crawler warnings), typechecks (`bun run typecheck` exits 0), and link-checks
+  (`bun run lint:links` exits 0).
 - The keiki subtree renders in the sidebar with the seven Explanation essays in foundations order,
   the getting-started tutorial, and the Code Walkthrough hub (href-less cards).
 - Every Haskell name in a snippet is present in the keiki source at `344c4ca` (verified per
@@ -1185,3 +1192,5 @@ lists the sections + faq — leave it); `content/docs/keiki/{how-to,reference,co
 - `docs/keiki-source-sync.md` exists and pins `344c4ca` (Validation 8).
 - The six shared conventions, the canonical jitsurei module map, and the page-to-plan `meta.json`
   assignment summary are stated in this plan so EP-21 … EP-26 can cite EP-20.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

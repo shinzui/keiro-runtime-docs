@@ -14,6 +14,11 @@ import {
 } from "node:fs"
 import { join } from "node:path"
 
+if (process.env.KEIRO_DOCS_SKIP_FONTS === "1") {
+  console.log("[copy-fonts] Skipped optional licensed fonts (KEIRO_DOCS_SKIP_FONTS=1).")
+  process.exit(0)
+}
+
 const repoRoot = process.cwd()
 const targetDir = join(repoRoot, "public", "fonts")
 const FONT_ATTR = process.env.PRAGMATAPRO_ATTR || "pragmataPro"
@@ -102,7 +107,7 @@ mkdirSync(targetDir, { recursive: true })
 for (const { name, m } of ligas) {
   const dest = join(targetDir, `PragmataProMono-${STYLE_NAMES[m[1]]}.otf`)
   // The source lives in the read-only Nix store, so copies inherit mode 0444.
-  // Remove any prior copy and re-chmod so re-runs (predev/prebuild) don't hit
+  // Remove any prior copy and re-chmod so re-runs (dev/build) don't hit
   // EACCES overwriting a read-only destination.
   rmSync(dest, { force: true })
   copyFileSync(join(sourceDir, name), dest)

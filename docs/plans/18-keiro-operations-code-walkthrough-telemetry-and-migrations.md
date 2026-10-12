@@ -5,6 +5,13 @@ title: "Keiro operations code walkthrough: telemetry and migrations"
 kind: exec-plan
 created_at: 2026-06-02T04:47:38Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro operations code walkthrough: telemetry and migrations
@@ -54,8 +61,8 @@ end to end. The tour explains:
   and the `keiro-migrate` CLI.
 
 You can see it working from the docs repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`:
-`pnpm build` prerenders the new pages with **zero** crawler warnings, `pnpm lint:links` exits 0, and
-browsing `http://localhost:3000/docs/keiro/walkthrough/operations/00-start-here` (via `pnpm dev`)
+`bun run build` prerenders the new pages with **zero** crawler warnings, `bun run lint:links` exits 0, and
+browsing `http://localhost:3000/docs/keiro/walkthrough/operations/00-start-here` (via `bun run dev`)
 shows the tour in the sidebar with its three chapters in order. This tour does **not** re-document
 the EP-12 telemetry/migrations *reference* pages — it **links** to them and walks the source instead.
 
@@ -92,7 +99,7 @@ This section must always reflect the actual current state of the work.
       load-bearing), the four runners (`runCoddLogger` + `applyMigrations`/`applyMigrationsNoCheck`,
       `VerifySchemas`, the `DiffTime` timeout), idempotency (codd ledger + `IF NOT EXISTS`), the
       `keiro-migrate` CLI dispatch on `KEIRO_MIGRATE_NO_CHECK`, and the five-table map.
-- [x] M5. Self-verify (no whole-tree gate — EP-19 owns that) — `pnpm typecheck` clean (fumadocs-mdx
+- [x] M5. Self-verify (no whole-tree gate — EP-19 owns that) — `bun run typecheck` clean (fumadocs-mdx
       parses all four pages; `tsc --noEmit` clean); no relative links under the subdir; no bare
       opening fences (27 tagged fences: 24 haskell, 1 mermaid, 2 text); every quoted binding/table
       confirmed in keiro source at pin `94c85e2`; all internal links from the subdir resolve;
@@ -201,7 +208,7 @@ Compare the result against the original purpose.
 **2026-06-02 — tour authored and self-verified.** The operations tour ships as planned: a
 `00-start-here.mdx` hub plus three chapters under `content/docs/keiro/walkthrough/operations/`, with
 `meta.json` listing the four slugs in order and `"operations"` appended to `walkthrough/meta.json`.
-All four pages compile (`pnpm typecheck` clean). Every Haskell identifier and SQL table/index quoted
+All four pages compile (`bun run typecheck` clean). Every Haskell identifier and SQL table/index quoted
 in a snippet was cross-checked against the keiro source at pin `94c85e2`; the telemetry keys are
 documented as **imported/re-exported** from `OpenTelemetry.SemanticConventions` (not vendored), the
 command cycle is phrased Hydrate → Transduce → Append, all fences are language-tagged, all links are
@@ -214,7 +221,7 @@ with kinds/names and call sites; the imported-vs-bespoke key split with the *why
 kiroku-then-keiro → four runners → idempotency → `keiro-migrate` CLI) and the three-files→five-tables
 map with subsystem cross-links.
 
-**Gaps / deferred to EP-19.** The whole-tree `pnpm build` crawler gate and `pnpm lint:links` exit-0
+**Gaps / deferred to EP-19.** The whole-tree `bun run build` crawler gate and `bun run lint:links` exit-0
 were *not* run to green here because sibling tours (command-cycle, integration, workflow, read-side)
 are mid-authoring and currently carry their own broken links; `scripts/check-doc-links.mjs` confirms
 none of those originate from `operations/`. EP-19 owns the expanded-tree gate and the two hub
@@ -232,9 +239,9 @@ working tree can complete the work.
 You author MDX content files under `content/docs/keiro/` in **this** repository,
 `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`. The site is a **fumadocs** documentation app
 (fumadocs-ui 16.9.3, fumadocs-mdx 15.0.10) on **TanStack Start as a static SPA** (React 19 + Vite,
-TypeScript), built and served with **pnpm** on **Node 22** inside the Nix dev shell (`nix develop`).
-`pnpm dev` runs `vite dev`; `pnpm build` runs `vite build` and emits a static SPA under
-`.output/public`; `pnpm start` serves it.
+TypeScript), built and served with **legacy package manager** on **Node 22** inside the Nix dev shell (`nix develop`).
+`bun run dev` runs `vite dev`; `bun run build` runs `vite build` and emits a static SPA under
+`.output/public`; `bun run start` serves it.
 
 Each directory under `content/docs/` has a `meta.json` whose `pages` array lists the child page slugs
 (a *slug* is the filename without its `.mdx` extension, or a subdirectory name) **in sidebar display
@@ -539,11 +546,11 @@ The pages this plan creates, all under `content/docs/keiro/walkthrough/operation
 
 ### Milestones
 
-- **M0 — Preconditions.** Confirm Node 22 + pnpm on PATH and `node_modules` present; confirm EP-7 and
+- **M0 — Preconditions.** Confirm Node 22 + legacy package manager on PATH and `node_modules` present; confirm EP-7 and
   EP-12 are Complete (the keiro tree, `walkthrough/index.mdx`, `walkthrough/meta.json`,
   `reference/telemetry.mdx`, `reference/migrations-and-schema.mdx`, and the four existing tours all
   exist); confirm the keiro source resolves and matches pin `94c85e2`. At the end, a baseline
-  `pnpm typecheck` and `pnpm build` both succeed before adding a page. Acceptance: both commands exit
+  `bun run typecheck` and `bun run build` both succeed before adding a page. Acceptance: both commands exit
   0 on the unmodified tree; the precondition `test` lines all print "present".
 
 - **M1 — Scaffold + hub.** Create the directory `content/docs/keiro/walkthrough/operations/`, its
@@ -553,7 +560,7 @@ The pages this plan creates, all under `content/docs/keiro/walkthrough/operation
   `<Cards>` index, a `text` fence listing the source files, a `<Callout type="warn">` repeating the
   partial-coverage note, and closing cross-links to the two reference pages + the two how-tos.
   **Append `"operations"`** to `content/docs/keiro/walkthrough/meta.json`. **Do not** touch
-  `walkthrough/index.mdx`. Acceptance: `pnpm build` clean (zero crawler warnings); the tour appears in
+  `walkthrough/index.mdx`. Acceptance: `bun run build` clean (zero crawler warnings); the tour appears in
   the sidebar; the `<Card href>`s in `00-start-here` resolve only to pages that exist (chapters 01–03
   created in M2–M4 — until then, author the hub's chapter cards but create the chapter files in the
   same milestone if you prefer to keep every intermediate build green; the safe order is M1 hub +
@@ -593,8 +600,8 @@ The pages this plan creates, all under `content/docs/keiro/walkthrough/operation
   `how-to/run-migrations`. Acceptance: function/CLI names and the five table names match source; build
   clean.
 
-- **M5 — Gate.** From the docs repo root: `pnpm typecheck` clean; `pnpm build` exits 0 with **no**
-  `[unhandledRejection]`/`Failed to fetch` line; `pnpm lint:links` exit 0; no relative `./`/`../`
+- **M5 — Gate.** From the docs repo root: `bun run typecheck` clean; `bun run build` exits 0 with **no**
+  `[unhandledRejection]`/`Failed to fetch` line; `bun run lint:links` exit 0; no relative `./`/`../`
   links under the new subdir; the depth checklist (Validation §7) satisfied; confirm **no** hub
   `<Card href>` was added to `walkthrough/index.mdx`. Acceptance: see Validation and Acceptance.
 
@@ -602,12 +609,12 @@ The pages this plan creates, all under `content/docs/keiro/walkthrough/operation
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless stated
-otherwise. The toolchain is **pnpm** on **Node 22** inside the Nix dev shell.
+otherwise. The toolchain is **legacy package manager** on **Node 22** inside the Nix dev shell.
 
 ### M0 — Preconditions
 
 ```bash
-nix develop                       # enter the dev shell (pnpm + Node 22)
+nix develop                       # enter the dev shell (legacy package manager + Node 22)
 
 # EP-7 + EP-12 must be Complete: these must all exist.
 test -f content/docs/keiro/walkthrough/index.mdx          && echo "walkthrough hub present"
@@ -619,9 +626,9 @@ for d in command-cycle read-side workflow integration; do
 done
 test ! -d content/docs/keiro/walkthrough/operations && echo "operations tour not yet created (expected)"
 
-pnpm install
-pnpm typecheck
-pnpm build
+bun install
+bun run typecheck
+bun run build
 ```
 
 Expected (abridged):
@@ -757,7 +764,7 @@ so the hub's `<Card href>`s never dangle, then fill them in M2–M4. A valid stu
 plus a one-line body. Build:
 
 ```bash
-pnpm typecheck && pnpm build
+bun run typecheck && bun run build
 ```
 
 Expected tail: `✓ built in <N>s` with no `[unhandledRejection]`/`Failed to fetch` line.
@@ -774,7 +781,7 @@ grep -nE "withProducerSpan|withConsumerSpan|withCommandSpan|withRemoteParent|inS
   "$KEIRO/keiro/src/Keiro/Telemetry.hs"
 grep -nE "withProducerSpan" "$KEIRO/keiro/src/Keiro/Outbox.hs"
 grep -nE "withCommandSpan|resolvedStreamName" "$KEIRO/keiro/src/Keiro/Command.hs"
-pnpm typecheck && pnpm build
+bun run typecheck && bun run build
 ```
 
 Expected: each name prints at least one line; build clean.
@@ -790,7 +797,7 @@ grep -nE "keiro_stream_name|keiro_retry_attempt|keiro_events_appended" "$KEIRO/k
 grep -nE "messaging_operation_type|db_system_name|db_namespace|db_collection_name|db_operation_name" \
   "$KEIRO/keiro/src/Keiro/Telemetry.hs"
 grep -nE "recordCommandOutcome|commandErrorClass|error_type|setStatus" "$KEIRO/keiro/src/Keiro/Command.hs"
-pnpm typecheck && pnpm build
+bun run typecheck && bun run build
 ```
 
 Expected: each name prints; build clean. Confirm the partial-coverage note is on the page:
@@ -815,7 +822,7 @@ grep -nE "KEIRO_MIGRATE_NO_CHECK|runAllKeiroMigrations|LaxCheck|secondsToDiffTim
   "$KEIRO/keiro-migrations/app/Main.hs"
 grep -rnE "CREATE TABLE IF NOT EXISTS keiro_(snapshots|read_models|timers|outbox|inbox)" \
   "$KEIRO/keiro-migrations/sql-migrations"
-pnpm typecheck && pnpm build
+bun run typecheck && bun run build
 ```
 
 Expected: the migration functions, the CLI dispatch, and all five `CREATE TABLE` lines print; build
@@ -824,9 +831,9 @@ clean.
 ### M5 — Gate
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm lint:links
+bun run typecheck
+bun run build
+bun run lint:links
 ```
 
 Expected (abridged):
@@ -836,7 +843,7 @@ Expected (abridged):
 ✓ doc links OK — checked <N> files, no broken internal links.
 ```
 
-The `pnpm build` output must contain **no** `[unhandledRejection]`/`Failed to fetch` line. Confirm no
+The `bun run build` output must contain **no** `[unhandledRejection]`/`Failed to fetch` line. Confirm no
 relative links and no premature hub card:
 
 ```bash
@@ -851,8 +858,8 @@ Expected: `no relative links` and `no premature hub card (correct)`.
 
 Exercise the system and observe specific behaviors:
 
-1. **The new tour builds and renders.** After M1–M4, `pnpm typecheck` and `pnpm build` exit 0.
-   Browsing `http://localhost:3000/docs/keiro/walkthrough/operations/00-start-here` (via `pnpm dev`)
+1. **The new tour builds and renders.** After M1–M4, `bun run typecheck` and `bun run build` exit 0.
+   Browsing `http://localhost:3000/docs/keiro/walkthrough/operations/00-start-here` (via `bun run dev`)
    shows the tour in the sidebar under **Code Walkthrough**, after the four existing tours, with its
    three chapters listed in `meta.json` order. Each chapter opens without a 404 and shows its
    frontmatter title.
@@ -860,14 +867,14 @@ Exercise the system and observe specific behaviors:
 2. **The hub diagram and chapter cards resolve.** The `00-start-here` page shows the `mermaid` diagram
    and three `<Card>`s; each card navigates to an existing chapter page (no dangling `href`).
 
-3. **Whole-tree build is clean.** `pnpm build` exits 0 and its output contains no
+3. **Whole-tree build is clean.** `bun run build` exits 0 and its output contains no
    `[unhandledRejection]` and no `Failed to fetch` line. Evidence to capture:
 
    ```text
    ✓ built in <N>s
    ```
 
-4. **Link-check passes; no relative links.** `pnpm lint:links` prints
+4. **Link-check passes; no relative links.** `bun run lint:links` prints
    `✓ doc links OK — checked <N> files, no broken internal links.`. No relative `./`/`../` links exist
    under the new subdir:
 
@@ -935,8 +942,8 @@ Exercise the system and observe specific behaviors:
 
 ## Idempotence and Recovery
 
-All steps are file authoring and are safe to repeat. Re-running `pnpm typecheck`/`pnpm build`/
-`pnpm lint:links` is idempotent. Creating or rewriting an `.mdx`/`meta.json` overwrites it; re-running
+All steps are file authoring and are safe to repeat. Re-running `bun run typecheck`/`bun run build`/
+`bun run lint:links` is idempotent. Creating or rewriting an `.mdx`/`meta.json` overwrites it; re-running
 a milestone simply rewrites the same files. No database, no keiro source, and no other plan's pages are
 modified — the keiro tree is opened read-only for cross-checking, and the only shared file touched is
 `content/docs/keiro/walkthrough/meta.json`, to which `"operations"` is **appended** (never reordering
@@ -945,12 +952,12 @@ or removing a sibling — EP-19 owns ordering).
 Recovery:
 - If a page breaks the build, the error names the offending `.mdx` file and line; the usual causes are
   an untagged code fence, a stray `<` in prose, or a link to a non-existent route. Fix and rebuild.
-- If `pnpm build` emits `[unhandledRejection]`/`Failed to fetch`, a `<Card href>` or link points at a
+- If `bun run build` emits `[unhandledRejection]`/`Failed to fetch`, a `<Card href>` or link points at a
   route that does not exist — most often a chapter card whose file was not created yet. Create the
   missing chapter (a valid stub is enough to clear the crawler) and rebuild. **Never** fix this by
   adding the operations card to `walkthrough/index.mdx` — that file belongs to EP-19; adding it here
   would create exactly the premature-`<Card href>` failure the contract forbids.
-- If `pnpm lint:links` fails, it prints each broken `file -> target`; fix the link to an existing
+- If `bun run lint:links` fails, it prints each broken `file -> target`; fix the link to an existing
   `/docs/keiro/...` page (absolute, never relative) and re-run.
 - If a snippet diverges from the source at pin `94c85e2`, fix the snippet (the source is
   authoritative) and record the divergence in Surprises & Discoveries.
@@ -986,10 +993,10 @@ Recovery:
 - fumadocs (`fumadocs-core`/`fumadocs-ui` 16.9.3, `fumadocs-mdx` 15.0.10) — MDX + sidebar from
   `meta.json`; components registered globally in `src/components/mdx.tsx` (`Callout`, `Cards`, `Card`,
   `Steps`, `Tabs`, `TypeTable`) — use bare, no imports.
-- TanStack Start + Vite — `pnpm dev`/`pnpm build`/`pnpm start`; `pnpm typecheck` =
-  `fumadocs-mdx && tsc --noEmit`; `pnpm lint:links` = `node scripts/check-doc-links.mjs && linkinator
-  .output/public …`; `pnpm check` runs the whole chain.
-- pnpm + Node 22 inside the Nix dev shell (`nix develop`).
+- TanStack Start + Vite — `bun run dev`/`bun run build`/`bun run start`; `bun run typecheck` =
+  `fumadocs-mdx && tsc --noEmit`; `bun run lint:links` = `node scripts/check-doc-links.mjs && linkinator
+  .output/public …`; `bun run check` runs the whole chain.
+- legacy package manager + Node 22 inside the Nix dev shell (`nix develop`).
 
 ### Files this plan CREATES / OWNS
 
@@ -1029,7 +1036,7 @@ Recovery:
 
 - The four new files plus the new `meta.json` exist under
   `content/docs/keiro/walkthrough/operations/`; `"operations"` is in `walkthrough/meta.json`.
-- `pnpm typecheck`, `pnpm build`, and `pnpm lint:links` all exit 0; `pnpm build` emits no
+- `bun run typecheck`, `bun run build`, and `bun run lint:links` all exit 0; `bun run build` emits no
   `[unhandledRejection]`/`Failed to fetch` line.
 - No relative links under the new subdir; the command cycle is phrased Hydrate → Transduce → Append.
 - The depth checklist (Validation §7) is satisfied; the partial-coverage honesty note appears in
@@ -1037,3 +1044,5 @@ Recovery:
 - `walkthrough/index.mdx` is unchanged (no premature operations hub card).
 - Every Haskell identifier quoted in a snippet exists in the keiro source at the telemetry pin
   `94c85e2`; the telemetry keys are documented as **imported/re-exported**, not vendored.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

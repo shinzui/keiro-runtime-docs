@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-07-14T15:14:32Z
 intention: "intention_01kxgjsgnse1z9r0w141akd9g2"
 master_plan: "docs/masterplans/6-prepare-keiro-runtime-documentation-for-wider-announcement.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Prepare announcement navigation compatibility and whole-site release gate
@@ -114,7 +121,7 @@ and navigation integrity.
   range summaries. The jitsurei pointer remains byte-for-byte unchanged. `mori show --full`
   resolves all seven dependencies and ten local documentation references; formatting and whitespace
   checks pass.
-- Milestone 4's automated release gate is implemented and green. `pnpm check` now verifies types,
+- Milestone 4's automated release gate is implemented and green. `bun run check` now verifies types,
   lint, formatting, navigation metadata, the production build, and links; navigation covers 62
   metadata files and all 506 pages, and the internal-link scan reports no broken links. The run has
   the same four pre-existing lint warnings plus the existing production chunk-size warning.
@@ -135,7 +142,7 @@ The site root is `content/docs/index.mdx`; top-level navigation is
 `content/docs/meta.json`. Onboarding is under `content/docs/getting-started/`, library integration
 guides are under `content/docs/integrations/`, and the product trees are keiki, keiro, kiroku,
 shibuya, pgmq, and—after EP-5—pg-migrate. Each directory's `meta.json` lists pages in sidebar order.
-The app is built by Fumadocs/TanStack Start with commands in `package.json`; `pnpm check` currently
+The app is built by Fumadocs/TanStack Start with commands in `package.json`; `bun run check` currently
 runs type generation/checking, lint, formatting, static build, and source/built link checks.
 
 Repository identity and documented dependencies live in `mori.dhall`. It currently describes five
@@ -162,7 +169,7 @@ exactly once in its nearest navigation metadata. Before adding a script, inspect
 equivalent exists, add `scripts/check-doc-navigation.mjs`, a read-only check that ignores
 `content/docs/_templates/`, validates each `meta.json` entry resolves, reports duplicate entries,
 and reports non-index MDX pages omitted from the nearest metadata file. Wire it to `package.json`
-and `pnpm check`.
+and `bun run check`.
 
 
 ## Plan of Work
@@ -199,7 +206,7 @@ changes.
 
 Milestone 4 establishes and runs the release gate. Inspect existing scripts; implement the
 navigation coverage script described in Context only if needed, add a `lint:nav` or equivalent
-package command, and include it in `pnpm check`. Run scoped stale-claim scans for removed keiki
+package command, and include it in `bun run check`. Run scoped stale-claim scans for removed keiki
 Decider APIs, old Codd/hasql-migration runners, old keiro schema locations, old Shibuya handler/app
 APIs, removed PGMQ migration calls, and old DSL syntax. Historical/import explanations may be
 allow-listed with a reason. Run the full site gate, inspect the built navigation/search manually in
@@ -251,7 +258,7 @@ rg -n 'keiro_(snapshots|timers|outbox|inbox)' content/docs/keiro content/docs/in
 Run the complete gate after edits:
 
 ```bash
-pnpm run check
+bun run check
 git diff --check
 mori show --full
 ```
@@ -268,7 +275,7 @@ git diff --check emits no output.
 mori show --full lists pg-migrate and all local documentation references.
 ```
 
-For a manual content check, run `pnpm dev`, open the URL Vite prints, and inspect the landing page,
+For a manual content check, run `bun run dev`, open the URL Vite prints, and inspect the landing page,
 compatibility page, pg-migrate section, representative source walkthroughs, search results, and the
 jitsurei pending-upgrade callout. Stop the server normally after inspection.
 
@@ -287,7 +294,7 @@ the complete docs pass. The jitsurei pointer and subtree must have no diff from 
 
 Stale scans are accepted only when every remaining match is either a conceptual comparison, a
 predecessor-history import instruction, or an explicit upgrade note, and that context is clear on
-the same page. Current setup/tutorial/reference pages must use the new APIs. `pnpm run check`, the
+the same page. Current setup/tutorial/reference pages must use the new APIs. `bun run check`, the
 navigation check, `git diff --check`, and `mori show --full` must succeed. The manual preview must
 show working sidebars, search hits for keiki/keiro/kiroku/shibuya/pgmq/pg-migrate, and no visibly
 broken MDX component or diagram.
@@ -312,7 +319,7 @@ and every source-sync pointer.
 
 The site interfaces are Fumadocs MDX, nearest-directory `meta.json` navigation, TanStack static
 build output, the source link checker, and mori's project/doc registry. No upstream production API
-changes are authorized. The completed coordination interface is a single `pnpm run check` quality
+changes are authorized. The completed coordination interface is a single `bun run check` quality
 gate and a consistent public discovery path over all completed domain docs.
 
 
@@ -321,3 +328,5 @@ gate and a consistent public discovery path over all completed domain docs.
 2026-07-14T20:00:07Z — Recorded the third consecutive unavailable-browser result and the resulting
 external blocker. Milestone 4 remains open because automated evidence cannot prove the explicitly
 required rendered sidebar, search, and MDX-component behavior.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

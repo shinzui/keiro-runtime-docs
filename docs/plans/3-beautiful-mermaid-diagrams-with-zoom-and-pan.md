@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-05-30T20:05:53Z
 intention: "intention_01ksx5mf7qe2ht659e4kr9w2t0"
 master_plan: "docs/masterplans/1-keiro-runtime-docs-infrastructure-and-kiroku-foundation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Beautiful Mermaid diagrams with zoom and pan
@@ -20,7 +27,7 @@ This repository, `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`, is a docume
 website built with **fumadocs** (a documentation framework that renders **MDX**, which is
 Markdown with embedded React components) running on **TanStack Start** — a React full-stack
 framework built on **Vite** and **TanStack Router** — configured here as a **static SPA**
-(single-page app): `pnpm build` prerenders the docs to plain HTML/JS under `.output/public`,
+(single-page app): `bun run build` prerenders the docs to plain HTML/JS under `.output/public`,
 which is served as static files (no Node server at runtime). The documentation describes a
 family of four Haskell libraries, and those docs lean heavily on architecture diagrams
 (event flows, stream/category relationships, projection pipelines). Today, if an author
@@ -42,7 +49,7 @@ in its other docs sites (keiki-docs and mina-ui). It exports a function `renderM
 that takes Mermaid source text plus a small theme object and returns a complete SVG string
 with a warm, hand-tuned palette — much nicer than stock Mermaid.
 
-Concretely, you can see it working when, after `pnpm dev` (or after `pnpm build && pnpm start`
+Concretely, you can see it working when, after `bun run dev` (or after `bun run build && bun run start`
 for the static build), you open a page containing this exact block and the diagram appears
 with a control bar (`+`, `-`, `Fit`, `Expand`), responds to the mouse wheel by zooming toward
 the cursor, drags to pan, and re-colors itself when you toggle the site between light and dark
@@ -71,8 +78,8 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 This section must always reflect the actual current state of the work.
 
 - [x] Milestone 0 — Verify prerequisites: scaffold present (`src/components/mdx.tsx`,
-      `source.config.ts`, `src/styles/app.css`, `package.json` with pnpm scripts). Confirmed all
-      four seam files exist; `pnpm` + Node 22 available in the dev shell. _(2026-05-30)_
+      `source.config.ts`, `src/styles/app.css`, `package.json` with legacy package manager scripts). Confirmed all
+      four seam files exist; `legacy package manager` + Node 22 available in the dev shell. _(2026-05-30)_
 - [x] Milestone 1 — Add the `beautiful-mermaid` dependency and prove `renderMermaidSVG`
       produces an SVG (throwaway script), confirming the API shape before wiring it in. Added
       `beautiful-mermaid@1.1.3`; probe printed an `<svg … viewBox="0 0 129.072 175.8" …>`
@@ -96,14 +103,14 @@ This section must always reflect the actual current state of the work.
       after Plan B's font rules. _(2026-05-30)_
 - [x] Milestone 5 — Add a sample diagram page and verify (automated gates). Added
       `content/docs/diagram-demo.mdx` (flowchart + sequence) and registered it in
-      `content/docs/meta.json`. `pnpm typecheck` clean; `pnpm build` prerenders `/docs/diagram-demo`
+      `content/docs/meta.json`. `bun run typecheck` clean; `bun run build` prerenders `/docs/diagram-demo`
       with no `window`/`document` crash; the compiled MDX renders `(jsx)(Mermaid,{chart:"flowchart
-      TD\n…"})` with zero `shiki`/`language-mermaid` strings (fence intercepted); `pnpm start`
+      TD\n…"})` with zero `shiki`/`language-mermaid` strings (fence intercepted); `bun run start`
       serves `/docs/diagram-demo`, `/docs/diagram-demo.md`, `/`, `/docs` all 200. _(2026-05-30)_
 - [ ] Milestone 5 (remaining) — **Human browser pass.** The visual/interactive acceptance
       (wheel-zoom toward cursor, drag-pan, `Fit`, `Expand`/`Escape`, light↔dark re-render, the
       malformed-diagram error box) requires a real browser and was not automatable here (no
-      headless browser binary available in this environment). Run `pnpm dev` and walk the seven
+      headless browser binary available in this environment). Run `bun run dev` and walk the seven
       checks in Milestone 5 to close this out.
 
 
@@ -125,7 +132,7 @@ implementation. Provide concise evidence.
   both `viewBox` and explicit `width`/`height`. The `viewBox` is present, so the zoom/pan model
   (mutating `viewBox`) works without the width/height fallback noted in Recovery. _(2026-05-30)_
 - **The plain-array `rehypePlugins: [rehypeMermaid]` form did NOT intercept the fence — the
-  function form was required.** With the array form, `pnpm build` compiled both ` ```mermaid `
+  function form was required.** With the array form, `bun run build` compiled both ` ```mermaid `
   fences into Shiki-highlighted `<pre class="shiki shiki-themes github-light github-dark">`
   blocks (verified by reading the compiled module
   `.output/server/_ssr/diagram-demo-*.mjs`), not `<Mermaid>` components. The cause is exactly
@@ -146,7 +153,7 @@ Record every decision made while working on the plan.
 - Decision: Render the diagram in the browser rather than on the server, and guard against the
   prerender pass.
   Rationale: `beautiful-mermaid` (and the underlying `mermaid`) measure text to lay out nodes,
-  which is only reliable in a real DOM. This site is a static SPA: `pnpm build` runs a
+  which is only reliable in a real DOM. This site is a static SPA: `bun run build` runs a
   prerender pass (TanStack Start `spa.prerender` in `vite.config.ts`) where there is no DOM,
   and the docs page already streams MDX into the browser through a client loader
   (`browserCollections.docs.createClientLoader` / `clientLoader.useContent`, see
@@ -224,10 +231,10 @@ the automated gates:
 - `Mermaid` registered in `src/components/mdx.tsx`; `.diagram*` CSS appended to
   `src/styles/app.css`; demo page added at `content/docs/diagram-demo.mdx`.
 
-Verification evidence: `pnpm typecheck` clean; `pnpm build` prerenders `/docs/diagram-demo`
+Verification evidence: `bun run typecheck` clean; `bun run build` prerenders `/docs/diagram-demo`
 without a `window`/`document` crash; the compiled MDX module emits
 `(jsx)(Mermaid,{chart:"flowchart TD\n…"})` with **zero** `shiki`/`language-mermaid` strings
-(the fence is intercepted, not highlighted); `pnpm start` serves all routes 200.
+(the fence is intercepted, not highlighted); `bun run start` serves all routes 200.
 
 **Key lesson:** plugin ordering was the one real trap. fumadocs' built-in Shiki `rehypeCode`
 step (Plan B) claims the `language-mermaid` block first unless `rehypeMermaid` is prepended via
@@ -246,7 +253,7 @@ risk is low — but the on-screen confirmation remains open.
 You are working in `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`, a TanStack Start +
 fumadocs documentation site (a static SPA built with Vite). Everything in this plan assumes
 you run commands from that directory, inside the project's Nix dev shell (`nix develop`,
-which provides pnpm + Node 22). The app's source lives under `src/`: routes (pages) under
+which provides legacy package manager + Node 22). The app's source lives under `src/`: routes (pages) under
 `src/routes/` (TanStack Router file-based routing — e.g. the docs page is `src/routes/docs/$.tsx`),
 shared helpers under `src/lib/`, components under `src/components/`, and styles under
 `src/styles/`. Markdown/MDX content lives under `content/docs/`. The Vite build pipeline is
@@ -256,9 +263,9 @@ Definitions you will need throughout:
 
 - **TanStack Start (static SPA)**: a React framework on Vite + TanStack Router. Here it is
   configured (`vite.config.ts`, the `tanstackStart({ spa: { enabled: true, prerender: {...} } })`
-  plugin) to prerender pages to static HTML/JS under `.output/public`. `pnpm dev` runs the Vite
-  dev server (`vite dev`) at `http://localhost:3000`; `pnpm build` (`vite build`) produces the
-  static output; `pnpm start` serves that output (`serve .output/public`).
+  plugin) to prerender pages to static HTML/JS under `.output/public`. `bun run dev` runs the Vite
+  dev server (`vite dev`) at `http://localhost:3000`; `bun run build` (`vite build`) produces the
+  static output; `bun run start` serves that output (`serve .output/public`).
 - **fumadocs**: a documentation framework that compiles `.mdx` files into pages. Its build-time
   configuration lives in `source.config.ts` (read by the `fumadocs-mdx/vite` plugin); its
   runtime component registry lives in `src/components/mdx.tsx`. Installed versions:
@@ -342,7 +349,7 @@ Scope: make sure the scaffold this plan extends exists, so later edits have some
 attach to. Nothing new is created. At the end you will have confirmed the seam files exist
 and the dev server runs.
 
-Enter the Nix dev shell first (it provides pnpm + Node 22 and runs `pnpm install` on entry):
+Enter the Nix dev shell first (it provides legacy package manager + Node 22 and runs `bun install` on entry):
 
 ```bash
 nix develop
@@ -357,11 +364,11 @@ ls src/components/mdx.tsx source.config.ts src/styles/app.css package.json
 You must see all four. Then start the dev server and open the site:
 
 ```bash
-pnpm install
-pnpm dev
+bun install
+bun run dev
 ```
 
-Acceptance: `pnpm dev` prints a local URL (`http://localhost:3000`, configured via
+Acceptance: `bun run dev` prints a local URL (`http://localhost:3000`, configured via
 `server.port` in `vite.config.ts`) and visiting `http://localhost:3000/docs` shows a styled,
 navigable (if empty) docs site. If `src/components/mdx.tsx` does not exist, implement
 `docs/plans/1-scaffold-the-fumadocs-documentation-app.md` first and return here.
@@ -380,7 +387,7 @@ The version to install matches the team's other sites exactly:
 Install it from the repo root:
 
 ```bash
-pnpm add beautiful-mermaid@^1.1.3
+bun add beautiful-mermaid@^1.1.3
 ```
 
 This adds the dependency to `package.json`. After install, `package.json`'s `dependencies`
@@ -549,7 +556,7 @@ fumadocs project (it ships with the MDX/rehype toolchain). If TypeScript cannot 
 types, add the dev dependency explicitly:
 
 ```bash
-pnpm add -D @types/hast
+bun add -D @types/hast
 ```
 
 The import path is relative (`./src/lib/rehype-mermaid`) because `source.config.ts` is read by
@@ -620,16 +627,16 @@ against fumadocs-mdx 15.0.10 that `mdxOptions.rehypePlugins` is typed `ResolvePl
 accepts either an array or a function that receives and returns the default plugin array.
 
 Note: fumadocs-mdx regenerates the `.source/` directory (the virtual `collections/*` modules)
-from `source.config.ts` on `pnpm dev`/`pnpm build` and via the `postinstall`/`typecheck`
+from `source.config.ts` on `bun run dev`/`bun run build` and via the `postinstall`/`typecheck`
 (`fumadocs-mdx`) script. If your config edit does not seem to take effect, regenerate it.
 
 Acceptance for this milestone is checked together with Milestone 3 (you need the component
-to see anything render). After this edit, `pnpm dev` must still compile without errors (the
+to see anything render). After this edit, `bun run dev` must still compile without errors (the
 `Mermaid` element will warn as an unknown component until Milestone 4 registers it — that is
 expected and harmless at this point). Run:
 
 ```bash
-pnpm dev
+bun run dev
 ```
 
 and confirm the server starts without a build error referencing `rehype-mermaid`.
@@ -1002,7 +1009,7 @@ Important implementation notes for the reader:
 - All browser work is inside `useEffect`: `await import('beautiful-mermaid')` and every DOM
   access run only after the component mounts in the browser. During render the component returns
   only the static figure shell and a "Rendering diagram…" placeholder, so the static prerender
-  pass (`pnpm build`) never executes browser-only code. This is the TanStack Start replacement
+  pass (`bun run build`) never executes browser-only code. This is the TanStack Start replacement
   for Next.js' `"use client"` boundary.
 - `await import('beautiful-mermaid')` (a dynamic import) keeps the diagram renderer out of the
   initial page bundle; it loads only when a diagram is on the page.
@@ -1019,12 +1026,12 @@ For now, ensure the file type-checks (the project's `typecheck` script first reg
 `.source/` collections, then runs `tsc`):
 
 ```bash
-pnpm typecheck
+bun run typecheck
 ```
 
 It should report no errors in `src/components/mermaid.tsx` (errors about `Mermaid` being an
 unknown JSX tag elsewhere are resolved in Milestone 4). If you prefer to run only the compiler,
-`pnpm exec tsc --noEmit` works too.
+`bun x tsc --noEmit` works too.
 
 
 ### Milestone 4 — Register the component and add the diagram CSS
@@ -1230,7 +1237,7 @@ body:has(.diagram.expanded) {
 }
 ```
 
-Acceptance: after this milestone, restart `pnpm dev`, open a page that contains a mermaid
+Acceptance: after this milestone, restart `bun run dev`, open a page that contains a mermaid
 fence (next milestone adds one), and the diagram appears with the control bar.
 
 
@@ -1288,7 +1295,7 @@ the existing `pages` array (keep `title` and do not drop existing entries):
 Now run the full verification.
 
 ```bash
-pnpm dev
+bun run dev
 ```
 
 Open `http://localhost:3000/docs/diagram-demo` and verify, in this order:
@@ -1322,39 +1329,39 @@ Also run the type/build gates to confirm nothing regressed, then verify against 
 static build (not just the dev server):
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm start
+bun run typecheck
+bun run build
+bun run start
 ```
 
-`pnpm typecheck` (`fumadocs-mdx && tsc --noEmit`) must report no errors. `pnpm build`
+`bun run typecheck` (`fumadocs-mdx && tsc --noEmit`) must report no errors. `bun run build`
 (`vite build`) must complete and prerender the SPA into `.output/public`, including
 `/docs/diagram-demo` (the `tanstackStart` plugin in `vite.config.ts` prerenders `/docs` and
-crawls links). `pnpm start` (`serve .output/public`) then serves that static output; open the
+crawls links). `bun run start` (`serve .output/public`) then serves that static output; open the
 served URL's `/docs/diagram-demo` and confirm the diagram still renders and is interactive when
 loaded from the static build. This is the important SPA check: MDX (and the `Mermaid`
-component) renders in the browser, so a diagram that works under `pnpm dev` must also work when
+component) renders in the browser, so a diagram that works under `bun run dev` must also work when
 served as static files with no Node server.
 
 
 ## Concrete Steps
 
 All commands run from `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`, inside the Nix dev
-shell (`nix develop`, which provides pnpm + Node 22).
+shell (`nix develop`, which provides legacy package manager + Node 22).
 
 ```bash
 # 0. Prerequisites (inside `nix develop`)
 ls src/components/mdx.tsx source.config.ts src/styles/app.css package.json
-pnpm install
+bun install
 
 # 1. Dependency + API probe
-pnpm add beautiful-mermaid@^1.1.3
+bun add beautiful-mermaid@^1.1.3
 # create scripts/mermaid-probe.mjs (see Milestone 1), then:
 node scripts/mermaid-probe.mjs            # expect: prints <svg ...; "contains viewBox: true"
 rm scripts/mermaid-probe.mjs
 
 # (only if tsc cannot find hast types)
-pnpm add -D @types/hast
+bun add -D @types/hast
 
 # 2. Create src/lib/rehype-mermaid.ts and edit source.config.ts (merge mdxOptions.rehypePlugins)
 # 3. Create src/components/mermaid.tsx
@@ -1362,13 +1369,13 @@ pnpm add -D @types/hast
 # 5. Create content/docs/diagram-demo.mdx and update content/docs/meta.json
 
 # Verify
-pnpm typecheck                            # fumadocs-mdx && tsc --noEmit; expect: no errors
-pnpm dev                                  # open http://localhost:3000/docs/diagram-demo
-pnpm build                                # vite build; prerenders SPA to .output/public
-pnpm start                                # serve .output/public; re-check the served page
+bun run typecheck                            # fumadocs-mdx && tsc --noEmit; expect: no errors
+bun run dev                                  # open http://localhost:3000/docs/diagram-demo
+bun run build                                # vite build; prerenders SPA to .output/public
+bun run start                                # serve .output/public; re-check the served page
 ```
 
-Expected `pnpm add` transcript (abridged):
+Expected `bun add` transcript (abridged):
 
 ```text
 + beautiful-mermaid 1.1.3
@@ -1399,9 +1406,9 @@ The feature is accepted when all of the following hold on
   palette (the "concrete check": the same diagram is visibly light-on-white in light mode and
   light-on-dark in dark mode).
 - A malformed diagram renders a `diagram-error` box rather than blanking the page.
-- `pnpm typecheck` (`fumadocs-mdx && tsc --noEmit`) reports no type errors.
-- `pnpm build` (`vite build`) completes and prerenders the demo page into `.output/public`,
-  and the same behaviors above hold when the static output is served via `pnpm start` (no Node
+- `bun run typecheck` (`fumadocs-mdx && tsc --noEmit`) reports no type errors.
+- `bun run build` (`vite build`) completes and prerenders the demo page into `.output/public`,
+  and the same behaviors above hold when the static output is served via `bun run start` (no Node
   server) — confirming the diagram renders client-side from the static SPA.
 
 These are user-observable behaviors, not internal attributes; each maps to a specific click
@@ -1410,7 +1417,7 @@ or keystroke described in Milestone 5.
 
 ## Idempotence and Recovery
 
-Every step is safe to re-run. `pnpm add beautiful-mermaid@^1.1.3` is idempotent (re-running
+Every step is safe to re-run. `bun add beautiful-mermaid@^1.1.3` is idempotent (re-running
 leaves the same version). The edits to the three shared files (`source.config.ts`,
 `src/components/mdx.tsx`, `src/styles/app.css`) are additive and guarded: before adding the
 `rehypePlugins` entry, the `Mermaid` import/key, or the CSS block, check whether it is
@@ -1424,9 +1431,9 @@ Recovery if something breaks:
   exists and is imported (relatively, `./src/lib/rehype-mermaid`) in `source.config.ts`, and
   that `Mermaid` is imported in `src/components/mdx.tsx`. fumadocs-mdx generates the
   `collections/*` virtual modules into `.source/`; regenerate them if stale by re-running
-  `pnpm typecheck` (which runs `fumadocs-mdx`) or `rm -rf .source && pnpm dev`. Vite also keeps
+  `bun run typecheck` (which runs `fumadocs-mdx`) or `rm -rf .source && bun run dev`. Vite also keeps
   a cache under `node_modules/.vite`; if a stale build persists, clear it and restart
-  `pnpm dev`.
+  `bun run dev`.
 - Diagram shows as code text: the rehype plugin did not match; confirm the class check in
   `isMermaidPre` (the fence must produce `class="language-mermaid"`), and regenerate `.source/`.
 - Diagram renders but does not zoom/pan: confirm the SVG has a `viewBox` (Milestone 1 probe);
@@ -1441,9 +1448,9 @@ Recovery if something breaks:
 - Build (prerender) error about `window`/`document` is not defined, or `mermaid` failing at
   build time: a browser-only access leaked into render. Confirm every DOM access and the
   `import('beautiful-mermaid')` call live inside `useEffect`, never in the render body — the
-  `pnpm build` prerender pass has no DOM.
+  `bun run build` prerender pass has no DOM.
 
-The new dependency and files are removable with no residue: `pnpm remove beautiful-mermaid`,
+The new dependency and files are removable with no residue: `bun remove beautiful-mermaid`,
 delete the two new source files, revert the three shared-file additions, and delete the demo
 page + its `meta.json` entry.
 
@@ -1503,7 +1510,7 @@ Integration points touched by this plan (described so other plans can reconcile)
 
 This plan was originally written assuming the docs site ran on **Next.js** (App Router). The
 project has since **pivoted to TanStack Start configured as a static SPA** (Vite + TanStack
-Router; `pnpm build` prerenders to `.output/public`, served statically). The scaffold (Plan #1
+Router; `bun run build` prerenders to `.output/public`, served statically). The scaffold (Plan #1
 at `docs/plans/1-scaffold-the-fumadocs-documentation-app.md`) was re-implemented on TanStack
 Start and committed; this plan was rewritten to match. The feature's **intent and scope are
 unchanged** — port mina-ui's `MermaidViewer`, intercept ` ```mermaid ` fences with a rehype
@@ -1514,8 +1521,8 @@ framework-specific mechanics changed:
   `app/global.css` → `src/styles/app.css`; `app/layout.tsx` → `src/routes/__root.tsx`;
   `lib/rehype-mermaid.ts` → `src/lib/rehype-mermaid.ts`; `components/mermaid.tsx` →
   `src/components/mermaid.tsx`; `next.config.mjs` → `vite.config.ts`; `next dev` → `vite dev`
-  (`pnpm dev`); `next build` → `vite build` (`pnpm build`, static output in `.output/public`,
-  served via `pnpm start`); import alias `@/...` now resolves to `./src/...`.
+  (`bun run dev`); `next build` → `vite build` (`bun run build`, static output in `.output/public`,
+  served via `bun run start`); import alias `@/...` now resolves to `./src/...`.
 - The MDX registry seam is now `getMDXComponents`/`useMDXComponents` in `src/components/mdx.tsx`
   (with `satisfies MDXComponents` and the `MDXProvidedComponents` global). The docs page
   (`src/routes/docs/$.tsx`) renders MDX **in the browser** through a client loader
@@ -1534,10 +1541,10 @@ framework-specific mechanics changed:
   15.0.10 that `mdxOptions.rehypePlugins` accepts an array or a `(defaults) => plugins` function.
   The `rehype-mermaid` import in `source.config.ts` is relative (`./src/lib/rehype-mermaid`)
   rather than aliased.
-- Verification was re-phrased for the static SPA: `pnpm typecheck` (`fumadocs-mdx && tsc
-  --noEmit`), then `pnpm dev`, then `pnpm build` + `pnpm start` to confirm the diagram renders
+- Verification was re-phrased for the static SPA: `bun run typecheck` (`fumadocs-mdx && tsc
+  --noEmit`), then `bun run dev`, then `bun run build` + `bun run start` to confirm the diagram renders
   and is interactive from the static output. Commands run inside the Nix dev shell (`nix
-  develop`, pnpm + Node 22).
+  develop`, legacy package manager + Node 22).
 - References updated: the scaffold is "Plan #1"
   (`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`); Plan B (Shiki) is referenced by
   path (`docs/plans/2-pragmatapro-font-and-shiki-code-ligatures.md`).
@@ -1546,3 +1553,5 @@ Unchanged: the `beautiful-mermaid@^1.1.3` dependency and `renderMermaidSVG(sourc
 the viewBox-based zoom/pan model and its pure helpers (`centerOf`, `clampViewBox`,
 `zoomViewBoxAt`, confirmed against mina-ui's `MarkdownView.tsx`), the rehype fence-interception
 approach, the light/dark palettes, the diagram CSS, and all user-observable acceptance behaviors.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -5,6 +5,13 @@ title: "Deepen the keiro read-side walkthrough: snapshots and keiki registers"
 kind: exec-plan
 created_at: 2026-06-02T04:47:38Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Deepen the keiro read-side walkthrough: snapshots and keiki registers
@@ -79,8 +86,8 @@ What a reader can do after this change that they could not before:
   honestly-documented gaps (no async worker loop; rebuild is skeleton-only, no shadow-table swap).
 
 You can see the result by running the docs site from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`): `pnpm dev` (i.e. `vite dev`) and browsing
-`http://localhost:3000/docs/keiro/walkthrough/read-side`, or a production build with `pnpm build`.
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`): `bun run dev` (i.e. `vite dev`) and browsing
+`http://localhost:3000/docs/keiro/walkthrough/read-side`, or a production build with `bun run build`.
 The read-side tour appears in the sidebar under "Code Walkthrough" → "Read side" with its new,
 longer chapter list; every Haskell and SQL fence renders; and the snapshot chapters carry the
 register-pair story as their through-line. This is a **content** plan: it edits only MDX and one
@@ -100,7 +107,7 @@ This section must always reflect the actual current state of the work.
       cross-checked). At authoring start the foundation tour
       (`/docs/keiro/walkthrough/foundation/00-start-here`, EP-17) was ABSENT, so foundation links
       were parked; EP-17 then shipped during this work, so the parked links were upgraded to direct
-      foundation slugs (see Surprises). `pnpm build` not run here (central gate per orchestration).
+      foundation slugs (see Surprises). `bun run build` not run here (central gate per orchestration).
 - [x] M1. `00-start-here.mdx` rewritten _(2026-06-02)_ — register-pair framing, five-chapter map,
       the "what a snapshot persists" `<Callout type="warn">`, and an overview `mermaid` of the
       write → read flow. Foundation links now direct (foundation `04`/`05`).
@@ -126,7 +133,7 @@ This section must always reflect the actual current state of the work.
 - [x] M6. `walkthrough/read-side/meta.json` updated to the five-chapter `pages` array; the three
       superseded files deleted (plain `rm`). Local audits clean: no relative links, no untagged
       opening fences (all bare fences are closers; fence counts even), every quoted binding present
-      in pinned source, every cross-link resolves to an existing file. `pnpm build`/`pnpm lint:links`
+      in pinned source, every cross-link resolves to an existing file. `bun run build`/`bun run lint:links`
       deferred to the central gate (not run here per orchestration scope).
 
 
@@ -251,7 +258,7 @@ honestly (ch.04).
 Local audits (the docs build does not compile Haskell, so these are the guard): no relative links; no
 untagged opening fences (all bare fences are closers, fence counts even per file); every quoted
 Haskell/SQL binding verified present in the pinned keiro/keiki source; every cross-link resolves to an
-existing file. `pnpm build` / `pnpm lint:links` were deferred to the central walkthrough gate (EP-19)
+existing file. `bun run build` / `bun run lint:links` were deferred to the central walkthrough gate (EP-19)
 per the orchestration scope and were not run from this plan.
 
 Foundation link: **upgraded** (not left parked) — EP-17 shipped during this work, so the references
@@ -277,7 +284,7 @@ every snippet must match the real source transcribed below.
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is a **fumadocs**
 documentation site (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static
 single-page app** (React + MDX + TypeScript, bundled with **Vite**), built and served with
-**pnpm** on **Node 22**. `pnpm dev` runs `vite dev`; `pnpm build` runs `vite build` and emits a
+**legacy package manager** on **Node 22**. `bun run dev` runs `vite dev`; `bun run build` runs `vite build` and emits a
 static SPA under `.output/public`. Content lives under `content/docs/`. Each directory has a
 `meta.json` whose `pages` array lists child page slugs (and nested directory names) in sidebar
 order. A "page" is an `.mdx` file: YAML frontmatter (`title`, `description`) then an MDX body.
@@ -1005,7 +1012,7 @@ explain *why* the code is shaped that way in prose, in the voice of plan #9's wa
 
 Confirm EP-9's read-side tour exists, the toolchain builds, and the keiro/keiki source is readable
 at the pinned commit. Confirm whether EP-17's `/docs/keiro/walkthrough/foundation/00-start-here`
-page exists yet (it likely does not — park the forward link if so). At the end: `pnpm build` is
+page exists yet (it likely does not — park the forward link if so). At the end: `bun run build` is
 clean on the existing tree.
 
 ### M1 — `00-start-here.mdx` (rewrite)
@@ -1083,7 +1090,7 @@ Acceptance: see Validation and Acceptance.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The toolchain is **pnpm** on **Node 22** (enter the Nix dev shell first if the
+stated otherwise. The toolchain is **legacy package manager** on **Node 22** (enter the Nix dev shell first if the
 repo uses one: `nix develop`).
 
 ### M0 — Preconditions
@@ -1103,8 +1110,8 @@ test -f content/docs/keiro/walkthrough/foundation/00-start-here.mdx \
   || echo "foundation tour ABSENT — park the link on /docs/keiro/walkthrough"
 
 # Baseline build must be clean before you edit.
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Confirm the API names you will quote still exist at the pinned commit (read-only; do not edit the
@@ -1178,8 +1185,8 @@ git rm content/docs/keiro/walkthrough/read-side/01-snapshots-in-the-command-path
 Build and audit:
 
 ```bash
-pnpm build
-pnpm lint:links
+bun run build
+bun run lint:links
 ```
 
 Expected: `✓ built in <N>s` with no `[unhandledRejection]` / `Failed to fetch` lines, and
@@ -1193,7 +1200,7 @@ Acceptance is observable behavior plus a content-depth checklist, not merely "fi
 1. **The site builds and prerenders the five chapters.** From the repo root:
 
    ```bash
-   pnpm build
+   bun run build
    ```
 
    Succeeds (`✓ built`) and prerenders `/docs/keiro/walkthrough/read-side/00-start-here` and the
@@ -1204,7 +1211,7 @@ Acceptance is observable behavior plus a content-depth checklist, not merely "fi
 2. **Zero crawler warnings.**
 
    ```bash
-   pnpm build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
+   bun run build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
    ```
 
    Expected: `no crawler warnings`. (If the foundation forward-link was *not* parked and EP-17 has
@@ -1213,7 +1220,7 @@ Acceptance is observable behavior plus a content-depth checklist, not merely "fi
 3. **Link-check passes.**
 
    ```bash
-   pnpm lint:links
+   bun run lint:links
    ```
 
    Expected: exit 0, no broken or relative internal links.
@@ -1282,7 +1289,7 @@ Acceptance is observable behavior plus a content-depth checklist, not merely "fi
    - [ ] **The rebuild gap is documented honestly.** `rebuild`/`promote`/`abandonRebuild` are
      skeleton status transitions; no shadow-table swap, no automated replay. (Chapter 04.)
 
-8. **End-to-end anchor renders.** Run `pnpm dev`, open
+8. **End-to-end anchor renders.** Run `bun run dev`, open
    `http://localhost:3000/docs/keiro/walkthrough/read-side/01-the-snapshot-codec-and-the-register-pair`,
    and confirm the codec fences render and the read-side tour shows five chapters nested under
    "Code Walkthrough" → "Read side" in the sidebar.
@@ -1293,17 +1300,17 @@ pinned source (check #6 and a manual diff against the files named in Context).
 
 ## Idempotence and Recovery
 
-Authoring and rewriting `.mdx` files is additive and safe to repeat; `pnpm build` and
-`pnpm lint:links` are idempotent. The one ordering hazard is the rename: create the five new
+Authoring and rewriting `.mdx` files is additive and safe to repeat; `bun run build` and
+`bun run lint:links` are idempotent. The one ordering hazard is the rename: create the five new
 chapter files and point `meta.json` at the new slugs **before** deleting the three superseded files
 (`01-snapshots-in-the-command-path.mdx`, the old `02-the-read-model-query-path.mdx`,
 `03-projections.mdx`). If you delete first, the build still exits 0 (a `meta.json` slug pointing at
 a missing file yields a broken sidebar entry, not a crash), but inter-chapter links to the missing
-routes will fail `pnpm lint:links` — re-add or rename, then re-run the gate. A safe sequence: (1)
-write all five new files, (2) update `meta.json`, (3) `pnpm build` + `pnpm lint:links`, (4) only
+routes will fail `bun run lint:links` — re-add or rename, then re-run the gate. A safe sequence: (1)
+write all five new files, (2) update `meta.json`, (3) `bun run build` + `bun run lint:links`, (4) only
 then `git rm` the three old files, (5) re-run the gate.
 
-If `pnpm build` reports `Failed to fetch`, the cause is almost always a relative link or a link to
+If `bun run build` reports `Failed to fetch`, the cause is almost always a relative link or a link to
 a not-yet-shipped page — run acceptance check #4 for relative links and check #2 to find the
 offending route. For the EP-17 foundation forward-link specifically: if EP-17 has not shipped
 `…/foundation/00-start-here`, the link **must** be parked on `/docs/keiro/walkthrough`; un-parking
@@ -1396,3 +1403,5 @@ the two SQL statements); from `Keiro.Snapshot.Policy` — `shouldSnapshot`; from
 `SymTransducer`, `RegFile`, `step`, `applyEvents`, `applyEventStreaming`, `InFlight`, `isFinal`;
 from `Keiki.Shape` — `regFileShapeHash`; from `Keiki.Codec.JSON` — `regFileToJSON`,
 `regFileFromJSON`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

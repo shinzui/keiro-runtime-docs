@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
 intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro read-side documentation: projections, read models, and snapshots
@@ -51,8 +58,8 @@ A reader who finishes this slice can:
   `just jitsurei-snapshots`.
 
 You can see it working by running the docs dev server from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `pnpm dev` (which runs `vite dev`), or a
-production build with `pnpm build` (which runs `vite build` and emits a static single-page app
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `bun run dev` (which runs `vite dev`), or a
+production build with `bun run build` (which runs `vite build` and emits a static single-page app
 under `.output/public`). Browsing `http://localhost:3000/docs/keiro` shows the new read-side
 pages in the sidebar: two explanation essays, three reference pages, one tutorial, four how-to
 guides, and a four-part code walkthrough under `walkthrough/read-side/`. Haskell snippets render
@@ -74,7 +81,7 @@ This section must always reflect the actual current state of the work.
 
 - [x] M0. Preconditions verified — EP-7 Complete (overview/getting-started/jitsurei map +
       `docs/keiro-source-sync.md` exist); toolchain present; `content/docs/keiro/` + its section
-      subdirs exist; baseline `pnpm build` clean; keiro source readable at the pinned commit.
+      subdirs exist; baseline `bun run build` clean; keiro source readable at the pinned commit.
       _(2026-06-01; EP-8 also Complete, so soft-dep links resolve directly.)_
 - [x] M1. Explanation pages authored (`explanation/projections-read-models-and-snapshots.mdx`,
       `explanation/consistency-and-snapshots.mdx`), each with a `mermaid` diagram. _(2026-06-01)_
@@ -89,9 +96,9 @@ This section must always reflect the actual current state of the work.
       `02-the-read-model-query-path.mdx`, `03-projections.mdx`). _(2026-06-01; every excerpt quoted
       verbatim from the pinned source.)_
 - [x] M6. meta.json appends done (section `meta.json`s + `walkthrough/read-side/meta.json` +
-      "read-side" in `walkthrough/meta.json`); full `pnpm build` prerenders new pages with zero
+      "read-side" in `walkthrough/meta.json`); full `bun run build` prerenders new pages with zero
       crawler warnings; Haskell-name and link audits pass. _(2026-06-01: typecheck clean; build
-      exits 0, no crawler warnings; `pnpm lint:links` OK, 111 files; Haskell-name audit 0 missing;
+      exits 0, no crawler warnings; `bun run lint:links` OK, 111 files; Haskell-name audit 0 missing;
       no relative links.)_
 
 
@@ -105,7 +112,7 @@ implementation. Provide concise evidence.
   the real EP-8 slugs (`/docs/keiro/reference/command`, `/docs/keiro/reference/event-stream-and-stream`,
   `/docs/keiro/explanation/the-command-cycle`, and the command-cycle walkthrough chapters
   `…/walkthrough/command-cycle/01-the-command-processor` and `…/02-the-transactional-write-path`)
-  rather than parking on a section landing. Evidence: `pnpm lint:links` checked 111 files with no
+  rather than parking on a section landing. Evidence: `bun run lint:links` checked 111 files with no
   broken internal links, with the precise EP-8 targets in place. (Note for sequencing: this is the
   payoff of doing EP-8 before EP-9 — the soft dep became a non-issue.)
 - **Source confirmed every Decision-Log gotcha exactly.** `waitIfNeeded Strong _ = pure (Right ())`
@@ -178,8 +185,8 @@ working read model and snapshot against the real jitsurei example.
 transitions, no shadow-table swap or automated replay); the snapshot write is synchronous; and
 `Strong`/`Eventual` are identical in `runQuery`. Each is called out in the relevant page.
 
-**Validation:** `pnpm typecheck` clean; `pnpm build` exits 0 prerendering all 14 routes with zero
-crawler warnings; `pnpm lint:links` OK (111 files); no relative cross-links; Haskell-name audit 0
+**Validation:** `bun run typecheck` clean; `bun run build` exits 0 prerendering all 14 routes with zero
+crawler warnings; `bun run lint:links` OK (111 files); no relative cross-links; Haskell-name audit 0
 missing against the source at `3f5dc9c`.
 
 **Lesson:** sequencing a soft dependency *before* the dependent plan erases the forward-link problem
@@ -199,8 +206,8 @@ must match the real source transcribed below.
 
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is a **fumadocs**
 documentation site (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static single-page
-app** (React + MDX + TypeScript, bundled with **Vite**), built and served with **pnpm** on
-**Node 22**. `pnpm dev` runs `vite dev`; `pnpm build` runs `vite build` and emits a static SPA
+app** (React + MDX + TypeScript, bundled with **Vite**), built and served with **legacy package manager** on
+**Node 22**. `bun run dev` runs `vite dev`; `bun run build` runs `vite build` and emits a static SPA
 under `.output/public`. Content lives under `content/docs/`. Each directory has a `meta.json`
 whose `pages` array lists child page slugs (and nested directory names) in sidebar order. A
 "page" is an `.mdx` file: YAML frontmatter (`title`, `description`) followed by an MDX body.
@@ -511,7 +518,7 @@ the references and how-tos lean on.
 
 ### M0 — Preconditions
 
-Confirm EP-7 is Complete and the toolchain/tree are ready. At the end you can run `pnpm build`
+Confirm EP-7 is Complete and the toolchain/tree are ready. At the end you can run `bun run build`
 on the existing keiro tree with zero errors. Acceptance: the build succeeds before you add any
 EP-9 page, and `docs/keiro-source-sync.md` + `content/docs/keiro/index.mdx` exist.
 
@@ -525,7 +532,7 @@ read model). It carries a `mermaid` diagram placing the three primitives on the 
 `Strong == Eventual`-in-`runQuery` gotcha, and how snapshots accelerate hydration (the joint
 `(state, registers)` encoding, shape-hash/codec-version gating, the monotonicity guard). It
 carries a `mermaid` of the hydrate→replay→write-snapshot loop. At the end: both pages build and
-render with their diagrams. Acceptance: `pnpm build` prerenders both with no crawler warnings.
+render with their diagrams. Acceptance: `bun run build` prerenders both with no crawler warnings.
 
 ### M2 — Reference set (3 pages)
 
@@ -581,7 +588,7 @@ Validation and Acceptance.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The toolchain is **pnpm** on **Node 22** (enter the Nix dev shell first if the
+stated otherwise. The toolchain is **legacy package manager** on **Node 22** (enter the Nix dev shell first if the
 repo uses one: `nix develop`).
 
 ### M0 — Preconditions
@@ -597,8 +604,8 @@ for d in explanation reference how-to tutorials walkthrough; do
 done
 
 # Install deps and confirm the existing site builds before you add pages.
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected (abridged):
@@ -921,7 +928,7 @@ appended — other plans may have added their own slugs too, which you must pres
 Then build and audit:
 
 ```bash
-pnpm build
+bun run build
 ```
 
 Expected: `✓ built in <N>s` with no `[unhandledRejection]` / `Failed to fetch` lines.
@@ -934,7 +941,7 @@ Acceptance is observable behavior, not just "files exist".
 1. **The site builds and prerenders the new pages.** From the repo root:
 
    ```bash
-   pnpm build
+   bun run build
    ```
 
    Succeeds (`✓ built`) and the log shows the eleven new routes prerendered:
@@ -949,7 +956,7 @@ Acceptance is observable behavior, not just "files exist".
    lines. Confirm:
 
    ```bash
-   pnpm build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
+   bun run build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
    ```
 
    Expected: `no crawler warnings`.
@@ -991,7 +998,7 @@ Acceptance is observable behavior, not just "files exist".
    (Closing fences are bare ```` ``` ````; eyeball any hits to confirm they are closers, not
    untagged openers.)
 
-6. **The pages render in a browser.** Run `pnpm dev`, open
+6. **The pages render in a browser.** Run `bun run dev`, open
    `http://localhost:3000/docs/keiro/reference/read-model`, and confirm the `<TypeTable>` renders,
    the `Strong == Eventual` warning callout shows, and the read-side walkthrough appears nested
    under "Code Walkthrough" → "Read side" in the sidebar. (Ligature-glyph and Mermaid pan/zoom
@@ -1001,13 +1008,13 @@ Acceptance is observable behavior, not just "files exist".
 
 ## Idempotence and Recovery
 
-Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `pnpm build` is
+Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `bun run build` is
 idempotent. If a page name needs to change, rename the file *and* update the matching `meta.json`
 slug in the same edit — a slug pointing at a missing file (or a file missing from `pages`) yields a
 broken sidebar entry, not a crash, so the build still exits 0; catch it with the browser check
 (acceptance #6).
 
-If `pnpm build` reports a `Failed to fetch` for a link, the cause is almost always a relative link
+If `bun run build` reports a `Failed to fetch` for a link, the cause is almost always a relative link
 or a link to a page that does not exist yet. Run acceptance check #3 to find relative links and
 fix them to absolute paths. For soft-dep links into EP-8 pages whose slug you could not confirm,
 point at the section landing (`/docs/keiro/reference` or `/docs/keiro/explanation`) until EP-8
@@ -1080,3 +1087,5 @@ source; full signatures are in Context): from `Keiro.Projection` — `InlineProj
 `SnapshotSeed`, `hydrateWithSnapshot`, `writeSnapshot`; from `Keiro.Snapshot.Codec` —
 `defaultStateCodec`; from `Keiro.Snapshot.Policy` — `shouldSnapshot`; from `Keiro.Snapshot.Schema`
 — `SnapshotRow`, `SnapshotWrite`, `lookupSnapshot`, `writeSnapshotRow`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

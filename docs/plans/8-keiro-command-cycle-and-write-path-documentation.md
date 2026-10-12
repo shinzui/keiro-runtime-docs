@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
 intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro command cycle and write-path documentation
@@ -75,8 +82,8 @@ A reader who finishes this slice can:
   result. The worked example is the `jitsurei` `pagingRouter`.
 
 You can see it working by running the docs dev server from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `pnpm dev` (which runs `vite dev`), or a
-production build with `pnpm build` (which runs `vite build` and emits a static single-page app
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `bun run dev` (which runs `vite dev`), or a
+production build with `bun run build` (which runs `vite build` and emits a static single-page app
 under `.output/public`). Browsing `http://localhost:3000/docs/keiro` shows the new write-path pages
 in the sidebar: three explanation essays, four reference pages, five how-to guides, and a five-part
 code walkthrough under `walkthrough/command-cycle/`. Haskell snippets render (with ligatures once
@@ -97,7 +104,7 @@ must always reflect the actual current state of the work.
 
 - [x] M0. Preconditions verified — EP-7 Complete (overview/getting-started/jitsurei map +
       `docs/keiro-source-sync.md` exist); toolchain present; `content/docs/keiro/` + its section
-      subdirs exist; baseline `pnpm build` clean; keiro source readable at the pinned commit
+      subdirs exist; baseline `bun run build` clean; keiro source readable at the pinned commit
       `3f5dc9c`; the `walkthrough/command-cycle/` subdir created. _(2026-06-01)_
 - [x] M1. Explanation pages authored (`explanation/the-command-cycle.mdx`,
       `explanation/codec-and-schema-evolution.mdx`, `explanation/why-symtransducer-not-decider.mdx`),
@@ -113,9 +120,9 @@ must always reflect the actual current state of the work.
       `03-the-codec-on-the-boundary.mdx`, `04-the-router.mdx`). _(2026-06-01; every excerpt quoted
       verbatim from the pinned source.)_
 - [x] M5. meta.json appends done (section `meta.json`s + `walkthrough/command-cycle/meta.json` +
-      "command-cycle" present in `walkthrough/meta.json`); full `pnpm build` prerenders new pages
+      "command-cycle" present in `walkthrough/meta.json`); full `bun run build` prerenders new pages
       with zero crawler warnings; Haskell-name and link audits pass. _(2026-06-01: typecheck clean;
-      build exits 0, no `unhandledRejection`/`Failed to fetch`; `pnpm lint:links` OK, 97 files;
+      build exits 0, no `unhandledRejection`/`Failed to fetch`; `bun run lint:links` OK, 97 files;
       Haskell-name audit 0 missing; no relative links.)_
 
 
@@ -132,8 +139,8 @@ Provide concise evidence.
   own Idempotence & Recovery guidance, every such reference instead links the existing section
   landing `/docs/keiro/reference` and names the intended page in prose. Bearing: when EP-9/EP-10/EP-11
   land their reference pages, and in EP-12's finalization pass, these landing links should be
-  upgraded to the precise slugs. Evidence: `pnpm build` log on 2026-06-01 shows `OK: no crawler
-  warnings` with the landing-link form; `pnpm lint:links` checked 97 files with no broken internal
+  upgraded to the precise slugs. Evidence: `bun run build` log on 2026-06-01 shows `OK: no crawler
+  warnings` with the landing-link form; `bun run lint:links` checked 97 files with no broken internal
   links.
 - **The command-cycle walkthrough is reachable via the sidebar without touching the hub `<Cards>`.**
   Adding `"command-cycle"` to `walkthrough/meta.json` (now that the subdir exists with real chapter
@@ -196,8 +203,8 @@ Record every decision made while working on the plan.
   Rationale: the prerender crawler follows MDX links and emits `Failed to fetch` for any target that
   does not yet exist, which would fail this plan's zero-crawler-warnings gate. This is the fallback
   the plan's Context (§"Where this plan sits") and Idempotence & Recovery prescribe. EP-9/EP-10/EP-11
-  + EP-12 upgrade these to precise slugs once the targets exist. Evidence: clean `pnpm build` +
-  `pnpm lint:links` (97 files) on 2026-06-01.
+  + EP-12 upgrade these to precise slugs once the targets exist. Evidence: clean `bun run build` +
+  `bun run lint:links` (97 files) on 2026-06-01.
   Date: 2026-06-01
 - Decision: Wire the command-cycle tour into the sidebar via `walkthrough/meta.json`
   (`["index", "command-cycle"]`) but **leave the walkthrough hub `<Card>` href-less**, deferring it
@@ -225,8 +232,8 @@ the real jitsurei v1→v2 upcaster, make commands idempotent, and route events t
 `route-events-to-commands`; and the five-chapter `walkthrough/command-cycle/` tour
 (`00-start-here` … `04-the-router`).
 
-**Validation:** `pnpm typecheck` clean; `pnpm build` exits 0 prerendering all 17 routes with zero
-`unhandledRejection`/`Failed to fetch`; `pnpm lint:links` OK (97 files); no relative cross-links; the
+**Validation:** `bun run typecheck` clean; `bun run build` exits 0 prerendering all 17 routes with zero
+`unhandledRejection`/`Failed to fetch`; `bun run lint:links` OK (97 files); no relative cross-links; the
 Haskell-name audit (every quoted identifier, including the walkthrough internals `evaluateCommand`,
 `reconstructRecorded`, `isRetryableConflict`, `Tx.condemn`, `appendToStreamTx`, and the jitsurei
 anchors `orderCodec`/`upcastOrderPlacedV1`/`pagingRouter`) reports 0 missing against the source at
@@ -255,8 +262,8 @@ the real source transcribed below.
 
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is a **fumadocs** documentation
 site (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static single-page app** (React +
-MDX + TypeScript, bundled with **Vite**), built and served with **pnpm** on **Node 22**. `pnpm dev`
-runs `vite dev`; `pnpm build` runs `vite build` and emits a static SPA under `.output/public`.
+MDX + TypeScript, bundled with **Vite**), built and served with **legacy package manager** on **Node 22**. `bun run dev`
+runs `vite dev`; `bun run build` runs `vite build` and emits a static SPA under `.output/public`.
 Content lives under `content/docs/`. Each directory has a `meta.json` whose `pages` array lists
 child page slugs (and nested directory names) in sidebar order. A "page" is an `.mdx` file: YAML
 frontmatter (`title`, `description`) followed by an MDX body.
@@ -640,7 +647,7 @@ references and how-tos lean on.
 
 ### M0 — Preconditions
 
-Confirm EP-7 is Complete and the toolchain/tree are ready. At the end you can run `pnpm build` on
+Confirm EP-7 is Complete and the toolchain/tree are ready. At the end you can run `bun run build` on
 the existing keiro tree with zero errors, and the `walkthrough/command-cycle/` subdir exists.
 Acceptance: the build succeeds before you add any EP-8 page, and `docs/keiro-source-sync.md` +
 `content/docs/keiro/index.mdx` exist.
@@ -657,7 +664,7 @@ upcaster chain, the `schemaVersion`-in-metadata stamp (schema key always wins), 
 read, using the `jitsurei` order v1→v2 `OrderPlaced` upcaster as the worked example.
 `explanation/why-symtransducer-not-decider.mdx` explains why keiro builds on keiki's native
 `SymTransducer` (register file, ε-edges, guard alphabet `phi`) rather than a decide/evolve façade.
-At the end: all three pages build and render. Acceptance: `pnpm build` prerenders them with no
+At the end: all three pages build and render. Acceptance: `bun run build` prerenders them with no
 crawler warnings.
 
 ### M2 — Reference set (4 pages)
@@ -706,7 +713,7 @@ see Validation and Acceptance.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless stated
-otherwise. The toolchain is **pnpm** on **Node 22** (enter the Nix dev shell first if the repo uses
+otherwise. The toolchain is **legacy package manager** on **Node 22** (enter the Nix dev shell first if the repo uses
 one: `nix develop`).
 
 ### M0 — Preconditions
@@ -722,8 +729,8 @@ for d in explanation reference how-to walkthrough; do
 done
 
 # Install deps and confirm the existing site builds before you add pages.
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected (abridged):
@@ -1100,7 +1107,7 @@ for any reason it is missing, append it:
 Then build and audit:
 
 ```bash
-pnpm build
+bun run build
 ```
 
 Expected: `✓ built in <N>s` with no `[unhandledRejection]` / `Failed to fetch` lines.
@@ -1113,7 +1120,7 @@ Acceptance is observable behavior, not just "files exist".
 1. **The site builds and prerenders the new pages.** From the repo root:
 
    ```bash
-   pnpm build
+   bun run build
    ```
 
    Succeeds (`✓ built`) and the log shows the sixteen new routes prerendered:
@@ -1129,7 +1136,7 @@ Acceptance is observable behavior, not just "files exist".
    lines. Confirm:
 
    ```bash
-   pnpm build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
+   bun run build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
    ```
 
    Expected: `no crawler warnings`.
@@ -1176,7 +1183,7 @@ Acceptance is observable behavior, not just "files exist".
    (Closing fences are bare ```` ``` ````; eyeball any hits to confirm they are closers, not
    untagged openers.)
 
-6. **The pages render in a browser.** Run `pnpm dev`, open
+6. **The pages render in a browser.** Run `bun run dev`, open
    `http://localhost:3000/docs/keiro/reference/command`, and confirm the `<TypeTable>` renders, the
    retryable-conflict warning callout shows, and the command-cycle walkthrough appears nested under
    "Code Walkthrough" → "The command cycle" in the sidebar. Also open
@@ -1188,13 +1195,13 @@ Acceptance is observable behavior, not just "files exist".
 
 ## Idempotence and Recovery
 
-Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `pnpm build` is
+Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `bun run build` is
 idempotent. If a page name needs to change, rename the file *and* update the matching `meta.json` slug
 in the same edit — a slug pointing at a missing file (or a file missing from `pages`) yields a broken
 sidebar entry, not a crash, so the build still exits 0; catch it with the browser check
 (acceptance #6).
 
-If `pnpm build` reports a `Failed to fetch` for a link, the cause is almost always a relative link or
+If `bun run build` reports a `Failed to fetch` for a link, the cause is almost always a relative link or
 a link to a page that does not exist yet. Run acceptance check #3 to find relative links and fix them
 to absolute paths. For links into other plans' pages whose slug you could not confirm (EP-9's
 `reference/projection`, EP-10's `reference/process-manager`, EP-11's `reference/integration-event`),
@@ -1270,3 +1277,5 @@ source; full signatures are in Context): from `Keiro.Command` — `CommandResult
 `StateCodec`; from `Keiro.Stream` — `Stream`, `stream`, `streamName`, `mapStreamName`; from
 `Keiro.Router` — `Router`, `RouterResult`, `runRouterOnce`, `runRouterWorker`; and the jitsurei
 anchors `orderEventStream`, `orderCodec`, `upcastOrderPlacedV1`, `orderStream`, `pagingRouter`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

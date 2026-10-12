@@ -5,6 +5,13 @@ title: "Bootstrap pgmq-hs queue substrate and shibuya-pgmq adapter docs"
 kind: exec-plan
 created_at: 2026-06-07T15:37:55Z
 intention: "intention_01ksx5mf7qe2ht659e4kr9w2t0"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Bootstrap pgmq-hs queue substrate and shibuya-pgmq adapter docs
@@ -75,8 +82,8 @@ verified by a clean build and link check, not by new authored API content.
 - [x] **Milestone 4 — source-sync pointers.** (2026-06-07) Created `docs/pgmq-hs-source-sync.md`
   (pinned `973c107`, pgmq-hasql 0.3.0.0) and `docs/shibuya-pgmq-adapter-source-sync.md` (pinned
   `8e6f6e9`, adapter 0.7.0.0). Commit `1f483ab`.
-- [x] **Milestone 5 — validate + commit.** (2026-06-07) `pnpm typecheck` ✓, `node
-  scripts/check-doc-links.mjs` ✓ (331 files, no broken links), `pnpm build` ✓ — all six new routes
+- [x] **Milestone 5 — validate + commit.** (2026-06-07) `bun run typecheck` ✓, `node
+  scripts/check-doc-links.mjs` ✓ (331 files, no broken links), `bun run build` ✓ — all six new routes
   prerendered (`/docs/pgmq`, its four quadrants, `/docs/integrations/shibuya-pgmq-adapter`). Each
   milestone committed with `ExecPlan:` + `Intention:` trailers.
 
@@ -159,8 +166,7 @@ commit, each carrying the `ExecPlan:` and `Intention:` trailers:
 option, with shibuya consuming it" — explicitly *not* full API content. Delivered exactly that: a
 new top-level **pgmq** section (Reference/How-To/Explanation/Cookbook stubs), a **shibuya ⇄ pgmq
 adapter** integration page, pgmq woven into all four family entry pages (count, cards, dependency
-diagram, problem→library match line), and pinned source-sync baselines. Verified by `pnpm
-typecheck`, `node scripts/check-doc-links.mjs` (331 files, zero broken links), and `pnpm build`
+diagram, problem→library match line), and pinned source-sync baselines. Verified by `bun run typecheck`, `node scripts/check-doc-links.mjs` (331 files, zero broken links), and `bun run build`
 (all six new routes prerendered).
 
 **Gaps / deferred (as designed):** no verbatim signatures, `<TypeTable>`s, delivery-guarantee
@@ -252,9 +258,9 @@ templates for full pages live under `content/docs/_templates/` (`reference.mdx`,
 `explanation.mdx`, `cookbook-recipe.mdx`) — referenced from the stub callouts but not filled in
 by this plan.
 
-**Build/tooling note.** `package.json` scripts: `pnpm typecheck` (`fumadocs-mdx && tsc --noEmit`),
-`pnpm build`, `pnpm lint:links` (`node scripts/check-doc-links.mjs` + linkinator over built
-output), `pnpm format:check` (`oxfmt --check .`). **Per the project memory
+**Build/tooling note.** `package.json` scripts: `bun run typecheck` (`fumadocs-mdx && tsc --noEmit`),
+`bun run build`, `bun run lint:links` (`node scripts/check-doc-links.mjs` + linkinator over built
+output), `bun run format:check` (`oxfmt --check .`). **Per the project memory
 `oxfmt-mdx-baseline-not-clean.md`, hand-authored MDX already fails `oxfmt --check` repo-wide** —
 so do **not** run a formatter over the new MDX and do **not** treat `format:check` as a gate for
 this plan. Match the byte-for-byte style of the neighboring stub files instead.
@@ -388,9 +394,9 @@ All commands run from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime
 4. **Validate** (see Validation and Acceptance for expected output):
 
    ```bash
-   pnpm typecheck
+   bun run typecheck
    node scripts/check-doc-links.mjs
-   pnpm build
+   bun run build
    ```
 
 5. **Commit.** Example for the skeleton milestone (adjust subject per milestone). Per the global
@@ -417,7 +423,7 @@ All commands run from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime
 The change is documentation-only; "working" means the site builds, the new navigation appears,
 and no link is broken. Acceptance:
 
-1. **Type/MDX validity** — `pnpm typecheck` exits 0. `fumadocs-mdx` parses every new `.mdx`
+1. **Type/MDX validity** — `bun run typecheck` exits 0. `fumadocs-mdx` parses every new `.mdx`
    (malformed frontmatter or an unknown component fails here) and `tsc --noEmit` passes.
 
 2. **Internal links resolve** — `node scripts/check-doc-links.mjs` exits 0 with no broken-link
@@ -426,7 +432,7 @@ and no link is broken. Acceptance:
    `/docs/pgmq/reference`, `/docs/pgmq/how-to`, `/docs/pgmq/explanation`, `/docs/pgmq/cookbook`,
    `/docs/integrations/shibuya-pgmq-adapter` — must resolve.
 
-3. **Build succeeds** — `pnpm build` completes and pre-renders the new routes. Confirm the new
+3. **Build succeeds** — `bun run build` completes and pre-renders the new routes. Confirm the new
    HTML exists:
 
    ```bash
@@ -455,7 +461,7 @@ and no link is broken. Acceptance:
    while listing five. `grep -rn 'four' content/docs/index.mdx content/docs/getting-started/`
    should return nothing referring to the library count (or only intentional, unrelated uses).
 
-**Out of scope (explicitly not required to pass):** `pnpm format:check` / `oxfmt` — the MDX
+**Out of scope (explicitly not required to pass):** `bun run format:check` / `oxfmt` — the MDX
 baseline is already non-clean repo-wide (project memory `oxfmt-mdx-baseline-not-clean.md`); do not
 reformat. External link crawling via linkinator requires the built output and network and is not a
 gate for this skeleton.
@@ -468,8 +474,8 @@ database, migration, or external mutation.
 
 - The `meta.json` and family-page edits are small, targeted insertions. If an edit is applied
   twice (e.g. a duplicate `"pgmq"` entry or a duplicated `<Card>`), `git diff` will show it and
-  `pnpm typecheck` may flag duplicate keys — inspect and revert the dupe.
-- If `pnpm build` or `check-doc-links.mjs` reports a broken link, the cause is almost always a
+  `bun run typecheck` may flag duplicate keys — inspect and revert the dupe.
+- If `bun run build` or `check-doc-links.mjs` reports a broken link, the cause is almost always a
   `href`/slug mismatch or a page missing from its `meta.json`; fix the `meta.json` or the `href`
   and re-run — no rollback needed.
 - To abandon the whole change before committing: `git checkout -- content/docs docs` and
@@ -506,7 +512,7 @@ This is a docs-only change; the "interfaces" are the documentation contracts, no
 a one- to two-sentence intro; an honest `<Callout type="info">…Documentation in progress…</Callout>`.
 No invented API surface — describe only what the upstream READMEs/manifests state (see Context).
 
-**Tooling depended on:** `pnpm` (scripts in `package.json`), `node` (link checker),
+**Tooling depended on:** `legacy package manager` (scripts in `package.json`), `node` (link checker),
 `mori` (resolve upstream paths/commits for the sync pointers). **Upstream libraries referenced**
 (not built here): `shinzui/pgmq-hs` and `shinzui/shibuya-pgmq-adapter`.
 
@@ -514,3 +520,5 @@ No invented API surface — describe only what the upstream READMEs/manifests st
 signatures and `<TypeTable>`s for `Shibuya.Adapter.Pgmq` / `Pgmq` modules; runnable `jitsurei`
 worked examples; delivery-guarantee/visibility-timeout/DLQ explanations; a "Wire a pgmq queue to
 shibuya" how-to; any pgmq Tutorials or Code Walkthrough quadrant.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

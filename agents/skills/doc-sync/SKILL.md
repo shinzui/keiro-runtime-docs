@@ -112,9 +112,9 @@ faq → index cards → `meta.json`) so downstream pages cite already-settled tr
 
 ```bash
 node scripts/check-doc-links.mjs   # relative-link integrity
-pnpm run lint:nav                  # meta.json ↔ filesystem
-pnpm run typecheck
-pnpm run build
+bun run lint:nav                  # meta.json ↔ filesystem
+bun run typecheck
+bun run build
 ```
 
 Known gate gaps — cover these by hand:

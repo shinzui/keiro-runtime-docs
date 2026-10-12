@@ -21,6 +21,11 @@ provenance:
       at: 2026-10-11T23:27:58Z
       mode: "implement"
       note: "Implement the committed catalog projection, audit presentation, maintained diagrams, and incremental sync"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Publish the runtime pattern catalog with SVG diagrams and incremental synchronization
@@ -99,7 +104,7 @@ All milestones are complete. The production build passes navigation for 598 page
 
 The site uses React, TanStack Start, and Fumadocs. `source.config.ts` reads `content/docs/` and retains processed Markdown. `src/lib/source.ts` creates the page collection and Markdown text. `src/routes/docs/$.tsx` renders pages and source-view controls; it currently assumes every source belongs to this repository. `src/routes/docs/{$}[.]md.ts` serves processed Markdown. `src/routes/api/search.ts` provides search. `content/docs/meta.json` lists top-level sections. Add a generated `content/docs/runtime-patterns/` tree using these routes.
 
-`package.json` defines `pnpm check`. Navigation and link checks are in `scripts/check-doc-navigation.mjs` and `scripts/check-doc-links.mjs`. `scripts/check-doc-prose.mjs` and `scripts/doc-prose.mjs` enforce release and writing policy, including selected words such as “gotcha” and non-Language-6 examples. Canonical patterns contain different prose and historical version material. Introduce an explicit policy for verified source quotations without rewriting the source or broadly disabling checks. `.github/workflows/ci.yml` runs individual gates; it currently omits the SVG gate even though `pnpm check` includes it.
+`package.json` defines `bun run check`. Navigation and link checks are in `scripts/check-doc-navigation.mjs` and `scripts/check-doc-links.mjs`. `scripts/check-doc-prose.mjs` and `scripts/doc-prose.mjs` enforce release and writing policy, including selected words such as “gotcha” and non-Language-6 examples. Canonical patterns contain different prose and historical version material. Introduce an explicit policy for verified source quotations without rewriting the source or broadly disabling checks. `.github/workflows/ci.yml` runs individual gates; it currently omits the SVG gate even though `bun run check` includes it.
 
 `src/components/diagram.tsx`, `src/lib/diagram-svg.mjs`, and `src/styles/diagrams.css` support theme-aware SVGs and expansion. `content/diagrams/README.md` defines semantic classes, descriptive alt text, and a maximum viewBox width of 680 units. `scripts/render-diagram.mjs` produces light/dark previews; `scripts/check-doc-diagrams.mjs` checks asset contracts and page references.
 
@@ -202,7 +207,7 @@ Explain the two independent directions: library source is reconciled into the ca
 
 Extend `status.mjs` only as needed to report imported SHA, completed-review SHA, stale diagram bindings and visual assessments, unavailable sources, and non-ancestor ranges alongside normal drift. Keep `--json` machine-readable and status read-only. Distinguish imported-but-unreviewed output from completed publication. Do not classify a failed Git comparison or non-ancestor ref as current. Add focused fixtures for these failure cases while preserving library behavior.
 
-The initial pointer records actual SHA and committer date, complete inventory, scoped logs, profile evidence, known source gaps, the complete visual-assessment inventory, at least 18 diagram reviews, and coupled product pages. It certifies faithful reviewed catalog publication, not release certification of every source claim. Wire `test:patterns`, `lint:patterns`, and `lint:diagrams` into `pnpm check` and the individual jobs in `.github/workflows/ci.yml`. Update `README.md` and `content/docs/getting-started/contributing.mdx` with ownership, refresh commands, generated-file restrictions, diagram review, and offline consistency versus upstream freshness.
+The initial pointer records actual SHA and committer date, complete inventory, scoped logs, profile evidence, known source gaps, the complete visual-assessment inventory, at least 18 diagram reviews, and coupled product pages. It certifies faithful reviewed catalog publication, not release certification of every source claim. Wire `test:patterns`, `lint:patterns`, and `lint:diagrams` into `bun run check` and the individual jobs in `.github/workflows/ci.yml`. Update `README.md` and `content/docs/getting-started/contributing.mdx` with ownership, refresh commands, generated-file restrictions, diagram review, and offline consistency versus upstream freshness.
 
 Acceptance: filtered and all-upstream status include patterns with correct snapshot/pointer information. A temporary next catalog commit changing a concept and nested log with unchanged root log must trigger refresh and diagram review; failure leaves the pointer unchanged. Completed review advances pointer and snapshot to the same fixed SHA. The full gate and browser checks pass. Distill final project decisions into ADRs before completion.
 
@@ -233,12 +238,12 @@ git -C "$PATTERNS_REPO" log -1 --format='%H%n%cI%n%s'
 Replace `SELECTED_SHA` below with the selected full 40-hex commit, not a moving HEAD. The consistency command must report count and imported SHA, exiting zero only when generation, reviewed pointer, and diagram bindings agree.
 
 ```bash
-nix develop -c pnpm run sync:patterns -- --ref SELECTED_SHA
-nix develop -c pnpm run test:patterns
-nix develop -c pnpm run lint:patterns
+nix develop -c bun run sync:patterns --ref SELECTED_SHA
+nix develop -c bun run test:patterns
+nix develop -c bun run lint:patterns
 node agents/skills/doc-sync/status.mjs runtime-patterns --json
 node agents/skills/doc-sync/status.mjs
-nix develop -c pnpm check
+nix develop -c bun run check
 git diff --check
 ```
 
@@ -252,8 +257,8 @@ Render every selected asset in each Milestone 4 batch, including any added beyon
 
 ```bash
 nix develop -c node scripts/render-diagram.mjs content/diagrams/runtime-patterns/keiro/command-and-async-projections.svg
-nix develop -c pnpm run lint:diagrams
-nix develop -c pnpm dev
+nix develop -c bun run lint:diagrams
+nix develop -c bun run dev
 ```
 
 Open `http://127.0.0.1:5214/docs/runtime-patterns`, `/docs/runtime-patterns/keiro/projection-catalogs`, `/docs/runtime-patterns/keiro/behavior-conformance`, and each page's offered Markdown view. Inspect listing completeness, source SHA, criteria, scoped history, search, and diagrams. Stop the development server after inspection. Record actual outputs and reviewed commit in this plan during implementation.
@@ -268,7 +273,7 @@ Run `node --test scripts/runtime-patterns.test.mjs` plus focused status tests. T
 
 The required incremental exercise uses a temporary owner repository with baseline and next commits. Change a concept plus its nearest log while leaving the root log unchanged. Observe drift, stage import, observe stale diagram failure with unchanged pointer, perform review, and complete publication with matching snapshot/pointer SHA. Repeat for rename and deletion to demonstrate route policy and cleanup. Do not alter the user's production owner checkout for this exercise.
 
-`nix develop -c pnpm check` and CI must pass the added catalog and SVG gates. Browser inspection verifies owner source controls, provenance and criteria in Markdown, search discovery, complete navigation, and at least 18 distinct, readable diagrams in both themes and narrow layouts. Every catalog concept must have a current visual assessment, including justified text-only decisions. Check imported anchors against actual headings: the existing link checker strips anchors and does not prove their validity.
+`nix develop -c bun run check` and CI must pass the added catalog and SVG gates. Browser inspection verifies owner source controls, provenance and criteria in Markdown, search discovery, complete navigation, and at least 18 distinct, readable diagrams in both themes and narrow layouts. Every catalog concept must have a current visual assessment, including justified text-only decisions. Check imported anchors against actual headings: the existing link checker strips anchors and does not prove their validity.
 
 
 ## Idempotence and Recovery
@@ -286,7 +291,7 @@ Use Conventional Commits on the current branch. Site commits include the reposit
 ## Interfaces and Dependencies
 
 
-Reuse existing Node/pnpm, Fumadocs, TanStack, Markdown, and SVG infrastructure. Locate dependency APIs through Mori and local primary source. No package bounds or pins change by default; verify registry releases and upstream tags before any necessary change. Never search `/` or `/nix/store`.
+Reuse existing Node/legacy package manager, Fumadocs, TanStack, Markdown, and SVG infrastructure. Locate dependency APIs through Mori and local primary source. No package bounds or pins change by default; verify registry releases and upstream tags before any necessary change. Never search `/` or `/nix/store`.
 
 `scripts/lib/runtime-patterns.mjs` exposes pure parsing and rendering functions receiving explicit snapshot/presentation values. `scripts/runtime-patterns.mjs` owns Git, Mori, filesystem staging, and CLI orchestration. Snapshot concept records contain bundle-relative path, canonical resource URI, raw Markdown, complete parsed metadata, raw-byte hash, and semantic hash. Serialize records and keys consistently. Preserve schema version, source/profile/input identities, graph links, reserved files, and owner source-review facts.
 
@@ -305,3 +310,5 @@ Revision note (2026-10-11): Implemented ownership and committed-tree import, rec
 Revision note (2026-10-11 23:53Z): complete the visual assessment inventory, add configuration and equivalent reused illustrations, record responsive and Markdown-export findings, and implement independent generated-source synchronization/status fixtures.
 
 Revision note (2026-10-12 00:08Z): complete production search and Markdown browser checks, clarify coupled read-side guidance, pass the complete release gate, and register the completed initial review boundary.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

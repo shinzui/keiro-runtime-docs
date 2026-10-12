@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-07-14T15:14:31Z
 intention: "intention_01kxgjsgnse1z9r0w141akd9g2"
 master_plan: "docs/masterplans/6-prepare-keiro-runtime-documentation-for-wider-announcement.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Refresh keiro command replay snapshot and read-model reliability documentation
@@ -98,7 +105,7 @@ and finding the same types and defaults in the reviewed keiro source.
   and source walkthrough pages. `CommandRejected` is a no-match domain outcome;
   `CommandAmbiguous` is a definition defect; stored-history problems retain their replay reason or
   gap coordinates; and append-time divergence is explicitly post-commit telemetry evidence.
-- Milestone 1 validation passed `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the
+- Milestone 1 validation passed `bun run typecheck`, `bun run format:check`, `bun run build`, the
   448-file internal-link scan, and `git diff --check`.
 - Milestone 2 added a committed-state/result/fallback/metric matrix and made the distinction between
   benign lookup fallback, post-commit snapshot failure, and poisoned-stream replay divergence
@@ -111,7 +118,7 @@ and finding the same types and defaults in the reviewed keiro source.
   and checkpoint, `AsyncFenced` => fail or park without checkpoint; the canonical rebuild is
   `startRebuild`, replay through `applyAsyncProjectionUnfenced`, verify, then guarded
   `finishRebuild`.
-- Final EP-2 validation passed `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the
+- Final EP-2 validation passed `bun run typecheck`, `bun run format:check`, `bun run build`, the
   448-file internal-link scan, and `git diff --check`. The EP-7 handoff is source boundary
   `c68dcc7b9cea8d9c180d1c04254a72aa43804cac`; announcement vocabulary should retain
   `CommandAmbiguous`, typed `HydrationReplayReason`, post-commit replay evidence, advisory snapshot
@@ -240,9 +247,9 @@ rg -n 'snapshot.*failure|StrongScope|registerReadModel|qualifiedTableName' conte
 After each milestone run:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 node scripts/check-doc-links.mjs
 git diff --check
 ```
@@ -274,7 +281,7 @@ rg -n 'applyAsyncProjection.*Bool|checkpoint.*AsyncFenced.*continue' content/doc
 rg -n 'HydrationReplayFailed[^\n]*version only|ambiguous.*CommandRejected' content/docs/keiro
 ```
 
-Run `pnpm run typecheck`, `pnpm build`, `node scripts/check-doc-links.mjs`, and
+Run `bun run typecheck`, `bun run build`, `node scripts/check-doc-links.mjs`, and
 `git diff --check`. Record the reviewed SHA and a concise handoff of page changes and new canonical
 terms for EP-7. Do not update `docs/keiro-source-sync.md` in this plan because EP-3, EP-4, and EP-6
 also edit the keiro story.
@@ -308,3 +315,5 @@ worker failure dispositions. Migration runners and source pins belong to
 No Haskell interface changes. The documentation interface must present consistent constructor
 names, lifecycle order, and observable outcomes across reference, tutorial, how-to, explanation,
 cookbook, and walkthrough pages.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
 intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro workflow documentation: process managers and timers
@@ -51,8 +58,8 @@ lands on `/docs/keiro` and follows the workflow pages can:
   `runProcessManagerOnce` control flow and dispatch loop, the timer claim SQL and re-arm
   guard, and how `runTimerWorker` composes with the command cycle.
 
-You can see it working by running the docs dev server (`pnpm dev`, i.e. `vite dev`) — or a
-production build with `pnpm build && pnpm start` — and browsing
+You can see it working by running the docs dev server (`bun run dev`, i.e. `vite dev`) — or a
+production build with `bun run build && bun run start` — and browsing
 `http://localhost:3000/docs/keiro`: the workflow explanation, reference, how-to, tutorial,
 and `walkthrough/workflow/` pages appear in the sidebar in `meta.json` order; Haskell
 snippets render in PragmataPro with ligatures; and the process-manager and timer mermaid
@@ -74,8 +81,8 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] M0. Preconditions verified — toolchain present (pnpm 11.4.0, Node 22.22.3 on PATH;
-      no `nix develop` needed), baseline `pnpm build` exits 0, EP-7/EP-8/EP-9 Complete
+- [x] M0. Preconditions verified — toolchain present (legacy-manager 11.4.0, Node 22.22.3 on PATH;
+      no `nix develop` needed), baseline `bun run build` exits 0, EP-7/EP-8/EP-9 Complete
       (keiro landing/getting-started/core-concepts pages, the jitsurei module map, and
       `docs/keiro-source-sync.md` exist), keiro source readable at commit `3f5dc9c`. _(2026-06-01)_
 - [x] M1. Explanation pages authored (`process-managers-and-sagas`, `durable-timers`,
@@ -88,8 +95,8 @@ This section must always reflect the actual current state of the work.
       `01-the-process-manager`, `02-the-timer-schema`, `03-the-timer-worker`) + its `meta.json`. _(2026-06-01)_
 - [x] M6. meta.json appends done (explanation/reference/how-to/tutorials section files +
       new `walkthrough/workflow/meta.json` + `workflow` appended to `walkthrough/meta.json`);
-      `pnpm typecheck` clean; `pnpm build` exits 0 with zero crawler warnings;
-      `pnpm lint:links` OK (125 files, no broken internal links); snippet/framing
+      `bun run typecheck` clean; `bun run build` exits 0 with zero crawler warnings;
+      `bun run lint:links` OK (125 files, no broken internal links); snippet/framing
       checks pass; v2 roadmap page shows no shipped-looking v2 API. _(2026-06-01)_
 
 
@@ -106,7 +113,7 @@ implementation. Provide concise evidence.
   would have been a broken internal link (crawler failure). **Resolution:** the contrast links
   to the real, existing `/docs/keiro/reference/router`. Bearing: none on other plans; this is
   EP-10 matching the as-shipped IA. Evidence: `reference/meta.json` lists `router`; no
-  `the-content-based-router` in `explanation/meta.json`; `pnpm lint:links` clean.
+  `the-content-based-router` in `explanation/meta.json`; `bun run lint:links` clean.
 
 - **No shibuya-adapter how-to exists in the keiro tree to link from the subscription guide.**
   (Authoring M4, 2026-06-01.) The plan suggested linking a shibuya-adapter how-to (EP-7/EP-8
@@ -225,8 +232,8 @@ worked-example modules (`FulfillmentProcess`, `EscalationProcess`, `Timers`, `In
 `OrderStream`, `Domain`), not from the divergent in-repo notes.
 
 Measured against Purpose:
-- **Builds & link-checks cleanly** — `pnpm typecheck` clean, `pnpm build` exits 0 with zero
-  crawler warnings, `pnpm lint:links` OK (125 files, no broken internal links), no relative
+- **Builds & link-checks cleanly** — `bun run typecheck` clean, `bun run build` exits 0 with zero
+  crawler warnings, `bun run lint:links` OK (125 files, no broken internal links), no relative
   cross-links (all `/docs/keiro/...` absolute).
 - **Two-transaction model documented honestly** — the explanation and reference both state that
   the manager append + timers commit in one transaction while each dispatched `PMCommand` commits
@@ -256,9 +263,9 @@ You are writing MDX content files under `content/docs/keiro/` in **this** reposi
 (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`). The site is a **fumadocs**
 documentation app (fumadocs-ui 16.9.3 + fumadocs-mdx 15.0.10) built on **TanStack Start as a
 static SPA** (React 19 + MDX, TypeScript, Tailwind v4, bundled with **Vite**), built and
-served with **pnpm** on **Node 22** inside the Nix dev shell (`nix develop`). `pnpm dev` runs
-`vite dev`; `pnpm build` runs `vite build` and emits a static SPA under `.output/public`;
-`pnpm typecheck` runs `fumadocs-mdx && tsc --noEmit`. MDX is compiled by fumadocs-mdx and
+served with **legacy package manager** on **Node 22** inside the Nix dev shell (`nix develop`). `bun run dev` runs
+`vite dev`; `bun run build` runs `vite build` and emits a static SPA under `.output/public`;
+`bun run typecheck` runs `fumadocs-mdx && tsc --noEmit`. MDX is compiled by fumadocs-mdx and
 rendered client-side. Each content directory has a `meta.json` whose `pages` array lists its
 child page slugs / nested directory names in display order. A page is an `.mdx` file with
 YAML frontmatter (`title`, `description`) followed by an MDX body.
@@ -664,7 +671,7 @@ keiro source it documents, and the key snippet/diagram it must contain.
 **Milestones.**
 
 - **M0 — Preconditions.** Confirm the toolchain runs, EP-7 has landed (its pages and
-  conventions exist), and the keiro source is readable at `3f5dc9c`. At the end: `pnpm build`
+  conventions exist), and the keiro source is readable at `3f5dc9c`. At the end: `bun run build`
   succeeds on the current tree before you add any EP-10 page. Acceptance: see Concrete Steps.
 
 - **M1 — Explanation set** (3 pages under `explanation/`). At the end: the process-manager,
@@ -700,12 +707,12 @@ keiro source it documents, and the key snippet/diagram it must contain.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The docs toolchain is **pnpm** on **Node 22** inside the Nix dev shell.
+stated otherwise. The docs toolchain is **legacy package manager** on **Node 22** inside the Nix dev shell.
 
 ### M0 — Preconditions
 
 ```bash
-# enter the Nix dev shell (pnpm + Node 22) first
+# enter the Nix dev shell (legacy package manager + Node 22) first
 nix develop
 
 # confirm the scaffold + EP-7 foundation are present
@@ -715,8 +722,8 @@ test -f docs/keiro-source-sync.md && echo "EP-7 source pointer present"
 test -f content/docs/keiro/walkthrough/index.mdx && echo "EP-7 walkthrough hub present"
 
 # install + verify the current tree builds before you start
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected (abridged):
@@ -730,7 +737,7 @@ EP-7 walkthrough hub present
 ```
 
 If the EP-7 artifacts are missing, EP-7 is not Complete — stop and finish EP-7 first (it is a
-HARD DEP). If `pnpm build` fails on the current tree, fix that before adding pages.
+HARD DEP). If `bun run build` fails on the current tree, fix that before adding pages.
 
 Confirm the keiro source is at the pinned commit and the workflow modules exist:
 
@@ -961,9 +968,9 @@ absent:
 Then build:
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm dev   # then browse http://localhost:3000/docs/keiro
+bun run typecheck
+bun run build
+bun run dev   # then browse http://localhost:3000/docs/keiro
 ```
 
 
@@ -971,7 +978,7 @@ pnpm dev   # then browse http://localhost:3000/docs/keiro
 
 Exercise the system and observe specific behaviors:
 
-1. **Section builds.** From the repo root, `pnpm typecheck` is clean and `pnpm build`
+1. **Section builds.** From the repo root, `bun run typecheck` is clean and `bun run build`
    (`vite build`) exits 0 with the EP-10 pages present; it emits the static SPA under
    `.output/public`. Expected tail (abridged):
 
@@ -1001,7 +1008,7 @@ Exercise the system and observe specific behaviors:
    Expected: no matches (all cross-links are absolute `/docs/keiro/...`). The
    walkthrough back-link `<Callout>` is the one place to double-check is absolute.
 
-3. **Renders in the sidebar.** `pnpm dev` (or `pnpm build && pnpm start`), open
+3. **Renders in the sidebar.** `bun run dev` (or `bun run build && bun run start`), open
    `http://localhost:3000/docs/keiro`. The sidebar shows the new workflow pages under
    Explanation (3), Reference (2), How-To Guides (4), Tutorials (1), and a "Workflow
    Walkthrough" group under Code Walkthrough (4 chapters), each opening without a 404 and
@@ -1054,8 +1061,8 @@ Exercise the system and observe specific behaviors:
 
 ## Idempotence and Recovery
 
-All steps are file authoring and are safe to repeat: re-running `pnpm typecheck` /
-`pnpm build` / `pnpm dev` is idempotent; editing or recreating an `.mdx` / `meta.json` file
+All steps are file authoring and are safe to repeat: re-running `bun run typecheck` /
+`bun run build` / `bun run dev` is idempotent; editing or recreating an `.mdx` / `meta.json` file
 simply overwrites it; `mkdir -p content/docs/keiro/walkthrough/workflow` is idempotent. No
 database or keiro source is modified — the keiro tree is opened read-only for cross-checking.
 
@@ -1110,9 +1117,9 @@ at keiro commit `3f5dc9c`:**
   content + sidebar from `meta.json`; built-in components `Callout`, `Steps`, `Tabs`,
   `Cards`, `TypeTable`, registered in `src/components/mdx.tsx` (author bare, no imports).
   Loader/config in `src/lib/source.ts` and `source.config.ts`.
-- TanStack Start + Vite — `pnpm dev` = `vite dev`; `pnpm build` = `vite build` (static SPA in
-  `.output/public`); `pnpm start` serves it; `pnpm typecheck` = `fumadocs-mdx && tsc --noEmit`.
-- pnpm + Node 22 inside the Nix dev shell (`nix develop`).
+- TanStack Start + Vite — `bun run dev` = `vite dev`; `bun run build` = `vite build` (static SPA in
+  `.output/public`); `bun run start` serves it; `bun run typecheck` = `fumadocs-mdx && tsc --noEmit`.
+- legacy package manager + Node 22 inside the Nix dev shell (`nix develop`).
 
 **Files this plan creates/owns (all under `content/docs/keiro/`):**
 
@@ -1150,10 +1157,12 @@ walkthrough/meta.json   += "workflow"   (only if not already present — EP-7 ma
 top-level `content/docs/keiro/meta.json` is **not** touched.
 
 **Postconditions / interfaces that must exist at the end:**
-- Every file above exists and the site builds (`pnpm build` exits 0, `pnpm typecheck` clean).
+- Every file above exists and the site builds (`bun run build` exits 0, `bun run typecheck` clean).
 - The workflow subtree renders in the sidebar in `meta.json` order.
 - Each Haskell snippet uses only names present in the keiro source at `3f5dc9c` (verified per
   Validation step 4).
 - The process-manager and durable-timer explanation pages each carry a ` ```mermaid `
   diagram; the workflow-roadmap page shows no v2 API as real (Validation step 5); the
   two-transaction model and `PMCommandFailed` caveat are documented (Validation step 6).
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

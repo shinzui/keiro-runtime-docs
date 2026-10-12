@@ -5,6 +5,13 @@ title: "Deepen the keiro integration-events code walkthrough"
 kind: exec-plan
 created_at: 2026-06-02T04:47:38Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Deepen the keiro integration-events code walkthrough
@@ -101,8 +108,8 @@ A reader who finishes the deepened tour can:
   the poison-message rule), all pure and broker-free.
 
 You can see the result by running the docs site from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `pnpm dev` (which runs `vite dev`), or a
-production build with `pnpm build` (which runs `vite build` and emits a static single-page app
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `bun run dev` (which runs `vite dev`), or a
+production build with `bun run build` (which runs `vite build` and emits a static single-page app
 under `.output/public`). Browsing
 `http://localhost:3000/docs/keiro/walkthrough/integration/00-start-here` shows the expanded tour
 nested under "Code Walkthrough" → "Integration (inbox & outbox)" in the sidebar, with the new
@@ -138,7 +145,7 @@ must always reflect the actual current state of the work.
       including the `#recovering-stranded-publishing-rows` anchor at
       `choose-an-outbox-ordering-policy.mdx:57`, the consume tutorial); keiro source read at the
       pinned commit `3f5dc9c` and every transcription in this plan confirmed verbatim against the
-      named files. (No `pnpm build` run — out of scope for this authoring pass.)
+      named files. (No `bun run build` run — out of scope for this authoring pass.)
 - [x] M1. New chapter `01-the-integration-event-envelope.mdx` authored (207 lines) — the
       `IntegrationEvent` record's sixteen fields, `IntegrationContentType` / `SchemaReference` /
       `TraceContext` / `IntegrationEventError`, `integrationPayload`, `integrationHeaders`,
@@ -171,11 +178,10 @@ must always reflect the actual current state of the work.
 - [x] M6. `00-start-here.mdx` updated (51 lines) — new five-card chapter list, refreshed
       source-file map (nine read modules + two migrations), the pipeline `mermaid` kept; `meta.json`
       `pages` rewritten to the six new slugs (verified in sync).
-- [x] M7. Acceptance (no-pnpm pass) — depth checklist green (every `Inbox`/`Outbox`/`Integration.Event`
+- [x] M7. Acceptance (no-legacy package manager pass) — depth checklist green (every `Inbox`/`Outbox`/`Integration.Event`
       export, all four ordering predicates, the dead-letter path present in the subdir AND confirmed
       verbatim in the pinned source); no relative links; every opening fence language-tagged (even
-      fence counts per file); meta.json in sync; old `02-the-outbox.mdx` removed. Browser/`pnpm
-      build`/`lint:links` are deferred to the finalization pass (EP-19) per this run's scope.
+      fence counts per file); meta.json in sync; old `02-the-outbox.mdx` removed. Browser/`bun run build`/`lint:links` are deferred to the finalization pass (EP-19) per this run's scope.
 
 
 ## Surprises & Discoveries
@@ -281,7 +287,7 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion. Compare the
 result against the original purpose.
 
-**2026-06-02 — authoring pass complete (M0–M7, no-pnpm).** The tour grew from four chapters
+**2026-06-02 — authoring pass complete (M0–M7, no-legacy package manager).** The tour grew from four chapters
 (~358 MDX lines: `00`/`01-the-inbox`/`02-the-outbox`/`03-kafka-mapping`) to six chapters (975 MDX
 lines) under `content/docs/keiro/walkthrough/integration/`:
 
@@ -307,7 +313,7 @@ from the pinned source. The full depth checklist (Validation #6/#7) is green: ev
 the subdir AND in the pinned source. Every fence is language-tagged; every link is absolute; the
 stale-`publishing` gap is documented honestly (the inaccurate Haddock is not repeated).
 
-Gap / handoff: this run did not execute `pnpm build`, `pnpm lint:links`, or the browser walk (out of
+Gap / handoff: this run did not execute `bun run build`, `bun run lint:links`, or the browser walk (out of
 scope for the authoring pass). EP-19 (walkthrough finalization) should run the full acceptance gate
 (Validation #1–#3, #8) across the deepened tours. No source divergences were found, so no follow-up
 on accuracy is needed.
@@ -324,9 +330,9 @@ docs, and every snippet must match the real source transcribed below.
 
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is a **fumadocs**
 documentation site (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static single-page
-app** (React + MDX + TypeScript, bundled with **Vite**), built and served with **pnpm** on **Node
-22**. `pnpm dev` runs `vite dev`; `pnpm build` runs `vite build` and emits a static SPA under
-`.output/public`; `pnpm lint:links` checks internal links. Content lives under `content/docs/`.
+app** (React + MDX + TypeScript, bundled with **Vite**), built and served with **legacy package manager** on **Node
+22**. `bun run dev` runs `vite dev`; `bun run build` runs `vite build` and emits a static SPA under
+`.output/public`; `bun run lint:links` checks internal links. Content lives under `content/docs/`.
 Each directory has a `meta.json` whose `pages` array lists child page slugs (and nested directory
 names) in sidebar order. A "page" is an `.mdx` file: YAML frontmatter (`title`, `description`)
 followed by an MDX body.
@@ -1075,7 +1081,7 @@ integration references/explanations (as the current `03-kafka-mapping` already d
 
 ### M0 — Preconditions
 
-Confirm EP-11 is Complete and the cross-link targets exist. At the end you can run `pnpm build` on
+Confirm EP-11 is Complete and the cross-link targets exist. At the end you can run `bun run build` on
 the existing tree with zero errors. Acceptance: the build succeeds before you change any chapter;
 the four current chapters and `meta.json` exist; `integration` is in `walkthrough/meta.json`; and
 the link targets `reference/integration-event`, `reference/inbox`, `reference/outbox`, the three
@@ -1325,7 +1331,7 @@ the depth checklist green, no relative links, every fence tagged.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless stated
-otherwise. The toolchain is **pnpm** on **Node 22** (enter the Nix dev shell first if the repo uses
+otherwise. The toolchain is **legacy package manager** on **Node 22** (enter the Nix dev shell first if the repo uses
 one: `nix develop`).
 
 ### M0 — Preconditions
@@ -1349,8 +1355,8 @@ done
 grep -q "recovering-stranded-publishing-rows\|## Recovering stranded publishing rows" \
   content/docs/keiro/how-to/choose-an-outbox-ordering-policy.mdx && echo "anchor present"
 
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected: every `have …` line present (no `MISSING`), `anchor present`, and `✓ built in <N>s` with
@@ -1387,8 +1393,8 @@ two never collide on the `01` slug at the filesystem level — create the new `0
 After each chapter, build and view it:
 
 ```bash
-pnpm build
-# then pnpm dev and open the chapter, e.g.
+bun run build
+# then bun run dev and open the chapter, e.g.
 # http://localhost:3000/docs/keiro/walkthrough/integration/03-the-outbox-enqueue-and-claim
 ```
 
@@ -1436,8 +1442,8 @@ Edit `00-start-here.mdx`'s `<Cards>` to the five new chapters and overwrite `met
 ### M7 — Build and audit
 
 ```bash
-pnpm build
-pnpm lint:links
+bun run build
+bun run lint:links
 ```
 
 Expected: `✓ built` with no crawler warnings; `lint:links` exits 0.
@@ -1450,7 +1456,7 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
 1. **The site builds and prerenders every chapter.** From the repo root:
 
    ```bash
-   pnpm build
+   bun run build
    ```
 
    Succeeds (`✓ built`) and the log prerenders the six routes
@@ -1459,7 +1465,7 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
 2. **Zero crawler warnings.**
 
    ```bash
-   pnpm build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
+   bun run build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
    ```
 
    Expected: `no crawler warnings`.
@@ -1467,7 +1473,7 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
 3. **Link check passes.**
 
    ```bash
-   pnpm lint:links
+   bun run lint:links
    ```
 
    Expected: exit 0, no broken or relative internal links.
@@ -1533,7 +1539,7 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
    snippets and SQL are not compiled. The conceptual words like `dedupe_key` map to the migration
    column names; `keiro_inbox`/`keiro_outbox` map to the table names.)
 
-8. **The chapters render in a browser.** Run `pnpm dev`, open
+8. **The chapters render in a browser.** Run `bun run dev`, open
    `http://localhost:3000/docs/keiro/walkthrough/integration/00-start-here`, and confirm the five
    chapter cards link correctly, the pipeline `mermaid` renders as a diagram, and each chapter's
    `<Callout>`s render. Walk 00 → 05 via the "Next:" links and confirm every link navigates (no
@@ -1546,13 +1552,13 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
 
 Every step is safe to repeat. `git mv` is idempotent in effect (re-running after the move is a no-op
 or a harmless re-stage); `git rm` of the split `02-the-outbox.mdx` is a one-time delete (after which
-the content lives in `03`/`04`); editing `.mdx` files is additive; re-running `pnpm build` and
-`pnpm lint:links` is idempotent. If you renumber a chapter, rename the file *and* update the matching
+the content lives in `03`/`04`); editing `.mdx` files is additive; re-running `bun run build` and
+`bun run lint:links` is idempotent. If you renumber a chapter, rename the file *and* update the matching
 `meta.json` slug *and* every absolute intra-tour link that pointed at the old number, in the same
 change — a slug pointing at a missing file (or a file missing from `pages`) yields a broken sidebar
 entry, not a crash, so the build still exits 0; catch it with acceptance #8.
 
-If `pnpm build` reports `Failed to fetch`, the cause is almost always a relative link or a link to a
+If `bun run build` reports `Failed to fetch`, the cause is almost always a relative link or a link to a
 page that does not exist yet. Run acceptance #4 for relative links; for the runbook anchor, confirm
 the `#recovering-stranded-publishing-rows` heading still exists in
 `content/docs/keiro/how-to/choose-an-outbox-ordering-policy.mdx` (it is owned by EP-11; if EP-11
@@ -1641,3 +1647,5 @@ constructors), `OrderingPolicy` (four constructors), `BackoffSchedule`, `Exponen
 `outboxRowToKafkaRecord`, `integrationEventToKafkaRecord`; and the two SQL tables `keiro_inbox`
 (`PRIMARY KEY (source, dedupe_key)`) and `keiro_outbox` (`UNIQUE (source, message_id)`) with their
 indexes.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

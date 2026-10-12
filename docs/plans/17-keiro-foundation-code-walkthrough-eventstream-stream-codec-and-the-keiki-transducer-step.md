@@ -5,6 +5,13 @@ title: "Keiro foundation code walkthrough: EventStream, Stream, Codec, and the k
 kind: exec-plan
 created_at: 2026-06-02T04:47:38Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro foundation code walkthrough: EventStream, Stream, Codec, and the keiki transducer step
@@ -67,8 +74,8 @@ A reader who finishes this new tour can:
   step, not just the state.
 
 You can see it working by running the docs site from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`): `pnpm dev` (runs `vite dev`) for the dev server,
-or `pnpm build` (runs `vite build`, emitting a static single-page app under `.output/public`) for a
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`): `bun run dev` (runs `vite dev`) for the dev server,
+or `bun run build` (runs `vite build`, emitting a static single-page app under `.output/public`) for a
 production build. Browse `http://localhost:3000/docs/keiro/walkthrough` and the sidebar shows a new
 **foundation** tour nested under "Code Walkthrough": a `00 — Start here` plus five numbered chapters.
 Haskell snippets render (with ligatures once the font plan has landed) and the `mermaid` diagrams
@@ -92,7 +99,7 @@ always reflect the actual current state of the work.
       `docs/keiro-source-sync.md`, the `walkthrough/` hub + `walkthrough/meta.json`, the transducer
       primer page, and the command-cycle tour all exist); keiro source readable at `3f5dc9c`; keiki
       source located via `mori registry show shinzui/keiki --full` → `/Users/shinzui/Keikaku/bokuno/keiki`;
-      the new `walkthrough/foundation/` subdir created. (No `pnpm build` run — out of this EP's scope per
+      the new `walkthrough/foundation/` subdir created. (No `bun run build` run — out of this EP's scope per
       the dispatch; verification was by file existence + source cross-check.)
 - [x] M1. `00-start-here.mdx` authored (56 lines) — overview `mermaid` (Hydrate → Transduce → Append),
       `<Cards>` index with absolute hrefs, source-file `text` block, forward-link-to-read-side note in
@@ -121,10 +128,10 @@ always reflect the actual current state of the work.
       `"foundation"` appended to `walkthrough/meta.json` (preserving `operations` that EP-18 added in
       parallel); **no** `<Card href>` added to `walkthrough/index.mdx` (EP-19 owns that — confirmed 0
       hits).
-- [x] M8. Self-verification gate (no `pnpm`, per scope): all internal links resolve to existing files;
+- [x] M8. Self-verification gate (no `legacy package manager`, per scope): all internal links resolve to existing files;
       relative-link audit clean; every fence tagged (equal tagged-openers/bare-closers per file);
       Haskell-name audit 0 missing across keiro + keiki; depth checklist all covered. **Deferred to EP-19:**
-      the full `pnpm build` / `pnpm lint:links` whole-tree gate and the browser render check.
+      the full `bun run build` / `bun run lint:links` whole-tree gate and the browser render check.
 
 
 ## Surprises & Discoveries
@@ -225,7 +232,7 @@ Forward-links to read-side snapshot persistence are parked in prose on `/docs/ke
 `00-start-here`, ch. 04, and ch. 05, naming the read-side snapshot chapters as the persistence owner — no
 direct link to a possibly-unbuilt page, per Integration Point #7.
 
-Gaps / deferred: the whole-tree `pnpm build` (zero-crawler-warnings) and `pnpm lint:links` gate, plus the
+Gaps / deferred: the whole-tree `bun run build` (zero-crawler-warnings) and `bun run lint:links` gate, plus the
 browser render check (mermaid/TypeTable/sidebar), are out of this EP's dispatch scope and are owned by
 **EP-19**'s finalization gate. Self-verification here was by file-existence link resolution (all internal
 links resolve), the relative-link audit (clean), the fence audit (every opener tagged), and the
@@ -243,8 +250,8 @@ source transcribed below.
 
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is a **fumadocs** documentation
 site (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static single-page app** (React + MDX +
-TypeScript, bundled with **Vite**), built and served with **pnpm** on **Node 22**. `pnpm dev` runs
-`vite dev`; `pnpm build` runs `vite build` and emits a static SPA under `.output/public`. Content lives
+TypeScript, bundled with **Vite**), built and served with **legacy package manager** on **Node 22**. `bun run dev` runs
+`vite dev`; `bun run build` runs `vite build` and emits a static SPA under `.output/public`. Content lives
 under `content/docs/`. Each directory has a `meta.json` whose `pages` array lists child page slugs (and
 nested directory names) in sidebar order. A "page" is an `.mdx` file: YAML frontmatter (`title`,
 `description`) followed by an MDX body.
@@ -622,7 +629,7 @@ heart chapter (M5) leans on.
 ### M0 — Preconditions and subdir
 
 Confirm EP-7 and EP-8 are Complete and the toolchain/trees are ready. Locate the keiki source. Create
-the `walkthrough/foundation/` subdir. At the end you can run `pnpm build` on the existing tree with
+the `walkthrough/foundation/` subdir. At the end you can run `bun run build` on the existing tree with
 zero errors and the empty subdir exists. Acceptance: the build succeeds before you add any page, and
 `content/docs/keiro/index.mdx`, `content/docs/keiro/walkthrough/index.mdx`, and `docs/keiro-source-sync.md`
 all exist; `mori registry show shinzui/keiki --full` prints the keiki `Path:`.
@@ -639,7 +646,7 @@ source files in a `text` block. **In prose**, place the forward-link note: snaps
 `(state, registers)` pair — see the read side, linking `/docs/keiro/walkthrough` (the tour landing) and
 naming the read-side snapshot tour as the place that covers persistence (EP-14). Link back to the
 transducer primer `/docs/keiro/explanation/the-keiro-stack#what-is-a-transducer`. Acceptance:
-`pnpm build` prerenders it with no crawler warnings.
+`bun run build` prerenders it with no crawler warnings.
 
 ### M2 — `01-the-stream-handle.mdx`
 
@@ -710,15 +717,15 @@ sidebar; the hub has no foundation card yet.
 
 ### M8 — Full acceptance gate
 
-Run the whole build + link-check + audits (see Validation and Acceptance). Acceptance: `pnpm build`
-zero crawler warnings; `pnpm lint:links` exit 0; Haskell-name audit 0 missing; depth checklist all
+Run the whole build + link-check + audits (see Validation and Acceptance). Acceptance: `bun run build`
+zero crawler warnings; `bun run lint:links` exit 0; Haskell-name audit 0 missing; depth checklist all
 covered; no relative links; no bare fences.
 
 
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless stated
-otherwise. The toolchain is **pnpm** on **Node 22** (enter the Nix dev shell first if the repo uses
+otherwise. The toolchain is **legacy package manager** on **Node 22** (enter the Nix dev shell first if the repo uses
 one: `nix develop`).
 
 ### M0 — Preconditions and subdir
@@ -734,8 +741,8 @@ test -f content/docs/keiro/explanation/the-keiro-stack.mdx && echo "transducer p
 mori registry show shinzui/keiki --full | grep -i "Path:"
 
 # Install deps and confirm the existing site builds before you add pages.
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected (abridged):
@@ -871,7 +878,7 @@ new tours (foundation, operations) exist.
 ### M8 — Build and audit
 
 ```bash
-pnpm build
+bun run build
 ```
 
 Expected: `✓ built in <N>s` with no `[unhandledRejection]` / `Failed to fetch` lines.
@@ -884,7 +891,7 @@ Acceptance is observable behavior, not just "files exist."
 1. **The site builds and prerenders the six new pages.** From the repo root:
 
    ```bash
-   pnpm build
+   bun run build
    ```
 
    Succeeds (`✓ built`) and the log shows the six new routes prerendered:
@@ -899,7 +906,7 @@ Acceptance is observable behavior, not just "files exist."
    lines:
 
    ```bash
-   pnpm build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
+   bun run build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
    ```
 
    Expected: `no crawler warnings`. (The foundation tour is navigable via `meta.json` even though EP-19
@@ -908,7 +915,7 @@ Acceptance is observable behavior, not just "files exist."
 3. **Link check passes.**
 
    ```bash
-   pnpm lint:links
+   bun run lint:links
    ```
 
    Expected: exit 0, no broken or relative internal links.
@@ -985,7 +992,7 @@ Acceptance is observable behavior, not just "files exist."
      and on chapters 04 and 05, parked on `/docs/keiro/walkthrough`, naming the read-side target — not a
      direct link to an unbuilt page.
 
-9. **The pages render in a browser.** Run `pnpm dev`, open
+9. **The pages render in a browser.** Run `bun run dev`, open
    `http://localhost:3000/docs/keiro/walkthrough/foundation/00-start-here`, and confirm the overview
    `mermaid` renders as a diagram, the `<Cards>` chapter index navigates correctly, and the foundation
    tour appears nested under "Code Walkthrough" in the sidebar. Open
@@ -996,13 +1003,13 @@ Acceptance is observable behavior, not just "files exist."
 
 ## Idempotence and Recovery
 
-Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `pnpm build` and
-`pnpm lint:links` is idempotent. If a page slug needs to change, rename the file *and* update the
+Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `bun run build` and
+`bun run lint:links` is idempotent. If a page slug needs to change, rename the file *and* update the
 matching `meta.json` slug in the same edit — a slug pointing at a missing file (or a file missing from
 `pages`) yields a broken sidebar entry, not a crash, so the build still exits 0; catch it with the
 browser check (acceptance #9).
 
-If `pnpm build` reports a `Failed to fetch`, the cause is almost always a relative link or a link to a
+If `bun run build` reports a `Failed to fetch`, the cause is almost always a relative link or a link to a
 page that does not exist yet. Run acceptance check #4 to find relative links and fix them to absolute
 paths. The single most likely such failure for this plan is a **premature link to the read-side snapshot
 persistence pages or a premature hub `<Card href>`** — both targets may not exist when you build. The
@@ -1073,3 +1080,5 @@ RegFile rs, [co])`), `applyEvents`, `applyEventStreaming`, `BoolAlg`; from `Keir
 `evaluateCommand` (the `Keiki.step … (state current, registers current) …` call); and the anchors
 `orderEventStream`, `snapshotOrderEventStream`, `orderCodec`, `orderStream` (keiro jitsurei) and
 `OrderCartRegs`, `OrderVertex`, `orderCart` (keiki jitsurei).
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

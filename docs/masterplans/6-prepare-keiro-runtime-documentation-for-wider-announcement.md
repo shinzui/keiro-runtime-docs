@@ -5,6 +5,13 @@ title: "Prepare keiro runtime documentation for wider announcement"
 kind: master-plan
 created_at: 2026-07-14T15:12:46Z
 intention: "intention_01kxgjsgnse1z9r0w141akd9g2"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Prepare keiro runtime documentation for wider announcement
@@ -452,7 +459,7 @@ Compare the result against the original vision.
   Dirty upstream files remain excluded and untouched, and the jitsurei ledger is unchanged.
   `mori show --full`, formatting, and whitespace checks pass.
 - EP-7 Milestone 4's automated portion added a read-only navigation-integrity checker and wired it
-  into `pnpm check`. The checker covers 62 metadata files and 506 pages; the full type, lint,
+  into `bun run check`. The checker covers 62 metadata files and 506 pages; the full type, lint,
   formatting, navigation, production-build, and link gate passes, with four pre-existing lint
   warnings and the existing chunk-size warning recorded. `git diff --check` is clean and
   `mori show --full` resolves seven dependencies and ten docs. EP-7 remains in progress until the
@@ -473,3 +480,5 @@ Compare the result against the original vision.
 2026-07-14T20:00:07Z — Recorded the third consecutive unavailable-browser result and the resulting
 external blocker. EP-7 remains In Progress; resume the manual rendered-preview acceptance checks
 when a browser backend is available.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

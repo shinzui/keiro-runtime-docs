@@ -19,45 +19,48 @@ Historical plans and source-review records remain under `docs/`.
 
 The [runtime catalog](content/docs/runtime-patterns/index.mdx) publishes all 88 concepts from a fixed committed revision of `mori://shinzui/keiro-runtime-patterns/okf/runtime-patterns`. Historical and candidate source examples remain qualified quotations. Local product guidance remains Language 6. Source rules are maintained in the owner; site explanations and SVGs are maintained here.
 
-Refresh with `nix develop -c pnpm run sync:patterns -- --ref FULL_COMMIT_SHA`. Do not edit generated MDX. Review the snapshot diff, all invalidated concept visual assessments and diagram bindings in `docs/patterns/presentation.json`, and coupled product pages. Render changed drawings in both themes and inspect desktop/mobile expansion. Complete the [pattern sync procedure](agents/skills/doc-sync/PATTERNS.md) before advancing [the reviewed pointer](docs/runtime-patterns-source-sync.md).
+Refresh with `nix develop -c bun run sync:patterns --ref FULL_COMMIT_SHA`. Do not edit generated MDX. Review the snapshot diff, all invalidated concept visual assessments and diagram bindings in `docs/patterns/presentation.json`, and coupled product pages. Render changed drawings in both themes and inspect desktop/mobile expansion. Complete the [pattern sync procedure](agents/skills/doc-sync/PATTERNS.md) before advancing [the reviewed pointer](docs/runtime-patterns-source-sync.md).
 
-`pnpm run lint:patterns` checks offline generation, coverage, visual bindings, and pointer agreement. `node scripts/runtime-patterns.mjs --check-upstream` separately reports owner drift. `node agents/skills/doc-sync/status.mjs runtime-patterns --json` distinguishes imported output from completed review. Import does not advance the owner's library review ledger or certify that an agent complied with a pattern.
+`bun run lint:patterns` checks offline generation, coverage, visual bindings, and pointer agreement. `node scripts/runtime-patterns.mjs --check-upstream` separately reports owner drift. `node agents/skills/doc-sync/status.mjs runtime-patterns --json` distinguishes imported output from completed review. Import does not advance the owner's library review ledger or certify that an agent complied with a pattern.
 
 ## Local development
 
 Enter the Nix environment before running project commands. The shared flake-parts
 module supplies Bun 1.4.2, TypeScript 7.0.2, oxlint, and oxfmt. The project-owned
-`flake.module.nix` retains Node 22 and pnpm; `packageManager` selects pnpm 11.4.0.
+`flake.module.nix` retains Node 22 for dependency executables; `packageManager` selects Bun 1.4.2.
 
 ```bash
 nix develop
-pnpm install
-pnpm dev
+bun install --frozen-lockfile
+bun run dev
 ```
 
 Open <http://127.0.0.1:5214>.
 
+`dev` and `build` prepare optional fonts exactly once. Set `KEIRO_DOCS_SKIP_FONTS=1`
+for unattended checks/builds to skip licensed-font lookup and use the system font fallback.
+
 ## Verification
 
-| Command                     | Purpose                                                            |
-| --------------------------- | ------------------------------------------------------------------ |
-| `pnpm run lint:docs`        | Check release scope and common prose problems.                     |
-| `pnpm run review:prose`     | Report sentence and paragraph findings for editorial review.       |
-| `pnpm run test:patterns`    | Verify committed import, failure recovery, and incremental review. |
-| `pnpm run lint:patterns`    | Check catalog output and completed visual/source bindings.         |
-| `pnpm run lint:diagrams`    | Check SVG structure and placement.                                 |
-| `pnpm run test:docs`        | Verify the documentation checker.                                  |
-| `pnpm run sync:terminology` | Refresh the glossary from Keiro's terminology bundle through Mori. |
-| `pnpm run lint:terminology` | Verify the glossary against its canonical snapshot.                |
-| `pnpm typecheck`            | Compile MDX metadata and check TypeScript.                         |
-| `pnpm lint`                 | Check application code.                                            |
-| `pnpm format:check`         | Check source formatting.                                           |
-| `pnpm lint:nav`             | Check navigation coverage.                                         |
-| `pnpm build`                | Build the static site.                                             |
-| `pnpm lint:links`           | Check source links and built routes.                               |
-| `pnpm check`                | Run the complete release gate.                                     |
+| Command                    | Purpose                                                            |
+| -------------------------- | ------------------------------------------------------------------ |
+| `bun run lint:docs`        | Check release scope and common prose problems.                     |
+| `bun run review:prose`     | Report sentence and paragraph findings for editorial review.       |
+| `bun run test:patterns`    | Verify committed import, failure recovery, and incremental review. |
+| `bun run lint:patterns`    | Check catalog output and completed visual/source bindings.         |
+| `bun run lint:diagrams`    | Check SVG structure and placement.                                 |
+| `bun run test:docs`        | Verify the documentation checker.                                  |
+| `bun run sync:terminology` | Refresh the glossary from Keiro's terminology bundle through Mori. |
+| `bun run lint:terminology` | Verify the glossary against its canonical snapshot.                |
+| `bun run typecheck`        | Compile MDX metadata and check TypeScript.                         |
+| `bun run lint`             | Check application code.                                            |
+| `bun run format:check`     | Check source formatting.                                           |
+| `bun run lint:nav`         | Check navigation coverage.                                         |
+| `bun run build`            | Build the static site.                                             |
+| `bun run lint:links`       | Check source links and built routes.                               |
+| `bun run check`            | Run the complete release gate.                                     |
 
-Run `pnpm check` before a push.
+Run `bun run check` before a push.
 
 The [module migration report](docs/fumadocs-module-upgrade-2026-10-08.md) records
 the tested versions, preserved customizations, and future update procedure.
@@ -91,6 +94,6 @@ For licensed local fonts, read [the font setup guide](docs/optional-commercial-f
 
 ## Deployment
 
-`pnpm build` writes the static site to `.output/public/`.
+`bun run build` writes the static site to `.output/public/`.
 CI verifies pushes and pull requests to `master`.
 Serve that directory with a static host.

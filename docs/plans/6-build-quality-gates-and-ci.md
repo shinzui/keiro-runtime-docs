@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-05-30T20:05:53Z
 intention: "intention_01ksx5mf7qe2ht659e4kr9w2t0"
 master_plan: "docs/masterplans/1-keiro-runtime-docs-infrastructure-and-kiroku-foundation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Build quality gates and CI
@@ -23,14 +30,14 @@ Markdown/MDX files into a styled website. ("fumadocs" = a set of npm packages
 = Markdown that can also embed React components.) The site is built on **TanStack Start in
 static-SPA mode**: TanStack Start is a full-stack React framework whose Vite plugin
 (`@tanstack/react-start/plugin/vite`) is configured here to **prerender** the site into a
-fully static bundle. The build command is `vite build` (exposed as `pnpm build`); it emits a
+fully static bundle. The build command is `vite build` (exposed as `bun run build`); it emits a
 static site under `.output/public` that needs no running server. The site documents four
 Haskell libraries (kiroku, keiro, keiki, shibuya); the site itself is TypeScript/React and
 all code samples shown on the pages are Haskell.
 
 Right now the repository has no automated way to answer the question "is the docs site
 healthy?". After this plan is implemented, a contributor can run a single command —
-`pnpm run check` — locally and get a clear pass/fail across five gates: TypeScript type
+`bun run check` — locally and get a clear pass/fail across five gates: TypeScript type
 checking, code linting, code-format checking, a full production build, and link checking of
 the built static site. The exact same gates run automatically in GitHub on every pull
 request and every push to the `master` branch through a workflow file at
@@ -38,9 +45,9 @@ request and every push to the `master` branch through a workflow file at
 before it merges. A "gate" here just means a check that must pass; if any gate fails, the
 command (and CI) exits non-zero and the failure is reported.
 
-You can see it working three ways. (1) Locally: `pnpm run check` prints five green sections
+You can see it working three ways. (1) Locally: `bun run check` prints five green sections
 and exits 0. (2) Deliberately break something — for example introduce a type error — and
-`pnpm run typecheck` exits non-zero and names the file/line. (3) On GitHub: open a pull
+`bun run typecheck` exits non-zero and names the file/line. (3) On GitHub: open a pull
 request and watch the "CI" check turn green; push a commit with a type error and watch it
 turn red with the `tsc` error in the logs.
 
@@ -58,26 +65,26 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 This section must always reflect the actual current state of the work.
 
 - [x] Milestone 0 — Confirmed Plan A landed (package.json, flake.nix, vite.config.ts,
-      source.config.ts, content/docs all present); baseline toolchain (Node 22, pnpm 11, oxlint
+      source.config.ts, content/docs all present); baseline toolchain (Node 22, legacy-manager 11, oxlint
       1.66.0, oxfmt 0.45.0) on PATH. _(2026-05-30)_
 - [x] Milestone 1 — Added the `linkinator` devDependency and the `lint:links` + `check` scripts
       to `package.json`; lockfile regenerated to include linkinator. _(2026-05-30)_
 - [x] Milestone 2 — Added `linkinator.config.json` (now `{recurse, silent, directoryListing,
       skip:"^https?://"}` — the working key is `skip`, not `linksToSkip`). _(2026-05-30)_
 - [x] Milestone 3 — Every gate green locally: typecheck, lint (warnings only), format:check,
-      build, link-check. Ran `pnpm run format` once to normalise the whole repo (the gate had
+      build, link-check. Ran `bun run format` once to normalise the whole repo (the gate had
       never been enforced — 109 files), then scoped oxfmt with a new `.prettierignore`.
       _(2026-05-30)_
-- [x] Milestone 4 — `pnpm build` emits `.output/public`; link-check runs over it. Discovered the
+- [x] Milestone 4 — `bun run build` emits `.output/public`; link-check runs over it. Discovered the
       prerendered HTML is client-rendered (zero static `<a>`), so added a **source-level**
-      doc-link checker (`scripts/check-doc-links.mjs`) as the meaningful gate. `pnpm run check`
+      doc-link checker (`scripts/check-doc-links.mjs`) as the meaningful gate. `bun run check`
       exits 0. _(2026-05-30)_
 - [x] Milestone 5 — Dev shell already complete: Plan B added the `pragmatapro` flake input
-      (real attr `pragmataPro`, exposed as `packages.pragmatapro-fonts`); Node 22/pnpm/oxlint/
+      (real attr `pragmataPro`, exposed as `packages.pragmatapro-fonts`); Node 22/legacy package manager/oxlint/
       oxfmt already present; linkinator comes via the npm devDependency. Added a clarifying
       comment to `flake.nix` rather than a possibly-nonexistent `pkgs.linkinator`. _(2026-05-30)_
-- [x] Milestone 6 — Added `.github/workflows/ci.yml` (pnpm + Node 22 fallback, oxlint/oxfmt
-      pinned via `pnpm dlx` to the Nix versions). The Nix-flake CI variant was rejected: the
+- [x] Milestone 6 — Added `.github/workflows/ci.yml` (legacy package manager + Node 22 fallback, oxlint/oxfmt
+      pinned via `bun x` to the Nix versions). The Nix-flake CI variant was rejected: the
       flake's `pragmatapro` input is a **local filesystem path** that does not exist on a runner.
       CI-exact commands validated locally. (GitHub PR run not exercised — no remote in this
       environment.) _(2026-05-30)_
@@ -95,8 +102,8 @@ surprised:)
 
 - **nitro is pinned.** `package.json` pins `nitro` to `3.0.260429-beta`. The newer
   `3.0.260522-beta` breaks the `vite dev` SSR worker; the pinned beta works for both
-  `pnpm dev` and the prerendered `pnpm build`. CI must rely on the committed `pnpm-lock.yaml`
-  (`pnpm install --frozen-lockfile`); do not let CI float to a newer nitro. Record the exact
+  `bun run dev` and the prerendered `bun run build`. CI must rely on the committed `bun.lock`
+  (`bun install --frozen-lockfile`); do not let CI float to a newer nitro. Record the exact
   versions you observed here.
 - **Static-SPA link-check coverage is partial by design.** The prerendered HTML in
   `.output/public/` contains real, link-bearing HTML for the routes TanStack Start
@@ -111,16 +118,16 @@ surprised:)
   default attribute name and a version mismatch (built `result/` reports `0.9` while the
   flake declares `0.901`). Handle the input defensively (see Milestone 5); record the exact
   attribute name you had to use here once observed.
-- `pnpm build` may print warnings about a sparse content tree until Plans D and E populate
+- `bun run build` may print warnings about a sparse content tree until Plans D and E populate
   `content/docs/`. A build with only the seed `content/docs/index.mdx` from Plan A must still
   succeed and emit `.output/public/docs/index.html`; record the observed output here.
 
 Observed during implementation (2026-05-30):
 
 - **The format gate had never been enforced — 109 files were unformatted.** `oxfmt --check .`
-  failed on first run. Ran `pnpm run format` once (per Milestone 3) to normalise, then discovered
+  failed on first run. Ran `bun run format` once (per Milestone 3) to normalise, then discovered
   oxfmt formats *everything* by default — including planning docs (`docs/**`), vendored skill
-  files (`agents/**`), the generated+committed `src/routeTree.gen.ts`, and `pnpm-lock.yaml`. Fixed
+  files (`agents/**`), the generated+committed `src/routeTree.gen.ts`, and `bun.lock`. Fixed
   by adding a `.prettierignore` (oxfmt reads it by default) scoping the gate to the docs **site**:
   `src/`, `content/docs/`, and root config. Critical detail: the planning-docs exclusion must be
   **anchored** as `/docs/` (leading slash) so it does NOT also exclude `content/docs/` (which IS
@@ -145,18 +152,18 @@ Observed during implementation (2026-05-30):
   `index.html`** (only `_shell.html`), so a bare crawl reports `[404] /`; adding
   `directoryListing: true` makes the root resolve and the gate pass. (3) The config key that
   skips external links is `skip`, not the plan's `linksToSkip`.
-- **pnpm fast-path can desync the lockfile.** After reverting `pnpm-lock.yaml`, `pnpm install`
+- **legacy package manager fast-path can desync the lockfile.** After reverting `bun.lock`, `bun install`
   (even `--force`, `--no-frozen-lockfile`) repeatedly said "Already up to date" and refused to
   re-add `linkinator`, because it trusts the existing `node_modules` virtual-store state. Only a
-  full `rm -rf node_modules pnpm-lock.yaml && pnpm install` regenerated a correct lockfile.
-  Lesson: do not hand-revert the lockfile; let pnpm own it.
+  full `rm -rf node_modules bun.lock && bun install` regenerated a correct lockfile.
+  Lesson: do not hand-revert the lockfile; let legacy package manager own it.
 - **Nix-flake CI is non-viable as-is.** `flake.nix` has `inputs.pragmatapro.url =
   "path:/absolute/path/to/fonts"` — a **local filesystem path** absent on a GitHub
-  runner, so `nix develop` cannot evaluate the flake in CI. The pnpm/Node-22 fallback is used
+  runner, so `nix develop` cannot evaluate the flake in CI. The legacy package manager/Node-22 fallback is used
   instead. The build still works on a runner because `scripts/copy-fonts.mjs` tolerates a missing
   font package (warns, exits 0; code blocks fall back to system monospace).
 - **CI oxlint/oxfmt are pinned to the Nix versions** (`oxlint@1.66.0`, `oxfmt@0.45.0`) via
-  `pnpm dlx`. Both fetch from npm (verified). Pinning prevents the format gate from flapping on a
+  `bun x`. Both fetch from npm (verified). Pinning prevents the format gate from flapping on a
   version skew between a contributor's Nix shell and `@latest` on the runner (e.g. oxfmt 0.45 vs
   0.52 format differently).
 
@@ -165,17 +172,17 @@ Observed during implementation (2026-05-30):
 
 Record every decision made while working on the plan.
 
-- Decision: Use **pnpm** as the package manager and **Node 22** as the runtime for all
+- Decision: Use **legacy package manager** as the package manager and **Node 22** as the runtime for all
   gates and CI.
   Rationale: The sibling fumadocs site `shibuya-docs` and the sibling
-  `keiki-docs` both pin Node 22 via their Nix flakes and use pnpm; matching them keeps the
+  `keiki-docs` both pin Node 22 via their Nix flakes and use legacy package manager; matching them keeps the
   family consistent. Plan A (`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`)
-  established this repo's flake on pnpm + Node 22, and this plan builds on that.
+  established this repo's flake on legacy package manager + Node 22, and this plan builds on that.
   Date: 2026-05-30
 
 - Decision: Lint with **oxlint** and format-check with **oxfmt**, the tools already present
-  in the current `flake.nix` dev shell and already wired as `pnpm lint` (`oxlint`) and
-  `pnpm run format:check` (`oxfmt --check .`), rather than introducing ESLint/Prettier/Biome.
+  in the current `flake.nix` dev shell and already wired as `bun run lint` (`oxlint`) and
+  `bun run format:check` (`oxfmt --check .`), rather than introducing ESLint/Prettier/Biome.
   Rationale: The repository's existing `flake.nix` already ships `pkgs.oxlint` and
   `pkgs.oxfmt`, the existing `package.json` already calls them, and `.oxlintrc.json` already
   configures oxlint. There is no ESLint in this repo and nothing here uses `next lint` (the
@@ -186,10 +193,10 @@ Record every decision made while working on the plan.
   this plan is unaffected.)
   Date: 2026-05-30
 
-- Decision: The production build gate is **`vite build`** (the `pnpm build` script), which
+- Decision: The production build gate is **`vite build`** (the `bun run build` script), which
   prerenders the site into a **static SPA** under `.output/public`. This is already
   **host-agnostic** — the output is a plain directory of static HTML/CSS/JS that any static
-  host (or the bundled `pnpm start` = `serve .output/public`) can serve. There is **no
+  host (or the bundled `bun run start` = `serve .output/public`) can serve. There is **no
   separate `build:export` step**: the static export *is* the default build, produced by the
   `tanstackStart({ spa: { enabled: true, prerender: { enabled: true, crawlLinks: true } } })`
   configuration in `vite.config.ts`.
@@ -202,9 +209,9 @@ Record every decision made while working on the plan.
   Date: 2026-05-30
 
 - Decision: Pin **nitro** to `3.0.260429-beta` and have CI install from the committed
-  `pnpm-lock.yaml` with `--frozen-lockfile`.
+  `bun.lock` with `--frozen-lockfile`.
   Rationale: The newer `3.0.260522-beta` breaks the `vite dev` SSR worker. The pinned beta
-  works for both `pnpm dev` and the prerendered `pnpm build`. Freezing the lockfile in CI
+  works for both `bun run dev` and the prerendered `bun run build`. Freezing the lockfile in CI
   prevents a silent float to the broken version.
   Date: 2026-05-30
 
@@ -231,21 +238,21 @@ Record every decision made while working on the plan.
   Date: 2026-05-30
 
 - Decision: CI prefers the **Nix flake dev shell** (`nix develop`) to provide the toolchain;
-  if the team prefers a lighter runner, a documented pnpm/Node-22 fallback job is included as
+  if the team prefers a lighter runner, a documented legacy package manager/Node-22 fallback job is included as
   an alternative in this plan.
   Rationale: Using `nix develop --command` guarantees CI runs the exact tool versions a
-  developer gets locally (Node 22, pnpm, oxlint, oxfmt). The fallback uses
-  `actions/setup-node@v4` + `pnpm/action-setup@v4` for teams not wanting Nix in CI; note that
+  developer gets locally (Node 22, legacy package manager, oxlint, oxfmt). The fallback uses
+  `actions/setup-node@v4` + `legacy package manager/action-setup@v4` for teams not wanting Nix in CI; note that
   oxlint/oxfmt are only on PATH via Nix, so the fallback must install them via npm or
-  `pnpm dlx` (see Milestone 6).
+  `bun x` (see Milestone 6).
   Date: 2026-05-30
 
-- Decision (implementation): **Shipped the pnpm/Node-22 fallback CI, not the Nix-flake variant.**
+- Decision (implementation): **Shipped the legacy package manager/Node-22 fallback CI, not the Nix-flake variant.**
   Rationale: `flake.nix`'s `pragmatapro` input is `path:/absolute/path/to/fonts`, a
   local filesystem path that does not exist on a GitHub runner, so `nix develop` cannot evaluate
   the flake in CI. The fallback works because `scripts/copy-fonts.mjs` tolerates a missing font
   package (the build degrades to system monospace, exits 0). oxlint/oxfmt are pinned via
-  `pnpm dlx` to the exact Nix versions (`oxlint@1.66.0`, `oxfmt@0.45.0`) so CI and local agree and
+  `bun x` to the exact Nix versions (`oxlint@1.66.0`, `oxfmt@0.45.0`) so CI and local agree and
   the format gate never flaps on a version skew. (A future Nix-CI option would require making the
   font input remote or optional.)
   Date: 2026-05-30
@@ -265,11 +272,11 @@ Record every decision made while working on the plan.
 - Decision (implementation): **Scoped the format gate with a `.prettierignore`** (read by oxfmt
   by default) to `src/` + `content/docs/` + root config, excluding planning docs (`/docs/`,
   anchored so `content/docs/` is still checked), vendored tooling (`agents/`), the generated
-  `src/routeTree.gen.ts`, and `pnpm-lock.yaml`.
+  `src/routeTree.gen.ts`, and `bun.lock`.
   Rationale: `oxfmt --check .` formats the whole repo by default. The generated route tree is
   regenerated unformatted by every build (would flap the gate); planning docs contain code/mermaid
   fences oxfmt cannot format stably; the lockfile and vendored skills are not the docs site. The
-  one-time `pnpm run format` normalised 109 site files (kept).
+  one-time `bun run format` normalised 109 site files (kept).
   Date: 2026-05-30
 
 
@@ -278,10 +285,10 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-**Complete (2026-05-30).** A contributor can now run a single command, `pnpm run check`, and get a
+**Complete (2026-05-30).** A contributor can now run a single command, `bun run check`, and get a
 pass/fail across five gates — typecheck, lint, format-check, build, and link-check — and the same
 gates run on GitHub via `.github/workflows/ci.yml` on every pull request and every push to
-`master`. `pnpm run check` exits 0 on the current tree; each gate is real (verified it fails on
+`master`. `bun run check` exits 0 on the current tree; each gate is real (verified it fails on
 bad input: a type error fails typecheck, a broken `/docs` link fails the doc-link check).
 
 What shipped vs. the original plan:
@@ -290,8 +297,8 @@ What shipped vs. the original plan:
   crawl, because the client-rendered SPA emits no static links for a crawler to follow (the plan
   assumed otherwise). This is the change that makes the gate actually catch broken links.
 - **Format gate scoped** via `.prettierignore`; one-time repo normalisation applied (109 files).
-- **CI is the pnpm/Node-22 fallback**, not the Nix-flake variant, because the flake's font input
-  is a local path absent on runners; oxlint/oxfmt are pinned via `pnpm dlx` to the Nix versions.
+- **CI is the legacy package manager/Node-22 fallback**, not the Nix-flake variant, because the flake's font input
+  is a local path absent on runners; oxlint/oxfmt are pinned via `bun x` to the Nix versions.
 - **Hosting deferred**, host-agnostic by construction (static `.output/public`).
 
 Gaps / follow-ups: (1) The GitHub CI run itself was not exercised (no remote configured in this
@@ -300,7 +307,7 @@ more routes are prerendered or a JS-rendering crawler is added (future enhanceme
 notes). (3) A future Nix-CI would need the `pragmatapro` font input made remote/optional.
 
 Lessons: read the *actual* build output before designing a gate around it (the "0 static links"
-discovery reshaped the link gate); let pnpm own the lockfile (manual reverts desync it); pin
+discovery reshaped the link gate); let legacy package manager own the lockfile (manual reverts desync it); pin
 linter/formatter versions across local and CI to stop format gates flapping; scope whole-repo
 formatters with an ignore file before enforcing them.
 
@@ -328,7 +335,7 @@ This plan has a HARD dependency on **Plan A**, whose file is
 `docs/plans/1-scaffold-the-fumadocs-documentation-app.md`. "HARD dependency" means Plan A
 must be implemented and merged before this plan can be implemented, because this plan adds
 gates that operate on the fumadocs app Plan A creates. Plan A is what scaffolds the
-TanStack Start + fumadocs site, creates `package.json`, sets up `flake.nix` (pnpm + Node 22),
+TanStack Start + fumadocs site, creates `package.json`, sets up `flake.nix` (legacy package manager + Node 22),
 and seeds `content/docs/index.mdx`. This plan has SOFT dependencies on Plans B, C, D, and E
 (files `docs/plans/2-...`, `docs/plans/3-...`, `docs/plans/4-...`, `docs/plans/5-...`). "SOFT
 dependency" means this plan does not require them; the gates work on whatever content and
@@ -339,17 +346,17 @@ After Plan A, the repository tree relevant to this plan looks like this (paths a
 repository-relative):
 
 ```text
-package.json            # created by Plan A; pnpm scripts dev/build/start/typecheck/lint/format; owned by Plan A
-pnpm-lock.yaml          # committed lockfile; CI installs from it with --frozen-lockfile
-pnpm-workspace.yaml     # allowBuilds: esbuild + sharp
-flake.nix               # pnpm + Node 22 + oxlint + oxfmt dev shell; this plan extends it
+package.json            # created by Plan A; legacy package manager scripts dev/build/start/typecheck/lint/format; owned by Plan A
+bun.lock          # committed lockfile; CI installs from it with --frozen-lockfile
+legacy build-permission configuration     # allowBuilds: esbuild + sharp
+flake.nix               # legacy package manager + Node 22 + oxlint + oxfmt dev shell; this plan extends it
 flake.lock
 .gitignore              # ignores .output, .nitro, .tanstack, .source; commits src/routeTree.gen.ts
 vite.config.ts          # Vite build pipeline: tanstackStart(spa+prerender) + nitro; emits .output/public
 source.config.ts        # fumadocs-mdx collection config (defineDocs over content/docs)
 tsconfig.json           # strict TS, noEmit, paths { "@/*": ./src/*, "collections/*": ./.source/* }
 .oxlintrc.json          # oxlint config (plugins, categories, ignorePatterns)
-serve.json              # SPA fallback rewrite for the `pnpm start` static server
+serve.json              # SPA fallback rewrite for the `bun run start` static server
 src/                    # file-based routing + app code (see below)
 content/docs/           # MDX content; at least index.mdx after Plan A
 ```
@@ -374,14 +381,14 @@ src/routes/docs/{$}[.]md.ts    # raw-markdown route ("/docs/*.md")
 src/routes/api/search.ts       # static search index route (server.staticGET); SPA uses client-side Orama search
 ```
 
-The current `flake.nix` (already on pnpm + Node 22) already contains the two lint/format
+The current `flake.nix` (already on legacy package manager + Node 22) already contains the two lint/format
 binaries this plan reuses, plus an empty `checks = {}` output block this plan may populate:
 
 ```nix
 devShells.default = pkgs.mkShell {
   nativeBuildInputs = [
     pkgs.nodejs_22
-    pkgs.pnpm
+    pkgs.bun
     pkgs.just
     pkgs.oxlint
     pkgs.oxfmt
@@ -392,7 +399,7 @@ devShells.default = pkgs.mkShell {
 ```
 
 This plan (Milestone 5) extends that shell, ensuring `pkgs.oxlint`, `pkgs.oxfmt`, Node 22,
-pnpm, the link-check tool, and the pragmatapro font input are all present.
+legacy package manager, the link-check tool, and the pragmatapro font input are all present.
 
 The existing `package.json` scripts (created by Plan A — do not rename them; Plan A and this
 plan share them as an integration contract):
@@ -417,28 +424,28 @@ plan share them as an integration contract):
 Definitions of the gates this plan installs (the first four scripts already exist; this plan
 adds the link-check and the aggregate `check`):
 
-- **TypeScript typecheck** — `pnpm run typecheck` = `fumadocs-mdx && tsc --noEmit`. It runs
+- **TypeScript typecheck** — `bun run typecheck` = `fumadocs-mdx && tsc --noEmit`. It runs
   `fumadocs-mdx` first to generate the `.source/` directory that `tsconfig.json`'s
   `collections/*` path alias maps to; without it, `tsc` reports missing-module errors. There
   is **no `next typegen`** step (this is not Next.js); TanStack route types come from
   `src/routeTree.gen.ts`, which is **committed**, so a clean CI checkout resolves the route
   tree without first running `vite dev`/`vite build`. (If `src/routeTree.gen.ts` is ever
   stale, it is regenerated by `vite dev`/`vite build`.)
-- **Lint** — `pnpm lint` = `oxlint`, reading `.oxlintrc.json`. oxlint scans the
+- **Lint** — `bun run lint` = `oxlint`, reading `.oxlintrc.json`. oxlint scans the
   TypeScript/JavaScript source for suspicious code.
-- **Format check** — `pnpm run format:check` = `oxfmt --check .`, which fails (rather than
+- **Format check** — `bun run format:check` = `oxfmt --check .`, which fails (rather than
   rewrites) when something is unformatted.
-- **Build** — `pnpm build` = `vite build`, which compiles every MDX file via `fumadocs-mdx`,
+- **Build** — `bun run build` = `vite build`, which compiles every MDX file via `fumadocs-mdx`,
   prerenders the routes, and emits the static SPA into `.output/public`. This is the
   strongest single signal that the whole site compiles, type-checks its MDX, and renders.
-- **Link check** — after `pnpm build`, crawl the static HTML in `.output/public/` with
+- **Link check** — after `bun run build`, crawl the static HTML in `.output/public/` with
   linkinator to confirm no internal link is broken. Coverage is partial (static-SPA caveat —
   see Surprises & Discoveries and Milestone 4).
 
 Integration-point contract with Plan A (state this identically wherever touched): the files
 `package.json` (its `scripts` block) and `flake.nix` (the dev shell) are **owned by Plan A**.
 Plan A creates them with the baseline scripts (`dev`/`build`/`start`/`typecheck`/`lint`/
-`format:check`/…) and the pnpm + Node 22 shell. This plan **extends** them additively: it
+`format:check`/…) and the legacy package manager + Node 22 shell. This plan **extends** them additively: it
 adds the `lint:links` and `check` scripts to `package.json` and adds the link-check tool +
 font input to `flake.nix`. When implementing, MERGE into the existing blocks; never replace
 Plan A's content, and never rename an existing script.
@@ -475,7 +482,7 @@ implemented; implement Plan A first
 Scope: the per-gate scripts (`typecheck`, `lint`, `format:check`, `build`) already exist in
 `package.json` (owned by Plan A). This milestone adds the two missing scripts — `lint:links`
 and the aggregate `check` — plus the link-check dev dependency. At the end, each gate is
-runnable individually and `pnpm run check` chains them.
+runnable individually and `bun run check` chains them.
 
 Edit `package.json` (owned by Plan A — MERGE into the existing `scripts` and
 `devDependencies`; do not rename or remove existing entries). Add these two scripts to the
@@ -485,14 +492,14 @@ Edit `package.json` (owned by Plan A — MERGE into the existing `scripts` and
 {
   "scripts": {
     "lint:links": "linkinator .output/public --recurse --silent --config linkinator.config.json",
-    "check": "pnpm run typecheck && pnpm lint && pnpm run format:check && pnpm build && pnpm run lint:links"
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run build && bun run lint:links"
   }
 }
 ```
 
 Notes on each script:
 
-- `lint:links` crawls the **built** static site. `pnpm build` (Milestone 4) emits static HTML
+- `lint:links` crawls the **built** static site. `bun run build` (Milestone 4) emits static HTML
   into `.output/public`; linkinator crawls that directory. `--recurse` follows internal
   links; `--silent` keeps output to failures; the config file (Milestone 2) restricts
   checking to internal links so CI does not depend on the public internet.
@@ -513,11 +520,11 @@ Add the link-check tool to `devDependencies` (merge):
 Install (this also re-runs the `postinstall` = `fumadocs-mdx` hook, regenerating `.source/`):
 
 ```bash
-pnpm install
+bun install
 ```
 
-Acceptance: `pnpm install` completes; `pnpm run typecheck` runs (it should pass if Plan A
-left a clean tree); `pnpm lint` and `pnpm run format:check` run inside `nix develop` so
+Acceptance: `bun install` completes; `bun run typecheck` runs (it should pass if Plan A
+left a clean tree); `bun run lint` and `bun run format:check` run inside `nix develop` so
 oxlint/oxfmt are on PATH.
 
 
@@ -553,26 +560,26 @@ fallback `.output/public/_shell.html` only references hashed asset files. See th
 caveat in Surprises & Discoveries: links that live only in the client-rendered body of a
 non-prerendered page are not visible to a static HTML crawler.
 
-Acceptance: `linkinator.config.json` exists; `pnpm run lint:links` (after Milestone 4's
+Acceptance: `linkinator.config.json` exists; `bun run lint:links` (after Milestone 4's
 build) checks only internal links.
 
 
 ### Milestone 3 — Make every gate green locally
 
 Scope: run each gate, fix any issues in config (not in product code unless trivially this
-plan's own files), and confirm `pnpm run check` passes end to end. At the end, a developer in
+plan's own files), and confirm `bun run check` passes end to end. At the end, a developer in
 the Nix shell can run one command to validate the whole site.
 
 Run inside the Nix shell so oxlint/oxfmt are available:
 
 ```bash
-nix develop --command pnpm run typecheck
-nix develop --command pnpm lint
-nix develop --command pnpm run format:check
+nix develop --command bun run typecheck
+nix develop --command bun run lint
+nix develop --command bun run format:check
 ```
 
 If `format:check` fails because some files are unformatted, run
-`nix develop --command pnpm run format` once to format them, review the diff, and commit it.
+`nix develop --command bun run format` once to format them, review the diff, and commit it.
 If `lint` reports issues, prefer fixing them in a focused commit; the existing
 `.oxlintrc.json` already ignores generated/vendored output via its `ignorePatterns`:
 
@@ -593,12 +600,12 @@ links; those are validated in Milestone 4.)
 
 ### Milestone 4 — Confirm the static-SPA build gate and run the link check
 
-Scope: confirm `pnpm build` produces the static `.output/public` directory the link checker
-can crawl, then run the link checker over it. At the end, `pnpm build` succeeds and
-`pnpm run lint:links` crawls the result. No build configuration changes are needed — the
+Scope: confirm `bun run build` produces the static `.output/public` directory the link checker
+can crawl, then run the link checker over it. At the end, `bun run build` succeeds and
+`bun run lint:links` crawls the result. No build configuration changes are needed — the
 host-agnostic static export is already the default.
 
-Background: `pnpm build` runs `vite build`. The `tanstackStart` plugin in `vite.config.ts` is
+Background: `bun run build` runs `vite build`. The `tanstackStart` plugin in `vite.config.ts` is
 configured for a static SPA with prerendering:
 
 ```ts
@@ -618,7 +625,7 @@ This prerenders the listed pages (and any links `crawlLinks` discovers) into rea
 under `.output/public`, alongside an SPA fallback `_shell.html` and hashed asset bundles.
 There is **no separate static-export step** and **no host to choose**: the static directory
 is the build, and it can be served by any static host or by the bundled
-`pnpm start` (= `serve .output/public --config ../../serve.json`, which uses `serve.json`'s
+`bun run start` (= `serve .output/public --config ../../serve.json`, which uses `serve.json`'s
 SPA-fallback rewrite to `_shell.html`).
 
 The static-SPA caveat (record findings in Surprises & Discoveries): a static HTML crawler can
@@ -629,24 +636,24 @@ are not in the static HTML and the crawler cannot follow them. Be honest about t
 plan's outcomes: the link gate verifies the navigation chrome and the prerendered pages, not
 every link buried in client-rendered MDX bodies. If broader coverage is needed later, options
 include (a) adding more entries to the `pages` array so more routes are prerendered, or
-(b) serving the built site with `pnpm start` and crawling the running URL with a
+(b) serving the built site with `bun run start` and crawling the running URL with a
 JS-rendering crawler — that belongs to a future enhancement, not this plan.
 
 Run and verify:
 
 ```bash
-nix develop --command pnpm build
+nix develop --command bun run build
 ls .output/public/docs/index.html .output/public/_shell.html
-nix develop --command pnpm run lint:links
+nix develop --command bun run lint:links
 ```
 
-Acceptance: `pnpm build` exits 0 and prints the Vite/TanStack build summary;
+Acceptance: `bun run build` exits 0 and prints the Vite/TanStack build summary;
 `.output/public/docs/index.html` and `.output/public/_shell.html` exist;
-`pnpm run lint:links` crawls `.output/public` and reports `0 broken` for internal links.
+`bun run lint:links` crawls `.output/public` and reports `0 broken` for internal links.
 Finally confirm the aggregate:
 
 ```bash
-nix develop --command bash -c "pnpm run typecheck && pnpm lint && pnpm run format:check && pnpm build && pnpm run lint:links"
+nix develop --command bash -c "bun run typecheck && bun run lint && bun run format:check && bun run build && bun run lint:links"
 ```
 
 
@@ -654,10 +661,10 @@ nix develop --command bash -c "pnpm run typecheck && pnpm lint && pnpm run forma
 
 Scope: make every gate tool available simply by entering `nix develop`, and add the
 pragmatapro font flake input so the font is available locally (used by Plan B; added here so
-the shell is complete). At the end, a fresh clone + `nix develop` yields Node 22, pnpm,
+the shell is complete). At the end, a fresh clone + `nix develop` yields Node 22, legacy package manager,
 oxlint, oxfmt, the link-check tool, and the font package.
 
-This file is owned by Plan A; Node 22, pnpm, oxlint, and oxfmt are already present. This
+This file is owned by Plan A; Node 22, legacy package manager, oxlint, and oxfmt are already present. This
 milestone MERGES the additions below into the existing flake. Here is the full intended
 `flake.nix` after this plan's additions (use as the merge target):
 
@@ -687,14 +694,14 @@ milestone MERGES the additions below into the existing flake. Here is the full i
       in
       {
         # Optional: nix-level checks could mirror the CI gates here, e.g. a derivation
-        # that runs `pnpm run check`. Left empty for now; CI (Milestone 6) is the gate.
+        # that runs `bun run check`. Left empty for now; CI (Milestone 6) is the gate.
         checks = {
         };
 
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
             pkgs.nodejs_22      # Node 22
-            pkgs.pnpm           # pnpm package manager
+            pkgs.bun           # legacy package manager package manager
             pkgs.just
             pkgs.oxlint         # lint gate
             pkgs.oxfmt          # format gate
@@ -708,10 +715,10 @@ milestone MERGES the additions below into the existing flake. Here is the full i
 
             echo "keiro-runtime-docs dev shell"
             echo "node $(node --version)"
-            echo "pnpm $(pnpm --version)"
+            echo "legacy package manager $(bun --version)"
 
             if [ ! -d node_modules ]; then
-              echo "Run 'pnpm install' to fetch dependencies."
+              echo "Run 'bun install' to fetch dependencies."
             fi
           '';
         };
@@ -723,7 +730,7 @@ milestone MERGES the additions below into the existing flake. Here is the full i
 Notes:
 
 - If `pkgs.linkinator` does not exist in nixpkgs, remove that line; the `linkinator`
-  devDependency from Milestone 1 covers it (run via `pnpm run lint:links`). Record which path
+  devDependency from Milestone 1 covers it (run via `bun run lint:links`). Record which path
   you used in Surprises & Discoveries.
 - The font input is added here so the dev shell is complete and Plan B can consume `fontPkg`.
   If Plan B already added the input, do not duplicate it — merge.
@@ -733,11 +740,11 @@ Run and verify:
 
 ```bash
 nix flake show path:/absolute/path/to/fonts
-nix develop --command bash -c 'node --version && pnpm --version && oxlint --version && oxfmt --version'
+nix develop --command bash -c 'node --version && bun --version && oxlint --version && oxfmt --version'
 ```
 
 Acceptance: `nix flake show` reveals the font package's real attribute name (update `fontPkg`
-if needed); `node --version` prints `v22.*`; `pnpm --version` prints a version;
+if needed); `node --version` prints `v22.*`; `bun --version` prints a version;
 `oxlint`/`oxfmt` print versions.
 
 
@@ -756,7 +763,7 @@ mkdir -p .github/workflows
 
 Write `.github/workflows/ci.yml`. This is the **preferred** version using the Nix flake dev
 shell so CI runs the exact tool versions developers use. Note `--frozen-lockfile`: CI installs
-from the committed `pnpm-lock.yaml` so it gets the pinned `nitro` `3.0.260429-beta` (a newer
+from the committed `bun.lock` so it gets the pinned `nitro` `3.0.260429-beta` (a newer
 nitro breaks the build — see Decision Log).
 
 ```yaml
@@ -789,27 +796,27 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v8
 
       - name: Install dependencies
-        run: nix develop --command pnpm install --frozen-lockfile
+        run: nix develop --command bun install --frozen-lockfile
 
       - name: Typecheck
-        run: nix develop --command pnpm run typecheck
+        run: nix develop --command bun run typecheck
 
       - name: Lint
-        run: nix develop --command pnpm lint
+        run: nix develop --command bun run lint
 
       - name: Format check
-        run: nix develop --command pnpm run format:check
+        run: nix develop --command bun run format:check
 
       - name: Build (static SPA -> .output/public)
-        run: nix develop --command pnpm build
+        run: nix develop --command bun run build
 
       - name: Link check
-        run: nix develop --command pnpm run lint:links
+        run: nix develop --command bun run lint:links
 ```
 
 If the team prefers NOT to run Nix in CI, use this **fallback** workflow instead (same gates,
-plain pnpm/Node 22). Because oxlint/oxfmt are only provided by the Nix shell, the fallback
-runs them via `pnpm dlx` (or you can add them as npm devDependencies):
+plain legacy package manager/Node 22). Because oxlint/oxfmt are only provided by the Nix shell, the fallback
+runs them via `bun x` (or you can add them as npm devDependencies):
 
 ```yaml
 name: CI
@@ -826,42 +833,42 @@ concurrency:
 
 jobs:
   gates:
-    name: Quality gates (pnpm + Node 22)
+    name: Quality gates (legacy package manager + Node 22)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      - name: Set up legacy package manager
+        uses: legacy package manager/action-setup@v4
 
       - name: Set up Node 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
+          cache: legacy package manager
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: bun install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm run typecheck
+        run: bun run typecheck
 
       - name: Lint
-        run: pnpm dlx oxlint
+        run: bun x oxlint
 
       - name: Format check
-        run: pnpm dlx oxfmt --check .
+        run: bun x oxfmt --check .
 
       - name: Build (static SPA -> .output/public)
-        run: pnpm build
+        run: bun run build
 
       - name: Link check
-        run: pnpm run lint:links
+        run: bun run lint:links
 ```
 
-(If you choose the fallback, record the choice in the Decision Log. Prefer `pnpm dlx` for
+(If you choose the fallback, record the choice in the Decision Log. Prefer `bun x` for
 oxlint/oxfmt over adding them as npm deps, so the Nix shell remains the single source of truth
 for those tool versions.)
 
@@ -878,8 +885,8 @@ Scope: record, in this plan, that hosting is intentionally deferred and what a f
 plan would add. At the end, the plan unambiguously explains the host-agnostic stance and the
 follow-on work. This milestone is documentation only.
 
-The host-agnostic stance is already satisfied by construction: `pnpm build` emits a static
-SPA under `.output/public` that any static host can serve, and `pnpm start`
+The host-agnostic stance is already satisfied by construction: `bun run build` emits a static
+SPA under `.output/public` that any static host can serve, and `bun run start`
 (= `serve .output/public --config ../../serve.json`) serves it locally with the SPA-fallback
 rewrite. No host is wired and no host-specific config exists.
 
@@ -924,13 +931,13 @@ Step 2 — add `lint:links` + `check` scripts and the `linkinator` dev dep to `p
 (Milestone 1), then install:
 
 ```bash
-pnpm install
+bun install
 ```
 
 Expected tail (abbreviated):
 
 ```text
-Done in 12.3s using pnpm 11.x
+Done in 12.3s using legacy-manager 11.x
 ```
 
 Step 3 — create `linkinator.config.json` (Milestone 2).
@@ -938,9 +945,9 @@ Step 3 — create `linkinator.config.json` (Milestone 2).
 Step 4 — run each gate (Milestone 3):
 
 ```bash
-nix develop --command pnpm run typecheck
-nix develop --command pnpm lint
-nix develop --command pnpm run format:check
+nix develop --command bun run typecheck
+nix develop --command bun run lint
+nix develop --command bun run format:check
 ```
 
 Expected (typecheck, abbreviated):
@@ -953,8 +960,8 @@ Expected (typecheck, abbreviated):
 Step 5 — build the static SPA and run the link check (Milestone 4):
 
 ```bash
-nix develop --command pnpm build
-nix develop --command pnpm run lint:links
+nix develop --command bun run build
+nix develop --command bun run lint:links
 ```
 
 Expected (link check, abbreviated):
@@ -968,7 +975,7 @@ Step 6 — extend `flake.nix` (Milestone 5), then verify the shell:
 
 ```bash
 nix flake show path:/absolute/path/to/fonts
-nix develop --command bash -c 'node --version && pnpm --version && oxlint --version && oxfmt --version'
+nix develop --command bash -c 'node --version && bun --version && oxlint --version && oxfmt --version'
 ```
 
 Expected (abbreviated):
@@ -990,7 +997,7 @@ mkdir -p .github/workflows
 Step 8 — commit everything with the required trailers:
 
 ```bash
-git add package.json pnpm-lock.yaml flake.nix flake.lock linkinator.config.json .github/workflows/ci.yml docs/plans/6-build-quality-gates-and-ci.md
+git add package.json bun.lock flake.nix flake.lock linkinator.config.json .github/workflows/ci.yml docs/plans/6-build-quality-gates-and-ci.md
 git commit -m "chore(ci): add link-check + aggregate check gate and CI workflow
 
 MasterPlan: docs/masterplans/1-keiro-runtime-docs-infrastructure-and-kiroku-foundation.md
@@ -1014,24 +1021,24 @@ Expected: `gh pr checks --watch` shows the `CI` check transitioning to `pass`.
 The change is effective when these behaviors hold (each is a concrete input → observable
 output):
 
-1. Aggregate gate passes locally. Input: `nix develop --command bash -c "pnpm run typecheck
-   && pnpm lint && pnpm run format:check && pnpm build && pnpm run lint:links"`. Output: exit
+1. Aggregate gate passes locally. Input: `nix develop --command bash -c "bun run typecheck
+   && bun run lint && bun run format:check && bun run build && bun run lint:links"`. Output: exit
    code 0; the link-check prints `0 broken`. Verify exit code with `echo $?` → `0`.
 
 2. The link gate actually catches broken links. Input: add a deliberately broken relative
    link to `content/docs/index.mdx`, e.g. `[broken](/docs/this-page-does-not-exist)`, then
-   run `pnpm build && pnpm run lint:links`. Output: linkinator exits non-zero and names the
+   run `bun run build && bun run lint:links`. Output: linkinator exits non-zero and names the
    broken URL — but ONLY if the link appears in the prerendered HTML for `/docs`. Because the
    `/docs` index is prerendered, a link in its body is checked. Then remove the bad link and
    confirm the gate returns to green. (Record in Surprises & Discoveries whether the broken
    link was caught, which confirms the static-SPA coverage for that route.)
 
 3. The typecheck gate catches type errors. Input: introduce a type error (e.g. assign a
-   `string` to a `number` in any `.ts`/`.tsx` file under `src/`), run `pnpm run typecheck`.
+   `string` to a `number` in any `.ts`/`.tsx` file under `src/`), run `bun run typecheck`.
    Output: `tsc` exits non-zero with the error and file/line. Revert and confirm green.
 
 4. The build gate catches build breakage. Input: introduce a syntax error in a `.tsx`
-   component under `src/`, or malformed MDX in `content/docs/index.mdx`, run `pnpm build`.
+   component under `src/`, or malformed MDX in `content/docs/index.mdx`, run `bun run build`.
    Output: `vite build` fails with the error. Revert and confirm green.
 
 5. CI runs the same gates on a PR. Input: open a PR against `master`. Output: the GitHub
@@ -1040,44 +1047,44 @@ output):
    the check goes green on the next push.
 
 6. The dev shell is complete. Input: in a fresh checkout, run `nix develop --command bash -c
-   'node --version && pnpm --version && oxlint --version && oxfmt --version'`. Output: Node
+   'node --version && bun --version && oxlint --version && oxfmt --version'`. Output: Node
    prints `v22.*` and the other three print versions, proving the shell provides the whole
    toolchain.
 
 Acceptance is the conjunction of 1–6: every gate is real (fails on bad input, passes on good
-input), runs locally via `pnpm run check`, and runs in CI on PRs and pushes to `master`.
+input), runs locally via `bun run check`, and runs in CI on PRs and pushes to `master`.
 
 
 ## Idempotence and Recovery
 
-All steps are safe to repeat. `pnpm install` is idempotent (its `postinstall` regenerates
-`.source/`). Re-running any gate has no side effects except `pnpm run format` (which rewrites
-files) — prefer `pnpm run format:check` (read-only) in gates and CI; only run
-`pnpm run format` intentionally and review the diff. `pnpm build` overwrites `.output/`,
+All steps are safe to repeat. `bun install` is idempotent (its `postinstall` regenerates
+`.source/`). Re-running any gate has no side effects except `bun run format` (which rewrites
+files) — prefer `bun run format:check` (read-only) in gates and CI; only run
+`bun run format` intentionally and review the diff. `bun run build` overwrites `.output/`,
 `.nitro/`, `.tanstack/`, and `.source/`, all gitignored, so rebuilding is harmless; delete
 them to recover from a corrupted build:
 
 ```bash
 rm -rf .output .nitro .tanstack .source
-nix develop --command pnpm build
+nix develop --command bun run build
 ```
 
 If the build still fails after a clean rebuild, suspect a floated `nitro`: reinstall from the
 committed lockfile to restore the pinned `3.0.260429-beta`:
 
 ```bash
-nix develop --command pnpm install --frozen-lockfile
+nix develop --command bun install --frozen-lockfile
 ```
 
 `src/routeTree.gen.ts` is committed; if `tsc` complains it is stale, regenerate it by running
-`pnpm dev` or `pnpm build` once and committing the result.
+`bun run dev` or `bun run build` once and committing the result.
 
 Editing `flake.nix` updates `flake.lock`; if the font input fails to resolve, comment out the
 `pragmatapro` input and the `fontPkg` line, commit, and revisit after running
 `nix flake show path:/absolute/path/to/fonts` to learn the real attribute name.
-The dev shell still provides Node/pnpm/oxlint/oxfmt without the font, so gates remain
+The dev shell still provides Node/legacy package manager/oxlint/oxfmt without the font, so gates remain
 runnable. The CI workflow is additive; deleting `.github/workflows/ci.yml` fully reverts CI.
-If the Nix-based CI is too slow or flaky, switch to the documented pnpm/Node-22 fallback
+If the Nix-based CI is too slow or flaky, switch to the documented legacy package manager/Node-22 fallback
 workflow in Milestone 6 without changing any gate scripts.
 
 
@@ -1085,8 +1092,8 @@ workflow in Milestone 6 without changing any gate scripts.
 
 Tools and why each is used:
 
-- **pnpm** (package manager) and **Node 22** (runtime) — match the sibling fumadocs site
-  `shibuya-docs` and `keiki-docs`; provided by `flake.nix` via `pkgs.nodejs_22` + `pkgs.pnpm`.
+- **legacy package manager** (package manager) and **Node 22** (runtime) — match the sibling fumadocs site
+  `shibuya-docs` and `keiki-docs`; provided by `flake.nix` via `pkgs.nodejs_22` + `pkgs.bun`.
   Owned by Plan A (`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`).
 - **TypeScript `tsc`** with a `fumadocs-mdx` pre-step — the typecheck gate
   (`fumadocs-mdx && tsc --noEmit`). fumadocs requires the generated `.source/` (mapped by
@@ -1094,8 +1101,8 @@ Tools and why each is used:
   `next typegen` is involved (not Next.js); TanStack route types come from the committed
   `src/routeTree.gen.ts`.
 - **oxlint** / **oxfmt** — lint and format-check gates, provided by `flake.nix`
-  (`pkgs.oxlint`, `pkgs.oxfmt`), already present in the shell and already wired as `pnpm lint`
-  / `pnpm run format:check`. Config: `.oxlintrc.json`.
+  (`pkgs.oxlint`, `pkgs.oxfmt`), already present in the shell and already wired as `bun run lint`
+  / `bun run format:check`. Config: `.oxlintrc.json`.
 - **linkinator** (npm devDependency, optionally also a Nix package) — internal link checker
   over the built `.output/public` directory. Config: `linkinator.config.json` (skips external
   `http(s)` links to stay deterministic/offline). Coverage is partial for a static SPA — see
@@ -1107,8 +1114,8 @@ Tools and why each is used:
   plugin is part of this pipeline and is pinned to `3.0.260429-beta`.
 - **GitHub Actions** — runs all gates on `pull_request` and `push` to `master` via
   `.github/workflows/ci.yml`. Preferred runner uses `DeterminateSystems/nix-installer-action`
-  + the flake dev shell; documented fallback uses `pnpm/action-setup@v4` +
-  `actions/setup-node@v4` (Node 22) with oxlint/oxfmt via `pnpm dlx`.
+  + the flake dev shell; documented fallback uses `legacy package manager/action-setup@v4` +
+  `actions/setup-node@v4` (Node 22) with oxlint/oxfmt via `bun x`.
 
 Files this plan creates or extends, with ownership:
 
@@ -1128,11 +1135,11 @@ Files this plan creates or extends, with ownership:
 
 Function/script signatures that must exist at the end:
 
-- `pnpm run typecheck` → runs `fumadocs-mdx && tsc --noEmit`; exit 0 on clean.
-- `pnpm lint` / `pnpm run format:check` → `oxlint` / `oxfmt --check .`; exit 0 on clean.
-- `pnpm build` → `vite build` → static `.output/public`; exit 0 on success.
-- `pnpm run lint:links` → `linkinator .output/public ...`; prints `0 broken`; exit 0 on clean.
-- `pnpm run check` → all of the above chained; the single local entry point.
+- `bun run typecheck` → runs `fumadocs-mdx && tsc --noEmit`; exit 0 on clean.
+- `bun run lint` / `bun run format:check` → `oxlint` / `oxfmt --check .`; exit 0 on clean.
+- `bun run build` → `vite build` → static `.output/public`; exit 0 on success.
+- `bun run lint:links` → `linkinator .output/public ...`; prints `0 broken`; exit 0 on clean.
+- `bun run check` → all of the above chained; the single local entry point.
 
 Integration-point contract restated (identical wording wherever this appears): `package.json`
 scripts and the `flake.nix` dev shell are owned by Plan A and extended (never replaced) by
@@ -1151,11 +1158,11 @@ mechanics while preserving the plan's original intent and scope (stand up build,
 typecheck, and link-check gates and wire CI). Key changes:
 
 - Build gate: `next build` (+ opt-in `NEXT_OUTPUT=export` static export, `build:export`) →
-  `vite build` (`pnpm build`), which prerenders a static SPA into `.output/public`. The
+  `vite build` (`bun run build`), which prerenders a static SPA into `.output/public`. The
   static export *is* the default build now, so the separate `build:export` script and the
   `next.config.mjs` `output` toggle were removed; the build is host-agnostic by construction.
-- Lint/format gates: confirmed on **oxlint** (`pnpm lint` = `oxlint`) and **oxfmt**
-  (`pnpm run format:check`), reading `.oxlintrc.json` — explicitly NOT ESLint / `next lint`
+- Lint/format gates: confirmed on **oxlint** (`bun run lint` = `oxlint`) and **oxfmt**
+  (`bun run format:check`), reading `.oxlintrc.json` — explicitly NOT ESLint / `next lint`
   (there is no ESLint here, and this is not Next.js).
 - Typecheck gate: `fumadocs-mdx && tsc --noEmit` (no `next typegen`; TanStack route types come
   from the committed `src/routeTree.gen.ts`).
@@ -1175,5 +1182,7 @@ typecheck, and link-check gates and wire CI). Key changes:
   `--frozen-lockfile`) decision.
 - CI workflow steps updated to the five gates (typecheck, lint, format-check, build,
   link-check) over the static-SPA build; fallback runner now invokes oxlint/oxfmt via
-  `pnpm dlx`. Frontmatter preserved byte-for-byte. Reason: keep the plan accurate,
+  `bun x`. Frontmatter preserved byte-for-byte. Reason: keep the plan accurate,
   self-contained, and implementable against the pivoted TanStack Start codebase.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

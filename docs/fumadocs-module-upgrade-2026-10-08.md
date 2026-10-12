@@ -9,9 +9,9 @@ The Fumadocs and blueprint changes are unpublished candidates at validation time
 ## Versions and ownership
 
 Core/UI are 16.16.2, MDX is 15.4.6, Bun is 1.4.2, TypeScript is 7.0.2,
-oxlint is 1.87.0, and oxfmt is 0.72.0. The project retains pnpm 11.4.0 and
-its workspace and frozen lockfile. The unmanaged `flake.module.nix` adds Node 22
-and pnpm to the shared shell. The project-local TypeScript dependency was removed
+oxlint is 1.87.0, and oxfmt is 0.72.0. At adoption time, the project retained legacy-manager 11.4.0 and
+its workspace and frozen lockfile. The unmanaged `flake.module.nix` then added Node 22
+and legacy package manager to the shared shell. The project-local TypeScript dependency was removed
 so typechecking uses the Nix compiler. CI enters the same shell for every gate.
 
 Seihou operations generated the application IDs and canonical baselines. The recorded
@@ -34,8 +34,8 @@ The old shell's informational version banner was omitted; it set no environment 
 
 ## Validation
 
-- `nix develop --command pnpm install --frozen-lockfile` passed.
-- `nix develop --command pnpm run check` passed documentation tests, prose,
+- `nix develop --command bun install --frozen-lockfile` passed.
+- `nix develop --command bun run check` passed documentation tests, prose,
   terminology, TypeScript, lint, formatting, navigation, diagram checks, production
   prerendering, and links. The source link checker covered 500 MDX files.
 - The actual Fumadocs `staticClient` queried the exported search index and found
@@ -56,6 +56,8 @@ as before; the source-level checker provides the meaningful internal-link gate.
 
 After publication, install the current module and blueprint cohort from the recorded
 repository origin. Use `seihou agent run upgrade-fumadocs` for reviewed updates, retaining
-the complete `pnpm run check` gate and authored content hashes. The explicit blueprint
+the complete `bun run check` gate and authored content hashes. The explicit blueprint
 0.1.2-to-0.2.1 edge is for sites actually using module 0.1.2. Seihou updates of shared
 files require `--include-shared-owners`; inspect the plan before applying it.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

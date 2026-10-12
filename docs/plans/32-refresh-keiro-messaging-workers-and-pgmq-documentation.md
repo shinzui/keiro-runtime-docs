@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-15T19:08:29Z
 intention: intention_01kv6bpntyeh98ta4k2famkdm9
 master_plan: "docs/masterplans/4-refresh-keiro-and-kiroku-documentation-after-june-hardening.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Refresh Keiro messaging workers and PGMQ documentation
@@ -72,7 +79,7 @@ router/process-manager delivery classification, telemetry counters, and the expa
 surface for codec errors, retry tuning, producer metadata, queue provisioning, FIFO ordering, DLQ
 operations, and metrics.
 
-Validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, `git diff
+Validation passed with `bun run typecheck`, `bun run format:check`, `bun run build`, `git diff
 --check`, and a focused stale-claim scan for superseded stranded-outbox, decode, queue-metric, and
 process-manager failure wording. EP-6 still owns final source-sync pointer updates and broad
 integration reconciliation.
@@ -142,9 +149,9 @@ rg "Poison|attempt_count|reclaim|prune|requeue|ShardedWorkerOptions|WorkerOption
 After edits:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
 
@@ -155,9 +162,9 @@ Acceptance requires that the docs accurately describe current core worker recove
 Run:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
 All commands should exit with status 0. Any newly added pages must be registered in the relevant `meta.json` file before validation.
@@ -173,3 +180,5 @@ The edits are documentation-only and can be repeated safely. Do not edit `/Users
 Use `mori` to resolve `shinzui/keiro`. This plan has a soft dependency on `docs/plans/30-refresh-kiroku-subscriptions-adapter-observability-and-metrics-documentation.md` for subscription and Shibuya adapter terminology.
 
 The interfaces to document are `Keiro.Inbox`, `Keiro.Inbox.Types`, `Keiro.Inbox.Kafka`, `Keiro.Outbox`, `Keiro.Outbox.Types`, `Keiro.Outbox.Kafka`, `Keiro.Timer`, `Keiro.Timer.Types`, `Keiro.Subscription.Shard`, `Keiro.Subscription.Shard.Worker`, `Keiro.Router`, `Keiro.ProcessManager`, `Keiro.Telemetry`, `Keiro.PGMQ`, `Keiro.PGMQ.Runtime`, `Keiro.PGMQ.Codec`, `Keiro.PGMQ.Job`, `Keiro.PGMQ.Dlq`, and `Keiro.PGMQ.Metrics`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
 intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro integration-events documentation: inbox, outbox, and Kafka
@@ -45,8 +52,8 @@ across a message broker such as Kafka. A reader who lands on the integration-eve
   pure header⇄record Kafka mappings.
 
 You can see it working by running the docs dev server from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `pnpm dev` (which runs `vite dev`),
-or a production build with `pnpm build && pnpm start` (the build emits a static SPA under
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `bun run dev` (which runs `vite dev`),
+or a production build with `bun run build && bun run start` (the build emits a static SPA under
 `.output/public`), and browsing `http://localhost:3000/docs/keiro`: the integration-events
 pages appear in the sidebar in the order their `meta.json` files define; Haskell snippets
 render in PragmataPro with ligatures (`->`, `=>`, `<-`, `::`, `>>=`, `<$>` shown as glyphs);
@@ -65,9 +72,9 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] M0. Preconditions verified — toolchain present (pnpm 11.4.0, Node 22.22.3 on PATH),
+- [x] M0. Preconditions verified — toolchain present (legacy-manager 11.4.0, Node 22.22.3 on PATH),
       `content/docs/keiro/` and its section subdirectories exist, EP-7/EP-8/EP-9/EP-10 landed,
-      `docs/keiro-source-sync.md` exists, baseline `pnpm build` clean, keiro source readable
+      `docs/keiro-source-sync.md` exists, baseline `bun run build` clean, keiro source readable
       at `3f5dc9c` for cross-checking. _(2026-06-01)_
 - [x] M1. Explanation set authored (`explanation/integration-events.mdx`,
       `explanation/the-inbox-pattern.mdx`, `explanation/the-outbox-pattern.mdx`). _(2026-06-01)_
@@ -78,7 +85,7 @@ This section must always reflect the actual current state of the work.
 - [x] M5. Code walkthrough authored under `walkthrough/integration/` (00-start-here, 01-the-inbox,
       02-the-outbox, 03-kafka-mapping) + its `meta.json`. _(2026-06-01)_
 - [x] M6. Section `meta.json` files appended; `walkthrough/meta.json` lists `integration`;
-      `pnpm typecheck` clean; `pnpm build` exits 0 with zero crawler warnings; `pnpm lint:links`
+      `bun run typecheck` clean; `bun run build` exits 0 with zero crawler warnings; `bun run lint:links`
       OK (141 files, no broken internal links); every Haskell name/SQL transcribed from the pinned
       keiro source. _(2026-06-01)_
 
@@ -192,8 +199,8 @@ transcribed from the read-only source (`Keiro/Integration/Event.hs`, `Keiro/Inbo
 `Keiro/Outbox*.hs`, the two migrations), not from the divergent in-repo notes.
 
 Measured against Purpose:
-- **Builds & link-checks cleanly** — `pnpm typecheck` clean, `pnpm build` exits 0 with zero crawler
-  warnings, `pnpm lint:links` OK (141 files, no broken internal links), all cross-links absolute.
+- **Builds & link-checks cleanly** — `bun run typecheck` clean, `bun run build` exits 0 with zero crawler
+  warnings, `bun run lint:links` OK (141 files, no broken internal links), all cross-links absolute.
 - **Identity rule stated prominently** — every page that touches identity says `messageId` is the
   canonical dedupe key and the Kafka offset is delivery metadata only.
 - **Exactly-once-effect framing** — the inbox explanation states "exactly-once effect =
@@ -221,9 +228,9 @@ You are writing MDX content files under `content/docs/keiro/` in **this** reposi
 (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`). The site is a **fumadocs** documentation
 app (fumadocs-ui 16.9.3 + fumadocs-mdx 15.0.10) built on **TanStack Start as a static SPA**
 (React 19 + MDX, TypeScript, Tailwind v4, bundled with **Vite**), built and served with
-**pnpm** on **Node 22** inside the Nix dev shell (`nix develop`). `pnpm dev` runs `vite dev`;
-`pnpm build` runs `vite build` and emits a static SPA under `.output/public`, served by
-`pnpm start`; `pnpm typecheck` runs `fumadocs-mdx && tsc --noEmit`. MDX is compiled by
+**legacy package manager** on **Node 22** inside the Nix dev shell (`nix develop`). `bun run dev` runs `vite dev`;
+`bun run build` runs `vite build` and emits a static SPA under `.output/public`, served by
+`bun run start`; `bun run typecheck` runs `fumadocs-mdx && tsc --noEmit`. MDX is compiled by
 fumadocs-mdx and rendered client-side. Content lives under `content/docs/`. Each directory has
 a `meta.json` whose `pages` array lists child page slugs / nested directory names in display
 order. A page is an `.mdx` file with YAML frontmatter (`title`, `description`) followed by an
@@ -628,7 +635,7 @@ to the keiro overview (`/docs/keiro`) and to the relevant reference page.
 ### Milestones
 
 - **M0 — Preconditions.** Confirm the toolchain, the keiro content tree, and the EP-7 foundation
-  are present, and that the empty site builds. At the end: `pnpm build` succeeds before you add
+  are present, and that the empty site builds. At the end: `bun run build` succeeds before you add
   any EP-11 page; the keiro source is readable for cross-checking. Acceptance: see Concrete Steps.
 
 - **M1 — Explanation set** (3 pages under `explanation/`). At the end: a reader can understand
@@ -668,12 +675,12 @@ to the keiro overview (`/docs/keiro`) and to the relevant reference page.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The docs toolchain is **pnpm** on **Node 22** inside the Nix dev shell.
+stated otherwise. The docs toolchain is **legacy package manager** on **Node 22** inside the Nix dev shell.
 
 ### M0 — Preconditions
 
 ```bash
-# enter the Nix dev shell (pnpm + Node 22) first
+# enter the Nix dev shell (legacy package manager + Node 22) first
 nix develop
 
 # confirm the scaffold + IA are present
@@ -691,8 +698,8 @@ for d in explanation reference how-to tutorials walkthrough; do
 done
 
 # install + verify the site builds before you start
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected (abridged):
@@ -1050,9 +1057,9 @@ If EP-7 (or other Phase-2 plans) already added other subdirectories, append `int
 reordering them. Then build:
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm dev   # then browse http://localhost:3000/docs/keiro
+bun run typecheck
+bun run build
+bun run dev   # then browse http://localhost:3000/docs/keiro
 ```
 
 
@@ -1060,8 +1067,8 @@ pnpm dev   # then browse http://localhost:3000/docs/keiro
 
 Exercise the system and observe specific behaviors:
 
-1. **Section builds.** From the repo root, `pnpm typecheck` (`fumadocs-mdx && tsc --noEmit`)
-   passes so the generated `.source/` collection picks up the new pages, and `pnpm build`
+1. **Section builds.** From the repo root, `bun run typecheck` (`fumadocs-mdx && tsc --noEmit`)
+   passes so the generated `.source/` collection picks up the new pages, and `bun run build`
    (`vite build`) exits 0 with all EP-11 pages present, emitting the static SPA under
    `.output/public`. Expected tail (abridged):
 
@@ -1070,7 +1077,7 @@ Exercise the system and observe specific behaviors:
    .output/public/...
    ```
 
-2. **Zero crawler warnings.** The `pnpm build` log contains no `unhandledRejection` /
+2. **Zero crawler warnings.** The `bun run build` log contains no `unhandledRejection` /
    `Failed to fetch` lines. Such lines indicate a broken (usually relative) cross-link. Confirm
    no EP-11 page uses a relative `./` or `../` doc link:
 
@@ -1082,7 +1089,7 @@ Exercise the system and observe specific behaviors:
 
    Expected: no matches (all cross-links are absolute `/docs/keiro/...`).
 
-3. **Renders in the sidebar.** `pnpm dev` (or `pnpm build && pnpm start`), open
+3. **Renders in the sidebar.** `bun run dev` (or `bun run build && bun run start`), open
    `http://localhost:3000/docs/keiro`. The sidebar shows the new pages in `meta.json` order:
    Explanation gains 3 pages, Reference gains 3, Tutorials gains 1, How-To Guides gains 5, and
    Code Walkthrough gains the "Integration (inbox & outbox)" group with its 4 chapters. Every
@@ -1127,8 +1134,8 @@ Exercise the system and observe specific behaviors:
 
 ## Idempotence and Recovery
 
-All steps are file authoring and are safe to repeat: re-running `pnpm typecheck`/`pnpm build`/
-`pnpm dev` is idempotent; editing or recreating an `.mdx`/`meta.json` file overwrites it.
+All steps are file authoring and are safe to repeat: re-running `bun run typecheck`/`bun run build`/
+`bun run dev` is idempotent; editing or recreating an `.mdx`/`meta.json` file overwrites it.
 Creating the `walkthrough/integration/` subdirectory with `mkdir -p` is idempotent. No database
 or keiro source is modified by this plan (the keiro tree is opened read-only for cross-checking
 only).
@@ -1169,9 +1176,9 @@ keiro commit `3f5dc9c`:**
   from `meta.json`; built-in components `Callout`, `Steps`, `Tabs`, `Cards`, `TypeTable`,
   registered globally in `src/components/mdx.tsx` (used bare, no imports). Loader/config in
   `src/lib/source.ts` and `source.config.ts`.
-- TanStack Start + Vite — `pnpm dev` = `vite dev`; `pnpm build` = `vite build` (static SPA in
-  `.output/public`); `pnpm start` serves it; `pnpm typecheck` = `fumadocs-mdx && tsc --noEmit`.
-- pnpm + Node 22 inside the Nix dev shell (`nix develop`).
+- TanStack Start + Vite — `bun run dev` = `vite dev`; `bun run build` = `vite build` (static SPA in
+  `.output/public`); `bun run start` serves it; `bun run typecheck` = `fumadocs-mdx && tsc --noEmit`.
+- legacy package manager + Node 22 inside the Nix dev shell (`nix develop`).
 
 **Files this plan creates/owns (all under `content/docs/keiro/`):**
 
@@ -1219,7 +1226,7 @@ references EP-8's `runCommandWithSqlEvents`; link to EP-8's command reference pa
 absolute path (`/docs/keiro/reference/command`).
 
 **Postconditions / interfaces that must exist at the end:**
-- Every file above exists and the site builds (`pnpm typecheck` passes, `pnpm build` exits 0).
+- Every file above exists and the site builds (`bun run typecheck` passes, `bun run build` exits 0).
 - The EP-11 pages render in the sidebar in the order set by the section `meta.json` files; the
   `walkthrough/integration/` group appears under Code Walkthrough.
 - Each Haskell snippet uses only names present in the pinned keiro source (verified per Validation
@@ -1227,3 +1234,5 @@ absolute path (`/docs/keiro/reference/command`).
 - At least one `mermaid` diagram (the producer→outbox→Kafka→inbox→consumer pipeline) and
   ligature-bearing Haskell snippets are present.
 - The shibuya header-drop gap and the stale-`publishing`-row gap are documented honestly.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

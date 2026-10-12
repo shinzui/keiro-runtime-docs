@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-05-30T20:05:53Z
 intention: "intention_01ksx5mf7qe2ht659e4kr9w2t0"
 master_plan: "docs/masterplans/1-keiro-runtime-docs-infrastructure-and-kiroku-foundation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # PragmataPro font and Shiki code ligatures
@@ -33,9 +40,9 @@ Haskell (and Nix, Cabal, Bash, JSON) syntax-highlighted with correct, theme-matc
 colors, because we explicitly configure the Shiki syntax highlighter that fumadocs
 uses with a pinned language list that includes `haskell`.
 
-Concretely, the user-visible outcome is: build and serve the static site (`pnpm build`
-then `pnpm start`, default `http://localhost:3000`) — or run the dev server with
-`pnpm dev` — open the page that contains the Haskell sample added by this plan, and
+Concretely, the user-visible outcome is: build and serve the static site (`bun run build`
+then `bun run start`, default `http://localhost:3000`) — or run the dev server with
+`bun run dev` — open the page that contains the Haskell sample added by this plan, and
 observe (1) the monospace font is PragmataPro (its distinctive shapes — e.g. the dotted
 zero, the wide glyphs — are obvious), (2) the sequences `->`, `>>=`, `<-`, `::`, `/=`
 are drawn as single ligature glyphs, and (3) toggling the site theme between light and
@@ -235,8 +242,8 @@ Shiki-highlighted with a `github-light`/`github-dark` theme pair.
 What shipped: flake input `pragmatapro` + `scripts/copy-fonts.mjs` (predev/prebuild hook,
 tolerant if the licensed font is absent), four `@font-face` faces + `--fd-font-mono` +
 ligature CSS in `src/styles/app.css`, the Shiki config in `source.config.ts`, and a
-`content/docs/ligature-check.mdx` smoke page. `pnpm build` prerenders 6 pages with no
-language-not-found or font errors; `pnpm exec tsc --noEmit` is clean; the OTF and the
+`content/docs/ligature-check.mdx` smoke page. `bun run build` prerenders 6 pages with no
+language-not-found or font errors; `bun x tsc --noEmit` is clean; the OTF and the
 verify page both serve 200.
 
 Deviations from the written plan (all in Surprises & Discoveries): filenames are
@@ -262,9 +269,9 @@ inside the Nix dev shell. Enter the dev shell first:
 nix develop
 ```
 
-The dev shell provides Node 22 and pnpm (and `just`, `oxlint`, `oxfmt`, `tsc`). If you
+The dev shell provides Node 22 and legacy package manager (and `just`, `oxlint`, `oxfmt`, `tsc`). If you
 have `direnv` configured, `cd` into the repo and the shell loads automatically via
-`.envrc`. If dependencies are not installed yet, run `pnpm install`.
+`.envrc`. If dependencies are not installed yet, run `bun install`.
 
 ### Hard dependency: Plan A (the scaffold) must be done first
 
@@ -272,7 +279,7 @@ This plan extends an app that another plan already scaffolds. That plan lives at
 `docs/plans/1-scaffold-the-fumadocs-documentation-app.md` (referenced here by path
 only; it is sometimes called "Plan A" or "Plan #1"). The scaffold has already been
 implemented on TanStack Start and committed. Before starting, confirm these files exist
-and that `pnpm dev` serves a styled, empty docs site:
+and that `bun run dev` serves a styled, empty docs site:
 
 - `source.config.ts` — fumadocs-mdx configuration (the file Shiki is configured in).
 - `src/styles/app.css` — base Tailwind v4 + fumadocs CSS imports (the file fonts and
@@ -305,9 +312,9 @@ app/global.css                       → src/styles/app.css (the font + ligature
 mdx-components.tsx                   → src/components/mdx.tsx (not touched here)
 lib/source.ts                        → src/lib/source.ts
 next.config.mjs                      → vite.config.ts
-next dev   / pnpm dev                → vite dev   (still `pnpm dev`)
-next build / pnpm build              → vite build (still `pnpm build`); STATIC SPA
-next start / pnpm start              → serve .output/public (still `pnpm start`)
+next dev   / bun run dev                → vite dev   (still `bun run dev`)
+next build / bun run build              → vite build (still `bun run build`); STATIC SPA
+next start / bun run start              → serve .output/public (still `bun run start`)
 next/font/local                      → CSS @font-face in src/styles/app.css
 RootProvider from fumadocs-ui/.../next → RootProvider from fumadocs-ui/provider/tanstack
 ```
@@ -373,7 +380,7 @@ From `package.json` and `vite.config.ts` on 2026-05-30:
 - Vite `^8.0.14`, `@tailwindcss/vite` `^4.3.0`, `tailwindcss` `^4.3.0` (Tailwind v4),
   `nitro` pinned to `3.0.260429-beta`.
 - TypeScript `^6.0.3`.
-- Package manager **pnpm**; Node **22** (provided by the repo `flake.nix` dev shell).
+- Package manager **legacy package manager**; Node **22** (provided by the repo `flake.nix` dev shell).
 
 fumadocs-mdx processes the MDX build through its Vite plugin (`mdx()` in
 `vite.config.ts`), which reads `source.config.ts`. fumadocs-core bundles **Shiki**
@@ -528,7 +535,7 @@ The work proceeds in four milestones. Each is independently verifiable.
 Scope: add `/absolute/path/to/fonts` as a flake input named `pragmatapro`,
 and add a `copy-fonts` mechanism that copies the four `_Mono_*_liga_*.otf` files into
 `public/fonts/` before dev and before build. At the end, `public/fonts/` contains
-`PragmataPro_Mono_R_liga_09.otf` and its B/I/Z siblings, and `pnpm dev`/`pnpm build`
+`PragmataPro_Mono_R_liga_09.otf` and its B/I/Z siblings, and `bun run dev`/`bun run build`
 refresh them automatically. Acceptance: `ls public/fonts/` shows the four OTFs.
 
 The repo currently has no `public/` directory; this plan creates `public/fonts/`. In a
@@ -537,7 +544,7 @@ site root (so `public/fonts/X.otf` is reachable at the URL `/fonts/X.otf`), whic
 the `@font-face` rules in Milestone 2 use absolute URLs like
 `url("/fonts/PragmataPro_Mono_R_liga_09.otf")`.
 
-The repo `flake.nix` (owned by the scaffold; it provides the Node 22 + pnpm dev shell)
+The repo `flake.nix` (owned by the scaffold; it provides the Node 22 + bun run dev shell)
 gains the font flake as an input and a small package output so the OTFs are reachable at
 a stable Nix store path. Add the input under `inputs` and reference the package by its
 **working** attribute `pragmataPro` (capital P) — never `default`. Full edits are in
@@ -550,7 +557,7 @@ resolved (the licensed zip is not on this machine), it prints a warning and exit
 dev/build still proceed (the site then falls back to the system monospace, without
 ligatures). Full file contents are in Concrete Steps.
 
-Wire the script into pnpm so it runs automatically before dev and build via pnpm's
+Wire the script into legacy package manager so it runs automatically before dev and build via legacy package manager's
 `pre*` lifecycle hooks (`predev` runs before `dev`, `prebuild` before `build`). Also
 ensure `public/fonts/` is git-ignored so the licensed binaries are never committed.
 
@@ -602,8 +609,8 @@ file is in Concrete Steps. Also add it to the docs nav so it is reachable — ap
 scaffold); do not remove existing entries.
 
 Because docs pages render MDX **client-side** in this static SPA, you must verify in a
-browser (the prerendered HTML is only a shell). Use `pnpm dev` for fast iteration, or
-`pnpm build` + `pnpm start` to verify the production static output.
+browser (the prerendered HTML is only a shell). Use `bun run dev` for fast iteration, or
+`bun run build` + `bun run start` to verify the production static output.
 
 
 ## Concrete Steps
@@ -750,11 +757,11 @@ Note: the `._`-prefixed entries in the source directory are macOS AppleDouble
 resource-fork stubs (~163 B each); the `!f.startsWith("._")` filter ignores them so only
 the four real ~2.8 MB OTFs are copied.
 
-### Step 3 — Wire pnpm scripts and gitignore
+### Step 3 — Wire legacy package manager scripts and gitignore
 
 Apply this diff to `package.json` (add only; keep the scaffold's existing scripts —
 `dev`, `build`, `start`, `preview`, `typecheck`, `lint`, `format`, `postinstall`, etc.).
-The scaffold's `dev` is `vite dev` and `build` is `vite build`; pnpm runs `predev`
+The scaffold's `dev` is `vite dev` and `build` is `vite build`; legacy package manager runs `predev`
 automatically before `dev` and `prebuild` before `build`:
 
 ```diff
@@ -771,8 +778,8 @@ automatically before `dev` and `prebuild` before `build`:
 -    "postinstall": "fumadocs-mdx"
 +    "postinstall": "fumadocs-mdx",
 +    "copy-fonts": "node scripts/copy-fonts.mjs",
-+    "predev": "pnpm run copy-fonts",
-+    "prebuild": "pnpm run copy-fonts"
++    "predev": "bun run copy-fonts",
++    "prebuild": "bun run copy-fonts"
    },
 ```
 
@@ -786,7 +793,7 @@ Apply this diff to `.gitignore` (add the line if absent; the repo already ignore
 Run the copy step once to populate the directory now:
 
 ```bash
-pnpm run copy-fonts
+bun run copy-fonts
 ```
 
 Expected (when the font is available):
@@ -971,7 +978,7 @@ All commands run from the repo root inside `nix develop`.
 ### Option A — dev server (fast iteration)
 
 ```bash
-pnpm dev
+bun run dev
 ```
 
 Expected console: the `predev` hook runs `copy-fonts` first (printing
@@ -981,13 +988,13 @@ prints a local URL such as `http://localhost:3000`.
 ### Option B — production static build (what ships)
 
 ```bash
-pnpm build
-pnpm start
+bun run build
+bun run start
 ```
 
 Expected: `prebuild` runs `copy-fonts`, then `vite build` prerenders the SPA into
 `.output/public` without font-resolution errors and without "language not found"
-warnings for `haskell`/`nix`/`cabal`/`bash`/`json`. `pnpm start` serves
+warnings for `haskell`/`nix`/`cabal`/`bash`/`json`. `bun run start` serves
 `.output/public` (default `http://localhost:3000`).
 
 ### What to check in the browser
@@ -1023,7 +1030,7 @@ all of which a human can verify by looking:
 ### Type check (the scaffold's gate, must stay green)
 
 ```bash
-pnpm run typecheck
+bun run typecheck
 ```
 
 Expected: no TypeScript errors introduced by the `source.config.ts` edit. (This runs
@@ -1035,7 +1042,7 @@ Expected: no TypeScript errors introduced by the `source.config.ts` edit. (This 
 
 Every step is safe to re-run:
 
-- `pnpm run copy-fonts` overwrites the OTFs in `public/fonts/` each time; re-running is
+- `bun run copy-fonts` overwrites the OTFs in `public/fonts/` each time; re-running is
   harmless. `mkdirSync(..., { recursive: true })` and `copyFileSync` never fail on an
   existing directory or file.
 - The `package.json`, `.gitignore`, `flake.nix`, `src/styles/app.css`,
@@ -1052,7 +1059,7 @@ fails to load the missing OTF and the `font-family` fallback chain
 (without ligatures). Nothing in `src/styles/app.css` needs to be commented out. Once the
 font is available (a clone of `/absolute/path/to/fonts` with its vendored
 `fonts-archive/PragmataPro-0.901.zip` is present, so `nix build .#pragmataPro` succeeds),
-re-run `pnpm run copy-fonts`, reload the page, and ligatures return. Document the
+re-run `bun run copy-fonts`, reload the page, and ligatures return. Document the
 temporary fallback in Surprises & Discoveries if you hit it.
 
 Rollback: revert the edits to `flake.nix`, `flake.lock`, `package.json`, `.gitignore`,
@@ -1135,13 +1142,13 @@ surrounding code):
     The CSS file path moved `app/global.css` → `src/styles/app.css`; the root layout
     `app/layout.tsx` → `src/routes/__root.tsx`; build pipeline `next.config.mjs` →
     `vite.config.ts`.
-  - Commands updated: `next dev`→`vite dev` (still `pnpm dev`), `next build`→`vite build`
-    (still `pnpm build`, now emitting a static SPA in `.output/public`),
-    `next start`→`pnpm start` (`serve .output/public`); type-check is now
-    `pnpm run typecheck` (`fumadocs-mdx && tsc --noEmit`, the scaffold's gate).
+  - Commands updated: `next dev`→`vite dev` (still `bun run dev`), `next build`→`vite build`
+    (still `bun run build`, now emitting a static SPA in `.output/public`),
+    `next start`→`bun run start` (`serve .output/public`); type-check is now
+    `bun run typecheck` (`fumadocs-mdx && tsc --noEmit`, the scaffold's gate).
   - Acceptance reworded as observable browser behavior, noting MDX renders client-side
     so verification must happen in a hydrated browser page (the prerendered HTML is a
-    shell), via `pnpm dev` or `pnpm build` + `pnpm start`.
+    shell), via `bun run dev` or `bun run build` + `bun run start`.
   - Recovery simplified: the CSS `@font-face` fallback chain degrades gracefully when the
     licensed font is absent (no build break), unlike `next/font/local` which fails to
     compile on missing `src` files.
@@ -1152,3 +1159,5 @@ surrounding code):
   Reason: keep the plan self-contained and implementable against the new stack so a
   novice can deliver PragmataPro + Haskell-aware Shiki ligatures using only this file and
   the working tree.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

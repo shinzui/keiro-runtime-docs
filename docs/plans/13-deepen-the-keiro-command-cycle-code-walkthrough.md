@@ -5,6 +5,13 @@ title: "Deepen the keiro command-cycle code walkthrough"
 kind: exec-plan
 created_at: 2026-06-02T04:47:38Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Deepen the keiro command-cycle code walkthrough
@@ -83,8 +90,8 @@ A reader who finishes the deepened tour can:
   `DuplicateEvent` fold), and `runRouterWorker`'s decode/dispatch/ack policy over a shibuya adapter.
 
 You can see the result by running the docs site from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `pnpm dev` (which runs `vite dev`), or a
-production build with `pnpm build` (which runs `vite build` and emits a static single-page app under
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `bun run dev` (which runs `vite dev`), or a
+production build with `bun run build` (which runs `vite build` and emits a static single-page app under
 `.output/public`). Browsing `http://localhost:3000/docs/keiro/walkthrough/command-cycle/00-start-here`
 shows the expanded tour nested under "Code Walkthrough" → "The command cycle" in the sidebar, with
 the new chapters in `meta.json` order. The visible, demonstrable change: where the old tour had
@@ -151,7 +158,7 @@ must always reflect the actual current state of the work.
 - [x] M9. Self-verification done _(2026-06-02)_ — depth checklist (Validation #6) green: every named
       binding present across the eight chapters; source-name check (Validation #7) green against the
       `3f5dc9c` corpus; no relative links; every opening fence language-tagged (per-file
-      `lang_opens == bare_closes`). The `pnpm build` / `pnpm lint:links` gate is run centrally by the
+      `lang_opens == bare_closes`). The `bun run build` / `bun run lint:links` gate is run centrally by the
       integration owner for this run.
 
 
@@ -256,7 +263,7 @@ gap list — hydration machine, plan/hydration types, full error taxonomy, telem
 **Verification.** Self-checks passed without the build: depth checklist (Validation #6) green across the
 eight chapters; source-name check (Validation #7) green against a `git show 3f5dc9c` corpus of all eight
 quoted files (1848 lines); zero relative links; every opening fence language-tagged (per-file
-`lang_opens == bare_closes`, and `total == opens + closes`). The `pnpm build` / `pnpm lint:links` gate
+`lang_opens == bare_closes`, and `total == opens + closes`). The `bun run build` / `bun run lint:links` gate
 is owned and run centrally by the integration owner for this run, so it was not invoked here.
 
 **Lessons.** (1) The keiro checkout had moved past the pin — always read quoted source via
@@ -281,8 +288,8 @@ every snippet must match the real source transcribed below.
 
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is a **fumadocs** documentation
 site (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static single-page app** (React +
-MDX + TypeScript, bundled with **Vite**), built and served with **pnpm** on **Node 22**. `pnpm dev`
-runs `vite dev`; `pnpm build` runs `vite build` and emits a static SPA under `.output/public`.
+MDX + TypeScript, bundled with **Vite**), built and served with **legacy package manager** on **Node 22**. `bun run dev`
+runs `vite dev`; `bun run build` runs `vite build` and emits a static SPA under `.output/public`.
 Content lives under `content/docs/`. Each directory has a `meta.json` whose `pages` array lists child
 page slugs (and nested directory names) in sidebar order. A "page" is an `.mdx` file: YAML
 frontmatter (`title`, `description`) followed by an MDX body.
@@ -1013,7 +1020,7 @@ existing chapters. Every chapter opens by naming its source file and linking the
 
 ### M0 — Preconditions
 
-Confirm EP-8 is Complete and the cross-link targets exist. At the end you can run `pnpm build` on the
+Confirm EP-8 is Complete and the cross-link targets exist. At the end you can run `bun run build` on the
 existing tree with zero errors. Acceptance: the build succeeds before you change any chapter; the
 five current chapters and `meta.json` exist; `command-cycle` is in `walkthrough/meta.json`; and the
 link targets `reference/command`, `reference/codec`, `reference/event-stream-and-stream`,
@@ -1233,7 +1240,7 @@ the depth checklist green, no relative links, every fence tagged.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless stated
-otherwise. The toolchain is **pnpm** on **Node 22** (enter the Nix dev shell first if the repo uses
+otherwise. The toolchain is **legacy package manager** on **Node 22** (enter the Nix dev shell first if the repo uses
 one: `nix develop`).
 
 ### M0 — Preconditions
@@ -1255,8 +1262,8 @@ for f in reference/command reference/codec reference/event-stream-and-stream ref
   test -f "content/docs/keiro/$f.mdx" && echo "have $f" || echo "MISSING $f"
 done
 
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected: every `have …` line present (no `MISSING`), and `✓ built in <N>s` with no
@@ -1285,8 +1292,8 @@ Then create `01-command-types-and-errors.mdx`, `02-hydration.mdx`, `06-the-typed
 edit all chapters per M1–M7. After each chapter, build and view it:
 
 ```bash
-pnpm build
-# then pnpm dev and open the chapter, e.g.
+bun run build
+# then bun run dev and open the chapter, e.g.
 # http://localhost:3000/docs/keiro/walkthrough/command-cycle/02-hydration
 ```
 
@@ -1330,8 +1337,8 @@ Edit `00-start-here.mdx`'s `<Cards>` to the seven new chapters and overwrite `me
 ### M9 — Build and audit
 
 ```bash
-pnpm build
-pnpm lint:links
+bun run build
+bun run lint:links
 ```
 
 Expected: `✓ built` with no crawler warnings; `lint:links` exits 0.
@@ -1344,7 +1351,7 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
 1. **The site builds and prerenders every chapter.** From the repo root:
 
    ```bash
-   pnpm build
+   bun run build
    ```
 
    Succeeds (`✓ built`) and the log prerenders the eight routes
@@ -1353,7 +1360,7 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
 2. **Zero crawler warnings.**
 
    ```bash
-   pnpm build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
+   bun run build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
    ```
 
    Expected: `no crawler warnings`.
@@ -1361,7 +1368,7 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
 3. **Link check passes.**
 
    ```bash
-   pnpm lint:links
+   bun run lint:links
    ```
 
    Expected: exit 0, no broken or relative internal links.
@@ -1417,7 +1424,7 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
    /Users/shinzui/Keikaku/bokuno/keiro/jitsurei` instead of the docs dir; every line must say `ok:`.
    (This catches a typo'd identifier the docs build cannot: Haskell snippets are not compiled.)
 
-8. **The chapters render in a browser.** Run `pnpm dev`, open
+8. **The chapters render in a browser.** Run `bun run dev`, open
    `http://localhost:3000/docs/keiro/walkthrough/command-cycle/00-start-here`, and confirm the seven
    chapter cards link correctly, the overview `mermaid` renders as a diagram, and each chapter's
    `<TypeTable>`s and `<Callout>`s render. Walk 00 → 07 via the "Next:" links and confirm every link
@@ -1427,13 +1434,12 @@ Acceptance is observable behavior plus a depth audit, not "files exist".
 ## Idempotence and Recovery
 
 Every step is safe to repeat. `git mv` is idempotent in effect (re-running after the move is a no-op
-or a harmless re-stage); editing `.mdx` files is additive; re-running `pnpm build` and `pnpm
-lint:links` is idempotent. If you renumber a chapter, rename the file *and* update the matching
+or a harmless re-stage); editing `.mdx` files is additive; re-running `bun run build` and `bun run lint:links` is idempotent. If you renumber a chapter, rename the file *and* update the matching
 `meta.json` slug *and* every absolute intra-tour link that pointed at the old number, in the same
 change — a slug pointing at a missing file (or a file missing from `pages`) yields a broken sidebar
 entry, not a crash, so the build still exits 0; catch it with acceptance #8.
 
-If `pnpm build` reports `Failed to fetch`, the cause is almost always a relative link or a link to a
+If `bun run build` reports `Failed to fetch`, the cause is almost always a relative link or a link to a
 page that does not exist yet. Run acceptance #4 for relative links; for a cross-tour forward-link
 whose slug is unconfirmed (a not-yet-authored EP-17 foundation chapter), link the existing
 `/docs/keiro/explanation/why-symtransducer-not-decider` and name the intended target in prose until
@@ -1504,3 +1510,5 @@ internals `Hydrated`, `Replay`, `CommandPlan`, `hydrate`, `hydrateFull`, `applyR
 `Keiro.Router` — `Router`, `RouterResult`, `runRouterOnce`, `runRouterWorker`; and the jitsurei
 anchors `orderCodec`, `upcastOrderPlacedV1`, `orderEventStream`, `snapshotOrderEventStream`,
 `orderStream`, `pagingRouter`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -5,6 +5,13 @@ title: "Keiki symbolic analysis, build-time validation, and diagnostics"
 kind: exec-plan
 created_at: 2026-06-07T04:53:26Z
 master_plan: "docs/masterplans/3-keiki-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiki symbolic analysis, build-time validation, and diagnostics
@@ -57,7 +64,7 @@ A reader who lands on these pages can:
   memo cache, `symIsBot`/`symSatExt`, the single-valuedness gate, the validation umbrella,
   opaque guards, the solver-backed checks, and the runtime-rejection mirror.
 
-You can see the result by running the docs dev server from the repo root with `pnpm dev` and
+You can see the result by running the docs dev server from the repo root with `bun run dev` and
 browsing `http://localhost:3000/docs/keiki`: the symbolic/validation pages appear in the
 sidebar in the order their `meta.json` files define; the `walkthrough/symbolic-and-validation`
 tour is reachable from the sidebar; Haskell snippets render in PragmataPro with ligatures
@@ -82,7 +89,7 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 This section must always reflect the actual current state of the work.
 
 - [x] M0. Preconditions verified (2026-06-06) — toolchain present, section subdirs exist, EP-20
-      foundation landed, baseline `pnpm build` clean, keiki source readable at `344c4ca`,
+      foundation landed, baseline `bun run build` clean, keiki source readable at `344c4ca`,
       `walkthrough/symbolic-and-validation/` subdir created.
 - [x] M1. Reference + explanation set authored (2026-06-06) (`reference/symbolic.mdx`,
       `reference/validate.mdx` with the `Keiki.Render.Validate` disambiguation, `reference/step-failure.mdx`
@@ -93,7 +100,7 @@ This section must always reflect the actual current state of the work.
 - [x] M3. Code walkthrough authored under `walkthrough/symbolic-and-validation/` (2026-06-06)
       (`00-start-here` + chapters `01`–`10`) + its `meta.json`.
 - [x] M4. Section `meta.json` files appended; `walkthrough/meta.json` lists `symbolic-and-validation`;
-      `pnpm typecheck` clean; `pnpm build` exits 0 with zero crawler warnings; `pnpm lint:links` exits
+      `bun run typecheck` clean; `bun run build` exits 0 with zero crawler warnings; `bun run lint:links` exits
       0 (283 files); Haskell-name audit passes. (2026-06-06)
 
 
@@ -104,7 +111,7 @@ implementation. Provide concise evidence.
 
 - **A forward link to EP-25's not-yet-authored `walkthrough/rendering` tripped the crawler.** Chapter
   07's `Keiki.Render.Validate` disambiguation linked `/docs/keiki/walkthrough/rendering` (EP-25's
-  tour), which does not exist yet — `pnpm build` emitted one `Failed to fetch`. Per the
+  tour), which does not exist yet — `bun run build` emitted one `Failed to fetch`. Per the
   soft-dependency rule, demoted it to a plain `/docs/keiki/reference` link. (The stray-harness-tag
   grep added after EP-23 passed clean here, so that failure mode did not recur.)
   Date: 2026-06-06
@@ -162,7 +169,7 @@ Record every decision made while working on the plan.
   Rationale: the parent MasterPlan's Integration Point #2 assigns EP-24 the disjoint
   subdirectory `walkthrough/symbolic-and-validation/`; disjoint subdirs let the five Phase-2
   plans run in parallel without colliding on chapter numbering, and the hub-href-less rule
-  keeps every intermediate `pnpm build` crawler-clean.
+  keeps every intermediate `bun run build` crawler-clean.
   Date: 2026-06-07
 
 
@@ -174,8 +181,7 @@ Compare the result against the original purpose.
 **Outcome (2026-06-06).** EP-24 is complete: 18 pages — three reference (`symbolic`, `validate`,
 `step-failure`), two explanations (`the-symbolic-ci-gate`, `single-valuedness-and-soundness`), two
 how-tos (`assert-a-transducer-is-well-formed-in-ci`, `diagnose-a-rejected-command`), and the
-eleven-file `walkthrough/symbolic-and-validation/` tour. The whole keiki tree builds clean (`pnpm
-build` exit 0, zero crawler warnings) and link-checks (283 files); every quoted Haskell identifier was
+eleven-file `walkthrough/symbolic-and-validation/` tour. The whole keiki tree builds clean (`bun run build` exit 0, zero crawler warnings) and link-checks (283 files); every quoted Haskell identifier was
 audited against the pinned source `344c4ca`. The two accuracy corrections held throughout:
 `validateTransducer` is documented from `Keiki.Core` with the `Keiki.Render.Validate` disambiguation
 on every validate surface, and there is no `StepResult` (the bare triple). z3/`sbv` is framed as a
@@ -192,10 +198,10 @@ and the working tree can complete the work.
 You are writing MDX content files under `content/docs/keiki/` in **this** repository
 (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`). The site is a **fumadocs**
 documentation app built on **TanStack Start as a static SPA** (React 19 + MDX, TypeScript,
-Tailwind v4, bundled with Vite), built and served with **pnpm** on **Node 22**. `pnpm dev`
-runs the dev server; `pnpm build` builds the static SPA and **prerenders** every page,
-emitting crawler link-check warnings if any internal link is broken; `pnpm typecheck` runs
-`fumadocs-mdx && tsc --noEmit`; `pnpm lint:links` checks internal links and exits non-zero on
+Tailwind v4, bundled with Vite), built and served with **legacy package manager** on **Node 22**. `bun run dev`
+runs the dev server; `bun run build` builds the static SPA and **prerenders** every page,
+emitting crawler link-check warnings if any internal link is broken; `bun run typecheck` runs
+`fumadocs-mdx && tsc --noEmit`; `bun run lint:links` checks internal links and exits non-zero on
 a broken link. Content lives under `content/docs/`. Each directory has a `meta.json` whose
 `pages` array lists child page slugs / nested directory names in display order. A page is an
 `.mdx` file with YAML frontmatter (`title`, `description`) followed by an MDX body. The
@@ -609,7 +615,7 @@ concrete evaluation.
 
 - **M0 — Preconditions.** Confirm the toolchain, the keiki content tree, the EP-20
   foundation, and z3/`sbv` on PATH (for the build-time checks the examples reference) are
-  present, and that the empty site builds. At the end: `pnpm build` succeeds before you add
+  present, and that the empty site builds. At the end: `bun run build` succeeds before you add
   any EP-24 page; the keiki source is readable at `344c4ca` for cross-checking. Acceptance:
   see Concrete Steps.
 
@@ -621,8 +627,7 @@ concrete evaluation.
   `explanation/single-valuedness-and-soundness.mdx`. **Work:** transcribe every signature from
   Context, copy-exact; use `<TypeTable>` for the `ValidationOptions` fields, the four warning
   constructors, the three `StepFailure` variants, and the `Sym` typeclass members; write the
-  per-pair-per-vertex `mermaid` diagram on `the-symbolic-ci-gate.mdx`. **Commands:** `pnpm
-  build` then `pnpm lint:links`. **Acceptance:** all five pages build and render; every
+  per-pair-per-vertex `mermaid` diagram on `the-symbolic-ci-gate.mdx`. **Commands:** `bun run build` then `bun run lint:links`. **Acceptance:** all five pages build and render; every
   validate page (here: `reference/validate.mdx`, plus the CI how-to in M2 and the validation
   walkthrough chapters in M3) carries the disambiguating sentence about `Keiki.Render.Validate`;
   no page mentions a `StepResult` type; every page that mentions z3 states it is build/CI-time
@@ -638,7 +643,7 @@ concrete evaluation.
   `how-to/diagnose-a-rejected-command.mdx`. **Work:** real-API snippets anchored to
   `ValidationSpec`/`UserRegistrationSymbolicSpec` and `StepEitherSpec`; state the z3-on-PATH CI
   requirement; map `AmbiguousEdges` (runtime) back to `NondeterministicPair` (build-time).
-  **Commands:** `pnpm build` then `pnpm lint:links`. **Acceptance:** both build; the CI guide
+  **Commands:** `bun run build` then `bun run lint:links`. **Acceptance:** both build; the CI guide
   shows the microsecond pure assertion **and** the opt-in z3 escalation and the
   `Keiki.Render.Validate` disambiguation; the diagnose guide pattern-matches all three
   `StepFailure` variants and frames `AmbiguousEdges` as a defect, not an ordinary rejection.
@@ -690,7 +695,7 @@ concrete evaluation.
 
   **Work:** copy `content/docs/_templates/code-walkthrough.mdx`; each chapter quotes a short,
   source-faithful excerpt naming its file path; cross-chapter links are absolute. **Commands:**
-  `pnpm build` then `pnpm lint:links`. **Acceptance:** the chapters build; each excerpt names
+  `bun run build` then `bun run lint:links`. **Acceptance:** the chapters build; each excerpt names
   its source file; cross-chapter links are absolute; the validation chapters carry the
   `Keiki.Render.Validate` disambiguation; the tour is navigable.
 
@@ -702,7 +707,7 @@ concrete evaluation.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The docs toolchain is **pnpm** on **Node 22**.
+stated otherwise. The docs toolchain is **legacy package manager** on **Node 22**.
 
 ### M0 — Preconditions
 
@@ -722,9 +727,9 @@ for d in explanation reference how-to walkthrough; do
 done
 
 # install + verify the site builds before you start
-pnpm install
-pnpm build
-pnpm lint:links
+bun install
+bun run build
+bun run lint:links
 ```
 
 Expected (abridged):
@@ -793,20 +798,20 @@ the validation walkthrough chapters, include the disambiguating sentence about
 `/docs/keiki/explanation/why-smt`. Then:
 
 ```bash
-pnpm build
-pnpm lint:links
+bun run build
+bun run lint:links
 ```
 
 ### M2 — How-to set
 
 Copy `content/docs/_templates/how-to.mdx`. Author the two how-tos described in Plan of Work.
-Then `pnpm build` and `pnpm lint:links`.
+Then `bun run build` and `bun run lint:links`.
 
 ### M3 — Code walkthrough
 
 Copy `content/docs/_templates/code-walkthrough.mdx`. Author `00-start-here.mdx` + the 10
-numbered chapters (and the optional 11th only if it strengthens the tour). Then `pnpm build`
-and `pnpm lint:links`.
+numbered chapters (and the optional 11th only if it strengthens the tour). Then `bun run build`
+and `bun run lint:links`.
 
 ### M4 — Sidebar + full acceptance
 
@@ -864,9 +869,9 @@ Do **not** add a hub `<Card href>` in `walkthrough/index.mdx` — EP-26 finalize
 Run the full acceptance gate:
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm lint:links
+bun run typecheck
+bun run build
+bun run lint:links
 ```
 
 
@@ -875,15 +880,15 @@ pnpm lint:links
 The change is a documentation-content change; "working" means the pages build, render,
 link-check clean, and accurately reflect the shipped keiki source at `344c4ca`.
 
-1. **Build is clean.** From the repo root, `pnpm typecheck` completes with no errors, and
-   `pnpm build` exits 0 with **zero** crawler / `Failed to fetch` link-check warnings.
-2. **Links resolve.** `pnpm lint:links` exits 0 (no broken internal links). Every cross-page
+1. **Build is clean.** From the repo root, `bun run typecheck` completes with no errors, and
+   `bun run build` exits 0 with **zero** crawler / `Failed to fetch` link-check warnings.
+2. **Links resolve.** `bun run lint:links` exits 0 (no broken internal links). Every cross-page
    link is absolute (`/docs/keiki/...`, `/docs/keiro/...`). The
    `single-valuedness-and-soundness` page links to `/docs/keiki/explanation/why-smt`; the
    symbolic/validate/step-failure pages link back to EP-21's
    `/docs/keiki/explanation/the-symtransducer`, `/docs/keiki/explanation/registers-vs-state`,
    and `/docs/keiki/reference/core`.
-3. **Sidebar navigability.** Run `pnpm dev` and browse `http://localhost:3000/docs/keiki`. The
+3. **Sidebar navigability.** Run `bun run dev` and browse `http://localhost:3000/docs/keiki`. The
    three reference pages, two explanation pages, and two how-tos appear under their sections;
    the `walkthrough/symbolic-and-validation` tour appears in the walkthrough sidebar with all
    chapters in order and is reachable from the sidebar (even though the hub `<Card href>` is
@@ -920,12 +925,12 @@ end.
 ## Idempotence and Recovery
 
 All steps are additive and safe to repeat. Authoring a page is creating/overwriting one `.mdx`
-file under `content/docs/keiki/`; re-running `pnpm build` / `pnpm lint:links` is
+file under `content/docs/keiki/`; re-running `bun run build` / `bun run lint:links` is
 non-destructive. The only shared files this plan edits are the section `meta.json` files and
 `walkthrough/meta.json`, which are **append-only** here: add only this plan's slugs, never
 reorder or remove another plan's entries, so concurrent Phase-2 plans do not conflict. If a
 `meta.json` append is duplicated by a re-run, de-duplicate the `pages` array (each slug appears
-once). If `pnpm build` emits a crawler warning for a not-yet-authored target, it is a soft-dep
+once). If `bun run build` emits a crawler warning for a not-yet-authored target, it is a soft-dep
 link (EP-20/EP-21 page) that resolves once that plan lands — confirm the link is absolute and
 spelled correctly; do not add a `<Card href>` to the walkthrough hub (that is EP-26's job and
 would otherwise emit a `Failed to fetch` warning).
@@ -935,7 +940,7 @@ would otherwise emit a `Failed to fetch` warning).
 
 **Libraries / tools used at build/CI time only (not site runtime):** z3 (the SMT solver) and
 the `sbv` Haskell binding (`Data.SBV`), referenced by the examples' build-time checks. The
-docs site itself is fumadocs + TanStack Start (pnpm, Node 22); it has **no** solver
+docs site itself is fumadocs + TanStack Start (legacy package manager, Node 22); it has **no** solver
 dependency.
 
 **Source modules cross-checked (read-only, at `344c4ca`):**
@@ -993,3 +998,5 @@ LoanApplication}SymbolicSpec.hs`.
   document under rendering; this plan only disambiguates it from `validateTransducer`.
 - **Note for EP-26**: this plan does **not** add the walkthrough hub `<Card href>`; EP-26
   wires it and runs the final whole-tree `meta.json` ordering pass.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

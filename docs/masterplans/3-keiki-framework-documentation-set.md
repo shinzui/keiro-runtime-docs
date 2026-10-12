@@ -4,6 +4,13 @@ slug: keiki-framework-documentation-set
 title: "Keiki framework documentation set"
 kind: master-plan
 created_at: 2026-06-07T04:53:20Z
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiki framework documentation set
@@ -82,8 +89,8 @@ set: every conceptual page links to the exact module and the test that proves it
 canonical spine is the capability ladder EmailDelivery → OrderCart → UserRegistration
 (+V0) → LoanApplication → Loan/CoreBankingSync/LoanWorkflow (see Integration Point 3).
 
-You can see the result by running the docs dev server (`pnpm dev`) — or a production build
-with `pnpm build && pnpm start` — and browsing `http://localhost:3000/docs/keiki`: the
+You can see the result by running the docs dev server (`bun run dev`) — or a production build
+with `bun run build && bun run start` — and browsing `http://localhost:3000/docs/keiki`: the
 keiki tree appears in the sidebar with the page order defined by the `meta.json` files;
 Haskell snippets render in PragmataPro with ligatures; and `mermaid` diagrams render
 interactively.
@@ -263,7 +270,7 @@ lives in EP-20.
 **2. The `walkthrough/` tree.** EP-20 creates `content/docs/keiki/walkthrough/index.mdx` (a
 hub linking the tours with `<Cards>`) and leaves `walkthrough/meta.json` as `["index"]`. Per
 the hard-won crawler lesson recorded in MasterPlan #2's Surprises, EP-20 ships the hub
-`<Cards>` **without `href`s** (a `<Card href>` to a not-yet-authored page makes `pnpm build`
+`<Cards>` **without `href`s** (a `<Card href>` to a not-yet-authored page makes `bun run build`
 emit a crawler `Failed to fetch` link-check failure). Each Phase-2 plan owns a **disjoint
 subdirectory** under `walkthrough/`, each with its own `meta.json`, a `00-start-here.mdx`,
 and numbered chapter files — so parallel plans never collide on a shared numbered sequence:
@@ -277,7 +284,7 @@ Each Phase-2 plan, when it creates its subdir, **appends** its subdirectory fold
 `walkthrough/meta.json` and authors a real `00-start-here.mdx`, so its tour is
 sidebar-navigable — but it does **not** add its hub `<Card href>`. **EP-26 finalizes** the
 hub `<Card href>`s (one per tour, each pointing at that tour's `00-start-here`) and runs the
-final `walkthrough/meta.json` ordering pass, so every intermediate `pnpm build` stays clean.
+final `walkthrough/meta.json` ordering pass, so every intermediate `bun run build` stays clean.
 
 **3. The `jitsurei` worked-example spine (the canonical module map).** EP-20 introduces the
 jitsurei package and publishes the canonical capability→module→test map; every other plan
@@ -498,8 +505,8 @@ five capability reference/explanation/how-to slices, five disjoint contribution-
 tours (`core-and-builder`, `derivations`, `composition`, `symbolic-and-validation`,
 `rendering-and-codecs`), a 16-recipe domain cookbook with a decision guide, four worked-example
 tutorials, and a 9-question FAQ — all threaded through the one `jitsurei` spine and pinned to keiki
-source `344c4ca`. The whole tree builds clean (`pnpm build` exit 0, **zero** crawler warnings),
-typechecks, and link-checks (`pnpm lint:links` + `node scripts/check-doc-links.mjs`, 322 files, no
+source `344c4ca`. The whole tree builds clean (`bun run build` exit 0, **zero** crawler warnings),
+typechecks, and link-checks (`bun run lint:links` + `node scripts/check-doc-links.mjs`, 322 files, no
 broken internal links); no relative links and no "coming soon" placeholders remain.
 
 **What worked.** Decomposition by capability layer held: each Phase-2 plan read one cohesive module
@@ -524,3 +531,5 @@ changed the decomposition or the dependency graph.
 subdirs (the disjoint-subdir rule), but they all append to the same section `meta.json` files; those
 appends were serialized by the implementer to avoid races, and EP-26 owned the final ordering pass —
 exactly as Integration Points #1 and #2 prescribed.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

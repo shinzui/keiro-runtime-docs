@@ -5,6 +5,13 @@ title: "Keiki domain cookbook, worked-example tutorials, FAQ, and finalization"
 kind: exec-plan
 created_at: 2026-06-07T04:53:26Z
 master_plan: "docs/masterplans/3-keiki-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiki domain cookbook, worked-example tutorials, FAQ, and finalization
@@ -69,10 +76,10 @@ different domains."** After it, a reader who lands on `/docs/keiki` can:
   every sidebar section in a deliberate reading order.
 
 You can see it working by running the docs site from the repo root
-`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`: `pnpm typecheck` is clean, `pnpm build` exits 0
-and prerenders every keiki page with **zero** crawler warnings, `pnpm lint:links` exits 0, and the
+`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`: `bun run typecheck` is clean, `bun run build` exits 0
+and prerenders every keiki page with **zero** crawler warnings, `bun run lint:links` exits 0, and the
 in-repo doc-link checker `node scripts/check-doc-links.mjs` reports no broken internal links.
-Browsing `http://localhost:3000/docs/keiki` (via `pnpm dev`, or `pnpm build && pnpm start`) shows
+Browsing `http://localhost:3000/docs/keiki` (via `bun run dev`, or `bun run build && bun run start`) shows
 the cookbook recipes with a `<Cards>` index, the loan-application tutorial rendering as `<Steps>`,
 the FAQ rendering as expandable accordions, every section landing showing cards, and the walkthrough
 hub's five cards linking to their tours.
@@ -99,7 +106,7 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 This section must always reflect the actual current state of the work.
 
 - [x] M0. Preconditions verified (2026-06-06) — toolchain present, EP-20 Complete, keiki source on
-      disk at `344c4ca`, baseline `pnpm typecheck`/`pnpm build` clean.
+      disk at `344c4ca`, baseline `bun run typecheck`/`bun run build` clean.
 - [x] M1. Cookbook authored (2026-06-06) — `cookbook/index.mdx` overwritten with a `<Cards>` index +
       the "Choosing how to model your domain" decision guide and new-transducer checklist; 16
       `cookbook/*.mdx` recipes authored, each anchored to a jitsurei source line (overlapping recipes
@@ -116,8 +123,8 @@ This section must always reflect the actual current state of the work.
       landings (tutorials, how-to, reference, explanation) replaced with grouped `<Cards>` (cookbook
       done in M1); the five walkthrough-hub `<Card href>`s wired to each tour's `00-start-here`;
       `docs/keiki-source-sync.md` most-coupled-pages list updated to cover the Phase-3 pages. Gate
-      green: `pnpm typecheck` clean, `pnpm build` exit 0 with **zero** crawler warnings,
-      `pnpm lint:links` exit 0 (322 files), `node scripts/check-doc-links.mjs` OK, no relative links,
+      green: `bun run typecheck` clean, `bun run build` exit 0 with **zero** crawler warnings,
+      `bun run lint:links` exit 0 (322 files), `node scripts/check-doc-links.mjs` OK, no relative links,
       no "coming soon" left. **134 `.mdx` files** under `content/docs/keiki/`.
 
 
@@ -184,7 +191,7 @@ Record every decision made while working on the plan.
   them bare. All cross-page links use **absolute** doc paths (`/docs/keiki/...`,
   `/docs/keiro/...`), never relative `./` or `../`.
   Rationale: matches the established house style (master plan Integration Point 7) and avoids the
-  relative-link crawler failures that the kiroku/keiro sets paid for; the `pnpm lint:links` gate
+  relative-link crawler failures that the kiroku/keiro sets paid for; the `bun run lint:links` gate
   treats an absolute non-`/docs` internal link and a dangling relative link as broken.
   Date: 2026-06-07
 
@@ -200,8 +207,8 @@ domain" decision guide, two worked-example tutorials (the LoanApplication proces
 the derived-lifecycle-transition trap), and a 9-question FAQ; then it ran the finalization pass —
 ordering every section `meta.json`, replacing every "coming soon" landing with a grouped `<Cards>`
 index, and wiring the walkthrough hub's five `<Card href>`s to their tours. The whole keiki tree
-(**134 `.mdx` files**) builds clean (`pnpm build` exit 0, **zero** crawler warnings), typechecks, and
-link-checks (`pnpm lint:links` + `node scripts/check-doc-links.mjs`, 322 files, no broken internal
+(**134 `.mdx` files**) builds clean (`bun run build` exit 0, **zero** crawler warnings), typechecks, and
+link-checks (`bun run lint:links` + `node scripts/check-doc-links.mjs`, 322 files, no broken internal
 links); no relative links and no placeholders remain. Every cookbook/tutorial snippet's distinctive
 Haskell identifier was audited against the pinned source `344c4ca`. The user's central ask — guide
 developers to model their own domains properly — is answered by the decision guide, the recipe set,
@@ -218,9 +225,9 @@ working tree can complete the work.
 You author MDX content files under `content/docs/keiki/` in **this** repository,
 `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`. The site is a **fumadocs** documentation app
 built on **TanStack Start as a static SPA** (React 19 + Vite, TypeScript), built and served with
-**pnpm** on **Node 22** inside the Nix dev shell (`nix develop`). `pnpm dev` runs the dev server at
-`http://localhost:3000`; `pnpm build` prerenders every doc route to a static SPA under
-`.output/public`; `pnpm start` serves it.
+**legacy package manager** on **Node 22** inside the Nix dev shell (`nix develop`). `bun run dev` runs the dev server at
+`http://localhost:3000`; `bun run build` prerenders every doc route to a static SPA under
+`.output/public`; `bun run start` serves it.
 
 Each directory under `content/docs/` has a `meta.json` whose `pages` array lists the child page
 slugs (a *slug* is the filename without its `.mdx` extension, or a subdirectory name) **in sidebar
@@ -251,15 +258,15 @@ The `_templates/` directory is **skipped** by the link checker (its placeholder 
 
 These commands, run from the repo root, are the gate this plan must pass (defined in `package.json`):
 
-- `pnpm typecheck` runs `fumadocs-mdx && tsc --noEmit`. The `fumadocs-mdx` step regenerates the
+- `bun run typecheck` runs `fumadocs-mdx && tsc --noEmit`. The `fumadocs-mdx` step regenerates the
   `.source/` collection so newly added pages are picked up; `tsc --noEmit` type-checks the app.
   Expected tail: no errors.
-- `pnpm build` runs `vite build`, prerendering every doc route. Success ends with a Vite
+- `bun run build` runs `vite build`, prerendering every doc route. Success ends with a Vite
   `built in <N>s` line and writes `.output/public`. **Failure modes to watch:** a line containing
   `[unhandledRejection]` or `Failed to fetch` means a page links to a route that does not exist (the
   kiroku/keiro precedent: relative `./` links and `<Card href>`s to not-yet-authored pages produce
   exactly these crawler warnings). Zero such lines is an acceptance criterion.
-- `pnpm lint:links` runs `node scripts/check-doc-links.mjs && linkinator .output/public ...`. The
+- `bun run lint:links` runs `node scripts/check-doc-links.mjs && linkinator .output/public ...`. The
   first script scans every `content/docs/**/*.mdx` for internal links and fails (exit 1, printing
   `✗ N broken internal doc link(s)`) if any points at a page that does not exist on disk; on success
   it prints `✓ doc links OK — checked <N> files, no broken internal links.`. It resolves a link
@@ -457,11 +464,11 @@ Overwrite the `faq.mdx` stub with ~8–9 real Q&A:
 
 ### Milestones
 
-- **M0 — Preconditions.** Confirm Node 22 + pnpm are on PATH, `node_modules` is present, and **EP-20
+- **M0 — Preconditions.** Confirm Node 22 + legacy package manager are on PATH, `node_modules` is present, and **EP-20
   is Complete** (the `content/docs/keiki/` tree exists with section `meta.json` files,
   `docs/keiki-source-sync.md` exists, the `/docs/keiki` overview + getting-started pages exist, and
   the walkthrough hub `walkthrough/index.mdx` exists). Confirm the keiki source is on disk at
-  `344c4ca`. At the end: a baseline `pnpm typecheck` and `pnpm build` both succeed before you add a
+  `344c4ca`. At the end: a baseline `bun run typecheck` and `bun run build` both succeed before you add a
   page. Acceptance: both commands exit 0 on the unmodified tree; `git -C /Users/shinzui/Keikaku/bokuno/keiki
   rev-parse HEAD` prints `344c4cadd55e0b997cc2c6ce0ab687851d66fa31`.
 
@@ -508,12 +515,12 @@ Overwrite the `faq.mdx` stub with ~8–9 real Q&A:
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless stated
-otherwise. The toolchain is **pnpm** on **Node 22** inside the Nix dev shell.
+otherwise. The toolchain is **legacy package manager** on **Node 22** inside the Nix dev shell.
 
 ### M0 — Preconditions
 
 ```bash
-nix develop                       # enter the dev shell (pnpm + Node 22)
+nix develop                       # enter the dev shell (legacy package manager + Node 22)
 
 # EP-20 must be Complete: these must all exist.
 test -d content/docs/keiki && echo "keiki tree present"
@@ -528,9 +535,9 @@ git -C /Users/shinzui/Keikaku/bokuno/keiki rev-parse HEAD
 # Confirm the jitsurei spine modules are on disk.
 ls /Users/shinzui/Keikaku/bokuno/keiki/jitsurei/src/Jitsurei/
 
-pnpm install
-pnpm typecheck
-pnpm build
+bun install
+bun run typecheck
+bun run build
 ```
 
 Expected (abridged):
@@ -610,7 +617,7 @@ grep -nE "buildAssign|syncPendingLoanId|SyncSettled" \
   /Users/shinzui/Keikaku/bokuno/keiki/jitsurei/src/Jitsurei/CoreBankingSync.hs
 ```
 
-Expected: each distinctive name prints at least one matching line. Then `pnpm typecheck && pnpm build`.
+Expected: each distinctive name prints at least one matching line. Then `bun run typecheck && bun run build`.
 
 ### M2 — Worked-example tutorials
 
@@ -641,14 +648,14 @@ next rung up the capability ladder. Append the slugs (append only):
 > tutorial slugs is done in M4. If EP-20/EP-21 have already populated `pages`, keep their entries and
 > append yours.
 
-Then `pnpm typecheck && pnpm build`.
+Then `bun run typecheck && bun run build`.
 
 ### M3 — FAQ
 
 Overwrite `content/docs/keiki/faq.mdx`. Remove the "coming soon" `<Callout>`; author the real
 `<Accordions>` block from the M3 question list, each answer linking to the deeper page with an
 absolute `/docs/keiki/...` link. No `meta.json` change is needed (`faq` is already listed in the
-top-level `content/docs/keiki/meta.json`). Then `pnpm typecheck && pnpm build`, and confirm the stub
+top-level `content/docs/keiki/meta.json`). Then `bun run typecheck && bun run build`, and confirm the stub
 callout is gone:
 
 ```bash
@@ -752,9 +759,9 @@ missing entries.
 Run the full gate:
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm lint:links
+bun run typecheck
+bun run build
+bun run lint:links
 node scripts/check-doc-links.mjs
 ```
 
@@ -765,7 +772,7 @@ Expected (abridged):
 ✓ doc links OK — checked <N> files, no broken internal links.
 ```
 
-The `pnpm build` output must contain **no** `[unhandledRejection]` or `Failed to fetch` line. Confirm
+The `bun run build` output must contain **no** `[unhandledRejection]` or `Failed to fetch` line. Confirm
 no relative links anywhere under the keiki tree, and record file counts:
 
 ```bash
@@ -793,8 +800,8 @@ authoritative).
 
 Exercise the system and observe specific behaviors:
 
-1. **Cookbook recipes build and render with a `<Cards>` index.** After M1, `pnpm typecheck` and
-   `pnpm build` exit 0. Browsing `http://localhost:3000/docs/keiki/cookbook` (via `pnpm dev`) shows
+1. **Cookbook recipes build and render with a `<Cards>` index.** After M1, `bun run typecheck` and
+   `bun run build` exit 0. Browsing `http://localhost:3000/docs/keiki/cookbook` (via `bun run dev`) shows
    the decision guide and a `<Cards>` index; each card opens its recipe without a 404 and shows the
    Problem → Solution → How it works shape.
 
@@ -823,14 +830,14 @@ Exercise the system and observe specific behaviors:
    `walkthrough/index.mdx` links to its tour's `00-start-here`, and clicking each opens that tour
    (no 404, no crawler `Failed to fetch`).
 
-7. **The whole keiki tree builds with zero crawler warnings.** `pnpm build` exits 0 and its output
+7. **The whole keiki tree builds with zero crawler warnings.** `bun run build` exits 0 and its output
    contains no `[unhandledRejection]` and no `Failed to fetch` line:
 
    ```text
    ✓ built in <N>s
    ```
 
-8. **Link-checks pass.** `pnpm lint:links` and `node scripts/check-doc-links.mjs` both exit 0;
+8. **Link-checks pass.** `bun run lint:links` and `node scripts/check-doc-links.mjs` both exit 0;
    the latter prints `✓ doc links OK — checked <N> files, no broken internal links.`. There are no
    relative `./`/`../` links anywhere under `content/docs/keiki/**`:
 
@@ -848,8 +855,8 @@ Exercise the system and observe specific behaviors:
 
 ## Idempotence and Recovery
 
-All steps are file authoring and are safe to repeat. Re-running `pnpm typecheck` / `pnpm build` /
-`pnpm lint:links` / `node scripts/check-doc-links.mjs` is idempotent. Editing or recreating an
+All steps are file authoring and are safe to repeat. Re-running `bun run typecheck` / `bun run build` /
+`bun run lint:links` / `node scripts/check-doc-links.mjs` is idempotent. Editing or recreating an
 `.mdx` / `meta.json` file overwrites it; re-running a milestone simply rewrites the same files. The
 M4 `meta.json` ordering and the section `<Cards>` landings are **idempotent rewrites** — re-running
 M4 produces the same ordered arrays and the same landing files, so it is safe to re-run. No database,
@@ -861,10 +868,10 @@ Recovery:
 - If a page breaks the build, the error names the offending `.mdx` file and line; the usual causes
   are an untagged code fence, a stray `<` in prose, or a link to a non-existent route. Fix and
   rebuild.
-- If `pnpm lint:links` or `node scripts/check-doc-links.mjs` fails, it prints each broken
+- If `bun run lint:links` or `node scripts/check-doc-links.mjs` fails, it prints each broken
   `file -> target`; fix the link to an existing `/docs/keiki/...` page (absolute, never relative) and
   re-run.
-- If `pnpm build` emits `[unhandledRejection]` / `Failed to fetch`, a link points at a route that
+- If `bun run build` emits `[unhandledRejection]` / `Failed to fetch`, a link points at a route that
   does not exist (most often a relative `./` link, or a hub `<Card href>` whose tour subdir is not
   present yet); replace it with an absolute `/docs/keiki/...` path, or — if a Phase-2 tour is missing
   — stop M4 (its precondition is not met) and finish that plan first.
@@ -900,10 +907,10 @@ Recovery:
 - fumadocs (`fumadocs-core`/`fumadocs-ui`, `fumadocs-mdx`) — MDX + sidebar from `meta.json`;
   components (`Callout`, `Cards`, `Card`, `Steps`, `Accordions`, `Accordion`, `TypeTable`) registered
   globally in `src/components/mdx.tsx` — use bare, no imports.
-- TanStack Start + Vite — `pnpm dev` / `pnpm build` / `pnpm start`; `pnpm typecheck` =
-  `fumadocs-mdx && tsc --noEmit`; `pnpm lint:links` = `node scripts/check-doc-links.mjs && linkinator
+- TanStack Start + Vite — `bun run dev` / `bun run build` / `bun run start`; `bun run typecheck` =
+  `fumadocs-mdx && tsc --noEmit`; `bun run lint:links` = `node scripts/check-doc-links.mjs && linkinator
   .output/public …`; the standalone in-content gate is `node scripts/check-doc-links.mjs`.
-- pnpm + Node 22 inside the Nix dev shell (`nix develop`).
+- legacy package manager + Node 22 inside the Nix dev shell (`nix develop`).
 
 ### Files this plan CREATES / OWNS (all under `content/docs/keiki/`)
 
@@ -988,12 +995,14 @@ FAQ:
 
 ### Postconditions that must hold at the end
 
-- Every file listed above exists; `pnpm typecheck`, `pnpm build`, `pnpm lint:links`, and
+- Every file listed above exists; `bun run typecheck`, `bun run build`, `bun run lint:links`, and
   `node scripts/check-doc-links.mjs` all exit 0 with the whole keiki tree present.
-- `pnpm build` emits no `[unhandledRejection]` / `Failed to fetch` line (zero crawler warnings).
+- `bun run build` emits no `[unhandledRejection]` / `Failed to fetch` line (zero crawler warnings).
 - No section `index.mdx` under `content/docs/keiki/` contains "coming soon"; each carries a `<Cards>`
   index whose links resolve; the walkthrough hub's five `<Card href>`s each link to a present tour.
 - Every Haskell identifier quoted in a keiki cookbook/tutorial snippet exists in the keiki source at
   `344c4ca`; no snippet presents a divergent in-repo note (four-field `Decider`, `StepResult`
   wrapper, codec PII redaction) as the shipped API.
 - `docs/keiki-source-sync.md`'s "most-coupled pages" list covers the pages this plan added.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

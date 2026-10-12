@@ -5,6 +5,13 @@ title: "Author shibuya foundation core and walkthrough docs"
 kind: exec-plan
 created_at: 2026-06-24T18:04:03Z
 master_plan: "docs/masterplans/5-complete-shibuya-pgmq-and-adapter-documentation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Author shibuya foundation core and walkthrough docs
@@ -55,7 +62,7 @@ implementation. Provide concise evidence.
 - The stale-stub scan still finds `content/docs/shibuya/faq.mdx` and
   `content/docs/shibuya/cookbook/index.mdx`. Those pages are outside EP-1's declared scope and are
   owned by the later operations, FAQ, and recipes plan.
-- `pnpm build` initially failed because `content/docs/shibuya/walkthrough/index.mdx` had an
+- `bun run build` initially failed because `content/docs/shibuya/walkthrough/index.mdx` had an
   unquoted YAML frontmatter description containing a colon. Quoting the description fixed the
   parse error and the full production build then completed.
 
@@ -93,7 +100,7 @@ shutdown.
 Validation evidence:
 
 ```text
-$ pnpm run typecheck
+$ bun run typecheck
 $ fumadocs-mdx && tsc --noEmit
 [MDX] generated files in 1.6835420000000454ms
 ```
@@ -104,7 +111,7 @@ $ node scripts/check-doc-links.mjs
 ```
 
 ```text
-$ pnpm build
+$ bun run build
 ...
 ✓ built in 1.46s
 ℹ Generated .output/nitro.json
@@ -260,8 +267,8 @@ sed -n '1,180p' content/docs/keiki/reference/core.mdx
 After editing, validate:
 
 ```bash
-pnpm run typecheck
-pnpm build
+bun run typecheck
+bun run build
 node scripts/check-doc-links.mjs
 rg -n "Documentation for shibuya is in progress|Documentation in progress" content/docs/shibuya
 ```
@@ -283,7 +290,7 @@ Acceptance is user-visible documentation behavior:
 - Browsing `/docs/shibuya/walkthrough` gives a source-ordered tour of shibuya-core, including
   adapter ingestion, envelope construction, handler execution, ack processing, retry/dead-letter
   behavior, and runner supervision.
-- `pnpm run typecheck`, `pnpm build`, and `node scripts/check-doc-links.mjs` pass.
+- `bun run typecheck`, `bun run build`, and `node scripts/check-doc-links.mjs` pass.
 - New pages are listed in the relevant `meta.json` files and appear in sidebar order.
 - No page authored by this plan claims APIs from memory; every signature and module name is
   traceable to the local shibuya source tree resolved through mori.
@@ -329,3 +336,5 @@ At the end of this plan, later plans can link to stable pages for shibuya vocabu
 concepts. EP-2 consumes those pages for metrics and operations. EP-4 consumes them for adapter
 delivery guarantees and conversion narratives. EP-5 consumes them for final landing-page and
 integration-page reconciliation.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

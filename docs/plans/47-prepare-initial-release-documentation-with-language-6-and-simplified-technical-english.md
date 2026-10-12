@@ -15,6 +15,11 @@ provenance:
       at: 2026-10-02T16:15:04Z
       mode: "implement"
       note: "Implement initial-release cleanup and controlled-English authoring workflow"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Prepare initial-release documentation with Language 6 and Simplified Technical English
@@ -59,11 +64,11 @@ Apply the writing policy to every published product tree and to the authoring te
 
 ## Outcomes & Retrospective
 
-The release cleanup and terminology refresh are implemented. Strict terminology validation, all five complete DSL source checks, and `nix develop -c pnpm check` pass. Navigation checks cover 56 metadata files and 500 pages. Six checker tests pass. The browser displays the glossary and its canonical definitions. The first editorial pass does not complete the requested conversion of every page. Remaining prose findings are recorded in [the editorial review](../writing/review-2026-10-02.md). The current review has 2775 findings across 392 files. Full compliance remains unverified until the remaining editing and official rules and dictionary review pass.
+The release cleanup and terminology refresh are implemented. Strict terminology validation, all five complete DSL source checks, and `nix develop -c bun run check` pass. Navigation checks cover 56 metadata files and 500 pages. Six checker tests pass. The browser displays the glossary and its canonical definitions. The first editorial pass does not complete the requested conversion of every page. Remaining prose findings are recorded in [the editorial review](../writing/review-2026-10-02.md). The current review has 2775 findings across 392 files. Full compliance remains unverified until the remaining editing and official rules and dictionary review pass.
 
 ## Context and Orientation
 
-The site reads MDX from `content/docs/`. Each directory has `meta.json` navigation entries. `scripts/check-doc-navigation.mjs` checks those entries. `scripts/check-doc-links.mjs` checks internal link destinations. `package.json` defines the complete `pnpm check` gate. CI runs the gates from `.github/workflows/ci.yml`.
+The site reads MDX from `content/docs/`. Each directory has `meta.json` navigation entries. `scripts/check-doc-navigation.mjs` checks those entries. `scripts/check-doc-links.mjs` checks internal link destinations. `package.json` defines the complete `bun run check` gate. CI runs the gates from `.github/workflows/ci.yml`.
 
 There was no ADR directory or profiled ADR bundle before this change. [ADR-1](../adr/0001-initial-release-scope-and-technical-writing.md) now records the durable release and writing policy. Historical plans under `docs/plans/` and source-sync records under `docs/` are not site pages.
 
@@ -75,7 +80,7 @@ First remove `content/docs/example-app/`, Keiro 0.1 and 0.2 migration guides, an
 
 Next rewrite the language reference and complete examples for Language 6. Do not merely change the preamble of examples that use obsolete read-model clauses. Use projection owners for delivery and `freshness` for query policy. Retain the toolchain's actual reported labels in a concise implementation note.
 
-Refresh the owning terminology bundle at `mori://shinzui/keiro/okf/terminology`. Mori resolves its directory. Validate it with its owning project profile, update the bundle log, and preserve identifiers, metadata relationships, and source anchors. `pnpm run sync:terminology` reads the canonical descriptions and generates `docs/writing/technical-terms.json` and `content/docs/getting-started/technical-terms.mdx`. CI compares the local snapshot and glossary without an upstream checkout.
+Refresh the owning terminology bundle at `mori://shinzui/keiro/okf/terminology`. Mori resolves its directory. Validate it with its owning project profile, update the bundle log, and preserve identifiers, metadata relationships, and source anchors. `bun run sync:terminology` reads the canonical descriptions and generates `docs/writing/technical-terms.json` and `content/docs/getting-started/technical-terms.mdx`. CI compares the local snapshot and glossary without an upstream checkout.
 
 Then replace the former conversational authoring voice with controlled technical English. Define technical terms, imperative procedures, active descriptions, short sentences, explicit conditions, and consistent vocabulary. Add a conservative source checker for unsupported language declarations and common prose issues. Explain its limits. Record remaining editorial findings rather than suppressing them with a grandfathered baseline.
 
@@ -93,7 +98,7 @@ The contributing guide, templates, and terminology define the writing policy. A 
 
 ### 3. Release verification and editorial evidence
 
-Run `pnpm check` from the repository root. The build must compile all retained MDX pages. Capture remaining editorial findings in a report. Complete the dictionary review when an official copy is available; keep that step open until it actually passes.
+Run `bun run check` from the repository root. The build must compile all retained MDX pages. Capture remaining editorial findings in a report. Complete the dictionary review when an official copy is available; keep that step open until it actually passes.
 
 ## Concrete Steps
 
@@ -102,9 +107,9 @@ Run all commands from `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`.
 ```bash
 node scripts/check-doc-navigation.mjs
 node scripts/check-doc-links.mjs
-pnpm run sync:terminology
-pnpm run lint:terminology
-nix develop -c pnpm check
+bun run sync:terminology
+bun run lint:terminology
+nix develop -c bun run check
 ```
 
 Use `git diff --check` to detect malformed edits. Inspect `git diff --stat` and retired paths before committing. Commits use Conventional Commits and include this plan's `ExecPlan:` trailer.
@@ -133,8 +138,10 @@ Expected result: `OK: 64 concepts (okf_version 0.2)`.
 
 ## Interfaces and Dependencies
 
-Use the existing Node and pnpm toolchain. Add no runtime dependency for prose checks. Keep Markdown links, MDX components, Haskell identifiers, CLI flags, and wire values unchanged during general prose edits.
+Use the existing Node and legacy package manager toolchain. Add no runtime dependency for prose checks. Keep Markdown links, MDX components, Haskell identifiers, CLI flags, and wire values unchanged during general prose edits.
 
 Revision note (2026-10-02): The user authorized editing the canonical upstream terminology bundle. All 64 concepts were refreshed and validated. The local glossary now derives from that source. Release cleanup, first prose pass, and site checks pass; comprehensive editing and official dictionary review remain open.
 
 Revision note (2026-10-02): Created the release cleanup and controlled-English implementation plan from the source and content inventory.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

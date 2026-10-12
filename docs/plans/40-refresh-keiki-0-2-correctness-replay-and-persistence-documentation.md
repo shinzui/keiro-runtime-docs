@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-07-14T15:14:31Z
 intention: "intention_01kxgjsgnse1z9r0w141akd9g2"
 master_plan: "docs/masterplans/6-prepare-keiro-runtime-documentation-for-wider-announcement.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Refresh keiki 0.2 correctness replay and persistence documentation
@@ -31,14 +38,14 @@ is exported at the reviewed source commit, and by navigating the site without li
 - [x] (2026-07-14T15:35:24Z) Resolve `shinzui/keiki` through mori and verify the clean
   `ce5748b5f2311de1355e648db564da8b404e42f2` source boundary and 0.2.0.0 package version.
 - [x] (2026-07-14T15:46:08Z) Milestone 1: remove the dead Decider API documentation and establish
-  explicit output intent, structured replay, and `InFlight`-aware acceptors. `pnpm run typecheck`,
-  `pnpm run format:check`, `pnpm build`, the 447-file internal-link scan, the removed-path scan, and
+  explicit output intent, structured replay, and `InFlight`-aware acceptors. `bun run typecheck`,
+  `bun run format:check`, `bun run build`, the 447-file internal-link scan, the removed-path scan, and
   `git diff --check` all passed.
 - [x] (2026-07-14T16:19:29Z) Milestone 2: refresh builder validation, symbolic soundness, and
-  checked composition. `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the 447-file
+  checked composition. `bun run typecheck`, `bun run format:check`, `bun run build`, the 447-file
   internal-link scan, the upstream-export symbol scan, and `git diff --check` all passed.
 - [x] (2026-07-14T16:35:26Z) Milestone 3: refresh shape hashes, JSON persistence evolution, and the
-  keiro integration handoff. `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, the
+  keiro integration handoff. `bun run typecheck`, `bun run format:check`, `bun run build`, the
   447-file internal-link scan, exact-once keiki navigation audit, upstream-export symbol scan, and
   `git diff --check` all passed.
 - [x] (2026-07-14T16:35:26Z) Run the complete EP-1 validation and stale-API scan, then record
@@ -283,9 +290,9 @@ rg -n 'CanonicalTypeName|shape hash|event envelope|composeChecked' content/docs/
 Run incremental site checks after each milestone:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 node scripts/check-doc-links.mjs
 git diff --check
 ```
@@ -324,7 +331,7 @@ This check must find the new primary APIs in both reference and at least one tut
 rg -n 'buildTransducerEither|reconstituteEither|ReplayFailureReason|composeChecked' content/docs/keiki
 ```
 
-Finally, `pnpm run typecheck`, `pnpm build`, `node scripts/check-doc-links.mjs`, and
+Finally, `bun run typecheck`, `bun run build`, `node scripts/check-doc-links.mjs`, and
 `git diff --check` must exit zero. Record the reviewed SHA and any justified conceptual Decider
 allow-list in this plan's living sections for EP-7; do not update `docs/keiki-source-sync.md` here.
 
@@ -358,3 +365,5 @@ No production Haskell interface is created by this documentation work. The requi
 interface at completion is a navigable keiki section whose examples name the 0.2 public symbols,
 whose metadata contains no removed page, and whose cross-library page clearly separates keiki's
 structured replay contract from keiro's runtime error mapping.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -4,6 +4,13 @@ slug: complete-shibuya-pgmq-and-adapter-documentation
 title: "Complete shibuya pgmq and adapter documentation"
 kind: master-plan
 created_at: 2026-06-24T18:03:59Z
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Complete shibuya pgmq and adapter documentation
@@ -246,7 +253,7 @@ Compare the result against the original vision.
 - EP-4 completed on 2026-06-24. The integrations section now includes a shared shibuya adapter
   comparison plus source-checked PGMQ, Kiroku, Kafka, and Message DB adapter pages. The PGMQ adapter
   source-sync pointer was promoted from bootstrap stub to content-authored status at upstream
-  `71a7b82`. Validation passed with `pnpm run typecheck`, `pnpm build`,
+  `71a7b82`. Validation passed with `bun run typecheck`, `bun run build`,
   `node scripts/check-doc-links.mjs`, and the stale-stub scan over integrations and shibuya docs.
 - EP-5 completed on 2026-06-24. Final reconciliation added source-sync pointers for shibuya,
   shibuya-kiroku-adapter, shibuya-kafka-adapter, and shibuya-message-db-adapter; confirmed pgmq-hs
@@ -255,9 +262,11 @@ Compare the result against the original vision.
   integrations. Final source pins are shibuya `3f276ee`, pgmq-hs `973c107`,
   shibuya-pgmq-adapter `71a7b82`, shibuya-kiroku-adapter/Kiroku `9a52aa6`,
   shibuya-kafka-adapter `424a4c2`, and shibuya-message-db-adapter `4307255`. Final validation
-  passed with `pnpm run typecheck`, `pnpm run lint`, `pnpm run format:check`, `pnpm build`,
+  passed with `bun run typecheck`, `bun run lint`, `bun run format:check`, `bun run build`,
   `node scripts/check-doc-links.mjs`, stale-claim scans, and meta coverage checks.
 
 The master plan is complete. `/docs/shibuya`, `/docs/pgmq`, and `/docs/integrations` now read as a
 source-checked documentation set for shibuya core and operations, pgmq-hs as the PostgreSQL queue
 substrate, and the first-party shibuya adapter family.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

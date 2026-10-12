@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-01T17:36:29Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
 intention: intention_01ksx5mf7qe2ht659e4kr9w2t0
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro operations, FAQ, cookbook, and docs finalization
@@ -44,9 +51,9 @@ on `/docs/keiro` can:
   (no "coming soon" placeholders) and every sidebar section in a sensible reading order.
 
 You can see it working by running the docs site from the repo root
-`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`: `pnpm build` exits 0 and prerenders every
-keiro page with **zero** crawler warnings; `pnpm lint:links` reports no broken internal links;
-and browsing `http://localhost:3000/docs/keiro` (via `pnpm dev`, or `pnpm build && pnpm start`)
+`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`: `bun run build` exits 0 and prerenders every
+keiro page with **zero** crawler warnings; `bun run lint:links` reports no broken internal links;
+and browsing `http://localhost:3000/docs/keiro` (via `bun run dev`, or `bun run build && bun run start`)
 shows the keiro tree with the operations pages, the FAQ rendering as expandable accordions, and
 every section index showing cards.
 
@@ -68,9 +75,9 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] M0. Preconditions verified — Node 22.22.3 + pnpm 11.4.0 on PATH, `node_modules` present, EP-7
+- [x] M0. Preconditions verified — Node 22.22.3 + legacy-manager 11.4.0 on PATH, `node_modules` present, EP-7
       Complete (the `content/docs/keiro/` tree, `docs/keiro-source-sync.md`, and the
-      getting-started/overview pages exist), baseline `pnpm typecheck` and `pnpm build` clean
+      getting-started/overview pages exist), baseline `bun run typecheck` and `bun run build` clean
       (zero crawler warnings). _(2026-06-01)_
 - [x] M1. Telemetry pages authored — `how-to/enable-opentelemetry.mdx` and
       `reference/telemetry.mdx`; their slugs appended to the how-to and reference `meta.json`.
@@ -92,8 +99,8 @@ This section must always reflect the actual current state of the work.
       (tutorials, how-to, reference, explanation, cookbook) replaced with grouped `<Cards>`; the
       four walkthrough-hub `<Card href>`s added; six parked landing links upgraded to precise slugs;
       `docs/keiro-source-sync.md` "most-coupled pages" list expanded to the reference + walkthrough +
-      conceptual anchors. Gate green: `pnpm typecheck` clean, `pnpm build` 0 crawler warnings,
-      `pnpm lint:links` exit 0 (148 files), search index carries the new pages, no relative links,
+      conceptual anchors. Gate green: `bun run typecheck` clean, `bun run build` 0 crawler warnings,
+      `bun run lint:links` exit 0 (148 files), search index carries the new pages, no relative links,
       `Keiro.Workflow` appears only as roadmap in the FAQ. _(2026-06-01)_
 
 
@@ -110,8 +117,8 @@ implementation. Provide concise evidence.
   (projection), `reference/event-stream-and-stream.mdx` (snapshot), `reference/router.mdx`
   (process-manager + projection), `reference/command.mdx` (projection). All six upgraded to the
   precise slug now that the target pages exist. Evidence: post-edit `grep` returns no
-  landing-only links that name a page; `pnpm lint:links` clean over 148 files.
-- **`linkinator` scans 0 links on the built SPA — expected, not a failure.** `pnpm lint:links`
+  landing-only links that name a page; `bun run lint:links` clean over 148 files.
+- **`linkinator` scans 0 links on the built SPA — expected, not a failure.** `bun run lint:links`
   exits 0 with `Successfully scanned 0 links`, because the prerendered HTML carries no static `<a>`
   tags (the SPA renders links client-side). The meaningful in-content check is
   `scripts/check-doc-links.mjs` (the source scan), which validated 148 files. Evidence: the
@@ -174,7 +181,7 @@ Record every decision made while working on the plan.
   `./` or `../`.
   Rationale: relative MDX links resolve wrong in the static SPA and trip the prerender crawler —
   a hard-won kiroku lesson recorded in `docs/plans/5`'s Surprises & Discoveries; the
-  `pnpm lint:links` gate (`scripts/check-doc-links.mjs`) treats an absolute non-`/docs` internal
+  `bun run lint:links` gate (`scripts/check-doc-links.mjs`) treats an absolute non-`/docs` internal
   link as broken and resolves relative links against the file directory.
   Date: 2026-06-01
 
@@ -201,8 +208,8 @@ Compare the result against the original purpose.
   cards now link to their tours; section `meta.json` files ordered into a deliberate reading order;
   six parked forward-links upgraded to precise slugs; the source-sync "most-coupled pages" list
   expanded.
-- **Gate green:** `pnpm typecheck` clean; `pnpm build` prerenders the whole tree with **zero**
-  crawler warnings; `pnpm lint:links` exits 0 over 148 files; the search index carries the new
+- **Gate green:** `bun run typecheck` clean; `bun run build` prerenders the whole tree with **zero**
+  crawler warnings; `bun run lint:links` exits 0 over 148 files; the search index carries the new
   pages; no relative links; every Haskell identifier cross-checked against keiro `3f5dc9c`; the v2
   durable-workflow engine appears only as roadmap in the FAQ.
 - **Gaps / honest notes:** the telemetry reference states plainly that instrumentation is partial
@@ -220,9 +227,9 @@ the working tree can complete the work.
 You author MDX content files under `content/docs/keiro/` in **this** repository,
 `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`. The site is a **fumadocs** documentation
 app (fumadocs-ui 16.9.3, fumadocs-mdx 15.0.10) built on **TanStack Start as a static SPA**
-(React 19 + Vite, TypeScript), built and served with **pnpm** on **Node 22** inside the Nix dev
-shell (`nix develop`). `pnpm dev` runs `vite dev`; `pnpm build` runs `vite build` and emits a
-static SPA under `.output/public`; `pnpm start` serves it.
+(React 19 + Vite, TypeScript), built and served with **legacy package manager** on **Node 22** inside the Nix dev
+shell (`nix develop`). `bun run dev` runs `vite dev`; `bun run build` runs `vite build` and emits a
+static SPA under `.output/public`; `bun run start` serves it.
 
 Each directory under `content/docs/` has a `meta.json` whose `pages` array lists the child page
 slugs (a *slug* is the filename without its `.mdx` extension, or a subdirectory name) **in
@@ -240,15 +247,15 @@ The MDX components you will use — `Callout`, `Cards`, `Card`, `Steps`, `Tabs`,
 These commands, run from the repo root, are the gate this plan must pass. They are defined in
 `package.json`:
 
-- `pnpm typecheck` runs `fumadocs-mdx && tsc --noEmit`. The `fumadocs-mdx` step regenerates the
+- `bun run typecheck` runs `fumadocs-mdx && tsc --noEmit`. The `fumadocs-mdx` step regenerates the
   `.source/` collection so newly added pages are picked up; `tsc --noEmit` type-checks the app.
   Expected tail: no errors (a silent exit, or a final `tsc` line with no diagnostics).
-- `pnpm build` runs `vite build`. It prerenders every doc route. Success ends with a Vite
+- `bun run build` runs `vite build`. It prerenders every doc route. Success ends with a Vite
   `built in <N>s` line and writes `.output/public`. **Failure modes to watch:** a line containing
   `[unhandledRejection]` or `Failed to fetch` means a page links to a route that does not exist
   (the kiroku precedent: relative `./` links produce exactly these crawler warnings). Zero such
   lines is an acceptance criterion.
-- `pnpm lint:links` runs `node scripts/check-doc-links.mjs && linkinator .output/public ...`.
+- `bun run lint:links` runs `node scripts/check-doc-links.mjs && linkinator .output/public ...`.
   The first script (read it: `scripts/check-doc-links.mjs`) scans every `content/docs/**/*.mdx`
   for internal links and fails (exit 1, printing `✗ N broken internal doc link(s)`) if any points
   at a page that does not exist on disk; on success it prints
@@ -258,7 +265,7 @@ These commands, run from the repo root, are the gate this plan must pass. They a
   own directory. The `linkinator` step then crawls the built SPA. Because the SPA's prerendered
   HTML has zero static `<a>` tags (the script's own header comment explains this), the source
   scan is the meaningful check for in-content links.
-- `pnpm check` runs the full chain: `typecheck`, `lint` (oxlint), `format:check` (oxfmt), `build`,
+- `bun run check` runs the full chain: `typecheck`, `lint` (oxlint), `format:check` (oxfmt), `build`,
   then `lint:links`. You may run the whole chain or the individual steps.
 
 The `_templates/` directory is skipped by the link checker (its placeholder links like
@@ -458,10 +465,10 @@ The pages this plan creates, all under `content/docs/keiro/`:
 
 ### Milestones
 
-- **M0 — Preconditions.** Confirm Node 22 + pnpm are on PATH, `node_modules` is present, and
+- **M0 — Preconditions.** Confirm Node 22 + legacy package manager are on PATH, `node_modules` is present, and
   **EP-7 is Complete** (the `content/docs/keiro/` tree exists with section `meta.json` files,
   `docs/keiro-source-sync.md` exists, and the `/docs/keiro` overview + getting-started pages
-  exist). At the end: a baseline `pnpm typecheck` and `pnpm build` both succeed before you add a
+  exist). At the end: a baseline `bun run typecheck` and `bun run build` both succeed before you add a
   page. Acceptance: both commands exit 0 on the unmodified tree.
 
 - **M1 — Telemetry (how-to + reference).** Author `how-to/enable-opentelemetry.mdx` (configure a
@@ -519,8 +526,8 @@ The pages this plan creates, all under `content/docs/keiro/`:
   callout with a real `<Cards>` index of that section's pages (tutorials, how-to, reference,
   explanation, cookbook, and the walkthrough hub); (c) update `docs/keiro-source-sync.md`'s
   "most-coupled pages" list to cover the pages the whole keiro set added; (d) run the gate:
-  `pnpm typecheck` clean, `pnpm build` exits 0 prerendering all keiro pages with **zero**
-  crawler/`unhandledRejection` warnings, `pnpm lint:links` passes (no broken or relative links in
+  `bun run typecheck` clean, `bun run build` exits 0 prerendering all keiro pages with **zero**
+  crawler/`unhandledRejection` warnings, `bun run lint:links` passes (no broken or relative links in
   `content/docs/keiro/**`), the search index carries the new pages, and the snippet cross-check
   confirms every Haskell name used across the keiro tree exists at `3f5dc9c`. Acceptance: see
   Validation and Acceptance.
@@ -529,21 +536,21 @@ The pages this plan creates, all under `content/docs/keiro/`:
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The toolchain is **pnpm** on **Node 22** inside the Nix dev shell.
+stated otherwise. The toolchain is **legacy package manager** on **Node 22** inside the Nix dev shell.
 
 ### M0 — Preconditions
 
 ```bash
-nix develop                       # enter the dev shell (pnpm + Node 22)
+nix develop                       # enter the dev shell (legacy package manager + Node 22)
 
 # EP-7 must be Complete: these must all exist.
 test -d content/docs/keiro && echo "keiro tree present"
 test -f docs/keiro-source-sync.md && echo "source-sync pointer present"
 test -f content/docs/keiro/index.mdx && echo "overview present"
 
-pnpm install
-pnpm typecheck
-pnpm build
+bun install
+bun run typecheck
+bun run build
 ```
 
 Expected (abridged):
@@ -596,7 +603,7 @@ grep -nE "keiro_stream_name|keiro_retry_attempt|keiro_events_appended|messaging_
   /Users/shinzui/Keikaku/bokuno/keiro/keiro/src/Keiro/Telemetry.hs
 ```
 
-Expected: each name prints at least one matching line. Then `pnpm typecheck && pnpm build`.
+Expected: each name prints at least one matching line. Then `bun run typecheck && bun run build`.
 
 ### M2 — Migrations pages
 
@@ -634,7 +641,7 @@ grep -rnE "CREATE TABLE IF NOT EXISTS keiro_(snapshots|read_models|timers|outbox
 ```
 
 Expected: the migration functions print; all five `CREATE TABLE` lines print. Then
-`pnpm typecheck && pnpm build`.
+`bun run typecheck && bun run build`.
 
 ### M3 — Testing how-to
 
@@ -656,7 +663,7 @@ grep -nE "withMigratedSuite|withFreshStore|withFreshStores2|data Fixture" \
   /Users/shinzui/Keikaku/bokuno/keiro/keiro-test-support/src/Keiro/Test/Postgres.hs
 ```
 
-Expected: each name prints. Then `pnpm typecheck && pnpm build`.
+Expected: each name prints. Then `bun run typecheck && bun run build`.
 
 ### M4 — Cookbook recipes
 
@@ -668,13 +675,13 @@ Create `content/docs/keiro/cookbook/idempotent-fan-out.mdx` and
 { "title": "Cookbook", "pages": ["index", "idempotent-fan-out", "timeout-saga"] }
 ```
 
-Then `pnpm typecheck && pnpm build`.
+Then `bun run typecheck && bun run build`.
 
 ### M5 — FAQ
 
 Overwrite `content/docs/keiro/faq.mdx`. Remove the "coming soon" `<Callout>`; author the real
 `<Accordions>` block from the M5 question list. No `meta.json` change is needed (`faq` is already
-listed in `content/docs/keiro/meta.json`). Then `pnpm typecheck && pnpm build`, and confirm the
+listed in `content/docs/keiro/meta.json`). Then `bun run typecheck && bun run build`, and confirm the
 stub callout is gone:
 
 ```bash
@@ -740,9 +747,9 @@ migrations-and-schema, command-cycle, integration, read-side, and workflow refer
 Run the full gate:
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm lint:links
+bun run typecheck
+bun run build
+bun run lint:links
 ```
 
 Expected (abridged):
@@ -752,7 +759,7 @@ Expected (abridged):
 ✓ doc links OK — checked <N> files, no broken internal links.
 ```
 
-The `pnpm build` output must contain **no** `[unhandledRejection]` or `Failed to fetch` line.
+The `bun run build` output must contain **no** `[unhandledRejection]` or `Failed to fetch` line.
 Finally, snippet cross-check — every Haskell name used anywhere in the keiro tree must exist in
 the source at `3f5dc9c`:
 
@@ -772,8 +779,8 @@ is authoritative).
 
 Exercise the system and observe specific behaviors:
 
-1. **Original-content pages build and render.** After M1–M5, `pnpm typecheck` and `pnpm build`
-   exit 0. Browsing `http://localhost:3000/docs/keiro` (via `pnpm dev`) shows the two telemetry
+1. **Original-content pages build and render.** After M1–M5, `bun run typecheck` and `bun run build`
+   exit 0. Browsing `http://localhost:3000/docs/keiro` (via `bun run dev`) shows the two telemetry
    pages, the two migrations pages, the testing how-to, the two cookbook recipes, and the FAQ in
    the sidebar; each opens without a 404 and shows its frontmatter title.
 
@@ -786,14 +793,14 @@ Exercise the system and observe specific behaviors:
    `how-to`, `reference`, `explanation`, `cookbook`, and `walkthrough` `index.mdx` contains a
    `<Cards>` block, and each card link resolves.
 
-4. **The whole keiro tree builds with zero crawler warnings.** `pnpm build` exits 0 and its
+4. **The whole keiro tree builds with zero crawler warnings.** `bun run build` exits 0 and its
    output contains no `[unhandledRejection]` and no `Failed to fetch` line. Evidence to capture:
 
    ```text
    ✓ built in <N>s
    ```
 
-5. **Link-check passes.** `pnpm lint:links` prints
+5. **Link-check passes.** `bun run lint:links` prints
    `✓ doc links OK — checked <N> files, no broken internal links.` and the `linkinator` crawl
    reports no broken links. There are no relative `./`/`../` links anywhere under
    `content/docs/keiro/**`:
@@ -804,7 +811,7 @@ Exercise the system and observe specific behaviors:
 
    Expected: `no relative links`.
 
-6. **Search index carries the new pages.** After `pnpm build`, the generated search index
+6. **Search index carries the new pages.** After `bun run build`, the generated search index
    includes the operations/FAQ/cookbook pages (e.g. searching the running site for "OpenTelemetry"
    or "keiro-migrate" returns the new pages). Verify by browsing and using the site search, or by
    confirming the pages appear in the generated `.source/`/search artifact.
@@ -823,8 +830,8 @@ Exercise the system and observe specific behaviors:
 
 ## Idempotence and Recovery
 
-All steps are file authoring and are safe to repeat. Re-running `pnpm typecheck`/`pnpm build`/
-`pnpm lint:links` is idempotent. Editing or recreating an `.mdx`/`meta.json` file overwrites it;
+All steps are file authoring and are safe to repeat. Re-running `bun run typecheck`/`bun run build`/
+`bun run lint:links` is idempotent. Editing or recreating an `.mdx`/`meta.json` file overwrites it;
 re-running a milestone simply rewrites the same files. No database, no keiro source, and no other
 plan's pages are modified (the keiro tree is opened read-only for cross-checking; `meta.json`
 edits in M6 reorder but never delete sibling entries).
@@ -833,9 +840,9 @@ Recovery:
 - If a page breaks the build, the error names the offending `.mdx` file and line; the usual causes
   are an untagged code fence, a stray `<` in prose, or a link to a non-existent route. Fix and
   rebuild.
-- If `pnpm lint:links` fails, it prints each broken `file -> target`; fix the link to an existing
+- If `bun run lint:links` fails, it prints each broken `file -> target`; fix the link to an existing
   `/docs/keiro/...` page (absolute, never relative) and re-run.
-- If `pnpm build` emits `[unhandledRejection]`/`Failed to fetch`, a link points at a route that
+- If `bun run build` emits `[unhandledRejection]`/`Failed to fetch`, a link points at a route that
   does not exist (most often a relative `./` link); replace it with an absolute `/docs/keiro/...`
   path.
 - If the M6 precondition check shows a missing Phase-2 walkthrough subdir or an `["index"]`-only
@@ -868,10 +875,10 @@ Recovery:
 - fumadocs (`fumadocs-core`/`fumadocs-ui` 16.9.3, `fumadocs-mdx` 15.0.10) — MDX + sidebar from
   `meta.json`; components registered globally in `src/components/mdx.tsx` (`Callout`, `Cards`,
   `Card`, `Steps`, `Tabs`, `TypeTable`, `Accordions`, `Accordion`) — use bare, no imports.
-- TanStack Start + Vite — `pnpm dev`/`pnpm build`/`pnpm start`; `pnpm typecheck` =
-  `fumadocs-mdx && tsc --noEmit`; `pnpm lint:links` = `node scripts/check-doc-links.mjs &&
-  linkinator .output/public ...`; `pnpm check` runs the whole chain.
-- pnpm + Node 22 inside the Nix dev shell (`nix develop`).
+- TanStack Start + Vite — `bun run dev`/`bun run build`/`bun run start`; `bun run typecheck` =
+  `fumadocs-mdx && tsc --noEmit`; `bun run lint:links` = `node scripts/check-doc-links.mjs &&
+  linkinator .output/public ...`; `bun run check` runs the whole chain.
+- legacy package manager + Node 22 inside the Nix dev shell (`nix develop`).
 
 ### Files this plan CREATES / OWNS (all under `content/docs/keiro/`)
 
@@ -924,11 +931,13 @@ Recovery:
 
 ### Postconditions that must hold at the end
 
-- Every file listed above exists; `pnpm typecheck`, `pnpm build`, and `pnpm lint:links` all exit
+- Every file listed above exists; `bun run typecheck`, `bun run build`, and `bun run lint:links` all exit
   0 with the whole keiro tree present.
-- `pnpm build` emits no `[unhandledRejection]`/`Failed to fetch` line (zero crawler warnings).
+- `bun run build` emits no `[unhandledRejection]`/`Failed to fetch` line (zero crawler warnings).
 - No section `index.mdx` under `content/docs/keiro/` contains "coming soon"; each carries a
   `<Cards>` index whose links resolve.
 - Every Haskell identifier quoted in a keiro snippet exists in the keiro source at `3f5dc9c`; no
   snippet presents the v2 durable-workflow engine as a shipped API.
 - The search index includes the operations, FAQ, and cookbook pages.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

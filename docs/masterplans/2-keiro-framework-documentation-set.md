@@ -4,6 +4,13 @@ slug: keiro-framework-documentation-set
 title: "Keiro framework documentation set"
 kind: master-plan
 created_at: 2026-06-01T17:36:17Z
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro framework documentation set
@@ -75,8 +82,8 @@ A single worked example — the **`jitsurei`** package shipped in the keiro repo
 every conceptual page links to the exact `jitsurei/src/Jitsurei/*.hs` module that
 demonstrates the feature and the `just jitsurei-*` target that runs it.
 
-You can see the result by running the docs dev server (`pnpm dev`, i.e. `vite dev`) — or a
-production build with `pnpm build && pnpm start` — and browsing `http://localhost:3000/docs/keiro`:
+You can see the result by running the docs dev server (`bun run dev`, i.e. `vite dev`) — or a
+production build with `bun run build && bun run start` — and browsing `http://localhost:3000/docs/keiro`:
 the keiro tree appears in the sidebar with the page order defined by the `meta.json`
 files; Haskell snippets render in PragmataPro with ligatures; and `mermaid` diagrams
 render interactively.
@@ -176,7 +183,7 @@ property Decision (disjoint walkthrough subdirs) established for Phase 2. A dedi
 warranted for the same reason EP-12 owned finalization in Phase 3: the walkthrough hub
 (`walkthrough/index.mdx`) and `walkthrough/meta.json` are shared artifacts that all six
 authoring plans touch, so they need a single owner for the final ordering pass, the two new hub
-`<Card>`s (foundation, operations), and the post-expansion `pnpm build` + `lint:links` gate.
+`<Card>`s (foundation, operations), and the post-expansion `bun run build` + `lint:links` gate.
 
 Seven Phase-4 plans pushes the initiative to thirteen child plans total, above the
 two-to-seven single-phase guidance — which is exactly why the work is **phased**: Phase 4 is its
@@ -345,7 +352,7 @@ touch another subdir or the shared `walkthrough/index.mdx` / `walkthrough/meta.j
 the post-expansion build + link-check. Per the hard-won crawler lesson (see Surprises), EP-17 and
 EP-18 create their subdir's `00-start-here.mdx` and real chapters and append the folder name to
 `walkthrough/meta.json` so the tour is sidebar-navigable, but they do **not** add their hub
-`<Card href>` — EP-19 does, once both tours exist, to keep every intermediate `pnpm build` clean.
+`<Card href>` — EP-19 does, once both tours exist, to keep every intermediate `bun run build` clean.
 
 **3. The `jitsurei` worked-example module map.** EP-7 introduces the jitsurei package and
 publishes the canonical feature→module→target map; every other plan links to the **same**
@@ -430,7 +437,7 @@ Progress; this is the at-a-glance roll-up. Check items as the child plans' miles
 - [x] EP-16: Integration tour deepened — `Keiro.Inbox` (dedupe policies, schema), `Keiro.Outbox` (claim CTE, ordering predicates, drain/backoff/dead-letter), and the Kafka mappings covered in full. _(2026-06-02; 6 chapters)_
 - [x] EP-17: Foundation tour authored (new `walkthrough/foundation/`) — `EventStream`/`Stream`, `Codec`, and the keiki `SymTransducer`/`step` core including the **symbolic register** model. _(2026-06-02; 6 chapters)_
 - [x] EP-18: Operations tour authored (new `walkthrough/operations/`) — `Keiro.Telemetry` span helpers and the `Keiro.Migrations` runner. _(2026-06-02; 4 chapters)_
-- [x] EP-19: Walkthrough finalization — two new hub `<Card>`s (foundation, operations), `walkthrough/meta.json` ordered, whole-tree `pnpm build` + `lint:links` gate green over the expanded tree. _(2026-06-02; gate green over 166 files)_
+- [x] EP-19: Walkthrough finalization — two new hub `<Card>`s (foundation, operations), `walkthrough/meta.json` ordered, whole-tree `bun run build` + `lint:links` gate green over the expanded tree. _(2026-06-02; gate green over 166 files)_
 
 
 ## Surprises & Discoveries
@@ -488,7 +495,7 @@ that affect more than one plan.)
 - **The walkthrough hub must be created by EP-7 but finalized by EP-12, because the prerender
   crawler follows `<Card href>`s.** (Discovered implementing EP-7, 2026-06-01.) EP-7 builds
   `content/docs/keiro/walkthrough/index.mdx`, the hub. If its `<Cards>` link to the four tours'
-  `…/00-start-here` pages (authored by EP-8 … EP-11) before those pages exist, `pnpm build` exits 0
+  `…/00-start-here` pages (authored by EP-8 … EP-11) before those pages exist, `bun run build` exits 0
   **but** the crawler emits `[unhandledRejection] … Failed to fetch …/00-start-here` for each — a
   link-check failure. **Resolution / contract reaffirmed:** EP-7 ships the hub `<Cards>` *without*
   `href`s and sets `walkthrough/meta.json` to `["index"]`; this matches Integration Point #2.
@@ -517,7 +524,7 @@ that affect more than one plan.)
     (Integration Point #5), so EP-8's parked link to it can now be resolved by EP-12.
   - **(Resolved, implementing EP-12, 2026-06-01.)** EP-12's finalization pass added all four hub
     `<Card href>`s (`command-cycle`, `read-side`, `workflow`, `integration` → each tour's
-    `00-start-here`) and ran the `walkthrough/meta.json` ordering pass. `pnpm build` re-ran with the
+    `00-start-here`) and ran the `walkthrough/meta.json` ordering pass. `bun run build` re-ran with the
     hrefs present and emitted **zero** crawler warnings (all four tours exist), closing the
     create-hub-without-hrefs contract this Surprise opened in EP-7.
 
@@ -529,7 +536,7 @@ that affect more than one plan.)
   `/docs/keiro/reference` and names the target page in prose. **Bearing:** EP-9, EP-10, and EP-11
   author those reference pages; **EP-12's finalization pass must upgrade these landing links to the
   precise slugs** (grep the keiro tree for `](/docs/keiro/reference)` occurrences that name a
-  specific page in nearby prose). Evidence: EP-8 `pnpm build` clean + `pnpm lint:links` 97 files, no
+  specific page in nearby prose). Evidence: EP-8 `bun run build` clean + `bun run lint:links` 97 files, no
   broken internal links.
   - **(Update, implementing EP-10, 2026-06-01.)** EP-10 created `reference/process-manager` (and
     `reference/timers`), so EP-8's parked landing link to it can now be upgraded by EP-12. EP-10
@@ -538,7 +545,7 @@ that affect more than one plan.)
     links to **`/docs/keiro/reference/router`**, because EP-8 shipped the router as a *reference*
     page — there is **no** `explanation/the-content-based-router` page (despite the child plan's
     prose suggesting that slug). EP-12 should not try to "upgrade" those router links to a
-    non-existent explanation page. Evidence: `reference/meta.json` lists `router`; `pnpm lint:links`
+    non-existent explanation page. Evidence: `reference/meta.json` lists `router`; `bun run lint:links`
     clean over 125 files including the EP-10 pages.
   - **(Resolved, implementing EP-12, 2026-06-01.)** EP-12 found **six** landing-only
     `](/docs/keiro/reference)` links that named a now-shipped page in nearby prose and upgraded each
@@ -548,7 +555,7 @@ that affect more than one plan.)
     `reference/event-stream-and-stream` (→ `reference/snapshot`), `reference/router`
     (→ `reference/process-manager` + `reference/projection`), and `reference/command`
     (→ `reference/projection`). It did **not** invent an `explanation/the-content-based-router` page,
-    per EP-10's correction above. Evidence: `pnpm lint:links` clean over 148 files;
+    per EP-10's correction above. Evidence: `bun run lint:links` clean over 148 files;
     `grep -rn "](/docs/keiro/reference)" content/docs/keiro` now returns nothing (all six upgraded).
 
 - **Phase-4 parallel authoring: chapter renumbering broke inbound links from the Phase-1–3 pages
@@ -691,8 +698,8 @@ A reader landing on `/docs/keiro` now finds a full Diátaxis set under `content/
   whole-tree IA finalization (grouped `<Cards>` on every section landing, ordered `meta.json`, the
   walkthrough hub wired up, six parked links upgraded).
 
-**Verification at completion:** `pnpm typecheck` clean; `pnpm build` prerenders the entire tree with
-**zero** crawler / `unhandledRejection` warnings; `pnpm lint:links` exits 0 over **148** files with
+**Verification at completion:** `bun run typecheck` clean; `bun run build` prerenders the entire tree with
+**zero** crawler / `unhandledRejection` warnings; `bun run lint:links` exits 0 over **148** files with
 no broken or relative internal links; the search index carries every new page. Every Haskell snippet
 was authored against the shipped source at the pinned commit `3f5dc9c` (keiro 0.1.0.0); the planned
 v2 durable-execution engine (`Keiro.Workflow`) appears only as clearly-labelled roadmap in the FAQ.
@@ -732,8 +739,8 @@ top-level `walkthrough/meta.json` to `[index, foundation, command-cycle, read-si
 integration, operations]`, upgraded the four parked foundation forward-links to the read-side snapshot
 chapter, and swept the five inbound links the renumbering broke.
 
-**Verification at Phase-4 completion:** `pnpm typecheck` clean; `pnpm build` prerenders the entire
-expanded tree with **zero** crawler / `unhandledRejection` warnings; `pnpm lint:links` exits 0 over
+**Verification at Phase-4 completion:** `bun run typecheck` clean; `bun run build` prerenders the entire
+expanded tree with **zero** crawler / `unhandledRejection` warnings; `bun run lint:links` exits 0 over
 **166** files (up from the Phase-3 baseline of 148) with no broken or relative internal links; no v2
 `Keiro.Workflow` API is presented as shipped. Every Haskell/SQL snippet was cross-checked against the
 pinned source (`3f5dc9c`; telemetry tracks `94c85e2`) and the keiki dependency.
@@ -766,3 +773,5 @@ ExecPlans were created under `docs/plans/13` … `docs/plans/19` and fleshed out
 only content reopened. Why: the walkthroughs are the artifact a would-be contributor reads to trust
 the system, and at four thin chapters per tour they sampled rather than explained — closing that gap
 is worth tracking as its own implementation wave.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -117,9 +117,7 @@ if (process.argv.includes("--refresh")) refresh()
 else {
   const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"))
   if (readFileSync(pagePath, "utf8") !== render(snapshot)) {
-    console.error(
-      "The glossary differs from its canonical snapshot. Run pnpm run sync:terminology.",
-    )
+    console.error("The glossary differs from its canonical snapshot. Run bun run sync:terminology.")
     process.exitCode = 1
   } else console.log(`Glossary matches ${snapshot.terms.length} canonical terms.`)
 }

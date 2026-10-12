@@ -5,6 +5,13 @@ title: "Keiki transducer core and authoring aggregates"
 kind: exec-plan
 created_at: 2026-06-07T04:53:26Z
 master_plan: "docs/masterplans/3-keiki-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiki transducer core and authoring aggregates
@@ -69,8 +76,8 @@ it. After this slice exists, a reader can:
   behaviour.
 
 You can see the result by running the docs dev server from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `pnpm dev` (which runs `vite dev`),
-or a production build with `pnpm build`. Browsing `http://localhost:3000/docs/keiki` shows the
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `bun run dev` (which runs `vite dev`),
+or a production build with `bun run build`. Browsing `http://localhost:3000/docs/keiki` shows the
 new pages in the sidebar: two model-owner explanation essays plus a third guards/emit essay,
 four reference pages (core, builder, operators, slots), five how-to guides, one tutorial, and a
 ten-file `walkthrough/core-and-builder/` tour (a `00-start-here` plus nine numbered chapters).
@@ -91,7 +98,7 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 This section must always reflect the actual current state of the work.
 
 - [x] M0. Preconditions verified (2026-06-06) — EP-20 Complete; keiki source readable at `344c4ca`;
-      section subdirs exist; baseline `pnpm build` clean; `walkthrough/core-and-builder/` subdir created.
+      section subdirs exist; baseline `bun run build` clean; `walkthrough/core-and-builder/` subdir created.
 - [x] M1. Model-owner explanation pages + reference pages authored (2026-06-06)
       (`explanation/the-symtransducer.mdx` with EmailDelivery `mermaid`, `explanation/registers-vs-state.mdx`,
       `explanation/guards-and-emit.mdx`; `reference/core.mdx`, `reference/builder.mdx`,
@@ -103,8 +110,8 @@ This section must always reflect the actual current state of the work.
 - [x] M3. Walkthrough authored (2026-06-06) (`walkthrough/core-and-builder/` subdir + its `meta.json`:
       `00-start-here.mdx` + `01-internal-slots` … `09-operators-and-namespacing`).
 - [x] M4. meta.json appends done (section `meta.json`s + `walkthrough/core-and-builder/meta.json`
-      + `"core-and-builder"` appended to `walkthrough/meta.json`); full `pnpm build` exits 0 with
-      zero crawler warnings; `pnpm lint:links` exits 0 (226 files); Haskell-name audit passes
+      + `"core-and-builder"` appended to `walkthrough/meta.json`); full `bun run build` exits 0 with
+      zero crawler warnings; `bun run lint:links` exits 0 (226 files); Haskell-name audit passes
       (all identifiers found in source). (2026-06-06)
 
 
@@ -164,7 +171,7 @@ Compare the result against the original purpose.
 canonical model-owner pages `the-symtransducer` + `registers-vs-state`, plus `guards-and-emit`),
 four reference pages (`core`, `builder`, `operators`, `slots`), four how-tos, one tutorial
 (`a-multi-command-lifecycle`, OrderCart), and the ten-file `walkthrough/core-and-builder/` source
-tour. The whole keiki tree builds clean (`pnpm build` exit 0, zero crawler warnings), and link-check
+tour. The whole keiki tree builds clean (`bun run build` exit 0, zero crawler warnings), and link-check
 passes (226 files). Every Haskell identifier used was audited against the pinned source `344c4ca`.
 
 **Surprises.** (1) A `<Card description="… slot @\"name\" …">` with backslash-escaped quotes broke
@@ -191,7 +198,7 @@ snippet must match the real source transcribed below.
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is a **fumadocs**
 documentation site (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static
 single-page app** (React + MDX + TypeScript, bundled with **Vite**), built and served with
-**pnpm** on **Node 22**. `pnpm dev` runs `vite dev`; `pnpm build` runs `vite build` and emits a
+**legacy package manager** on **Node 22**. `bun run dev` runs `vite dev`; `bun run build` runs `vite build` and emits a
 static SPA. Content lives under `content/docs/`. Each directory has a `meta.json` whose `pages`
 array lists child page slugs (and nested directory names) in sidebar order. A "page" is an
 `.mdx` file: YAML frontmatter (`title`, `description`) followed by an MDX body.
@@ -561,7 +568,7 @@ depends on), then the reference pages that the how-tos and walkthrough quote.
 
 ### M0 — Preconditions
 
-Confirm EP-20 is Complete and the toolchain/tree are ready. At the end you can run `pnpm build` on
+Confirm EP-20 is Complete and the toolchain/tree are ready. At the end you can run `bun run build` on
 the existing keiki tree with zero errors, and the `walkthrough/core-and-builder/` subdir exists.
 Acceptance: the build succeeds before you add any EP-21 page, `docs/keiki-source-sync.md` +
 `content/docs/keiki/index.mdx` + `content/docs/keiki/walkthrough/index.mdx` exist, and the keiki
@@ -616,7 +623,7 @@ machinery and the `IsLabel`/`slot @"name"` story. Anchor `src/Keiki/Internal/Slo
 
 At the end: all seven pages build and render; the two model-owner explanation pages are linkable
 at `/docs/keiki/explanation/the-symtransducer` and `/docs/keiki/explanation/registers-vs-state`.
-Acceptance: `pnpm build` prerenders them with no crawler warnings; the M1 slugs appended to
+Acceptance: `bun run build` prerenders them with no crawler warnings; the M1 slugs appended to
 `reference/meta.json` and `explanation/meta.json`.
 
 ### M2 — How-to guides + tutorial (5 pages)
@@ -684,7 +691,7 @@ audits. Acceptance: see Validation and Acceptance.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The toolchain is **pnpm** on **Node 22**.
+stated otherwise. The toolchain is **legacy package manager** on **Node 22**.
 
 ### M0 — Preconditions
 
@@ -704,8 +711,8 @@ mori registry show shinzui/keiki --full | grep -i path
 git -C /Users/shinzui/Keikaku/bokuno/keiki log --oneline -1   # expect 344c4ca
 
 # Install deps and confirm the existing site builds before you add pages.
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected (abridged):
@@ -741,7 +748,7 @@ Copy the matching template from `content/docs/_templates/` for each page, give i
 incremental dev server while authoring so you can eyeball each page:
 
 ```bash
-pnpm dev   # then browse http://localhost:3000/docs/keiki
+bun run dev   # then browse http://localhost:3000/docs/keiki
 ```
 
 When you copy the `code-walkthrough.mdx` template, **rewrite its `[00 — Start here](./00-start-here)`
@@ -791,10 +798,10 @@ Then run the full acceptance gate (see next section).
 Acceptance is phrased as observable behavior. Run from the repo root.
 
 ```bash
-pnpm typecheck      # expect: clean
-pnpm build          # expect: exits 0; prerenders all new keiki routes;
+bun run typecheck      # expect: clean
+bun run build          # expect: exits 0; prerenders all new keiki routes;
                     #         NO "unhandledRejection" / "Failed to fetch" crawler warnings
-pnpm lint:links     # expect: exit 0 (no broken internal links)
+bun run lint:links     # expect: exit 0 (no broken internal links)
 ```
 
 Specific things to observe:
@@ -828,8 +835,8 @@ Specific things to observe:
    in order, and navigating `00-start-here` → `01` … `09` works — **without** any hub `<Card href>`
    (that is EP-26's). No dead link is introduced.
 
-5. **Build cleanliness.** `pnpm build` shows zero `unhandledRejection`/`Failed to fetch` lines, and
-   `pnpm lint:links` exits 0. No relative `./`/`../` cross-links anywhere in the new pages:
+5. **Build cleanliness.** `bun run build` shows zero `unhandledRejection`/`Failed to fetch` lines, and
+   `bun run lint:links` exits 0. No relative `./`/`../` cross-links anywhere in the new pages:
 
    ```bash
    grep -RnE "\]\(\.\.?/" content/docs/keiki/explanation content/docs/keiki/reference \
@@ -840,7 +847,7 @@ Specific things to observe:
 
 ## Idempotence and Recovery
 
-Authoring MDX files is **additive and idempotent**: re-running the dev server or `pnpm build`
+Authoring MDX files is **additive and idempotent**: re-running the dev server or `bun run build`
 recomputes the same output, and re-writing a page from the template overwrites it cleanly. There
 is no migration and nothing destructive.
 
@@ -850,7 +857,7 @@ own slugs first. Never reorder or remove another plan's entries; only add your o
 final ordering pass). If a build fails with a crawler `Failed to fetch`, the cause is almost always
 a link (or a `<Card href>`) to a page that does not yet exist: replace it with a link to the
 existing section landing (`/docs/keiki/reference` or `/docs/keiki/explanation`) and name the
-intended target in prose, exactly as the soft-dependency rule prescribes. Re-running `pnpm build`
+intended target in prose, exactly as the soft-dependency rule prescribes. Re-running `bun run build`
 after the fix is safe.
 
 If you stop midway, the Progress checklist records which milestone is done; each milestone is
@@ -864,7 +871,7 @@ tour but is not destructive).
 ## Interfaces and Dependencies
 
 This plan consumes the keiki source at the pinned commit `344c4ca` (resolve the path with
-`mori registry show shinzui/keiki --full`) and the docs toolchain (`pnpm`, Node 22). It produces
+`mori registry show shinzui/keiki --full`) and the docs toolchain (`legacy package manager`, Node 22). It produces
 MDX pages only; no Haskell is written or compiled. Every page below is named by its full path,
 slug, scope, and source/test anchor.
 
@@ -970,3 +977,5 @@ From `Keiki.Core` (`src/Keiki/Core.hs`): `SymTransducer`, `Edge`, `RegFile`, `In
 (qualified-import shim). From `Keiki.Internal.Slots` (`src/Keiki/Internal/Slots.hs`):
 `Concat`/`Member`/`Disjoint`/`Names`, `IndexN`/`IZ`/`IS`, `HasIndexN`, the `IsLabel` instance,
 `indexNToInt`/`indexNName`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

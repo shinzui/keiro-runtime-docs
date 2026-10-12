@@ -44,9 +44,9 @@ The commands below reproduce this completed baseline; a subsequent round must su
 
 ```bash
 mori registry show shinzui/keiro-runtime-patterns --full
-nix develop -c pnpm sync:patterns --ref 2102ba1cce26d0f7ccfee775f5fc8bc60fada58e
+nix develop -c bun run sync:patterns --ref 2102ba1cce26d0f7ccfee775f5fc8bc60fada58e
 nix develop -c node scripts/runtime-patterns.mjs --check-upstream --ref 2102ba1cce26d0f7ccfee775f5fc8bc60fada58e
-nix develop -c pnpm check
+nix develop -c bun run check
 nix develop -c node agents/skills/doc-sync/status.mjs runtime-patterns --json
 ```
 

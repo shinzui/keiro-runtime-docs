@@ -5,6 +5,13 @@ title: "Keiro Runtime Docs Infrastructure and Kiroku Foundation"
 kind: master-plan
 created_at: 2026-05-30T20:05:39Z
 intention: "intention_01ksx5mf7qe2ht659e4kr9w2t0"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiro Runtime Docs Infrastructure and Kiroku Foundation
@@ -184,7 +191,7 @@ Next.js `app/` directory.
 | `src/styles/app.css` | #1 | #2 | #1 owns global styles and the stylesheet structure (Tailwind v4 + fumadocs CSS). #2 adds the PragmataPro `@font-face` declarations (pointing at the `/bokuno/fonts` OTFs — TanStack Start/Vite has no `next/font`, so fonts load via CSS `@font-face`) and the `--fd-font-mono` / code-block ligature rules. |
 | `src/lib/layout.shared.tsx` + `src/lib/source.ts` | #1 | #4 | #1 scaffolds `baseOptions()` (site title only) and the fumadocs `loader()`. #4 owns the navigation taxonomy: it adds the per-library top-level `links` (kiroku/keiro/keiki/shibuya) to `baseOptions()` and may extend the loader (icons, page-tree transforms). #1 deliberately omitted the nav links so the SPA prerenderer does not crawl pages that do not exist yet. |
 | `content/docs/**` + `meta.json` | #4 (structure) | #5 (populate) | Framework-agnostic. #4 defines the directory layout, `meta.json` navigation ordering, and the per-library Diátaxis skeleton. #5 populates the `kiroku/` subtree with real MDX and fills its `meta.json` entries, conforming to #4's structure. |
-| `package.json` scripts + `flake.nix` | #1 | #6 | #1 establishes the pnpm scripts (`dev`=`vite dev`, `build`=`vite build` → static `.output/public`, `start`=`serve .output/public`, `typecheck`=`fumadocs-mdx && tsc --noEmit`, plus `lint`=`oxlint`/`format`=`oxfmt`) and the Node 22 / pnpm dev shell in `flake.nix`. #6 adds the lint/format/link-check gates and CI wiring on top, keeping the existing script names intact. |
+| `package.json` scripts + `flake.nix` | #1 | #6 | #1 establishes the legacy package manager scripts (`dev`=`vite dev`, `build`=`vite build` → static `.output/public`, `start`=`serve .output/public`, `typecheck`=`fumadocs-mdx && tsc --noEmit`, plus `lint`=`oxlint`/`format`=`oxfmt`) and the Node 22 / bun run dev shell in `flake.nix`. #6 adds the lint/format/link-check gates and CI wiring on top, keeping the existing script names intact. |
 
 ## Progress
 
@@ -192,7 +199,7 @@ Next.js `app/` directory.
 
 - [x] #1 — Stand up a single root **TanStack Start** static-SPA fumadocs app (adapted from the fumadocs `tanstack-start-spa` example). _(2026-05-30)_
 - [x] #1 — Establish `source.config.ts`, `vite.config.ts`, `src/lib/source.ts`, `src/components/mdx.tsx`, `src/styles/app.css`, and the `src/routes/` tree. _(2026-05-30)_
-- [x] #1 — Set up pnpm + Node 22 dev shell in `flake.nix`; base `package.json` scripts (`vite dev`/`vite build`/static `serve`). _(2026-05-30)_
+- [x] #1 — Set up legacy package manager + Node 22 dev shell in `flake.nix`; base `package.json` scripts (`vite dev`/`vite build`/static `serve`). _(2026-05-30)_
 
 ### Phase 2 — Authoring primitives
 
@@ -201,11 +208,11 @@ Next.js `app/` directory.
 - [x] #3 — Port mina-ui's MermaidViewer; register the zoomable `Mermaid` component. _(2026-05-30)_
 - [x] #3 — Wire pan/zoom interaction and styling. _(2026-05-30; on-screen interactive
       verification still pending a human browser pass — see Surprises & Discoveries.)_
-- [x] #6 — Stood up the five gates (`pnpm run check`): typecheck, lint (oxlint), format-check
+- [x] #6 — Stood up the five gates (`bun run check`): typecheck, lint (oxlint), format-check
       (oxfmt, scoped via `.prettierignore`), build (static SPA), and link-check (a source-level
       `content/docs` internal-link checker + a linkinator crawl). All green. _(2026-05-30)_
-- [x] #6 — Wired CI in `.github/workflows/ci.yml` (pnpm + Node 22; oxlint/oxfmt pinned via
-      `pnpm dlx`) to run the gates on every PR and every push to `master`. _(2026-05-30)_
+- [x] #6 — Wired CI in `.github/workflows/ci.yml` (legacy package manager + Node 22; oxlint/oxfmt pinned via
+      `bun x`) to run the gates on every PR and every push to `master`. _(2026-05-30)_
 
 ### Phase 3 — Information architecture
 
@@ -258,10 +265,10 @@ Discovered during implementation of #1:
   documented capabilities (Shiki seam, MDX component registry, content tree,
   search) all carry over; only the wiring differs.
 - **`nitro@3.0.260522-beta` (the latest) breaks the Vite dev SSR worker.** With
-  it, `pnpm dev` returns 500s (`Vite environment "ssr" is unavailable`). The
-  prior beta `3.0.260429-beta` works for both `pnpm dev` and the prerendered
-  `pnpm build`, so nitro is pinned there.
-- **The static SPA output makes the deferred host decision easier.** `pnpm build`
+  it, `bun run dev` returns 500s (`Vite environment "ssr" is unavailable`). The
+  prior beta `3.0.260429-beta` works for both `bun run dev` and the prerendered
+  `bun run build`, so nitro is pinned there.
+- **The static SPA output makes the deferred host decision easier.** `bun run build`
   emits a fully static `.output/public`, deployable to any static host with no
   server — well aligned with "deploy host deferred."
 
@@ -291,7 +298,7 @@ Discovered during implementation of #4 (IA + authoring):
 
 - **Unquoted MDX frontmatter containing `": "` breaks the build.** A
   `description:` value with an embedded colon-space parsed as a nested YAML
-  mapping and failed `pnpm build` with `YAMLException: bad indentation`. **For
+  mapping and failed `bun run build` with `YAMLException: bad indentation`. **For
   #5:** quote `title`/`description` whenever they may contain `:`, `#`, `[`,
   etc. **For #6:** a cheap, high-value CI gate is to assert every
   `content/docs/**/*.mdx` parses its frontmatter.
@@ -350,10 +357,10 @@ Discovered during implementation of #5 (kiroku content):
   `src/lib/`, `src/components/`, `src/styles/app.css`, `vite.config.ts` — no
   Next.js `app/` directory.
 - **2026-05-30 — Pin `nitro@3.0.260429-beta`.** The latest nitro
-  (`3.0.260522-beta`) breaks the Vite dev SSR worker (`pnpm dev` → 500s); the
+  (`3.0.260522-beta`) breaks the Vite dev SSR worker (`bun run dev` → 500s); the
   prior beta works for both dev and the prerendered build.
-- **2026-05-30 — pnpm + Node 22 (switch from the repo's bun flake).** The
-  repo's current `flake.nix` is bun-based; the sibling fumadocs sites use pnpm +
+- **2026-05-30 — legacy package manager + Node 22 (switch from the repo's bun flake).** The
+  repo's current `flake.nix` is bun-based; the sibling fumadocs sites use legacy package manager +
   Node 22. We switch to match them so tooling, lockfiles, and CI are consistent
   across the family.
 - **2026-05-30 — PragmataPro via the `/bokuno/fonts` nix flake input.** The
@@ -378,11 +385,11 @@ Discovered during implementation of #5 (kiroku content):
 
 **Phase 1 — Scaffold (#1): complete (2026-05-30).** A single-root fumadocs
 documentation site now exists on **TanStack Start**, shipped as a **static SPA**.
-`pnpm build` prerenders `/`, `/docs`, `/docs/index.md`, and the static
-`/api/search` index into `.output/public`; `pnpm start` serves it (all routes
-200, SPA fallback for unknown paths); `pnpm dev` runs the Vite dev server; and
-`pnpm exec tsc --noEmit` is clean. The Nix dev shell reproducibly provides
-Node 22 + pnpm. All extension seams for #2–#6 are present (Shiki in
+`bun run build` prerenders `/`, `/docs`, `/docs/index.md`, and the static
+`/api/search` index into `.output/public`; `bun run start` serves it (all routes
+200, SPA fallback for unknown paths); `bun run dev` runs the Vite dev server; and
+`bun x tsc --noEmit` is clean. The Nix dev shell reproducibly provides
+Node 22 + legacy package manager. All extension seams for #2–#6 are present (Shiki in
 `source.config.ts`, fonts in `src/styles/app.css`, MDX components in
 `src/components/mdx.tsx`, nav/IA in `src/lib/layout.shared.tsx` +
 `src/lib/source.ts`, content tree in `content/docs/`).
@@ -423,14 +430,14 @@ transcription) and cross-checked against `kiroku-store/src`. 28 kiroku pages
 prerender cleanly.
 
 **Phase 2 — CI (#6): complete (2026-05-30).** Five quality gates behind
-`pnpm run check` (typecheck, lint, format-check, build, link-check) and a GitHub
+`bun run check` (typecheck, lint, format-check, build, link-check) and a GitHub
 Actions workflow running them on every PR and push to `master`. Two discoveries
 reshaped the work: (1) the client-rendered SPA's prerendered HTML has **zero
 static links**, so a static crawler is hollow — the meaningful link gate is a
 source-level `content/docs` internal-link checker (linkinator is kept as a
 secondary build-output crawl); (2) the Nix-flake CI is non-viable because the
 flake's PragmataPro input is a **local filesystem path** absent on runners, so CI
-uses the pnpm/Node-22 fallback with oxlint/oxfmt pinned via `pnpm dlx`. The build
+uses the legacy package manager/Node-22 fallback with oxlint/oxfmt pinned via `bun x`. The build
 still works on a runner because the font copy degrades gracefully.
 
 **Master plan complete (2026-05-30).** The site exists, is beautiful (PragmataPro
@@ -446,3 +453,5 @@ infrastructure. Cross-cutting carry-forwards for those plans: author against #4'
 real tree and the libraries' real source; use **absolute** doc links (the
 source-level link gate enforces this); and budget a human browser pass for the
 ligature/mermaid visual checks still outstanding from #2/#3.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

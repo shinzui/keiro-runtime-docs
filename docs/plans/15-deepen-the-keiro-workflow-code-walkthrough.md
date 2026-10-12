@@ -5,6 +5,13 @@ title: "Deepen the keiro workflow code walkthrough"
 kind: exec-plan
 created_at: 2026-06-02T04:47:38Z
 master_plan: "docs/masterplans/2-keiro-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Deepen the keiro workflow code walkthrough
@@ -49,8 +56,8 @@ reality and explains *why replay is still crash-safe* without atomicity: every w
 by a `deterministicCommandId` and pre-checked with `eventAlreadyIn`, so re-running the whole
 reaction appends nothing new.
 
-You can see the result by running the docs dev server (`pnpm dev`, i.e. `vite dev`) — or a
-production build with `pnpm build && pnpm start` — and browsing
+You can see the result by running the docs dev server (`bun run dev`, i.e. `vite dev`) — or a
+production build with `bun run build && bun run start` — and browsing
 `http://localhost:3000/docs/keiro/walkthrough/workflow`: the tour appears in the sidebar with
 more chapters than before (this plan splits the process-manager chapter into a **dispatch
 loop** chapter and a **transaction model** chapter, and splits timers into **types/schema**,
@@ -77,7 +84,7 @@ This section must always reflect the actual current state of the work.
       `keiro_timers_due_idx` present in the bootstrap migration; sibling tours
       (command-cycle, read-side) and all explanation/reference/how-to companion pages present;
       every signature/SQL block in §Context re-confirmed byte-for-byte against the source.
-      (pnpm build/lint:links not run — out of this task's scope.)
+      (bun run build/lint:links not run — out of this task's scope.)
 - [x] M1. `00-start-here.mdx` deepened _(2026-06-02)_ — overview mermaid, the separate-
       transaction thesis stated up front, honest-gaps preview, full `<Cards>` to the five
       chapters, "what this tour assumes" prose, cross-links to the command-cycle/read-side
@@ -109,12 +116,12 @@ This section must always reflect the actual current state of the work.
 - [x] M7. `walkthrough/workflow/meta.json` rewritten to the six-chapter order; the three
       obsolete files (`01-the-process-manager`, old `02-the-timer-schema`, old
       `03-the-timer-worker`) deleted with `rm`; no chapter links a deleted slug.
-- [~] M8. Validation — no-pnpm self-verification done _(2026-06-02)_: depth checklist returns
+- [~] M8. Validation — no-legacy package manager self-verification done _(2026-06-02)_: depth checklist returns
       `OK` for all 16 ProcessManager + 18 Timer symbols/SQL clauses; no relative links; no
       untagged fence openers (each file's tagged-open count equals its bare-close count); no
       "decide" labeling a cycle phase; separate-tx phrasing present in ch.02 and the atomic
       myth appears only as explicit denials; honest gaps present in 00/04/05; every snippet
-      symbol re-confirmed in the keiro source. `pnpm typecheck/build/lint:links` deferred to
+      symbol re-confirmed in the keiro source. `bun run typecheck/build/lint:links` deferred to
       EP-19's whole-tree gate (out of this task's scope).
 
 
@@ -215,7 +222,7 @@ Record every decision made while working on the plan.
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 
-**M0–M7 complete; M8 self-verified without pnpm _(2026-06-02)_.** The workflow tour now walks
+**M0–M7 complete; M8 self-verified without legacy package manager _(2026-06-02)_.** The workflow tour now walks
 `Keiro.ProcessManager` and `Keiro.Timer` end to end across six chapters:
 
 ```text
@@ -238,7 +245,7 @@ cancellation SQL, no backoff, no dead-letter, bare worker) are flagged in 00/04/
 are absolute and use the canonical cross-tour slug map; every fence is language-tagged
 (verified: per-file tagged-open count equals bare-close count).
 
-**Gaps / deferred.** This task did not run `pnpm typecheck`/`build`/`lint:links` (out of
+**Gaps / deferred.** This task did not run `bun run typecheck`/`build`/`lint:links` (out of
 scope); the whole-tree build + link gate is EP-19's. The soft-dep cross-tour targets
 (command-cycle `03`/`04`/`07`, read-side `04-projections-and-the-rebuild-path`) are authored in
 parallel; the links resolve once those tours finish landing their final slugs.
@@ -261,10 +268,10 @@ You are rewriting MDX content files under
 `content/docs/keiro/walkthrough/workflow/` in **this** repository
 (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`). The site is a **fumadocs**
 documentation app (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static SPA**
-(React 19 + MDX, TypeScript, Tailwind v4, bundled with **Vite**), built with **pnpm** on
-**Node 22**. `pnpm dev` runs `vite dev`; `pnpm build` runs `vite build` and emits a static
-SPA under `.output/public`; `pnpm typecheck` runs `fumadocs-mdx && tsc --noEmit`;
-`pnpm lint:links` checks intra-doc links. Each content directory has a `meta.json` whose
+(React 19 + MDX, TypeScript, Tailwind v4, bundled with **Vite**), built with **legacy package manager** on
+**Node 22**. `bun run dev` runs `vite dev`; `bun run build` runs `vite build` and emits a static
+SPA under `.output/public`; `bun run typecheck` runs `fumadocs-mdx && tsc --noEmit`;
+`bun run lint:links` checks intra-doc links. Each content directory has a `meta.json` whose
 `pages` array lists its child page slugs in display order. A page is an `.mdx` file with YAML
 frontmatter (`title`, `description`) followed by an MDX body.
 
@@ -777,8 +784,8 @@ Always link these modules and the `just jitsurei-*` targets so the example reads
 ## Plan of Work
 
 The work is one milestone per chapter plus preconditions and a final wiring/validation pass.
-Each chapter is independently verifiable: after authoring it, `pnpm build` and
-`pnpm lint:links` stay green and the chapter renders in the sidebar. Author in order; the
+Each chapter is independently verifiable: after authoring it, `bun run build` and
+`bun run lint:links` stay green and the chapter renders in the sidebar. Author in order; the
 chapters cross-reference each other so the back-links and next-links must be updated together
 in M7. Every page goes under `content/docs/keiro/walkthrough/workflow/`.
 
@@ -799,7 +806,7 @@ the pinned source); the reader must be able to follow the source line by line.
 
 - **M0 — Preconditions.** Confirm the toolchain runs, EP-7/EP-10 are landed (the four existing
   chapters + `meta.json` + the explanation/reference companion pages exist), the keiro source
-  is readable, and the baseline `pnpm build` + `pnpm lint:links` are green. Re-confirm every
+  is readable, and the baseline `bun run build` + `bun run lint:links` are green. Re-confirm every
   signature/SQL block in §Context against the source. Acceptance: see Concrete Steps M0.
 
 - **M1 — `00-start-here.mdx` deepened.** Rewrite the landing so it (a) names the six-chapter
@@ -847,7 +854,7 @@ the pinned source); the reader must be able to follow the source line by line.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The docs toolchain is **pnpm** on **Node 22**.
+stated otherwise. The docs toolchain is **legacy package manager** on **Node 22**.
 
 ### M0 — Preconditions
 
@@ -861,9 +868,9 @@ ls content/docs/keiro/walkthrough/command-cycle content/docs/keiro/walkthrough/r
   && echo "sibling tours present (for cross-links)"
 
 # baseline build + link-check must be green BEFORE editing
-pnpm install
-pnpm build
-pnpm lint:links
+bun install
+bun run build
+bun run lint:links
 ```
 
 Expected (abridged):
@@ -1137,9 +1144,9 @@ shared hub `walkthrough/index.mdx` (EP-19 owns the hub `<Card>`).
 ### M8 — Build, link-check, depth checklist
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm lint:links
+bun run typecheck
+bun run build
+bun run lint:links
 ```
 
 Then run the depth-checklist greps in Validation and Acceptance.
@@ -1150,9 +1157,9 @@ Then run the depth-checklist greps in Validation and Acceptance.
 Exercise the system and observe specific behaviors. Acceptance is phrased as what a reader can
 verify, not internal attributes.
 
-1. **The tour builds and link-checks clean.** From the repo root, `pnpm build` (`vite build`)
+1. **The tour builds and link-checks clean.** From the repo root, `bun run build` (`vite build`)
    exits 0 with **zero** crawler warnings (no `unhandledRejection` / `Failed to fetch` lines in
-   the log), and `pnpm lint:links` exits 0. Snippets are not compiled by the docs build; their
+   the log), and `bun run lint:links` exits 0. Snippets are not compiled by the docs build; their
    accuracy is guaranteed by transcription from the pinned source (step 6).
 
    ```text
@@ -1160,7 +1167,7 @@ verify, not internal attributes.
    ... lint:links: OK (no broken internal links)
    ```
 
-2. **Renders in the sidebar in the new order.** `pnpm dev`, open
+2. **Renders in the sidebar in the new order.** `bun run dev`, open
    `http://localhost:3000/docs/keiro/walkthrough/workflow`. The "Workflow Walkthrough" group
    shows six chapters in `meta.json` order (`00-start-here` … `05-the-timer-worker`), each
    opening without a 404 and showing its frontmatter `title`. The three old slugs
@@ -1266,8 +1273,8 @@ verify, not internal attributes.
 
 ## Idempotence and Recovery
 
-All steps are file authoring and safe to repeat. Re-running `pnpm typecheck` / `pnpm build` /
-`pnpm lint:links` / `pnpm dev` is idempotent; editing or recreating an `.mdx` or `meta.json`
+All steps are file authoring and safe to repeat. Re-running `bun run typecheck` / `bun run build` /
+`bun run lint:links` / `bun run dev` is idempotent; editing or recreating an `.mdx` or `meta.json`
 overwrites it. The `rm` of the three obsolete chapters (M7) is the only destructive step: it is
 safe because their content is fully subsumed by the new six-chapter set, and it is recoverable
 from git (`git checkout -- content/docs/keiro/walkthrough/workflow/<file>` restores a deleted
@@ -1338,9 +1345,9 @@ identical to `3f5dc9c`):**
 **Tooling / app (TypeScript, the docs site — TanStack Start static SPA):** fumadocs
 (`fumadocs-core`, `fumadocs-ui`, `fumadocs-mdx`) — MDX + sidebar from `meta.json`; built-in
 components `Callout`, `Steps`, `Tabs`, `Cards`/`Card`, `TypeTable` registered in
-`src/components/mdx.tsx` (author bare, no imports). `pnpm dev` = `vite dev`; `pnpm build` =
-`vite build` (static SPA in `.output/public`); `pnpm typecheck` = `fumadocs-mdx && tsc
---noEmit`; `pnpm lint:links` = the intra-doc link checker. pnpm + Node 22.
+`src/components/mdx.tsx` (author bare, no imports). `bun run dev` = `vite dev`; `bun run build` =
+`vite build` (static SPA in `.output/public`); `bun run typecheck` = `fumadocs-mdx && tsc
+--noEmit`; `bun run lint:links` = the intra-doc link checker. legacy package manager + Node 22.
 
 **Files this plan creates/owns (all under `content/docs/keiro/walkthrough/workflow/`):**
 
@@ -1363,7 +1370,7 @@ walkthrough subdirectory, and every page outside `walkthrough/workflow/`.
 
 **Postconditions / interfaces that must exist at the end of the plan:**
 - The six chapter files and `meta.json` exist; the three old chapter files are gone.
-- `pnpm typecheck` is clean; `pnpm build` exits 0 with zero crawler warnings; `pnpm lint:links`
+- `bun run typecheck` is clean; `bun run build` exits 0 with zero crawler warnings; `bun run lint:links`
   exits 0.
 - The workflow subtree renders in the sidebar in the new six-chapter order.
 - Every `Keiro.ProcessManager` and `Keiro.Timer` export and all three timer SQL statements are
@@ -1372,3 +1379,5 @@ walkthrough subdirectory, and every page outside `walkthrough/workflow/`.
   myth appears nowhere (Validation step 7); the honest gaps are documented (Validation step 8).
 - Every Haskell/SQL snippet uses only names present in the keiro source at the pin (Validation
   step 9); every cross-link is absolute; every fence is language-tagged.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

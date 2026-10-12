@@ -108,7 +108,7 @@ on the old version. When in doubt, ask — deletion is the one action here that 
 3. `grep -rn "<slug>" content/docs/` — repoint every inbound link, including from `faq.mdx`,
    `getting-started/`, and `integrations/`.
 4. Delete the file.
-5. `node scripts/check-doc-links.mjs && pnpm run lint:nav`.
+5. `node scripts/check-doc-links.mjs && bun run lint:nav`.
 6. Note the retirement in the pointer's range summary — a deleted page must be explainable later.
 
 ## 5. Deliberate non-goals

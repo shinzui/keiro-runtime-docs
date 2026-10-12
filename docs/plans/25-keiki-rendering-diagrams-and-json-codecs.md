@@ -5,6 +5,13 @@ title: "Keiki rendering, diagrams, and JSON codecs"
 kind: exec-plan
 created_at: 2026-06-07T04:53:26Z
 master_plan: "docs/masterplans/3-keiki-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiki rendering, diagrams, and JSON codecs
@@ -61,7 +68,7 @@ A reader who finishes this slice can:
   which `keiki-codec-json` does not have.
 
 You can see it working by running the docs dev server from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `pnpm dev`, then browsing
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `bun run dev`, then browsing
 `http://localhost:3000/docs/keiki`: the new pages appear in the sidebar under Reference,
 Explanation, How-To, and a nine-chapter code walkthrough nested under "Code Walkthrough" →
 "Rendering and codecs". Haskell snippets render with ligatures; ` ```mermaid ` fences render as
@@ -82,7 +89,7 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 This section must always reflect the actual current state of the work.
 
 - [x] M0. Preconditions verified (2026-06-06) — EP-20 Complete; toolchain present; section subdirs
-      exist; baseline `pnpm build` clean and `pnpm lint:links` exit 0; keiki source readable at
+      exist; baseline `bun run build` clean and `bun run lint:links` exit 0; keiki source readable at
       `344c4ca`; `walkthrough/rendering-and-codecs/` subdir created.
 - [x] M1. Reference + explanation pages authored (2026-06-06): `reference/render-mermaid.mdx` (with
       the `Keiki.Render.Validate` disambiguation), `reference/render-inspector.mdx`,
@@ -94,8 +101,8 @@ This section must always reflect the actual current state of the work.
       `how-to/persist-a-register-snapshot.mdx`.
 - [x] M3. Walkthrough authored (2026-06-06): `walkthrough/rendering-and-codecs/` subdir + its
       `meta.json` — `00-start-here.mdx` plus chapters `01-pretty-printer` … `09-shape-hash-and-snapshots`.
-- [x] M4. meta.json appends done; full `pnpm build` exit 0 with zero crawler warnings;
-      `pnpm lint:links` exit 0 (304 files); Haskell-name and relative-link audits pass. (2026-06-06)
+- [x] M4. meta.json appends done; full `bun run build` exit 0 with zero crawler warnings;
+      `bun run lint:links` exit 0 (304 files); Haskell-name and relative-link audits pass. (2026-06-06)
 
 
 ## Surprises & Discoveries
@@ -158,7 +165,7 @@ Compare the result against the original purpose.
 (`diagrams-from-one-declaration`, `the-regfile-codec-and-snapshots`), four how-tos
 (`render-a-mermaid-diagram`, `build-a-diagram-atlas`, `derive-a-json-event-codec`,
 `persist-a-register-snapshot`), and the ten-file `walkthrough/rendering-and-codecs/` tour. The whole
-keiki tree builds clean (`pnpm build` exit 0, zero crawler warnings) and link-checks (304 files);
+keiki tree builds clean (`bun run build` exit 0, zero crawler warnings) and link-checks (304 files);
 every quoted Haskell identifier was audited against the pinned source `344c4ca`. The guard-free-default
 pedagogy, the `Keiki.Render.Validate`-vs-`validateTransducer` disambiguation, the two-package
 aeson-free split, and the two-discriminant snapshot eligibility are documented; "sensitivity" is
@@ -179,8 +186,8 @@ must match the real source transcribed below.
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is a **fumadocs**
 documentation site (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static
 single-page app** (React + MDX + TypeScript, bundled with **Vite**), built and served with
-**pnpm**. `pnpm dev` runs the dev server; `pnpm build` builds the static SPA and prerenders every
-route; `pnpm lint:links` checks internal links and must exit 0; `pnpm typecheck` type-checks the
+**legacy package manager**. `bun run dev` runs the dev server; `bun run build` builds the static SPA and prerenders every
+route; `bun run lint:links` checks internal links and must exit 0; `bun run typecheck` type-checks the
 TypeScript. Content lives under `content/docs/`. Each directory has a `meta.json` whose `pages`
 array lists child page slugs (and nested directory names) in sidebar order. A "page" is an
 `.mdx` file: YAML frontmatter (`title`, `description`) followed by an MDX body.
@@ -581,15 +588,15 @@ milestone is independently verifiable by building the site and viewing the new p
 
 Confirm EP-20 is Complete and the toolchain/tree are ready. Resolve the keiki source path with
 `mori registry show shinzui/keiki --full` (expected: `/Users/shinzui/Keikaku/bokuno/keiki`).
-Acceptance: the existing keiki tree builds (`pnpm build` exits 0, no crawler warnings) and
-`pnpm lint:links` exits 0 *before* you add any EP-25 page, and `docs/keiki-source-sync.md` +
+Acceptance: the existing keiki tree builds (`bun run build` exits 0, no crawler warnings) and
+`bun run lint:links` exits 0 *before* you add any EP-25 page, and `docs/keiki-source-sync.md` +
 `content/docs/keiki/index.mdx` + `content/docs/keiki/walkthrough/index.mdx` exist.
 
 ### M1 — Reference + explanation set (7 pages)
 
 Author the five reference pages and the two explanation essays. At the end every Haskell name
 quoted is present verbatim in the pinned source and both explanations carry a ` ```mermaid `
-diagram. Acceptance: `pnpm build` prerenders all seven with no crawler warnings; a grep audit (M4)
+diagram. Acceptance: `bun run build` prerenders all seven with no crawler warnings; a grep audit (M4)
 finds every quoted Haskell name in the pinned source.
 
 `reference/render-mermaid.mdx` (title `"Render: Mermaid"`) documents the full Mermaid surface: the
@@ -701,7 +708,7 @@ sequence and what each must cover:
   builds on. Anchors `SensitivitySpec`, `GoldenSpec`.
 
 At the end the subdir exists with its own `meta.json` and the tour is sidebar-navigable.
-Acceptance: all ten files build; internal links are absolute; `pnpm lint:links` exit 0.
+Acceptance: all ten files build; internal links are absolute; `bun run lint:links` exit 0.
 
 ### M4 — meta.json appends + full acceptance
 
@@ -733,9 +740,9 @@ for d in reference explanation how-to walkthrough; do
 done
 
 # Install deps and confirm the existing site builds and links resolve before you add pages.
-pnpm install
-pnpm build
-pnpm lint:links
+bun install
+bun run build
+bun run lint:links
 ```
 
 Expected (abridged):
@@ -907,12 +914,12 @@ name) to `pages` (do not remove `"index"` or other plans' subdir names):
 Then build and audit:
 
 ```bash
-pnpm build
-pnpm lint:links
+bun run build
+bun run lint:links
 ```
 
 Expected: `✓ built in <N>s` with no `[unhandledRejection]` / `Failed to fetch` lines, and
-`pnpm lint:links` exits 0.
+`bun run lint:links` exits 0.
 
 
 ## Validation and Acceptance
@@ -922,7 +929,7 @@ Acceptance is observable behavior, not just "files exist".
 1. **The site builds and prerenders the new pages.** From the repo root:
 
    ```bash
-   pnpm build
+   bun run build
    ```
 
    Succeeds (`✓ built`) and the log shows the new routes prerendered: the five
@@ -933,7 +940,7 @@ Acceptance is observable behavior, not just "files exist".
 2. **Zero crawler warnings.**
 
    ```bash
-   pnpm build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
+   bun run build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
    ```
 
    Expected: `no crawler warnings`.
@@ -941,7 +948,7 @@ Acceptance is observable behavior, not just "files exist".
 3. **Internal links resolve.**
 
    ```bash
-   pnpm lint:links
+   bun run lint:links
    ```
 
    Expected: exit 0. This includes the soft-dep links into EP-21's
@@ -1012,7 +1019,7 @@ Acceptance is observable behavior, not just "files exist".
 
    Expected: both files listed.
 
-9. **The pages render in a browser.** Run `pnpm dev`, open
+9. **The pages render in a browser.** Run `bun run dev`, open
    `http://localhost:3000/docs/keiki/reference/render-mermaid`, and confirm the `<TypeTable>`
    renders, the disambiguation callout shows, and the rendering-and-codecs walkthrough appears
    nested under "Code Walkthrough" → "Rendering and codecs" in the sidebar with all ten chapters.
@@ -1022,13 +1029,13 @@ Acceptance is observable behavior, not just "files exist".
 
 ## Idempotence and Recovery
 
-Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `pnpm build` and
-`pnpm lint:links` is idempotent. If a page slug needs to change, rename the file *and* update the
+Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `bun run build` and
+`bun run lint:links` is idempotent. If a page slug needs to change, rename the file *and* update the
 matching `meta.json` slug in the same edit — a slug pointing at a missing file (or a file missing
 from `pages`) yields a broken sidebar entry, not a crash, so the build still exits 0; catch it with
 the browser check (acceptance #9).
 
-If `pnpm build` reports `Failed to fetch`, or `pnpm lint:links` reports a broken link, the cause is
+If `bun run build` reports `Failed to fetch`, or `bun run lint:links` reports a broken link, the cause is
 almost always a relative link or a link to a page that does not exist yet. Run acceptance check #4
 to find relative links and fix them to absolute paths. For soft-dep links into EP-21
 (`the-symtransducer`), EP-22 (`shape`), or EP-24 (`validate`) whose slug you could not confirm,
@@ -1124,3 +1131,5 @@ source; full signatures are in Context). From `Keiki.Render.Mermaid` — `toMerm
 `OnMissingCodec`, `EventCodecOptions`/`defaultEventCodecOptions`, `deriveEventCodecSkeleton`,
 `deriveEventCodecSkeletonAs`. The shape hash `regFileShapeHash` / `Keiki.Shape` is **EP-22's** to
 document; link to `/docs/keiki/reference/shape`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

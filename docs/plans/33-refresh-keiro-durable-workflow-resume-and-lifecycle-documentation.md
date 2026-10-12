@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-15T19:08:34Z
 intention: intention_01kv6bpntyeh98ta4k2famkdm9
 master_plan: "docs/masterplans/4-refresh-keiro-and-kiroku-documentation-after-june-hardening.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Refresh Keiro durable workflow resume and lifecycle documentation
@@ -72,7 +79,7 @@ resume crash backoff, `wake_after` sleep filtering, random journaled awakeable i
 and child wake paths, child failure envelopes, continue-as-new rotation, active-set patch decisions,
 workflow GC, schema migrations, and workflow telemetry counters.
 
-Validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`, `git diff
+Validation passed with `bun run typecheck`, `bun run format:check`, `bun run build`, `git diff
 --check`, and a focused stale-claim scan for superseded deterministic-awakeable, advisory-lock,
 step-row-discovery, step at-most-once, and patch-classification wording. EP-6 still owns final
 source-sync pointer updates and cross-library integration reconciliation.
@@ -143,9 +150,9 @@ rg "WorkflowRunOptions|WorkflowIdentityError|claimInstance|wake_after|ResumeSumm
 After edits:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
 
@@ -156,9 +163,9 @@ Acceptance requires that durable workflow docs match current source for workflow
 Run:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
 All commands should exit with status 0. If a source behavior appears tested but not public, describe it as operational behavior rather than an API guarantee unless the source docs or exported type make it public.
@@ -174,3 +181,5 @@ The plan is documentation-only. Do not edit the Keiro source repository. If the 
 Use `mori` to resolve `shinzui/keiro`. This plan has a soft dependency on `docs/plans/31-refresh-keiro-command-core-read-side-and-schema-documentation.md` for general migration and telemetry language.
 
 The interfaces to document are `Keiro.Workflow`, `Keiro.Workflow.Types`, `Keiro.Workflow.Schema`, `Keiro.Workflow.Instance`, `Keiro.Workflow.Resume`, `Keiro.Workflow.Sleep`, `Keiro.Workflow.Awakeable`, `Keiro.Workflow.Awakeable.Schema`, `Keiro.Workflow.Child`, `Keiro.Workflow.Child.Schema`, `Keiro.Workflow.Snapshot`, and `Keiro.Workflow.Gc`. The schema dependencies are the workflow SQL migrations under `/Users/shinzui/Keikaku/bokuno/keiro/keiro-migrations/sql-migrations/` and the expected schema under `/Users/shinzui/Keikaku/bokuno/keiro/keiro-migrations/expected-schema/`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

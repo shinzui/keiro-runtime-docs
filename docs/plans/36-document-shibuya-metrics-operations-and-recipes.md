@@ -5,6 +5,13 @@ title: "Document shibuya metrics operations and recipes"
 kind: exec-plan
 created_at: 2026-06-24T18:04:06Z
 master_plan: "docs/masterplans/5-complete-shibuya-pgmq-and-adapter-documentation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Document shibuya metrics operations and recipes
@@ -55,7 +62,7 @@ implementation. Provide concise evidence.
   `"shibuya.process.message"`, but current `Shibuya.Telemetry.Semantic.processSpanName` returns
   `destination <> " process"`. The docs authored here use the current source behavior, e.g.
   `"orders process"`.
-- `pnpm build` rejected a `promql` code fence because the configured Shiki language set does not
+- `bun run build` rejected a `promql` code fence because the configured Shiki language set does not
   include PromQL. The fence was changed to `text`, preserving an explicit language tag while using a
   supported highlighter.
 
@@ -93,7 +100,7 @@ handler tracing, retry storms, and local Jaeger; and a real FAQ.
 Validation evidence:
 
 ```text
-$ pnpm run typecheck
+$ bun run typecheck
 $ fumadocs-mdx && tsc --noEmit
 [MDX] generated files in 1.84191600000003ms
 ```
@@ -110,7 +117,7 @@ $ rg -n "Documentation in progress|TODO|coming soon|Documentation for shibuya is
 The stale-stub scan printed no matches.
 
 ```text
-$ pnpm build
+$ bun run build
 ...
 ✓ built in 1.57s
 ℹ Generated .output/nitro.json
@@ -242,8 +249,8 @@ sed -n '1,220p' content/docs/keiro/how-to/enable-opentelemetry.mdx
 Validate:
 
 ```bash
-pnpm run typecheck
-pnpm build
+bun run typecheck
+bun run build
 node scripts/check-doc-links.mjs
 rg -n "Documentation in progress|TODO|coming soon" content/docs/shibuya
 ```
@@ -264,7 +271,7 @@ Acceptance:
 - `/docs/shibuya/faq` answers real operational and conceptual questions.
 - Pages link back to EP-1-owned core pages for processor, handler, ack, retry, dead-letter,
   ordering, and concurrency definitions.
-- `pnpm run typecheck`, `pnpm build`, and `node scripts/check-doc-links.mjs` pass.
+- `bun run typecheck`, `bun run build`, and `node scripts/check-doc-links.mjs` pass.
 - Metric names, endpoint shapes, span names, and attribute names are traceable to local source or
   tests, not guessed from memory.
 
@@ -299,7 +306,9 @@ interfaces are:
 - `Shibuya.Telemetry.Propagation`
 - `Shibuya.Telemetry.Semantic`
 
-The validation interfaces are the docs app commands in `package.json`: `pnpm run typecheck`,
-`pnpm build`, and `node scripts/check-doc-links.mjs`. Final reconciliation and whole-site source
+The validation interfaces are the docs app commands in `package.json`: `bun run typecheck`,
+`bun run build`, and `node scripts/check-doc-links.mjs`. Final reconciliation and whole-site source
 sync updates are owned by
 `docs/plans/39-reconcile-shibuya-pgmq-integrations-navigation-and-source-sync.md`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-05-30T20:05:53Z
 intention: "intention_01ksx5mf7qe2ht659e4kr9w2t0"
 master_plan: "docs/masterplans/1-keiro-runtime-docs-infrastructure-and-kiroku-foundation.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Kiroku foundation documentation set
@@ -35,8 +42,8 @@ of the keiro runtime family. A reader who lands on `/docs/kiroku` can:
 - learn the user-land **decider / evolve** pattern that kiroku deliberately does *not*
   ship, presented as an application pattern layered on top of the store.
 
-You can see it working by running the docs dev server (`pnpm dev`, i.e. `vite dev`) — or a
-production build with `pnpm build && pnpm start` (the build emits a static SPA under
+You can see it working by running the docs dev server (`bun run dev`, i.e. `vite dev`) — or a
+production build with `bun run build && bun run start` (the build emits a static SPA under
 `.output/public`) — and browsing
 `http://localhost:3000/docs/kiroku`: the kiroku tree appears in the sidebar with the page
 order defined in `content/docs/kiroku/meta.json`; Haskell snippets render in PragmataPro with
@@ -55,9 +62,9 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] M0. Preconditions verified — toolchain (Node 22 + pnpm 11) on PATH, `node_modules`
+- [x] M0. Preconditions verified — toolchain (Node 22 + legacy-manager 11) on PATH, `node_modules`
       present, `content/docs/kiroku/` (and all Plan D Diátaxis subdirs) exist, baseline
-      `pnpm typecheck` clean, kiroku source tree readable for cross-checking. _(2026-05-30)_
+      `bun run typecheck` clean, kiroku source tree readable for cross-checking. _(2026-05-30)_
 - [x] M1. Landing + overview page (`index.mdx`) authored — "store not framework" callout,
       append→store→subscribe `mermaid`, `<Cards>` index. _(2026-05-30)_
 - [x] M2. Getting-started tutorial authored at `tutorials/getting-started.mdx`
@@ -76,7 +83,7 @@ This section must always reflect the actual current state of the work.
 - [x] M7. Known-gap tutorial authored at `tutorials/decider-and-evolve.mdx` (user-land
       decider/evolve pattern, with the "kiroku ships no such typeclass" Callout). _(2026-05-30)_
 - [x] M8. All section `meta.json` files populated and ordered; six section `index.mdx` landings
-      enriched with `<Cards>` (removed "coming soon"); `pnpm typecheck` clean; `pnpm build` exits
+      enriched with `<Cards>` (removed "coming soon"); `bun run typecheck` clean; `bun run build` exits
       0, prerenders all 28 kiroku pages with **zero** crawler warnings; search index carries the
       new pages; snippets cross-checked against `kiroku-store/src` (all names present); framing
       check passed (no `decide`/`evolve` presented as a kiroku API outside the tutorial).
@@ -152,7 +159,7 @@ Record every decision made while working on the plan.
   paths) is framework-agnostic and is unchanged. Only docs-app file/command references move:
   `mdx-components.tsx` → `src/components/mdx.tsx`, `lib/source.ts` → `src/lib/source.ts`,
   `app/global.css` → `src/styles/app.css`, `next.config.mjs` → `vite.config.ts`,
-  `next dev`/`next build` → `vite dev`/`vite build` (`pnpm dev`/`pnpm build`); the import
+  `next dev`/`next build` → `vite dev`/`vite build` (`bun run dev`/`bun run build`); the import
   alias `@/...` resolves to `./src/...`. Verification now browses the SPA where MDX renders
   client-side.
   Rationale: Plan A (the scaffold) is now a TanStack Start static SPA and is already
@@ -218,7 +225,7 @@ What landed vs. the original plan:
 - **Added scope.** The subscription walkthrough (M9) was not in the original milestone set; it was
   requested mid-implementation and slots into Plan D's empty `walkthrough/` section.
 
-Verification: `pnpm typecheck` clean; `pnpm build` exits 0, prerenders all 28 kiroku pages with
+Verification: `bun run typecheck` clean; `bun run build` exits 0, prerenders all 28 kiroku pages with
 zero crawler warnings; search index includes the new pages; snippet and framing checks pass.
 Deferred (browser-only, same as Plan #3): visual confirmation of PragmataPro ligature glyphs and
 mermaid pan/zoom interactivity.
@@ -241,9 +248,9 @@ You are writing MDX content files under `content/docs/kiroku/` in **this** repos
 (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`). The site itself is a **fumadocs**
 documentation app (fumadocs-ui 16.9.3 + fumadocs-mdx 15.0.10) built on **TanStack Start as a
 static SPA** (React 19 + MDX, TypeScript, Tailwind v4, bundled with **Vite**), built and
-served with **pnpm** on **Node 22** inside the Nix dev shell (`nix develop`). `pnpm dev` runs
-`vite dev`; `pnpm build` runs `vite build` and emits a static SPA under `.output/public`,
-served by `pnpm start`. MDX is compiled by fumadocs-mdx and rendered client-side in the SPA.
+served with **legacy package manager** on **Node 22** inside the Nix dev shell (`nix develop`). `bun run dev` runs
+`vite dev`; `bun run build` runs `vite build` and emits a static SPA under `.output/public`,
+served by `bun run start`. MDX is compiled by fumadocs-mdx and rendered client-side in the SPA.
 Content lives under `content/docs/`. Each directory has a
 `meta.json` that controls the sidebar (its `pages` array lists child page slugs / nested
 directory names in display order). A page is an `.mdx` file with YAML frontmatter
@@ -259,7 +266,7 @@ This plan is **Plan E** in the master plan
 
 - **HARD DEP — Plan A** (`docs/plans/1-scaffold-the-fumadocs-documentation-app.md`):
   scaffolds the fumadocs app on **TanStack Start (static SPA)** (already re-implemented and
-  committed). After Plan A, `pnpm dev` (`vite dev`) serves a styled empty docs site;
+  committed). After Plan A, `bun run dev` (`vite dev`) serves a styled empty docs site;
   `source.config.ts`, `src/lib/source.ts`, `src/components/mdx.tsx`, `src/styles/app.css`,
   `vite.config.ts`, the route layouts under `src/routes/`, and `content/docs/` with
   `index.mdx` + `meta.json` all exist. **You cannot build or preview your pages until Plan A
@@ -691,8 +698,8 @@ snippet/diagram it must contain. Detailed per-page outlines follow in Concrete S
 **Milestones:**
 
 - **M0 — Preconditions.** Confirm Plan A and Plan D have landed and that
-  `content/docs/kiroku/` exists. At the end: `pnpm dev` runs and you can browse the empty
-  site. Acceptance: `pnpm build` succeeds before you add any kiroku page.
+  `content/docs/kiroku/` exists. At the end: `bun run dev` runs and you can browse the empty
+  site. Acceptance: `bun run build` succeeds before you add any kiroku page.
 - **M1 — Landing + overview** (`index.mdx`). At the end: `/docs/kiroku` renders with a short
   intro, the "store, not a framework" framing, a `<Cards>` index, and the
   append→store→subscribe ` ```mermaid ` diagram. Acceptance: page builds and renders.
@@ -715,12 +722,12 @@ snippet/diagram it must contain. Detailed per-page outlines follow in Concrete S
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`
-unless stated otherwise. The docs toolchain is **pnpm** on **Node 22**.
+unless stated otherwise. The docs toolchain is **legacy package manager** on **Node 22**.
 
 ### M0 — Preconditions
 
 ```bash
-# enter the Nix dev shell (pnpm + Node 22) first
+# enter the Nix dev shell (legacy package manager + Node 22) first
 nix develop
 
 # confirm the scaffold (Plan A — TanStack Start static SPA) and the IA (Plan D) are present
@@ -728,8 +735,8 @@ test -f source.config.ts && test -f src/lib/source.ts && test -f vite.config.ts 
 test -d content/docs/kiroku && echo "Plan D kiroku dir present" || mkdir -p content/docs/kiroku
 
 # install + verify the empty site builds before you start
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected (abridged):
@@ -741,7 +748,7 @@ Plan D kiroku dir present
 ```
 
 If `content/docs/kiroku/` does not exist, Plan D has not landed; stop and finish Plan D first
-(this is a HARD DEP). If `pnpm build` fails on the empty site, fix Plan A first.
+(this is a HARD DEP). If `bun run build` fails on the empty site, fix Plan A first.
 
 Create the subdirectories you will populate:
 
@@ -1157,8 +1164,8 @@ Finally ensure the top-level `content/docs/meta.json` (owned/structured by Plan 
 
 ```bash
 # build with the full kiroku tree in place
-pnpm build
-pnpm dev   # then browse http://localhost:3000/docs/kiroku
+bun run build
+bun run dev   # then browse http://localhost:3000/docs/kiroku
 ```
 
 
@@ -1166,8 +1173,8 @@ pnpm dev   # then browse http://localhost:3000/docs/kiroku
 
 Exercise the system and observe specific behaviors:
 
-1. **Section builds.** From the repo root, `pnpm build` (`vite build`) exits 0 with the kiroku
-   pages present; it emits the static SPA under `.output/public`. Run `pnpm typecheck`
+1. **Section builds.** From the repo root, `bun run build` (`vite build`) exits 0 with the kiroku
+   pages present; it emits the static SPA under `.output/public`. Run `bun run typecheck`
    (`fumadocs-mdx && tsc --noEmit`) too, so the generated `.source/` collection picks up the
    new pages. Expected tail (abridged):
 
@@ -1176,7 +1183,7 @@ Exercise the system and observe specific behaviors:
    .output/public/...
    ```
 
-2. **Renders in the sidebar.** `pnpm dev` (or `pnpm build && pnpm start`), open
+2. **Renders in the sidebar.** `bun run dev` (or `bun run build && bun run start`), open
    `http://localhost:3000/docs/kiroku`. Because this is a static SPA, the page tree and MDX
    render client-side in the browser. The
    sidebar shows kiroku with children in the `meta.json` order: Getting started, Explanation
@@ -1223,7 +1230,7 @@ Exercise the system and observe specific behaviors:
 
 ## Idempotence and Recovery
 
-All steps are file authoring and are safe to repeat: re-running `pnpm build`/`pnpm dev` is
+All steps are file authoring and are safe to repeat: re-running `bun run build`/`bun run dev` is
 idempotent; editing or recreating an `.mdx`/`meta.json` file simply overwrites it. Creating
 the subdirectories with `mkdir -p` is idempotent. No database or kiroku source is modified by
 this plan (the kiroku tree is opened read-only for cross-checking only).
@@ -1256,10 +1263,10 @@ Recovery:
   content + sidebar from `meta.json`; built-in components `Callout`, `Steps`, `Tabs`,
   `Cards`, `TypeTable`, registered in `src/components/mdx.tsx`. Loader/config in
   `src/lib/source.ts` and `source.config.ts`.
-- TanStack Start + Vite — `pnpm dev` = `vite dev`; `pnpm build` = `vite build` (static SPA in
-  `.output/public`); `pnpm start` serves it; `pnpm typecheck` = `fumadocs-mdx && tsc --noEmit`.
-- pnpm + Node 22 inside the Nix dev shell (`nix develop`) — `pnpm install`, `pnpm build`,
-  `pnpm dev`.
+- TanStack Start + Vite — `bun run dev` = `vite dev`; `bun run build` = `vite build` (static SPA in
+  `.output/public`); `bun run start` serves it; `bun run typecheck` = `fumadocs-mdx && tsc --noEmit`.
+- legacy package manager + Node 22 inside the Nix dev shell (`nix develop`) — `bun install`, `bun run build`,
+  `bun run dev`.
 
 **Files this plan creates/owns (all under `content/docs/kiroku/`):**
 `index.mdx`, `getting-started.mdx`, `meta.json`; `explanation/{event-sourcing,append-only-log,
@@ -1275,7 +1282,7 @@ integrate-with-shibuya}.mdx` + `how-to-guides/meta.json`;
 `kiroku` is listed in `pages`.
 
 **Postconditions / interfaces that must exist at the end:**
-- Every file above exists and the site builds (`pnpm build` exits 0).
+- Every file above exists and the site builds (`bun run build` exits 0).
 - The kiroku subtree renders in the sidebar in the order set by the `meta.json` files.
 - Each Haskell snippet uses only names present in the kiroku source (verified per Validation
   step 5), except the explicitly user-land `decide`/`evolve` tutorial.
@@ -1305,11 +1312,11 @@ What changed:
   resolves to `./src/...`. App Router (`app/...`) no longer exists; routing is file-based
   under `src/routes/`, but this plan authors content under `content/docs/`, which is
   unchanged.
-- Commands remapped: `next dev`/`pnpm dev` → `vite dev` (`pnpm dev`); `next build`/`pnpm build`
-  → `vite build` (`pnpm build`), which emits a **static SPA in `.output/public`** served by
-  `pnpm start`; `pnpm typecheck` = `fumadocs-mdx && tsc --noEmit`. All commands run from the
-  repo root in the Nix dev shell (`nix develop`, pnpm + Node 22).
-- Verification updated: browse via `pnpm dev` or `pnpm build && pnpm start` at
+- Commands remapped: `next dev`/`bun run dev` → `vite dev` (`bun run dev`); `next build`/`bun run build`
+  → `vite build` (`bun run build`), which emits a **static SPA in `.output/public`** served by
+  `bun run start`; `bun run typecheck` = `fumadocs-mdx && tsc --noEmit`. All commands run from the
+  repo root in the Nix dev shell (`nix develop`, legacy package manager + Node 22).
+- Verification updated: browse via `bun run dev` or `bun run build && bun run start` at
   `http://localhost:3000/docs/kiroku`. MDX renders **client-side** in the SPA, so the rendered
   tree/content appears in the browser. Build-output expectations changed from the Next.js
   "Compiled successfully / Generating static pages" banner to Vite's `built in <N>s` plus the
@@ -1319,3 +1326,5 @@ What changed:
   (`docs/plans/3-beautiful-mermaid-diagrams-with-zoom-pan.md`) supplies interactive Mermaid via
   the registry in `src/components/mdx.tsx`. `haskell` and `mermaid` fences are authored now and
   light up once B and C land.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

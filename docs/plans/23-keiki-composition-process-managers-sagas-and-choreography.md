@@ -5,6 +5,13 @@ title: "Keiki composition: process managers, sagas, and choreography"
 kind: exec-plan
 created_at: 2026-06-07T04:53:26Z
 master_plan: "docs/masterplans/3-keiki-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiki composition: process managers, sagas, and choreography
@@ -76,8 +83,8 @@ library correctly:
    page presents this honestly and gives the workarounds (a stateless policy is the normal case;
    multi-round is nested `feedback1`; unbounded "until quiescence" belongs to keiro).
 
-You can see it working by running the docs dev server (`pnpm dev`) — or a production build with
-`pnpm build && pnpm start` — and browsing `http://localhost:3000/docs/keiki`: the composition
+You can see it working by running the docs dev server (`bun run dev`) — or a production build with
+`bun run build && bun run start` — and browsing `http://localhost:3000/docs/keiki`: the composition
 explanation, reference, how-to, and `walkthrough/composition/` pages appear in the sidebar in
 `meta.json` order; Haskell snippets render in PragmataPro with ligatures; and the
 composition/process-manager mermaid diagrams render interactively.
@@ -96,7 +103,7 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] M0. Preconditions verified (2026-06-06) — toolchain present, baseline `pnpm build` exits 0,
+- [x] M0. Preconditions verified (2026-06-06) — toolchain present, baseline `bun run build` exits 0,
       EP-20 Complete, keiki source readable at `344c4ca`, the `walkthrough/composition/` subdir created.
 - [x] M1. References + explanations authored (2026-06-06) (`reference/composition`,
       `reference/profunctor`, `explanation/process-managers-sagas-choreography-as-transducers`,
@@ -106,8 +113,8 @@ This section must always reflect the actual current state of the work.
       `how-to/build-a-cross-context-process` with the verbatim `loanWorkflow` chain).
 - [x] M3. Walkthrough authored under `walkthrough/composition/` (2026-06-06) (`00-start-here` + 11
       chapters) + its `meta.json`.
-- [x] M4. meta.json appends done; `pnpm typecheck` clean; `pnpm build` exits 0 with zero crawler
-      warnings; `pnpm lint:links` exits 0 (265 files); name audit passes. (2026-06-06)
+- [x] M4. meta.json appends done; `bun run typecheck` clean; `bun run build` exits 0 with zero crawler
+      warnings; `bun run lint:links` exits 0 (265 files); name audit passes. (2026-06-06)
 
 
 ## Surprises & Discoveries
@@ -117,7 +124,7 @@ implementation. Provide concise evidence.
 
 - **Authoring agents can leak harness control tags into a file.** Six of the twelve composition
   walkthrough chapters were written with a trailing `</content>` (and one `</invoke>`) line — stray
-  closing tags from the agent's tool-call format that bled into the file body. `pnpm build` failed
+  closing tags from the agent's tool-call format that bled into the file body. `bun run build` failed
   with `Unexpected closing slash "/" in tag, expected an open tag first` at the end of each file. Fix:
   strip any line matching `^</(content|invoke|antml:…)>$`. Added a grep for stray harness tags to the
   per-plan acceptance routine so this is caught before the build for the remaining plans.
@@ -190,7 +197,7 @@ Compare the result against the original purpose.
 **Outcome (2026-06-06).** EP-23 is complete: 19 pages — two reference (`composition`, `profunctor`),
 two explanations (`process-managers-sagas-choreography-as-transducers`, `the-composition-algebra`),
 three how-tos (`compose-two-transducers`, `model-a-saga-with-feedback`, `build-a-cross-context-process`),
-and the twelve-file `walkthrough/composition/` tour. The whole keiki tree builds clean (`pnpm build`
+and the twelve-file `walkthrough/composition/` tour. The whole keiki tree builds clean (`bun run build`
 exit 0, zero crawler warnings) and link-checks (265 files); every quoted Haskell identifier was
 audited against the pinned source `344c4ca`. The process-manager-as-flipped-transducer framing, the
 lockstep-vs-async caveat, the forward-only variance contract, and `feedback1`'s stateless-aggregate
@@ -208,9 +215,9 @@ the working tree can complete the work.
 You are writing MDX content files under `content/docs/keiki/` in **this** repository
 (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`). The site is a **fumadocs** documentation
 app (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static SPA** (React 19 + MDX,
-TypeScript, Tailwind v4, bundled with **Vite**), built and served with **pnpm** on **Node 22**.
-`pnpm dev` runs the dev server; `pnpm build` emits a static SPA; `pnpm typecheck` runs
-`fumadocs-mdx && tsc --noEmit`; `pnpm lint:links` checks internal links and must exit 0. Each
+TypeScript, Tailwind v4, bundled with **Vite**), built and served with **legacy package manager** on **Node 22**.
+`bun run dev` runs the dev server; `bun run build` emits a static SPA; `bun run typecheck` runs
+`fumadocs-mdx && tsc --noEmit`; `bun run lint:links` checks internal links and must exit 0. Each
 content directory has a `meta.json` whose `pages` array lists its child page slugs / nested
 directory names in display order. A page is an `.mdx` file with YAML frontmatter (`title`,
 `description`) followed by an MDX body.
@@ -622,7 +629,7 @@ keiki source/test it documents, and the key snippet/diagram it must contain.
 ### Milestones
 
 - **M0 — Preconditions.** Confirm the toolchain runs, EP-20 has landed (its pages and conventions
-  exist), and the keiki source is readable at `344c4ca`. At the end: `pnpm build` succeeds on the
+  exist), and the keiki source is readable at `344c4ca`. At the end: `bun run build` succeeds on the
   current tree before you add any EP-23 page, and the `walkthrough/composition/` subdir exists.
   Acceptance: see Concrete Steps.
 
@@ -651,8 +658,8 @@ keiki source/test it documents, and the key snippet/diagram it must contain.
 
 - **M4 — meta.json appends + full acceptance.** Append EP-23's slugs to the section `meta.json`
   files, create `walkthrough/composition/meta.json`, ensure `"composition"` is in
-  `walkthrough/meta.json`. Then `pnpm typecheck` clean, `pnpm build` exits 0 with zero crawler
-  warnings, `pnpm lint:links` exits 0. Acceptance: see Validation and Acceptance.
+  `walkthrough/meta.json`. Then `bun run typecheck` clean, `bun run build` exits 0 with zero crawler
+  warnings, `bun run lint:links` exits 0. Acceptance: see Validation and Acceptance.
 
 **The walkthrough chapter list (12 files; ordered; each cites the noted source + test anchor):**
 
@@ -686,7 +693,7 @@ keiki source/test it documents, and the key snippet/diagram it must contain.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless
-stated otherwise. The docs toolchain is **pnpm** on **Node 22**.
+stated otherwise. The docs toolchain is **legacy package manager** on **Node 22**.
 
 ### M0 — Preconditions
 
@@ -698,9 +705,9 @@ test -f content/docs/keiki/walkthrough/index.mdx && echo "EP-20 walkthrough hub 
 test -d content/docs/_templates && echo "templates present"
 
 # install + verify the current tree builds before you start
-pnpm install
-pnpm build
-pnpm lint:links
+bun install
+bun run build
+bun run lint:links
 ```
 
 Expected (abridged):
@@ -714,7 +721,7 @@ templates present
 ```
 
 If the EP-20 artifacts are missing, EP-20 is not Complete — stop and finish EP-20 first (HARD DEP).
-If `pnpm build` or `pnpm lint:links` fails on the current tree, fix that before adding pages.
+If `bun run build` or `bun run lint:links` fails on the current tree, fix that before adding pages.
 
 Resolve the keiki source path and confirm the pinned commit + the composition modules:
 
@@ -885,10 +892,10 @@ Apply the analogous append to `explanation/meta.json`
 Then build and link-check:
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm lint:links
-pnpm dev   # then browse http://localhost:3000/docs/keiki
+bun run typecheck
+bun run build
+bun run lint:links
+bun run dev   # then browse http://localhost:3000/docs/keiki
 ```
 
 
@@ -896,7 +903,7 @@ pnpm dev   # then browse http://localhost:3000/docs/keiki
 
 Exercise the system and observe specific behaviors:
 
-1. **Section builds.** From the repo root, `pnpm typecheck` is clean and `pnpm build` exits 0 with
+1. **Section builds.** From the repo root, `bun run typecheck` is clean and `bun run build` exits 0 with
    the EP-23 pages present. Expected tail (abridged):
 
    ```text
@@ -904,7 +911,7 @@ Exercise the system and observe specific behaviors:
    ```
 
 2. **Zero crawler warnings; link check passes.** The build log contains no `unhandledRejection` /
-   `Failed to fetch` lines (these flag broken/relative links), and `pnpm lint:links` exits 0.
+   `Failed to fetch` lines (these flag broken/relative links), and `bun run lint:links` exits 0.
    Confirm no relative cross-links were authored:
 
    ```bash
@@ -922,7 +929,7 @@ Exercise the system and observe specific behaviors:
    Expected: no matches (all cross-links are absolute `/docs/keiki/...` or `/docs/keiro/...`). The
    walkthrough back-link `<Callout>`s are the place to double-check are absolute.
 
-3. **Renders in the sidebar.** `pnpm dev` (or `pnpm build && pnpm start`), open
+3. **Renders in the sidebar.** `bun run dev` (or `bun run build && bun run start`), open
    `http://localhost:3000/docs/keiki`. The sidebar shows the new composition pages under Reference
    (2), Explanation (2), How-To (3), and a "Composition Walkthrough" group under Code Walkthrough
    (00-start-here + 11 chapters), each opening without a 404 and showing its frontmatter `title`.
@@ -976,8 +983,8 @@ Exercise the system and observe specific behaviors:
 
 ## Idempotence and Recovery
 
-All steps are file authoring and are safe to repeat: re-running `pnpm typecheck` / `pnpm build` /
-`pnpm lint:links` / `pnpm dev` is idempotent; editing or recreating an `.mdx` / `meta.json` file
+All steps are file authoring and are safe to repeat: re-running `bun run typecheck` / `bun run build` /
+`bun run lint:links` / `bun run dev` is idempotent; editing or recreating an `.mdx` / `meta.json` file
 simply overwrites it; `mkdir -p content/docs/keiki/walkthrough/composition` is idempotent. No
 database or keiki source is modified — the keiki tree is opened read-only for cross-checking.
 
@@ -1033,8 +1040,8 @@ commit `344c4ca`:**
 
 **Tooling / app (TypeScript, the docs site — TanStack Start static SPA):** fumadocs (MDX content +
 sidebar from `meta.json`; built-in components `Callout`, `Steps`, `Tabs`, `Cards`/`Card`,
-`TypeTable`, authored bare with no imports); TanStack Start + Vite (`pnpm dev`, `pnpm build`,
-`pnpm start`, `pnpm typecheck`, `pnpm lint:links`); pnpm + Node 22.
+`TypeTable`, authored bare with no imports); TanStack Start + Vite (`bun run dev`, `bun run build`,
+`bun run start`, `bun run typecheck`, `bun run lint:links`); legacy package manager + Node 22.
 
 **Files this plan creates/owns (all under `content/docs/keiki/`):**
 
@@ -1076,8 +1083,8 @@ append-only) and `walkthrough/meta.json` (shared; ensure `"composition"` present
 composition tour is **not** added (EP-26 wires it).
 
 **Postconditions / interfaces that must exist at the end:**
-- Every file above exists; `pnpm typecheck` clean, `pnpm build` exits 0 with zero crawler warnings,
-  `pnpm lint:links` exits 0.
+- Every file above exists; `bun run typecheck` clean, `bun run build` exits 0 with zero crawler warnings,
+  `bun run lint:links` exits 0.
 - The composition subtree renders in the sidebar in `meta.json` order.
 - Each Haskell snippet uses only names present in the keiki source at `344c4ca` (Validation step 4);
   the `loanWorkflow` snippet matches `jitsurei/src/Jitsurei/LoanWorkflow.hs` (Validation step 5).
@@ -1094,3 +1101,5 @@ When committing work for this plan, include these trailers:
 MasterPlan: docs/masterplans/3-keiki-framework-documentation-set.md
 ExecPlan: docs/plans/23-keiki-composition-process-managers-sagas-and-choreography.md
 ```
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-15T19:08:24Z
 intention: intention_01kv6bpntyeh98ta4k2famkdm9
 master_plan: "docs/masterplans/4-refresh-keiro-and-kiroku-documentation-after-june-hardening.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Refresh Keiro command core read side and schema documentation
@@ -75,7 +82,7 @@ snapshot boundary handling, conflict retries and snapshot failure accounting, st
 waits, centralized async projection deduplication, expected-schema drift checks, and the current
 test fixture model.
 
-Validation passed with `pnpm run typecheck`, `pnpm run format:check`, `pnpm build`,
+Validation passed with `bun run typecheck`, `bun run format:check`, `bun run build`,
 `git diff --check`, and a stale-claim `rg` scan for the old strong-consistency, codec,
 migration-count, and projection-dedup wording. EP-6 still owns the final
 `docs/keiro-source-sync.md` pointer update.
@@ -143,9 +150,9 @@ rg "RunCommandOptions|CommandError|Strong|ConsistencyMode|projection_dedup|State
 After edits:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
 
@@ -156,9 +163,9 @@ Acceptance requires that edited Keiro docs match current source for command retr
 Run:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 ```
 
 All commands should exit with status 0. Record any failure output in Surprises & Discoveries and fix before marking the plan complete.
@@ -174,3 +181,5 @@ This plan changes docs only and is safe to repeat. Do not edit the Keiro source 
 Use `mori` to resolve `shinzui/keiro` and read source directly. This plan has a soft dependency on `docs/plans/29-refresh-kiroku-write-path-schema-and-store-api-documentation.md` for Kiroku stream, append, and migration terminology.
 
 The interfaces to document are `Keiro.Codec`, `Keiro.EventStream`, `Keiro.EventStream.Validate`, `Keiro.Stream`, `Keiro.Snapshot.Policy`, `Keiro.Command`, `Keiro.Snapshot`, `Keiro.Projection`, `Keiro.ReadModel`, `Keiro.ReadModel.Rebuild`, `Keiro.ReadModel.Schema`, `Keiro.Migrations`, and `Keiro.Test.Postgres`. The migration surface includes `keiro-migrate`, `keiro-write-expected-schema`, the `keiro-migrations/expected-schema` tree, and the forward-only SQL files under `/Users/shinzui/Keikaku/bokuno/keiro/keiro-migrations/sql-migrations/`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-06-15T19:08:37Z
 intention: intention_01kv6bpntyeh98ta4k2famkdm9
 master_plan: "docs/masterplans/4-refresh-keiro-and-kiroku-documentation-after-june-hardening.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Reconcile cross library integration docs and source sync pointers
@@ -76,7 +83,7 @@ Source-sync pointers were bumped to the final upstream commits:
 - Keiro: `f1d67a01b7457387a4861e7268d1c521ef82287d` (`2026-06-15T11:27:19-07:00`,
   `docs(master-plan): close production readiness hardening`)
 
-Final validation passed with `pnpm run check` on 2026-06-15. That command ran typecheck, lint,
+Final validation passed with `bun run check` on 2026-06-15. That command ran typecheck, lint,
 format check, production build, internal doc-link checks, and linkinator; `oxlint` reported only
 pre-existing warnings in `src/routes/docs/{$}[.]md.ts`, `src/routes/docs/$.tsx`, and
 `src/lib/rehype-mermaid.ts`.
@@ -114,7 +121,7 @@ Milestone 3 reconciles landing, FAQ, and navigation. Update the Kiroku and Keiro
 
 Milestone 4 updates source-sync pointers. Use `git -C <source> rev-parse HEAD`, `git -C <source> show -s --format='%H%n%ad%n%s' --date=iso-strict HEAD`, and the summaries from EP-1 through EP-5. In `docs/kiroku-source-sync.md`, replace the Last reviewed commit block with the final Kiroku `HEAD`, move `0a39598` to Previous pointers, and summarize the whole range. In `docs/keiro-source-sync.md`, replace the Last reviewed commit block with final Keiro `HEAD`, move `9fa283b` to Previous pointers, and summarize the whole range. Acceptance is that both pointers name `mori` qualified names, final commits, dates, source paths, affected packages, and doc areas updated.
 
-Milestone 5 runs whole-site validation. Run the commands in Concrete Steps. Acceptance is that `pnpm run check` passes, including typecheck, lint, format check, build, and link validation. If link validation requires a built site, `pnpm run check` already builds before linkinator through the package script.
+Milestone 5 runs whole-site validation. Run the commands in Concrete Steps. Acceptance is that `bun run check` passes, including typecheck, lint, format check, build, and link validation. If link validation requires a built site, `bun run check` already builds before linkinator through the package script.
 
 
 ## Concrete Steps
@@ -139,17 +146,17 @@ rg "9fa283b|0a39598|f8950f4|98f46b3|TODO|stale|old" content/docs docs/keiro-sour
 Run final validation:
 
 ```bash
-pnpm run check
+bun run check
 ```
 
 Expected final result is a zero exit code. If the command is too broad during implementation, use this narrower progression before the final check:
 
 ```bash
-pnpm run typecheck
-pnpm lint
-pnpm run format:check
-pnpm build
-pnpm run lint:links
+bun run typecheck
+bun run lint
+bun run format:check
+bun run build
+bun run lint:links
 ```
 
 
@@ -160,7 +167,7 @@ Acceptance requires all hard dependencies complete, integration prose reconciled
 Run:
 
 ```bash
-pnpm run check
+bun run check
 ```
 
 The command should complete successfully. Then inspect:
@@ -175,11 +182,13 @@ The pointer diff should show old reviewed commits moved into Previous pointers a
 
 ## Idempotence and Recovery
 
-All edits are documentation-only. Re-running `mori`, `git show`, `rg`, and validation commands is safe. If `pnpm run check` fails on links, fix links in docs rather than disabling link validation. If a final pointer summary is missing facts, go back to the relevant child plan and source modules; do not invent a summary from memory.
+All edits are documentation-only. Re-running `mori`, `git show`, `rg`, and validation commands is safe. If `bun run check` fails on links, fix links in docs rather than disabling link validation. If a final pointer summary is missing facts, go back to the relevant child plan and source modules; do not invent a summary from memory.
 
 
 ## Interfaces and Dependencies
 
-This plan depends hard on EP-1 through EP-5 because it integrates their outputs. It uses `mori` to resolve source locations for `shinzui/keiro` and `shinzui/kiroku`. It uses the docs repository package scripts in `package.json`: `pnpm run typecheck`, `pnpm lint`, `pnpm run format:check`, `pnpm build`, `pnpm run lint:links`, and `pnpm run check`.
+This plan depends hard on EP-1 through EP-5 because it integrates their outputs. It uses `mori` to resolve source locations for `shinzui/keiro` and `shinzui/kiroku`. It uses the docs repository package scripts in `package.json`: `bun run typecheck`, `bun run lint`, `bun run format:check`, `bun run build`, `bun run lint:links`, and `bun run check`.
 
 The files owned by this plan are `docs/keiro-source-sync.md`, `docs/kiroku-source-sync.md`, `content/docs/integrations/*.mdx`, top-level Keiro and Kiroku index/FAQ pages as needed, and `meta.json` navigation files required by pages added in EP-1 through EP-5.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

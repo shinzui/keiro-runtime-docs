@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-07-14T15:14:31Z
 intention: "intention_01kxgjsgnse1z9r0w141akd9g2"
 master_plan: "docs/masterplans/6-prepare-keiro-runtime-documentation-for-wider-announcement.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Rebuild keiro-dsl 0.2 authoring and evolution documentation
@@ -240,9 +247,9 @@ Return to the docs repository and run after each milestone:
 
 ```bash
 cd /Users/shinzui/Keikaku/bokuno/keiro-runtime-docs
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 node scripts/check-doc-links.mjs
 git diff --check
 ```
@@ -275,7 +282,7 @@ rg -n 'readmodel|router|snapshot every|continueAsNew|persist =|ordering fifo' co
 ```
 
 The first two commands should return no obsolete instruction. The third must show coverage in both
-reference and task-oriented pages. `pnpm run typecheck`, `pnpm build`,
+reference and task-oriented pages. `bun run typecheck`, `bun run build`,
 `node scripts/check-doc-links.mjs`, and `git diff --check` must exit zero. Record the reviewed SHA
 and exact pages in this plan for EP-7; do not advance the shared keiro source pointer here.
 
@@ -304,3 +311,5 @@ dead-letter, router, and workflow policy terms. It has no hard dependency becaus
 source is self-contained, but final wording must agree. Plan 46 owns final navigation and source
 pins. No runtime interface is created; the documentation interface is a complete node catalog plus
 one verifiable author/check/scaffold/harness/diff journey.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

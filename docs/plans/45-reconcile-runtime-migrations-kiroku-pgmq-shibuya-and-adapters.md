@@ -6,6 +6,13 @@ kind: exec-plan
 created_at: 2026-07-14T15:14:32Z
 intention: "intention_01kxgjsgnse1z9r0w141akd9g2"
 master_plan: "docs/masterplans/6-prepare-keiro-runtime-documentation-for-wider-announcement.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:40Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Reconcile runtime migrations kiroku pgmq shibuya and adapters
@@ -250,9 +257,9 @@ rg -n 'runApp|AppConfig|Message|Ingested|shutdown|pg-migrate' content/docs/shibu
 After each milestone run:
 
 ```bash
-pnpm run typecheck
-pnpm run format:check
-pnpm build
+bun run typecheck
+bun run format:check
+bun run build
 node scripts/check-doc-links.mjs
 git diff --check
 ```
@@ -291,8 +298,8 @@ rg -n 'pg-migrate|MigrationComponent|migrationPlan' content/docs/keiro content/d
 ```
 
 The first three commands should return no active-current instruction. The last must show every
-runtime migration surface linked to the new canonical section. Run `pnpm run typecheck`,
-`pnpm build`, `node scripts/check-doc-links.mjs`, and `git diff --check`, then record reviewed SHAs,
+runtime migration surface linked to the new canonical section. Run `bun run typecheck`,
+`bun run build`, `node scripts/check-doc-links.mjs`, and `git diff --check`, then record reviewed SHAs,
 version facts, no-drift findings, and remaining EP-7 work.
 
 
@@ -317,3 +324,5 @@ public `Shibuya` umbrella, PGMQ public core/Hasql/Effectful/config facades, and
 `Shibuya.Adapter.Pgmq`. Avoid internal modules in consumer examples. Plans 41 and 42 own keiro
 command/worker semantics; this plan should link rather than rewrite them. Plan 46 owns source pins,
 root navigation, compatibility summaries, and final whole-site validation.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.

@@ -23,9 +23,9 @@ Before refreshing, write a ledger in the active plan or publication review with 
 ## Refresh and review
 
 ```bash
-nix develop -c pnpm run sync:patterns -- --ref TARGET_SHA
-nix develop -c pnpm run test:patterns
-nix develop -c pnpm run lint:patterns
+nix develop -c bun run sync:patterns --ref TARGET_SHA
+nix develop -c bun run test:patterns
+nix develop -c bun run lint:patterns
 ```
 
 Refresh validates a temporary committed owner tree, stages outputs, replaces only manifest-owned files, retains identity through rename, and leaves the completed-review pointer unchanged. Review the snapshot and complete generated diff. Repair site-owned links, captions, and heading placements in `docs/patterns/presentation.json`, then refresh again. Never make these edits in generated pages.
@@ -36,7 +36,7 @@ Review coupled local product explanations separately. Generated quotations prese
 
 ## Complete the boundary
 
-Run `nix develop -c pnpm check` and `git diff --check`. Only after source, visual, product-page, and browser reviews and gates complete, move **Last reviewed commit** to the same full SHA as `catalog.json`. Update committer date, subject, current-range ledger summary, previous pointers, and embedded update-command SHA together. Record exact inventory/log/profile/watermark evidence, visual assessment and diagram counts, known gaps, and coupled pages. Run consistency and status again after the pointer edit.
+Run `nix develop -c bun run check` and `git diff --check`. Only after source, visual, product-page, and browser reviews and gates complete, move **Last reviewed commit** to the same full SHA as `catalog.json`. Update committer date, subject, current-range ledger summary, previous pointers, and embedded update-command SHA together. Record exact inventory/log/profile/watermark evidence, visual assessment and diagram counts, known gaps, and coupled pages. Run consistency and status again after the pointer edit.
 
 A partial round leaves the old pointer unchanged. Record the imported target and outstanding review in the active plan. Offline `lint:patterns` proves committed-site consistency; read-only `--check-upstream` and `status.mjs` report upstream drift and cannot certify current library releases.
 

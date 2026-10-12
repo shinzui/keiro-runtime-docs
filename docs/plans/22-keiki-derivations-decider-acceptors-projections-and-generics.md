@@ -5,6 +5,13 @@ title: "Keiki derivations: decider, acceptors, projections, and generics"
 kind: exec-plan
 created_at: 2026-06-07T04:53:26Z
 master_plan: "docs/masterplans/3-keiki-framework-documentation-set.md"
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-12T02:18:39Z
+      mode: "update"
+      note: "Normalize archived command examples to Bun while retaining historical verification scope"
 ---
 
 # Keiki derivations: decider, acceptors, projections, and generics
@@ -77,8 +84,8 @@ A reader who finishes this slice can:
   **not** document the JSON codec itself.
 
 You can see it working by running the docs dev server from the repo root
-(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `pnpm dev`, or a production build with
-`pnpm build`. Browsing `http://localhost:3000/docs/keiki` shows the new derivations pages in the
+(`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) with `bun run dev`, or a production build with
+`bun run build`. Browsing `http://localhost:3000/docs/keiki` shows the new derivations pages in the
 sidebar: three explanation essays, five reference pages, two how-to guides, and a ten-part code
 walkthrough under `walkthrough/derivations/` (a `00-start-here.mdx` plus nine numbered chapters).
 Haskell snippets render and the tour is navigable.
@@ -98,7 +105,7 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 This section must always reflect the actual current state of the work.
 
 - [x] M0. Preconditions verified (2026-06-06) — EP-20 artifacts present; toolchain present; section
-      dirs exist; baseline `pnpm build` clean; keiki source readable at `344c4ca`; the 5-field
+      dirs exist; baseline `bun run build` clean; keiki source readable at `344c4ca`; the 5-field
       `Decider` record confirmed in `src/Keiki/Decider.hs`; `walkthrough/derivations/` subdir created.
 - [x] M1. Reference + explanation pages authored (2026-06-06): `reference/{decider,acceptor,generics,
       generics-th,shape}.mdx` and `explanation/{what-gets-derived,b-presentation-views,
@@ -110,7 +117,7 @@ This section must always reflect the actual current state of the work.
 - [x] M3. Walkthrough authored (2026-06-06) (`walkthrough/derivations/` subdir + its `meta.json`:
       `00-start-here.mdx` plus chapters `01`–`09`).
 - [x] M4. meta.json appends done (section `meta.json`s + `"derivations"` appended to
-      `walkthrough/meta.json`); full `pnpm build` exit 0 with zero crawler warnings; `pnpm lint:links`
+      `walkthrough/meta.json`); full `bun run build` exit 0 with zero crawler warnings; `bun run lint:links`
       exits 0 (246 files); Haskell-name audit passes; no relative links. (2026-06-06)
 
 
@@ -167,7 +174,7 @@ Compare the result against the original purpose.
 **Outcome (2026-06-06).** EP-22 is complete: 20 pages — five reference pages (`decider`, `acceptor`,
 `generics`, `generics-th`, `shape`), three explanations (`what-gets-derived`, `b-presentation-views`,
 `decider-facade-and-when-to-use-it`), two how-tos, and the ten-file `walkthrough/derivations/` tour.
-The whole keiki tree builds clean (`pnpm build` exit 0, zero crawler warnings) and link-checks (246
+The whole keiki tree builds clean (`bun run build` exit 0, zero crawler warnings) and link-checks (246
 files); every quoted Haskell identifier was audited against the pinned source `344c4ca`. The shipped
 five-field `Decider` record is documented (with the stale-haddock note), the Decider is framed
 strictly as a legacy façade with the ε-edge gap, and `reference/shape.mdx` owns the shape-hash model
@@ -187,9 +194,8 @@ the real source transcribed below.
 
 This repository (`/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs`) is a **fumadocs** documentation
 site (fumadocs-ui + fumadocs-mdx) built on **TanStack Start as a static single-page app** (React +
-MDX + TypeScript, bundled with **Vite**), built and served with **pnpm** on **Node 22**. `pnpm dev`
-runs the dev server; `pnpm build` runs the production build and prerenders every route; `pnpm
-typecheck` runs the TypeScript checker; `pnpm lint:links` checks internal links and exits non-zero
+MDX + TypeScript, bundled with **Vite**), built and served with **legacy package manager** on **Node 22**. `bun run dev`
+runs the dev server; `bun run build` runs the production build and prerenders every route; `bun run typecheck` runs the TypeScript checker; `bun run lint:links` checks internal links and exits non-zero
 on a broken one. Content lives under `content/docs/`. Each directory has a `meta.json` whose `pages`
 array lists child page slugs (and nested directory names) in sidebar order. A "page" is an `.mdx`
 file: YAML frontmatter (`title`, `description`) followed by an MDX body.
@@ -544,7 +550,7 @@ source the earlier pages already introduced.
 
 ### M0 — Preconditions
 
-Confirm EP-20 is Complete and the toolchain/tree are ready. At the end you can run `pnpm build` on
+Confirm EP-20 is Complete and the toolchain/tree are ready. At the end you can run `bun run build` on
 the existing keiki tree with zero errors. Acceptance: the build succeeds before you add any EP-22
 page; `docs/keiki-source-sync.md` and `content/docs/keiki/index.mdx` exist; the section dirs
 (`explanation`, `reference`, `how-to`, `walkthrough`) exist; and the five-field `Decider` record is
@@ -614,7 +620,7 @@ that the recommended surface is the transducer; present `toDecider` only as a mi
 `DeciderSpec`.
 
 At the end of M1: all eight pages build and render; every quoted signature matches the source.
-Acceptance: `pnpm build` prerenders all eight with no crawler warnings; the Haskell-name audit (M4)
+Acceptance: `bun run build` prerenders all eight with no crawler warnings; the Haskell-name audit (M4)
 finds every quoted identifier in the pinned source.
 
 ### M2 — How-to guides (2 pages)
@@ -679,7 +685,7 @@ Validation and Acceptance.
 ## Concrete Steps
 
 Run all commands from the repo root `/Users/shinzui/Keikaku/bokuno/keiro-runtime-docs` unless stated
-otherwise. The toolchain is **pnpm** on **Node 22** (enter the Nix dev shell first if the repo uses
+otherwise. The toolchain is **legacy package manager** on **Node 22** (enter the Nix dev shell first if the repo uses
 one: `nix develop`).
 
 ### M0 — Preconditions
@@ -695,8 +701,8 @@ for d in explanation reference how-to walkthrough; do
 done
 
 # Install deps and confirm the existing site builds before you add pages.
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 Expected (abridged):
@@ -865,13 +871,13 @@ relevant `pages` arrays should read like the following (existing entries kept, E
 Then build and audit:
 
 ```bash
-pnpm typecheck
-pnpm build
-pnpm lint:links
+bun run typecheck
+bun run build
+bun run lint:links
 ```
 
-Expected: `pnpm typecheck` clean; `pnpm build` ends `✓ built in <N>s` with no `[unhandledRejection]`
-/ `Failed to fetch` lines; `pnpm lint:links` exits 0.
+Expected: `bun run typecheck` clean; `bun run build` ends `✓ built in <N>s` with no `[unhandledRejection]`
+/ `Failed to fetch` lines; `bun run lint:links` exits 0.
 
 
 ## Validation and Acceptance
@@ -881,7 +887,7 @@ Acceptance is observable behavior, not just "files exist".
 1. **The site builds and prerenders the new pages.** From the repo root:
 
    ```bash
-   pnpm build
+   bun run build
    ```
 
    Succeeds (`✓ built`) and the log shows the twenty new routes prerendered: the five
@@ -893,7 +899,7 @@ Acceptance is observable behavior, not just "files exist".
 2. **Zero crawler warnings.**
 
    ```bash
-   pnpm build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
+   bun run build 2>&1 | grep -E "unhandledRejection|Failed to fetch" || echo "no crawler warnings"
    ```
 
    Expected: `no crawler warnings`.
@@ -901,7 +907,7 @@ Acceptance is observable behavior, not just "files exist".
 3. **Links pass the link-checker.**
 
    ```bash
-   pnpm lint:links
+   bun run lint:links
    ```
 
    Expected: exit code 0 (no broken internal links).
@@ -968,7 +974,7 @@ Acceptance is observable behavior, not just "files exist".
    (Closing fences are bare ```` ``` ````; eyeball any hits to confirm they are closers, not untagged
    openers.)
 
-9. **The pages render in a browser.** Run `pnpm dev`, open
+9. **The pages render in a browser.** Run `bun run dev`, open
    `http://localhost:3000/docs/keiki/reference/decider`, and confirm the `<TypeTable>` renders all
    five fields, the legacy-façade warning callout shows, and the derivations walkthrough appears
    nested under "Code Walkthrough" → "Derivations" in the sidebar.
@@ -976,13 +982,13 @@ Acceptance is observable behavior, not just "files exist".
 
 ## Idempotence and Recovery
 
-Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `pnpm build`,
-`pnpm typecheck`, and `pnpm lint:links` is idempotent. If a page name needs to change, rename the
+Every step is safe to repeat. Authoring `.mdx` files is additive; re-running `bun run build`,
+`bun run typecheck`, and `bun run lint:links` is idempotent. If a page name needs to change, rename the
 file *and* update the matching `meta.json` slug in the same edit — a slug pointing at a missing file
 (or a file missing from `pages`) yields a broken sidebar entry, not a crash, so the build still exits
-0; catch it with the browser check (acceptance #9) and `pnpm lint:links`.
+0; catch it with the browser check (acceptance #9) and `bun run lint:links`.
 
-If `pnpm build` reports a `Failed to fetch` for a link, or `pnpm lint:links` reports a broken link,
+If `bun run build` reports a `Failed to fetch` for a link, or `bun run lint:links` reports a broken link,
 the cause is almost always a relative link or a link to a page that does not exist yet. Run
 acceptance check #4 to find relative links and fix them to absolute paths. For the **soft-dep links
 into EP-21** (`/docs/keiki/explanation/the-symtransducer`, `/docs/keiki/explanation/registers-vs-state`)
@@ -1084,3 +1090,5 @@ source; full signatures are in Context): from `Keiki.Decider` — `Decider` (fiv
 `deriveWireCtorsAll`, `deriveWireCtorsWith`, `deriveAggregate`, `deriveView`, `DeriveCtorOptions`,
 `defaultDeriveCtorOptions`, `DeriveWireOptions`, `defaultDeriveWireOptions`; from `Keiki.Shape` —
 `CanonicalTypeName`, `KnownRegFileShape`, `regFileShapeHash`, `renderStableTypeRep`, `sha256Hex`.
+
+> Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.
