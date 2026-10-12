@@ -10,7 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as ApiSearchRouteImport } from './routes/api/search'
+import { Route as ApiSearchDotjsonRouteImport } from './routes/api/search[.]json'
 import { Route as DocsSplatRouteImport } from './routes/docs/$'
 import { Route as ApiMarkdownSplatRouteImport } from './routes/api.markdown.$'
 
@@ -19,9 +19,9 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiSearchRoute = ApiSearchRouteImport.update({
-  id: '/api/search',
-  path: '/api/search',
+const ApiSearchDotjsonRoute = ApiSearchDotjsonRouteImport.update({
+  id: '/api/search.json',
+  path: '/api/search.json',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DocsSplatRoute = DocsSplatRouteImport.update({
@@ -37,34 +37,34 @@ const ApiMarkdownSplatRoute = ApiMarkdownSplatRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/api/search': typeof ApiSearchRoute
+  '/api/search.json': typeof ApiSearchDotjsonRoute
   '/docs/$': typeof DocsSplatRoute
   '/api/markdown/$': typeof ApiMarkdownSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/api/search': typeof ApiSearchRoute
+  '/api/search.json': typeof ApiSearchDotjsonRoute
   '/docs/$': typeof DocsSplatRoute
   '/api/markdown/$': typeof ApiMarkdownSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/api/search': typeof ApiSearchRoute
+  '/api/search.json': typeof ApiSearchDotjsonRoute
   '/docs/$': typeof DocsSplatRoute
   '/api/markdown/$': typeof ApiMarkdownSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/search' | '/docs/$' | '/api/markdown/$'
+  fullPaths: '/' | '/api/search.json' | '/docs/$' | '/api/markdown/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/search' | '/docs/$' | '/api/markdown/$'
-  id: '__root__' | '/' | '/api/search' | '/docs/$' | '/api/markdown/$'
+  to: '/' | '/api/search.json' | '/docs/$' | '/api/markdown/$'
+  id: '__root__' | '/' | '/api/search.json' | '/docs/$' | '/api/markdown/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ApiSearchRoute: typeof ApiSearchRoute
+  ApiSearchDotjsonRoute: typeof ApiSearchDotjsonRoute
   DocsSplatRoute: typeof DocsSplatRoute
   ApiMarkdownSplatRoute: typeof ApiMarkdownSplatRoute
 }
@@ -78,11 +78,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/search': {
-      id: '/api/search'
-      path: '/api/search'
-      fullPath: '/api/search'
-      preLoaderRoute: typeof ApiSearchRouteImport
+    '/api/search.json': {
+      id: '/api/search.json'
+      path: '/api/search.json'
+      fullPath: '/api/search.json'
+      preLoaderRoute: typeof ApiSearchDotjsonRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/docs/$': {
@@ -104,7 +104,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ApiSearchRoute: ApiSearchRoute,
+  ApiSearchDotjsonRoute: ApiSearchDotjsonRoute,
   DocsSplatRoute: DocsSplatRoute,
   ApiMarkdownSplatRoute: ApiMarkdownSplatRoute,
 }

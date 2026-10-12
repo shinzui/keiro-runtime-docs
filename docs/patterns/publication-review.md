@@ -8,7 +8,7 @@ The committed Git tree contains 88 concepts and 16 reserved files. The OKF graph
 
 Types: Standard: 46, Pattern: 6, Overview: 7, Runbook: 4, Gotcha: 3, Navigation: 1, Guide: 19, Assessable Standard: 1, Reference: 1. Statuses: current: 88.
 
-Profile descriptor: `okf/runtime-patterns.dhall`, SHA-256 `01be974e8b8a72abfc9ddf315a2fc20fb5b81ffce72bfbacb40ee7d86138738f`.
+Profile descriptor in `mori://shinzui/keiro-runtime-patterns`, project-relative `okf/runtime-patterns.dhall` (artifact-level URI pending), SHA-256 `01be974e8b8a72abfc9ddf315a2fc20fb5b81ffce72bfbacb40ee7d86138738f`.
 
 ```dhall
 let profiles =
@@ -23,22 +23,22 @@ Owner checks ran against a task-owned temporary Git tree. Strict runtime profile
 
 ## Scoped evidence
 
-- `runtime-patterns/architecture/index.md`
-- `runtime-patterns/architecture/log.md`
-- `runtime-patterns/config/index.md`
-- `runtime-patterns/config/log.md`
-- `runtime-patterns/index.md`
-- `runtime-patterns/keiki/index.md`
-- `runtime-patterns/keiki/log.md`
-- `runtime-patterns/keiro/index.md`
-- `runtime-patterns/keiro/log.md`
-- `runtime-patterns/kiroku/index.md`
-- `runtime-patterns/kiroku/log.md`
-- `runtime-patterns/log.md`
-- `runtime-patterns/messaging/index.md`
-- `runtime-patterns/messaging/log.md`
-- `runtime-patterns/migrations/index.md`
-- `runtime-patterns/migrations/log.md`
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/architecture/index.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/architecture/log.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/config/index.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/config/log.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/index.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/keiki/index.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/keiki/log.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/keiro/index.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/keiro/log.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/kiroku/index.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/kiroku/log.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/log.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/messaging/index.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/messaging/log.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/migrations/index.md` (reserved artifact URI pending).
+- `mori://shinzui/keiro-runtime-patterns`, project-relative `runtime-patterns/migrations/log.md` (reserved artifact URI pending).
 
 ## Source qualification gaps
 
@@ -63,3 +63,13 @@ The new drawings intentionally distinguish offline fenced rebuild from beside-se
 ## Incremental proof and release gates
 
 The temporary-repository tests cover a material concept plus nearest-log change with unchanged root log. Import leaves the completed pointer unchanged and fails stale visual review. Explicit re-review and matching pointer clear it. Rename retains identity and a route stub; deletion keeps a labeled historical route. Deterministic reruns, missing/edited/extra outputs, dirty-source exclusion, safe literal compilation, and staged failure preservation pass.
+
+The complete `nix develop -c pnpm check` release gate passed after the final presentation fix: 12 pattern/status fixtures and seven prose fixtures, zero prose errors, terminology, typechecking, lint, formatting, 598-page navigation, all 259 SVG assets/references, production build, and source links. The static crawler reports zero links scanned; the source checker and importer provide document/link and bundle-anchor coverage instead.
+
+Production browser review covered the landing inventory, long read-model standard, historical Codd migration, behavior-conformance criteria, eight scoped histories, every drawing batch on desktop and phone, and the additional configuration illustration. Search finds the imported projection catalog and opens its real route. The offered Markdown view and copy control preserve canonical resource, full revision, applicability, all five criteria, and readable diagram text without executable component markup or a fabricated owner edit URL. Search exports an explicit JSON artifact to avoid SPA-shell rewriting; nested Markdown exports use the plain-text splat endpoint.
+
+Coupled product review corrected rich-query delivery policy and the truncated-history snapshot exception in the read-side explanation, and linked the product catalog reference to canonical policy. Deploy ordering, evolution gates, and event-envelope upcasting remain coherent. Product API references retain their independent library review boundaries; ordinary upstream drift is not hidden by the new publication pointer.
+
+The completed baseline is recorded in `docs/runtime-patterns-source-sync.md` at the selected full SHA after source, visual, product, browser, and release checks. The owner checkout is clean and its eight library watermarks are unchanged.
+
+Final read-only status reports the patterns publication as `reviewed`, with matching imported/completed-review SHAs, no pending visual issues, zero commits behind, and a clean owner checkout. The complete status command still discovers all 12 boundaries: eight pre-existing library boundaries are behind and four boundaries are current. No ordinary library pointer was advanced. The review browser blocked direct plain-text navigation/reload with `ERR_BLOCKED_BY_CLIENT`; opening the site's offered Markdown link displayed the complete final artifact, and HTTP 200 `text/plain` plus the copy control were independently verified.

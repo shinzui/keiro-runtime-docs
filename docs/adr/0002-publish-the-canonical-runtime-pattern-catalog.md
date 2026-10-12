@@ -24,6 +24,8 @@ The completed publication pointer must match the imported commit after all sourc
 
 Every committed concept is discoverable through navigation, search, and Markdown export. Export uses a dedicated splat endpoint and plain-text artifact extension, avoiding executable MDX and development-server Markdown module interception. Source gaps and stale upstream reviews remain evidence rather than implied approval. Review records distinguish faithful publication from source release certification.
 
+Export the static search database at `/api/search.json` and configure the client to fetch that artifact. The filename extension keeps static hosts from rewriting this data request to the SPA shell.
+
 Generated files are outputs. Refresh validates staged coverage and links before replacement, rejects human collisions or edited output, and removes only recorded generated files. Renames retain identity and a route stub; removed concepts retain a labeled historical route when previously published.
 
 ## Evidence

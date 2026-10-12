@@ -5,7 +5,7 @@ import { source } from "@/lib/source"
 
 const server = createFromSource(source)
 
-export const Route = createFileRoute("/api/search")({
+export const Route = createFileRoute("/api/search.json")({
   server: {
     handlers: {
       GET: () => server.staticGET(),

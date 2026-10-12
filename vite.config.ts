@@ -26,7 +26,7 @@ export default defineConfig({
           crawlLinks: true,
         },
       },
-      pages: [{ path: "/docs" }, { path: "/api/search" }],
+      pages: [{ path: "/docs" }, { path: "/api/search.json" }],
     }),
     react(),
     // See https://tanstack.com/start/latest/docs/framework/react/guide/hosting#nitro

@@ -43,14 +43,18 @@ The site reveals the standards agents can use. It does not prove that an agent f
 
 - [x] (2026-10-11 23:40Z) Establish ownership and release-scope decisions; inventory the committed catalog, profile, and scoped logs.
 - [x] (2026-10-11 23:40Z) Implement deterministic snapshot import, generation, coverage checks, and meaningful failure tests.
-- [ ] Publish every concept with navigation, search, provenance, supplied criteria, Markdown export, and audit guidance.
+- [x] (2026-10-12 00:08Z) Publish every concept with navigation, search, provenance, supplied criteria, Markdown export, and audit guidance.
 - [x] (2026-10-11 23:53Z) Assess the complete catalog for visual explanations and record diagram or text-only decisions.
 - [x] (2026-10-11 23:53Z) Add at least 18 useful SVG explanations in three batches and enforce their relationship to reviewed source content.
-- [ ] Extend doc-sync and its companions, register the initial reviewed pointer, and demonstrate incremental synchronization.
-- [ ] Pass the release gate, inspect browser and diagram previews, and distill durable decisions into ADRs.
+- [x] (2026-10-12 00:08Z) Extend doc-sync and its companions, register the initial reviewed pointer, and demonstrate incremental synchronization.
+- [x] (2026-10-12 00:08Z) Pass the release gate, inspect browser and diagram previews, and distill durable decisions into ADRs.
 
 
 ## Surprises & Discoveries
+
+The static production host rewrote extensionless `/api/search` to the SPA shell. Exporting `/api/search.json` and configuring Fumadocs’ supported `from` option restores real search results without a dependency change. Browser review also caught a product-link paragraph merging into the last supplied criterion; a blank boundary now preserves the criterion as its own list item.
+
+Coupled product review found overly broad inline-projection guidance and an unqualified snapshot fallback claim. The local explanation now defaults rich queries to subscriptions and states the covering-snapshot requirement after history truncation. The independently reviewed library API boundary is not advanced by this publication.
 
 Browser review exposed an existing nested Markdown export 404: `{$}.md` is not a splat route. A dedicated `/api/markdown/$` route handles nested paths. Vite intercepts `.md` source requests even with a valid route; `.txt` with a plain-text MIME type works for the browser view and copy controls and preserves Markdown content. No dependency change was needed.
 
@@ -59,10 +63,12 @@ Phone-width expansion originally shrank SVG labels too far. Expanded diagrams no
 
 The committed owner check confirms 88 concepts, despite the smaller registered DocRef listing. Validation runs in a temporary tree because the owner regenerates indexes. Owner ADR-6 changed in commit `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e`; it is the selected publication target.
 
-Markdown stringification initially escaped entity markers, which would display entities literally. The compilation fixture exposed this. A text handler now emits inert literals after Markdown escaping; seven fixture tests pass.
+Markdown stringification initially escaped entity markers, which would display entities literally. The compilation fixture exposed this. A text handler now emits inert literals after Markdown escaping; the inert compilation fixture passes.
 
 
 ## Decision Log
+
+On 2026-10-12, use explicit `.json` and `.txt` artifacts for static search and Markdown export, with a dedicated splat route for nested Markdown paths. Source-control links and copied text must be exercised on the production build. ADR 2 records these hosting decisions and the semantic/asset-hash review boundaries.
 
 
 On 2026-10-11, publish every concept in the `runtime-patterns` OKF bundle, including guides and migration guidance. The reserved `index.md` and `log.md` files provide navigation and history, not normative concept pages. Repository plans, skills, and ADRs remain outside the public inventory. Complete coverage means the corpus agents can discover, not every administrative file in the repository.
@@ -82,10 +88,10 @@ On 2026-10-11, include doc-sync changes as implementation work. Do not register 
 
 Visual review covers all 88 canonical resources. The three six-asset batches plus configuration precedence provide 19 new SVGs; two existing evolution/upcaster diagrams are explicitly bound and reused without counting toward the new baseline. Every selected drawing was rendered in both themes; timer park/expiry and outbox boundaries were rerouted after clipping/arrow review. Desktop and phone expansion were inspected for each batch. Per-concept text-only reasons, source hashes, actor/time, and diagram asset hashes are recorded in `docs/patterns/presentation.json`.
 
-Twelve focused fixtures pass: committed-only deterministic import, unknown metadata and supplied criteria, nested logs, inventory integrity, inert MDX including imports/exports, staging preservation, human collisions, material-change review invalidation, unrelated/review-only retention, complete-section retirement, prose quotation integrity, pointer status, unavailable sources, and divergent or failed Git comparisons. Full gate and final pointer remain pending.
+Twelve focused fixtures pass: committed-only deterministic import, unknown metadata and supplied criteria, nested logs, inventory integrity, inert MDX including imports/exports, staging preservation, human collisions, material-change review invalidation, unrelated/review-only retention, complete-section retirement, prose quotation integrity, pointer status, unavailable sources, and divergent or failed Git comparisons. The full release gate passes, and `docs/runtime-patterns-source-sync.md` now records the completed fixed revision. The source link checker reports 598 files with no broken internal links; the static crawler itself reports zero scanned links, so its success is not additional coverage evidence.
 
 
-Ownership and deterministic import are implemented. Publication review records committed inventory, scoped evidence, profile digest, and source qualification gaps. Remaining work is the complete visual review, doc-sync integration, and release/browser validation.
+All milestones are complete. The production build passes navigation for 598 pages, all 259 referenced SVGs, typechecking, formatting, terminology, and zero-error prose checks. Browser review verified landing coverage, a long standard, historical migration guidance, assessable criteria, all scoped histories, search-to-catalog navigation, the offered Markdown view, and copied provenance with diagram text. Source-owned standards and library watermarks remain unchanged apart from the separately authorized publication ADR. The completed pointer matches the imported full SHA; subsequent material changes require visual review while unrelated commits do not invalidate the drawings.
 
 
 ## Context and Orientation
@@ -297,3 +303,5 @@ Revision note (2026-10-11): Expanded visual scope from six to at least 18 SVG ex
 Revision note (2026-10-11): Implemented ownership and committed-tree import, recorded inventory evidence, and added failure and incremental synchronization fixtures.
 
 Revision note (2026-10-11 23:53Z): complete the visual assessment inventory, add configuration and equivalent reused illustrations, record responsive and Markdown-export findings, and implement independent generated-source synchronization/status fixtures.
+
+Revision note (2026-10-12 00:08Z): complete production search and Markdown browser checks, clarify coupled read-side guidance, pass the complete release gate, and register the completed initial review boundary.

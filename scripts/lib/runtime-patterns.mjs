@@ -248,7 +248,7 @@ export function provenanceText(snapshot, c) {
       result += `- **${k.id}** (${k.severity}; evidence: ${k.evidenceKind}): ${k.statement}\n`
     result += "\n"
   }
-  return markdownData(result, c.path, snapshot)
+  return markdownData(result, c.path, snapshot) + (m.criteria?.length ? "\n" : "")
 }
 export function conceptMarkdown(snapshot, c, presentation) {
   let body = markdownData(c.raw, c.path, snapshot)

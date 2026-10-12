@@ -60,7 +60,11 @@ flowchart LR
 ## Projection: the writer
 
 An `InlineProjection` runs inside the event append transaction. If its table update fails, the
-events roll back too. This is ideal when the write cost is small and immediate visibility matters.
+events roll back too. Reserve it for the minimum state required by an explicit atomic invariant.
+Default rich query targets to subscription delivery, with bounded post-commit position waits when
+callers need read-your-write. Keep the atomic state and rich query targets under distinct owners and
+rebuild groups where their dependencies permit. The canonical [delivery guidance](/docs/runtime-patterns/keiro/read-models-and-projections)
+records that boundary.
 `runCommandWithProjections` receives a `ValidatedEventStream` to run the aggregate command, then
 calls `apply :: co -> RecordedEvent -> Transaction ()` for each emitted event. The projection
 callback receives neither the aggregate state nor its register file.
@@ -102,11 +106,16 @@ queries and projection callbacks never read it. Projection rebuild never reads i
 incompatible, or undecodable snapshot falls back to replaying the event log; correctness is
 unchanged and only command-hydration latency suffers.
 
+That fallback requires the event history to remain visible. After a per-stream prefix is truncated,
+a valid snapshot must cover it; deleting that snapshot produces `HydrationGapDetected`. Restore
+history visibility or install a covering snapshot before resuming commands. See the canonical
+[snapshot and truncation guidance](/docs/runtime-patterns/keiro/read-models-and-projections).
+
 That contrasts deliberately with a read model:
 
 | Primitive problem | Runtime response | Why |
 | --- | --- | --- |
-| Snapshot missing or incompatible | Full event replay | The event log remains durable truth. |
+| Snapshot missing or incompatible, with complete visible history | Full event replay | The event log remains durable truth. |
 | Read model unregistered or schema-stale | Reject the query | Serving an unknown table shape would expose incorrect user-facing data. |
 | Read model rebuilding | Fence live async writers and reject queries | One rebuilder must own destructive in-place repopulation. |
 
