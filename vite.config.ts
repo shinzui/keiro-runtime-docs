@@ -30,7 +30,9 @@ export default defineConfig({
     }),
     react(),
     // See https://tanstack.com/start/latest/docs/framework/react/guide/hosting#nitro
-    nitro(),
+    // Keep tslib in the server bundle: dependency tracing otherwise copies only
+    // tslib.es6.js while Node's export conditions select modules/index.js.
+    nitro({ noExternals: ["tslib"] }),
   ],
   resolve: {
     tsconfigPaths: true,

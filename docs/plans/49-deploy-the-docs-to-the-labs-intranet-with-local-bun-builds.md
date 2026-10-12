@@ -42,17 +42,25 @@ The user's instruction that this project uses Bun is authoritative. The command-
 ## Progress
 
 
-- [ ] Milestone 1: finish the user-authorized Bun command-path migration, fresh frozen install, and release gate.
+- [x] (2026-10-12 02:30Z) Milestone 1: migrated commands and references to Bun, verified a fresh frozen install with unchanged dependency identities, and passed the complete release gate with real static artifacts.
 - [ ] Milestones 2–6: deployment preflight, packaging, protected deployment, automatic runner setup, and live acceptance remain unimplemented.
 
 
 ## Surprises & Discoveries
 
 
-(None from implementation yet; planning evidence is recorded in Context and Orientation.)
+The lock migration preserved all 611 resolved package identities: zero additions and zero removals. A fresh frozen Bun 1.4.2 install succeeded after moving the previous dependency tree outside the checkout; the lock hash remained unchanged. The installed platform-specific dependency count is 511.
+
+The first release check returned exit 0 despite prerendering zero pages. Nitro copied `tslib.es6.js`, but Node's package export conditions selected the missing `modules/index.js`. Explicitly bundling `tslib` with Nitro's supported `noExternals` option restored prerendering without changing dependencies. The fixed build emitted 599 HTML files and 598 Markdown exports. A new post-build artifact check prevents this false success from recurring. The landing route uses the existing `_shell.html` SPA fallback rather than a root `index.html`.
+
+Font preparation is explicit once per build/dev command. `KEIRO_DOCS_SKIP_FONTS=1` exits before any licensed-font discovery, providing the unattended path used for validation. Both the full build and `bun run dev` logged preparation exactly once. The dev server started at `127.0.0.1:5214`; the runtime-patterns route returned HTTP 200 with the expected SPA shell and client entry. The smoke server was stopped after verification.
 
 
 ## Decision Log
+
+- Decision: Bundle only `tslib` explicitly and require representative static artifacts after every build.
+  Rationale: The fresh install exposed incomplete server dependency tracing, and the existing bundler/link checks did not fail when prerendering emitted zero pages. This fixes the build without dependency upgrades and makes missing HTML, search, or Markdown output a nonzero build result.
+  Date: 2026-10-12.
 
 - Decision: Complete only the toolchain migration in the current user-authorized task, including archived reference cleanup. Preserve historical verification scope and keep deployment milestones pending.
   Rationale: The user requested removal of every trace of the retired package manager; deployment is a separate operation.
@@ -83,7 +91,9 @@ The user's instruction that this project uses Bun is authoritative. The command-
 ## Outcomes & Retrospective
 
 
-(To be filled during implementation. Completion requires a real automatic deployment and verified protected access, not merely a workflow file or successful container build.)
+Milestone 1 is complete. Project-owned tooling, CI, task recipes, skills, archived examples, dependency metadata, and the managed ignore baseline now agree on Bun. The fresh frozen install preserved the lock hash and all 611 resolved package identities. `KEIRO_DOCS_SKIP_FONTS=1 nix develop -c bun run check` passed all 19 fixtures, prose, terminology, typechecking, lint, formatting, navigation, diagrams, production build, static artifacts, and source links. The output contains 599 HTML files and 598 Markdown exports. Temporarily removing search JSON made the artifact guard return nonzero; the artifact was restored immediately.
+
+Deployment milestones 2–6 remain unimplemented. No runner registration or Labs deployment is part of this completed toolchain cleanup. Completion of the entire plan still requires a real automatic deployment and verified protected access.
 
 
 ## Context and Orientation
@@ -211,7 +221,7 @@ After milestone 1, run the frozen install and release gate:
 
 ```bash
 nix develop --command bun install --frozen-lockfile
-nix develop --command bun run check
+KEIRO_DOCS_SKIP_FONTS=1 nix develop --command bun run check
 git diff --exit-code -- bun.lock
 ```
 
@@ -305,3 +315,5 @@ Bun and Node are build tools; Nginx is the static runtime; Nix supplies the alre
 Created on 2026-10-11 from the current working tree, local Mori registry, selected Nagare release sources, and the user's instructions. The plan corrects the earlier legacy package manager assumption and distinguishes current Nagare checkout APIs from the installed CLI and Labs release. No implementation, runner registration, platform upgrade, or production deployment was performed while creating it.
 
 > Maintenance note (2026-10-12): Command examples use the current Bun equivalents. Earlier dated verification results retain their original scope; this cleanup does not claim those historical runs used Bun.
+
+Revision note (2026-10-12): Completed only the user-requested Bun migration in milestone 1, recorded fresh-install and release evidence, and fixed the server dependency tracing failure exposed by the new install. Added mandatory output checks so missing HTML, search, or Markdown artifacts fail the build. Deployment remains pending.
