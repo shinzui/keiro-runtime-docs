@@ -44,7 +44,11 @@ try {
   const html = await check("/", /text\/html/, /<!doctype html>/i)
   await check("/docs/runtime-patterns/messaging/outbox", /text\/html/, /Outbox/i)
   await check("/api/search.json", /application\/json/, /runtime-patterns/)
-  await check("/api/markdown/runtime-patterns/messaging/outbox.txt", /text\/plain/, /^# /)
+  await check(
+    "/api/markdown/runtime-patterns/messaging/outbox.txt",
+    /text\/plain; charset=utf-8/,
+    /^# /,
+  )
   const asset = html.match(/(?:src|href)="([^" ]+\.js)"/)?.[1]
   assert.ok(asset, "SPA shell must reference JavaScript")
   await check(asset, /javascript/, /./)

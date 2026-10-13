@@ -44,19 +44,25 @@ The current user request authorizes a manual protected deployment. The original 
 
 - [x] (2026-10-12 02:30Z) Milestone 1: migrated project commands to Bun, verified a fresh frozen install preserving all 611 dependency identities, and passed the release gate with real static artifacts.
 - [x] (2026-10-13 04:59Z) Milestone 2: verified the operator environment and live intranet use Nagare v0.6.2 with exact CLI, cluster, host, context, and payload compatibility. Node `intranet-nagare` is Ready; auth is converged; no transaction or executor claim is active.
-- [ ] Milestone 3: verify the committed linux/amd64 image and archive with local HTTP checks.
+- [x] (2026-10-13) Milestone 3: built committed revision `b0e17e72ee7f044b37af5ad651e26ed0dc3b0a7f` for linux/amd64 with the complete release gate and a real HTTP smoke test. Root/deep HTML, JavaScript, bundled SVG, search, Markdown, health, SHA, and missing-file 404s passed. Saved the archive in private deployment state.
 - [ ] Milestone 4: publish the accepted image, apply the protected deployment, grant the existing operator account, and verify live HTTPS and access behavior.
 - [ ] Milestone 5: register a local runner and enable trusted-master automatic deployment.
 - [ ] Milestone 6: complete automatic-release, rollback, and authorized/denied browser acceptance for the broader plan.
 
-The manual packaging, protected config, local HTTP smoke check, deployment procedure, and hosting ADR are being implemented. Live acceptance has not yet been recorded.
+The initial image and protected deployment have converged, and the existing operator account has an accepted host grant. Browser acceptance found an omitted UTF-8 declaration on Markdown responses; a corrected immutable release is being built before recording final live acceptance.
 
 ## Surprises & Discoveries
 
 
 The previous plan described the retired `labs` context and Nagare v0.3.0. The operator checkout now owns context `intranet`, registry repository `nagare-intranet`, and release v0.6.2. Mori registration metadata lagged these working files; authoritative upstream release metadata and live platform status confirm v0.6.2.
 
-Nagare has first-class `StaticSite` and `ServerSite` support, but neither model in v0.6.2 has an access field. Protected `Deployment` is the supported route. The reviewed compiler keeps the origin private and contributes central routes to the accepted auth owner, including the default hostname.
+Nagare has first-class `StaticSite` and `ServerSite` support, but neither model in v0.6.2 has an access field. Protected `Deployment` is the supported route. The reviewed compiler keeps the origin private and contributes declared public routes to the accepted auth owner. When a custom domain is declared, the default Knative hostname is private rather than an additional public enforcer route.
+
+The real smoke test caught Nginx directory redirects using internal port 8080. Setting `absolute_redirect off` preserved the public host and passed the deep-route check. The smoke test also waits for container readiness before making route assertions.
+
+Live Markdown opened successfully after the host grant, but punctuation rendered as mojibake because the text response omitted a charset. `charset utf-8` in Nginx declares the source encoding, and the smoke check now requires it on Markdown exports. The [upstream charset reference](https://nginx.org/en/docs/http/ngx_http_charset_module.html) documents this response-header behavior.
+
+Reviewed access planning and applying both require private `NAGARE_EN_API_KEY`. The adapter opens its own private port-forward, but does not acquire that credential. An apply attempted outside that environment stopped with a known-no-effect preflight refusal; the same transaction converged through `inventory resume` with the key supplied. The initial TLS issuance failed at the ACME finalize endpoint after successful DNS validation. The supported single-certificate `cmctl renew` recovery produced a valid Ready certificate; no TLS or auth policy was weakened.
 
 The build emits `_shell.html` rather than root `index.html`. Packaging supplies the root entry point and preserves prerendered routes. Diagrams are bundled SVG strings in JavaScript modules, not standalone public SVG files; smoke checks verify the real emitted diagram module. Search is `/api/search.json`, and Markdown exports have `.txt` extensions.
 
@@ -97,7 +103,7 @@ The site sources are `content/docs/`, `src/`, `source.config.ts`, and `vite.conf
 
 Follow [the complete deployment procedure](../deployment.md). `nagare/Config.hs` emits a `Deployment` with `requireLogin` and reads `KEIRO_DOCS_IMAGE_TAG`. `scripts/build-docs-image.sh`, exposed as `just deploy-image`, requires clean committed source, runs frozen installation and the complete gate, prepares root HTML and `/_deployment.json`, builds a linux/amd64 image, runs `scripts/check-docs-container.mjs`, and exports the archive. `deploy/Dockerfile`, `deploy/nginx.conf`, and `.dockerignore` define the runtime and narrow packaging boundary.
 
-Save and inspect the image review, then apply it. Save and inspect the Service review with the accepted image resource. Require a private origin plus protected canonical and default routes before applying. Grant the existing operator email through the existing en procedure. Verify HTTPS, anonymous denial/login, protected API behavior, and authorized usability. Retain full image/source evidence privately.
+Save and inspect the image review, then apply it. Save and inspect the Service review with the accepted image resource. Require a private origin plus a protected canonical route before applying; verify the default hostname cannot bypass protection. Grant the existing operator email through the existing en procedure. Verify HTTPS, anonymous denial/login, protected API behavior, and authorized usability. Retain full image/source evidence privately.
 
 ### Milestone 5: Automatic deployment
 

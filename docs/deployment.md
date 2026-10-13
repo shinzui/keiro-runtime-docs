@@ -43,9 +43,9 @@ jq '.operations[] | {operation, summary}' "$REVIEWS/deploy/review.json"
 direnv exec "$LABS_REPO" nagarectl inventory apply "$REVIEWS/deploy" --yes
 ```
 
-Require exact CLI/cluster/context/host compatibility, node `intranet-nagare` Ready, and null `activeTransaction`/`executorClaim`. The image review must only publish this image. The deployment review must keep the origin private and route both canonical and default hostnames through `nagare-access`. Read the reviews before applying. Keep the archive unchanged until publication completes. Reuse an accepted publication for retries; do not rebuild and overwrite the same published tag.
+Require exact CLI/cluster/context/host compatibility, node `intranet-nagare` Ready, and null `activeTransaction`/`executorClaim`. The image review must only publish this image. The deployment review must keep the origin private and route the canonical hostname through `nagare-access`. The default Knative hostname must not provide public access to the origin. Read the reviews before applying. Keep the archive unchanged until publication completes. Reuse an accepted publication for retries; do not rebuild and overwrite the same published tag.
 
-Grant the intended account access using the operator procedure in `mori://tan/tan-ng-labs`, project-relative `docs/runbooks/operations.md` (artifact-level URI pending):
+Grant the intended account access using the operator procedure in `mori://tan/tan-ng-labs`, project-relative `docs/runbooks/operations.md` (artifact-level URI pending). Run both commands within its private en credential environment:
 
 ```bash
 direnv exec "$LABS_REPO" nagarectl access grant \
@@ -54,7 +54,7 @@ direnv exec "$LABS_REPO" nagarectl access grant \
 direnv exec "$LABS_REPO" nagarectl inventory apply "$REVIEWS/grant" --yes
 ```
 
-The operator runbook supplies the private en connection for planning access changes. Never print its API key or browser session cookies. A grant can take up to 30 seconds to enter the access cache.
+The operator runbook supplies the private en connection and `NAGARE_EN_API_KEY`. Reviewed planning and applying both require that key; the reviewed adapter opens its own private port-forward. If apply stops with a known-no-effect credential error, supply the key and use `inventory resume TRANSACTION --yes` for that transaction. Never print the API key or browser session cookies. A grant can take up to 30 seconds to enter the access cache.
 
 ## Verify and recover
 
