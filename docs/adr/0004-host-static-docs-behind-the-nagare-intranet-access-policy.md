@@ -16,6 +16,8 @@ Use the operator environment from `mori://tan/tan-ng-labs`, project-relative `.e
 
 Build from clean committed source with the frozen Bun lock and the full release gate. Put the full source SHA in the image label and `/_deployment.json`; use `git-<full-SHA>` tags. Serve the SPA shell at the root, real prerendered deep routes, and strict 404s for absent API and asset files. Skip optional licensed fonts for releases.
 
+Use relative directory redirects (`absolute_redirect off`) so Nginx does not expose internal port 8080 in public URLs. Declare `charset utf-8` so browsers decode Markdown punctuation correctly. Verify both behaviors against the actual runtime container before publication. Keep the private en API key available throughout reviewed grant planning and applying; automatic private transport does not acquire the credential.
+
 ## Consequences
 
 The static runtime needs no Node server or persistent data. All docs, search, exports, and assets pass through the platform access enforcer. Users need separate grants for this host. First-class protected site hosting can replace this packaging when Nagare supports it; making that platform change is separate work.

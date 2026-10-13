@@ -44,12 +44,12 @@ The current user request authorizes a manual protected deployment. The original 
 
 - [x] (2026-10-12 02:30Z) Milestone 1: migrated project commands to Bun, verified a fresh frozen install preserving all 611 dependency identities, and passed the release gate with real static artifacts.
 - [x] (2026-10-13 04:59Z) Milestone 2: verified the operator environment and live intranet use Nagare v0.6.2 with exact CLI, cluster, host, context, and payload compatibility. Node `intranet-nagare` is Ready; auth is converged; no transaction or executor claim is active.
-- [x] (2026-10-13) Milestone 3: built committed revision `b0e17e72ee7f044b37af5ad651e26ed0dc3b0a7f` for linux/amd64 with the complete release gate and a real HTTP smoke test. Root/deep HTML, JavaScript, bundled SVG, search, Markdown, health, SHA, and missing-file 404s passed. Saved the archive in private deployment state.
-- [ ] Milestone 4: publish the accepted image, apply the protected deployment, grant the existing operator account, and verify live HTTPS and access behavior.
+- [x] (2026-10-13) Milestone 3: built committed revision `c7ceab9ef45536ed409b863ffcc3359c10419e00` for linux/amd64 with the complete release gate and a real HTTP smoke test. Root/deep HTML, JavaScript, bundled SVG, search, UTF-8 Markdown, health, SHA, and missing-file 404s passed. Saved the archive in private deployment state.
+- [x] (2026-10-13 12:57Z) Milestone 4: published and applied the protected release as Ready revision `keiro-docs-00002`; the running image digest and embedded SHA match publication. Granted `nadeem@topagentnetwork.com` through a converged reviewed transaction. Valid HTTPS, anonymous login/401 responses, signed-in ungranted denial before the grant, authorized navigation/search/diagrams, and private default-host behavior were observed. Final inventory has null transaction and executor claim.
 - [ ] Milestone 5: register a local runner and enable trusted-master automatic deployment.
 - [ ] Milestone 6: complete automatic-release, rollback, and authorized/denied browser acceptance for the broader plan.
 
-The initial image and protected deployment have converged, and the existing operator account has an accepted host grant. Browser acceptance found an omitted UTF-8 declaration on Markdown responses; a corrected immutable release is being built before recording final live acceptance.
+The authorized manual deployment is complete. The corrected immutable release is live with its existing operator host grant. Milestones 5 and 6 retain the original broader automation scope.
 
 ## Surprises & Discoveries
 
@@ -82,7 +82,13 @@ Complete the manual deployment authorized in this session. Keep runner registrat
 ## Outcomes & Retrospective
 
 
-The toolchain milestone is complete. Manual deployment evidence will be added after the live checks. No self-hosted runner or deployment CI job has been installed. The broader plan cannot be marked complete until its automatic deployment and recovery acceptance pass.
+The manual deployment is complete at <https://keiro-docs.labs.topagentnetwork.net>. The running image is `sha256:dd2e3edba229702f0914d247c3cf224fdce4f4fb9f60dbbf6a0c64a17ca5e844` from source `c7ceab9ef45536ed409b863ffcc3359c10419e00`. Image review `7ce9f2549f8498ec5a45ddc57ac27d605f96c5e646565c76d81d5926bc31b9e7`, Service review `92d0f060fa04f04d7e5fcc682543bb8573a0451cba8d05354e1e679434fda5cd`, and access review `38b4868de9f366d034962ad8b755c9de8ee8c8240ef4c61d605a8f43ee0609ff` all converged. The prior accepted image remains available for rollback.
+
+Anonymous root, deep HTML, search, Markdown, and build-metadata requests return login redirects. Search requested with JSON Accept returns 401 JSON. The default hostname returns HTTP 404 and rejects HTTPS before serving content. The canonical origin retains `cluster-local` visibility and its DomainMapping targets the access enforcer. The existing protected hello route still returns the expected HTTPS login redirect.
+
+Browser checks proved the existing signed-in account was denied before its grant, then could read the homepage, deep Outbox route, search results and their destination, SVG diagrams, and the Markdown export. The final homepage was checked after the UTF-8 correction. Chrome blocked direct build-metadata navigation and later raw-text reloads with `ERR_BLOCKED_BY_CLIENT`, including the existing hello page. Browser protections were left enabled. The final live origin's metadata SHA and HTTP 200 `text/plain; charset=utf-8` Markdown response were verified through the operator connection; final container smoke checks also passed. This limitation does not establish final raw-text browser acceptance.
+
+Private archives, saved reviews, and the receipt live under `~/.local/state/keiro-docs/intranet/`; the final receipt is `reviews/git-c7ceab9ef45536ed409b863ffcc3359c10419e00/receipt.json`. No self-hosted runner or deployment CI job has been installed. The broader plan cannot be marked complete until its automatic deployment and recovery acceptance pass.
 
 ## Context and Orientation
 

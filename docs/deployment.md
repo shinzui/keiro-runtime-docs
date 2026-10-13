@@ -63,3 +63,7 @@ Anonymous HTML requests must reach login; JSON/API requests must receive an auth
 For a later rollback, retain the accepted publication and its archive/receipt, select that publication's original tag in `KEIRO_DOCS_IMAGE_TAG`, and save/apply another protected Service deployment with its exact image resource and original source SHA. Do not rebuild historical source. Interrupted transactions use Nagare's named inventory resume/recovery path; inspect the active transaction before retrying.
 
 CI currently verifies pushes and pull requests. Automatic deployment and self-hosted runner registration have not been enabled.
+
+## Deployed release
+
+On 2026-10-13, source `c7ceab9ef45536ed409b863ffcc3359c10419e00` was published as `keiro-docs:git-c7ceab9ef45536ed409b863ffcc3359c10419e00` in the intranet app registry. Ready revision `keiro-docs-00002` runs digest `sha256:dd2e3edba229702f0914d247c3cf224fdce4f4fb9f60dbbf6a0c64a17ca5e844`. The existing operator account has a host grant. The full gate, container smoke check, live HTTPS and access boundary, authorized homepage/navigation/search/diagrams, and live origin UTF-8 Markdown response passed. [ExecPlan 49](plans/49-deploy-the-docs-to-the-labs-intranet-with-local-bun-builds.md) records the saved review identities and browser limitations.
