@@ -45,3 +45,7 @@ lint-links:
 # Run every documentation and application release gate
 check:
     bun run check
+
+# Check committed source, build linux/amd64, verify HTTP routes, and save an archive
+deploy-image:
+    bash scripts/build-docs-image.sh

@@ -96,4 +96,6 @@ For licensed local fonts, read [the font setup guide](docs/optional-commercial-f
 
 `bun run build` writes the static site to `.output/public/`.
 CI verifies pushes and pull requests to `master`.
-Serve that directory with a static host.
+The protected Nagare intranet deployment uses `nagare/Config.hs` and a static
+Nginx image. See [the deployment procedure](docs/deployment.md) for building,
+publishing, access grants, verification, and recovery.
