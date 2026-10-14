@@ -109,6 +109,9 @@ git -C "$REPO" status --porcelain                        # dirty? note it
 4. Add a row to `LIBRARIES.md`.
 5. `status.mjs` picks it up automatically — it globs `docs/*source-sync.md` and parses the mori name
    and SHA. Confirm with `node agents/skills/doc-sync/status.mjs <library>`.
+6. For a public runtime package, register release coverage per CHANGELOG.md: inventory its packages,
+   seed verified release history, wire the page and navigation, and record release evidence.
+   An example app or pattern catalog does not require package changelog registration.
 
 ## Generated catalog boundary
 

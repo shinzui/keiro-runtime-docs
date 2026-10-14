@@ -17,6 +17,12 @@ Language 6 is the only supported Keiro DSL language in the release documentation
 Obsolete Keiro upgrade guides and the older example-app tour are retired.
 Historical plans and source-review records remain under `docs/`.
 
+The [changelog](content/docs/changelog/index.mdx) covers the runtime package families and adapters,
+starting with three published releases per package. Source-only and archived packages are explicitly
+labelled. Hackage and upstream tag evidence is recorded in [the release review](docs/changelog-release-review.md).
+The [doc-sync skill](agents/skills/doc-sync/SKILL.md) checks and maintains release history independently
+of API review pointers; its [release procedure](agents/skills/doc-sync/CHANGELOG.md) applies even when no source commits changed.
+
 The [runtime catalog](content/docs/runtime-patterns/index.mdx) publishes all 88 concepts from a fixed committed revision of `mori://shinzui/keiro-runtime-patterns/okf/runtime-patterns`. Historical and candidate source examples remain qualified quotations. Local product guidance remains Language 6. Source rules are maintained in the owner; site explanations and SVGs are maintained here.
 
 Refresh with `nix develop -c bun run sync:patterns --ref FULL_COMMIT_SHA`. Do not edit generated MDX. Review the snapshot diff, all invalidated concept visual assessments and diagram bindings in `docs/patterns/presentation.json`, and coupled product pages. Render changed drawings in both themes and inspect desktop/mobile expansion. Complete the [pattern sync procedure](agents/skills/doc-sync/PATTERNS.md) before advancing [the reviewed pointer](docs/runtime-patterns-source-sync.md).

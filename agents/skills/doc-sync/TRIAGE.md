@@ -27,6 +27,7 @@ review.
 | **Deprecated API** | UPDATE with a deprecation callout | keep the page; name the replacement and the version |
 | **Removed API** | RETIRE per §4 | |
 | **Dependency bump** | UPDATE only if it changes a documented constraint | `getting-started/compatibility-and-upgrades.mdx`, the pointer's *Reviewed release* line |
+| **Published package release / metadata revision / publication-status change** | UPDATE release history even if source changes are otherwise doc-neutral | `changelog/` and `docs/changelog-release-review.md` per CHANGELOG.md; API boundaries remain independent |
 | **Chore / format / refactor with byte-identical public surface** | NO-OP | record as reviewed in the range summary |
 | **Upstream doc/plan/research-only commit** | NO-OP | if it describes unshipped work, record it as an explicit gap |
 | **Test-only change** | NO-OP, unless it reveals a documented behaviour was wrong | |

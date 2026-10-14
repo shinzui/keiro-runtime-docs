@@ -1,13 +1,14 @@
 ---
 name: doc-sync
 description: >
-  Refresh manually ported library documentation and the generated runtime pattern publication. Walks the tracked upstream
+  Refresh manually ported library documentation, package changelogs, and the generated runtime pattern publication. Walks the tracked upstream
   repos (keiro, keiki, kiroku, shibuya + adapters, pgmq-hs, pg-migrate, keiro-runtime-jitsurei) from
   each one's pinned "last reviewed commit", classifies every upstream change into a documentation
   action — add a new page, update an existing one, retire a stale one, or explicitly no-op — applies
   the edits, runs the gates, and bumps the pointer so the next round only reads new commits.
   TRIGGER when: a framework/library under the docs changed, the docs need to catch up with source,
-  the user asks what upstream drift is un-documented, a committed runtime catalog changed, its publication needs refresh, or a new upstream library must be tracked.
+  the user asks what upstream drift is un-documented, package releases or changelogs need checking,
+  a committed runtime catalog changed, its publication needs refresh, or a new upstream library must be tracked.
 argument-hint: <status|sync|register> [library|runtime-patterns …]
 user-invocable: true
 ---
@@ -16,19 +17,25 @@ user-invocable: true
 
 Most `content/docs/` pages are ported and cross-checked against upstream Haskell source. `content/docs/runtime-patterns/` is a generated presentation of the normative owner `mori://shinzui/keiro-runtime-patterns/okf/runtime-patterns`. Both need completed review boundaries; they use different editing workflows. Read **PATTERNS.md** for any pattern sync or registration, then follow its procedure instead of the library-only phases below. `status` stays read-only for both.
 
+`content/docs/changelog/` records published package history. Read **CHANGELOG.md** for every
+library status, sync, registration, or release-history request. Its release evidence is independent
+of the API and catalog pointers. A changelog-only request follows that companion's procedure
+without implying a full source review or advancing source pointers.
+
 Library-only sync must report potentially affected catalog subjects and its separate source/published boundaries, as described in PATTERNS.md. It must not imply that moving a library pointer reviewed the catalog.
 
 Three modes:
 
 | Mode | Ask | Do |
 | --- | --- | --- |
-| `status` | "what's un-documented?", "are the docs current?" | Phase 1 only, then report |
+| `status` | "what's un-documented?", "are the docs current?" | Phase 1 plus read-only release checks, then report |
 | `sync` | "update the docs for X", "catch the docs up" | All phases |
 | `register` | "track library Y too" | `POINTER.md` → *Registering a new upstream* |
 
 Companion files (read on demand, not up front):
 
 - **`PATTERNS.md`** — committed catalog publication, visual review, independent source directions, and recovery.
+- **`CHANGELOG.md`** — cohort package inventory, registry/tag verification, release-history edits, and independent evidence.
 - **`TRIAGE.md`** — the change → documentation-action matrix. The admission tests for adding a new
   guide / how-to / walkthrough chapter / cookbook recipe, the update ordering, and the retirement
   rules. **Read this before writing or deleting any page.**
@@ -55,7 +62,12 @@ Then, per library with drift, read `LIBRARIES.md` for its gotchas and its pointe
 range** note — the previous round's summary tells you what was already folded in and what was
 recorded as a known gap.
 
-Stop here for `status`: report commits behind per library, plus a one-line guess at doc impact.
+For every selected library, check releases per **CHANGELOG.md**, even with zero source drift.
+`status.mjs` reports commit drift only: it does not query Hackage or certify release-history freshness.
+New uploads, package revisions, and tags can appear without changing upstream `HEAD`.
+
+Stop here for `status`: report commits behind per library, a one-line guess at doc impact, and
+missing package releases or unverified release checks. Leave pages and release evidence unchanged.
 Do not bump anything.
 
 ## Phase 2 — Read intent before source
@@ -68,7 +80,7 @@ Cheapest-first, for the range `<pinned>..HEAD`:
 4. **`docs/plans/*`, `docs/masterplans/*`** — intent and scope only.
 5. **The source diff** — the only authority.
 
-Two hard rules:
+Release and source rules:
 
 - **Shipped source wins.** Upstream `docs/research/*` and `docs/plans/*` predate the implementation
   and diverge from it (renamed types, different SQL columns, unimplemented features). Never
@@ -76,6 +88,9 @@ Two hard rules:
 - **Un-landed is not shipped.** A plan describing work not in the source, or an untracked/dirty file
   in the upstream worktree, must not be documented as a shipped API. Record it as an explicit gap in
   the pointer's range summary and move on.
+- **Committed is not necessarily released.** Published history comes from verified release tags
+  and registry versions, not the `HEAD` changelog or an unchanged Cabal version. Keep candidate
+  language status and source-only features qualified as described in **CHANGELOG.md**.
 
 ## Phase 3 — Build the change ledger
 
@@ -93,6 +108,10 @@ documentation action it implies. Classify each with **`TRIAGE.md`**.
 Every commit in the range must land in a row, including `NO-OP` rows — that is what makes the pointer
 bump honest. Fold the ledger's shape into the range summary you write in Phase 6.
 
+Add release rows for new package versions and publication-status changes, including bounds-only
+and coordinated releases. A source diff can be doc-neutral while its published release still needs
+a changelog entry. Release-only work uses the release ledger, not a fabricated source-review range.
+
 ## Phase 4 — Apply the edits
 
 Follow `TRIAGE.md`'s ordering (reference → explanation → how-to/tutorial → walkthrough → cookbook →
@@ -107,12 +126,15 @@ faq → index cards → `meta.json`) so downstream pages cite already-settled tr
   source. Never paraphrase a type.
 - When you retire something, follow `TRIAGE.md`'s deletion checklist — orphaned `meta.json` entries
   and dangling links both fail the gates.
+- Update the selected packages' changelog pages and release evidence per **CHANGELOG.md**.
+  Preserve older entries and identify affected packages, breaking changes, and required actions.
 
 ## Phase 5 — Verify
 
 ```bash
 node scripts/check-doc-links.mjs   # relative-link integrity
 bun run lint:nav                  # meta.json ↔ filesystem
+bun run lint:docs                 # prose and release-scope checks
 bun run typecheck
 bun run build
 ```
@@ -134,6 +156,9 @@ Only now, and only for libraries whose range you actually reviewed. Per `POINTER
 SHA into **Previous pointers** with a one-line range summary, and write the new **Current range**
 note.
 
+For release-only work, update `docs/changelog-release-review.md` after verification and stop short
+of changing source pointers. Release publication does not complete an API or pattern review.
+
 A library you reviewed and found doc-neutral still gets its pointer bumped, with the range summary
 saying so. Skipping it means the next round re-reads those commits for nothing.
 
@@ -142,3 +167,6 @@ saying so. Skipping it means the next round re-reads those commits for nothing.
 State per library: commits reviewed, pages added / updated / retired, anything deliberately **not**
 documented (and why), and any gate step that failed. Commit with a `docs:` conventional message on
 the current branch — do not open a branch unless asked.
+
+Also state the package releases added, publication gaps, release check date, and whether the API
+review boundary advanced. Do not report unchanged commit pointers as proof that changelogs are current.

@@ -26,6 +26,11 @@ Keep automated editorial checks separate from verified standard compliance. Fail
 
 The generated runtime pattern catalog is an audit quotation of a pinned canonical source. Verified source bodies may retain historical language declarations and upstream wording, with visible qualification. Locally authored audit guidance and diagram explanations retain the release policy. See [ADR 2](0002-publish-the-canonical-runtime-pattern-catalog.md).
 
+The package changelog added on 2026-10-14 records verified historical releases and their breaking
+changes. It preserves upstream candidate language status and separates publication evidence from
+completed API reviews. This historical reference does not restore retired tutorials or unsupported
+DSL examples. See [the release review](../changelog-release-review.md).
+
 ## Consequences
 
 Readers have one DSL language and one source of technical definitions. Deprecated term entries remain available for lookup, while new prose uses their replacements.
