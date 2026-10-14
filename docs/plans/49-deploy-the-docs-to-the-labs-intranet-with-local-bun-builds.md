@@ -51,18 +51,18 @@ The current user request authorizes a manual protected deployment. The original 
 - [x] (2026-10-13 04:59Z) Milestone 2: verified the operator environment and live intranet use Nagare v0.6.2 with exact CLI, cluster, host, context, and payload compatibility. Node `intranet-nagare` is Ready; auth is converged; no transaction or executor claim is active.
 - [x] (2026-10-13) Milestone 3: built committed revision `c7ceab9ef45536ed409b863ffcc3359c10419e00` for linux/amd64 with the complete release gate and a real HTTP smoke test. Root/deep HTML, JavaScript, bundled SVG, search, UTF-8 Markdown, health, SHA, and missing-file 404s passed. Saved the archive in private deployment state.
 - [x] (2026-10-13 12:57Z) Milestone 4: published and applied the protected release as Ready revision `keiro-docs-00002`; the running image digest and embedded SHA match publication. Granted `nadeem@topagentnetwork.com` through a converged reviewed transaction. Valid HTTPS, anonymous login/401 responses, signed-in ungranted denial before the grant, authorized navigation/search/diagrams, and private default-host behavior were observed. Final inventory has null transaction and executor claim.
-- [ ] (2026-10-14) Replace Docker/Colima packaging with Apple container, pass the release gate and real HTTP smoke test, then publish and deploy the latest docs through the matching intranet v0.6.3 operator environment.
+- [x] (2026-10-14 23:28Z) Replaced Docker/Colima packaging with Apple container, passed the complete release gate and Rosetta localhost HTTP smoke test, converted the OCI archive with daemonless skopeo, and published/deployed source `494699ee46f47337402691661f421fff0e62a6e4` through intranet v0.6.3. Ready revision `keiro-docs-00003` runs the verified publication digest. Live source SHA, access boundary, authorized latest changelog/search/new-guide navigation, and UTF-8 Markdown response passed; inventory transaction and executor claim are null.
 - [ ] Milestone 5: register a local runner and enable trusted-master automatic deployment.
 - [ ] Milestone 6: complete automatic-release, rollback, and authorized/denied browser acceptance for the broader plan.
 
-The 2026-10-13 manual release is complete. On 2026-10-14 the user requested Apple container packaging and deployment of the latest committed docs. Milestones 5 and 6 retain the original broader automation scope.
+The 2026-10-13 manual release is complete. On 2026-10-14 the user requested Apple container packaging and deployment of the latest committed docs. That release is complete as revision `keiro-docs-00003`. Milestones 5 and 6 retain the original broader automation scope.
 
 ## Surprises & Discoveries
 
 
 Apple container exports OCI archives, while the Nagare reviewed publisher inspects Docker archives. The build uses daemonless `skopeo` conversion after saving the linux/amd64 image. The smoke test runs that image using Rosetta and reaches Nginx through a temporary published localhost port. Direct VM IPv4 access refused connections on this Mac, although Nginx started successfully; localhost publication passed all HTTP assertions. Apple container rejects host port zero, so the smoke test asks macOS for an available port before starting the container. The 2026-10-14 live preflight reports exact v0.6.3 CLI, cluster, host, context, and payload compatibility with no active transaction or executor claim.
 
-The previous plan described the retired `labs` context and Nagare v0.3.0. The operator checkout now owns context `intranet`, registry repository `nagare-intranet`, and release v0.6.2. Mori registration metadata lagged these working files; authoritative upstream release metadata and live platform status confirm v0.6.2.
+During the 2026-10-13 deployment, the previous plan described the retired `labs` context and Nagare v0.3.0. The operator checkout then owned context `intranet`, registry repository `nagare-intranet`, and release v0.6.2. Mori registration metadata lagged those working files; authoritative upstream release metadata and live platform status confirmed v0.6.2. The 2026-10-14 deployment uses the now-pinned v0.6.3 release.
 
 Nagare has first-class `StaticSite` and `ServerSite` support, but neither model in v0.6.2 has an access field. Protected `Deployment` is the supported route. The reviewed compiler keeps the origin private and contributes declared public routes to the accepted auth owner. When a custom domain is declared, the default Knative hostname is private rather than an additional public enforcer route.
 
@@ -91,6 +91,10 @@ Complete the manual deployment authorized in this session. Keep runner registrat
 
 ## Outcomes & Retrospective
 
+
+The 2026-10-14 release built with Apple container is complete. Source `494699ee46f47337402691661f421fff0e62a6e4` is live as Ready revision `keiro-docs-00003`, running `sha256:b79b55af9017fa3c66c4ad9050601663de3313babb214b9fb52501143df6f0bb`. Image review `0e111aefd8b6187339e79dc22aa79c55adf0443fb9280a2e25763eae7c0e4b69` and Service review `01700a95e158ca1b1de5962e8e00037ad0bf535fedadc4d67b550ab87c8a476c` converged. The image apply initially stopped when recording an operation with `StoreIoError "inventory object metadata could not be read"`; the original transaction converged through ordinary `inventory resume`, preserving its archive and review. No replacement review or manual inventory edit was used.
+
+The registry digest matches the running pod, and the live origin metadata matches the full source SHA. Anonymous root, deep route, search, Markdown, and metadata requests reach login; JSON search requests return 401, and the default hostname returns HTTP 404. The authorized browser displays the 2026-10-14 Keiro changelog, finds the new catalog-command guide through search, and renders that guide after selection. Chrome still blocks direct metadata navigation with `ERR_BLOCKED_BY_CLIENT`; the operator connection verifies metadata and HTTP 200 UTF-8 Markdown. Private release evidence is `reviews/git-494699ee46f47337402691661f421fff0e62a6e4/receipt.json` under the state directory. The existing grant is retained and final transaction/claim are null.
 
 The manual deployment is complete at <https://keiro-docs.labs.topagentnetwork.net>. The running image is `sha256:dd2e3edba229702f0914d247c3cf224fdce4f4fb9f60dbbf6a0c64a17ca5e844` from source `c7ceab9ef45536ed409b863ffcc3359c10419e00`. Image review `7ce9f2549f8498ec5a45ddc57ac27d605f96c5e646565c76d81d5926bc31b9e7`, Service review `92d0f060fa04f04d7e5fcc682543bb8573a0451cba8d05354e1e679434fda5cd`, and access review `38b4868de9f366d034962ad8b755c9de8ee8c8240ef4c61d605a8f43ee0609ff` all converged. The prior accepted image remains available for rollback.
 
@@ -180,4 +184,4 @@ Bun/Node build and validate the source. Apple container packages the static runt
 
 Created on 2026-10-11. Milestone 1 was implemented on 2026-10-12. Revised on 2026-10-13 to replace retired context/release assumptions with the verified intranet v0.6.2 contract and implement the currently authorized manual protected deployment. Historical toolchain evidence retains its original scope.
 
-Revised on 2026-10-14 to use Apple container and daemonless archive conversion, and to deploy the latest docs through the verified intranet v0.6.3 environment. Release validation and publication evidence will be recorded after execution.
+Revised on 2026-10-14 to use Apple container and daemonless archive conversion, and to deploy the latest docs through the verified intranet v0.6.3 environment. Recorded the successful Apple container release, localhost networking requirement, original-transaction publication recovery, live validation, and private receipt. Broader automatic deployment remains pending.
