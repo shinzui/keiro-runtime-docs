@@ -26,6 +26,11 @@ provenance:
       at: 2026-10-13T04:58:40Z
       mode: "implement"
       note: "Deploy the protected docs manually using the current intranet v0.6.2 reviewed publication contract"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-14T23:13:28Z
+      mode: "implement"
+      note: "Migrate release packaging to Apple container and deploy the latest docs through intranet v0.6.3"
 ---
 
 # Deploy the docs to the Labs intranet with local Bun builds
@@ -46,13 +51,16 @@ The current user request authorizes a manual protected deployment. The original 
 - [x] (2026-10-13 04:59Z) Milestone 2: verified the operator environment and live intranet use Nagare v0.6.2 with exact CLI, cluster, host, context, and payload compatibility. Node `intranet-nagare` is Ready; auth is converged; no transaction or executor claim is active.
 - [x] (2026-10-13) Milestone 3: built committed revision `c7ceab9ef45536ed409b863ffcc3359c10419e00` for linux/amd64 with the complete release gate and a real HTTP smoke test. Root/deep HTML, JavaScript, bundled SVG, search, UTF-8 Markdown, health, SHA, and missing-file 404s passed. Saved the archive in private deployment state.
 - [x] (2026-10-13 12:57Z) Milestone 4: published and applied the protected release as Ready revision `keiro-docs-00002`; the running image digest and embedded SHA match publication. Granted `nadeem@topagentnetwork.com` through a converged reviewed transaction. Valid HTTPS, anonymous login/401 responses, signed-in ungranted denial before the grant, authorized navigation/search/diagrams, and private default-host behavior were observed. Final inventory has null transaction and executor claim.
+- [ ] (2026-10-14) Replace Docker/Colima packaging with Apple container, pass the release gate and real HTTP smoke test, then publish and deploy the latest docs through the matching intranet v0.6.3 operator environment.
 - [ ] Milestone 5: register a local runner and enable trusted-master automatic deployment.
 - [ ] Milestone 6: complete automatic-release, rollback, and authorized/denied browser acceptance for the broader plan.
 
-The authorized manual deployment is complete. The corrected immutable release is live with its existing operator host grant. Milestones 5 and 6 retain the original broader automation scope.
+The 2026-10-13 manual release is complete. On 2026-10-14 the user requested Apple container packaging and deployment of the latest committed docs. Milestones 5 and 6 retain the original broader automation scope.
 
 ## Surprises & Discoveries
 
+
+Apple container exports OCI archives, while the Nagare reviewed publisher inspects Docker archives. The build uses daemonless `skopeo` conversion after saving the linux/amd64 image. The smoke test runs that image using Rosetta and reaches Nginx through the VM’s private IPv4 address. The 2026-10-14 live preflight reports exact v0.6.3 CLI, cluster, host, context, and payload compatibility with no active transaction or executor claim.
 
 The previous plan described the retired `labs` context and Nagare v0.3.0. The operator checkout now owns context `intranet`, registry repository `nagare-intranet`, and release v0.6.2. Mori registration metadata lagged these working files; authoritative upstream release metadata and live platform status confirm v0.6.2.
 
@@ -71,11 +79,13 @@ The Bun migration exposed Nitro tracing of `tslib`: bundling it explicitly resto
 ## Decision Log
 
 
+On 2026-10-14, use Apple container for local image builds and smoke checks, and include `skopeo` in the Nix dev shell to retain Nagare’s Docker archive interface. Keep the established protected hostname and existing grant. Use the operator-pinned v0.6.3 release confirmed by live compatibility checks.
+
 Use Bun with the frozen lock, retaining Node 22 for existing tools. Skip licensed-font discovery in release builds. This preserves the established toolchain and avoids workstation-only assets.
 
 Use a protected Nagare `Deployment` with Nginx serving static files on port 8080, canonical host `keiro-docs.labs.topagentnetwork.net`, namespace `personal`, and scale 1..3. One warm replica avoids docs cold starts. [ADR 4](../adr/0004-host-static-docs-behind-the-nagare-intranet-access-policy.md) records the platform boundary.
 
-Use only the current v0.6.2 reviewed route: build externally, export a Docker archive, publish with `app image-plan`, then deploy with its accepted image resource. `PrebuiltImage` must declare the same tag as publication; the CLI `--tag` does not override it. Keep reviews and archives outside the public checkout. Record full Git SHA provenance and use immutable `git-<full-SHA>` tags.
+Use the current operator-pinned v0.6.3 reviewed route: build externally, export a Docker archive, publish with `app image-plan`, then deploy with its accepted image resource. `PrebuiltImage` must declare the same tag as publication; the CLI `--tag` does not override it. Keep reviews and archives outside the public checkout. Record full Git SHA provenance and use immutable `git-<full-SHA>` tags.
 
 Complete the manual deployment authorized in this session. Keep runner registration and automatic deployment pending instead of treating the original broader plan as authorization to install automation now.
 
@@ -99,7 +109,7 @@ The site sources are `content/docs/`, `src/`, `source.config.ts`, and `vite.conf
 
 `mori://tan/tan-ng-labs` owns the operator environment: project-relative `.envrc`, `flake.nix`, `contexts/intranet.env`, and `docs/runbooks/operations.md` (file-level artifact URIs pending). Use `direnv exec` against that checkout so context, kubeconfig, gcloud configuration, and CLI pin stay paired. The GCP project is `tan-ng-labs`, base domain `labs.topagentnetwork.net`, target `linux/amd64`, and image prefix `us-west1-docker.pkg.dev/tan-ng-labs/nagare-intranet`.
 
-`mori://shinzui/nagare` owns the DSL and deployment contract. Read the v0.6.2 versions of project-relative `cli/nagare-dsl/src/Nagare/Dsl/Types.hs`, `Presets.hs`, `Build.hs`, `Static/Types.hs`, `Server/Types.hs`, and `docs/user/deploying-apps.md`; artifact-level URIs are pending. Never traverse `/nix/store` for source. No platform upgrade, auth-plane reinstall, DNS delegation change, or new database is needed.
+`mori://shinzui/nagare` owns the DSL and deployment contract. Read the operator-pinned v0.6.3 versions of project-relative `cli/nagare-dsl/src/Nagare/Dsl/Types.hs`, `Presets.hs`, `Build.hs`, `Static/Types.hs`, `Server/Types.hs`, and `docs/user/deploying-apps.md`; artifact-level URIs are pending. Never traverse `/nix/store` for source. No platform upgrade, auth-plane reinstall, DNS delegation change, or new database is needed.
 
 ## Plan of Work
 
@@ -130,7 +140,7 @@ Run build commands from the docs checkout:
 nix develop --command just deploy-image
 ```
 
-Run the publication, Service deployment, and grant commands exactly as documented in [deployment.md](../deployment.md). Resolve the operator checkout using `mori path mori://tan/tan-ng-labs`; use `direnv exec` and context `intranet`. Expect exact v0.6.2 compatibility, node Ready, and null transaction/claim. The standard reviewed route requires `--image-resource`; the former direct v0.3.0 example is obsolete.
+Run the publication, Service deployment, and grant commands exactly as documented in [deployment.md](../deployment.md). Resolve the operator checkout using `mori path mori://tan/tan-ng-labs`; use `direnv exec` and context `intranet`. Expect exact v0.6.3 compatibility, node Ready, and null transaction/claim. The standard reviewed route requires `--image-resource`; the former direct v0.3.0 example is obsolete.
 
 For anonymous verification:
 
@@ -161,11 +171,13 @@ If apply is interrupted, inspect Nagare's active transaction and use its named r
 ## Interfaces and Dependencies
 
 
-Bun/Node build and validate the source. Docker packages the static runtime. The operator-pinned Nagare publishes images and applies protected Service reviews, including TLS and access integration. Nginx serves the static content; no persistent volume or database is required.
+Bun/Node build and validate the source. Apple container packages the static runtime; `skopeo` converts its OCI export to Nagare’s Docker archive format without a Docker daemon. The operator-pinned Nagare publishes images and applies protected Service reviews, including TLS and access integration. Nginx serves the static content; no persistent volume or database is required.
 
-`KEIRO_DOCS_IMAGE_TAG` is mandatory when evaluating the config. `KEIRO_DOCS_STATE_DIR` chooses private build state. `scripts/build-docs-image.sh` requires a clean tree, a running Docker daemon, and the docs Nix shell. Manual reviewed deployment commands and grants are documented in `docs/deployment.md`. Automatic orchestration remains pending.
+`KEIRO_DOCS_IMAGE_TAG` is mandatory when evaluating the config. `KEIRO_DOCS_STATE_DIR` chooses private build state. `scripts/build-docs-image.sh` requires a clean tree, a running Apple container service on Apple silicon with Rosetta, and the docs Nix shell. Manual reviewed deployment commands and grants are documented in `docs/deployment.md`. Automatic orchestration remains pending.
 
 ## Creation Note
 
 
 Created on 2026-10-11. Milestone 1 was implemented on 2026-10-12. Revised on 2026-10-13 to replace retired context/release assumptions with the verified intranet v0.6.2 contract and implement the currently authorized manual protected deployment. Historical toolchain evidence retains its original scope.
+
+Revised on 2026-10-14 to use Apple container and daemonless archive conversion, and to deploy the latest docs through the verified intranet v0.6.3 environment. Release validation and publication evidence will be recorded after execution.

@@ -7,6 +7,9 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+command -v skopeo >/dev/null
+container system status >/dev/null
+
 commit=$(git rev-parse HEAD)
 tag="git-$commit"
 image="us-west1-docker.pkg.dev/tan-ng-labs/nagare-intranet/keiro-docs:$tag"
@@ -26,9 +29,14 @@ writeFileSync(".output/public/_deployment.json", JSON.stringify({
   context: "intranet",
 }) + "\n")
 JS
-docker build --platform linux/amd64 --build-arg "SOURCE_COMMIT=$commit" \
+container build --platform linux/amd64 --build-arg "SOURCE_COMMIT=$commit" \
   --tag "$image" --file deploy/Dockerfile .
 node scripts/check-docs-container.mjs "$image" "$commit"
-docker save --output "$state/$tag.tar" "$image"
+oci_archive=$(mktemp "$state/.oci-XXXXXX")
+trap 'rm -f "$oci_archive"' EXIT
+container image save --platform linux/amd64 --output "$oci_archive" "$image"
+# Nagare's reviewed publisher consumes Docker archives; conversion needs no daemon.
+skopeo --insecure-policy --override-os linux --override-arch amd64 copy \
+  "oci-archive:$oci_archive" "docker-archive:$state/$tag.tar:$image"
 echo "Archive: $state/$tag.tar"
 echo "Image: $image"

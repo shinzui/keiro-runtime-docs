@@ -4,21 +4,15 @@ import { readdirSync } from "node:fs"
 
 const [image, commit] = process.argv.slice(2)
 assert.ok(image && /^[a-f0-9]{40}$/.test(commit), "Usage: check-docs-container.mjs IMAGE FULL_SHA")
-const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" }).trim()
-const container = docker(
-  "run",
-  "--platform",
-  "linux/amd64",
-  "--detach",
-  "--publish",
-  "127.0.0.1::8080",
-  image,
-)
+const appleContainer = (...args) => execFileSync("container", args, { encoding: "utf8" }).trim()
+const container = appleContainer("run", "--platform", "linux/amd64", "--detach", "--rosetta", image)
 
 try {
-  const address = docker("port", container, "8080/tcp")
-  const base = `http://${address}`
-  // Docker exposes the port before Nginx has finished starting.
+  const [details] = JSON.parse(appleContainer("inspect", container))
+  const address = details.status.networks.find((network) => network.ipv4Address)?.ipv4Address
+  assert.ok(address, "Container must have an IPv4 address reachable from macOS")
+  const base = `http://${address.split("/")[0]}:8080`
+  // The VM can be reachable before Nginx has finished starting.
   const deadline = Date.now() + 10_000
   const ready = async () => {
     try {
@@ -68,5 +62,5 @@ try {
     `Container verified: HTML, deep route, JavaScript, SVG, search, Markdown, health, SHA ${commit}, and missing-file 404s.`,
   )
 } finally {
-  docker("rm", "--force", container)
+  appleContainer("delete", "--force", container)
 }

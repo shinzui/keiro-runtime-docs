@@ -4,17 +4,18 @@ The site runs at <https://keiro-docs.labs.topagentnetwork.net> behind the existi
 
 ## Build and verify
 
-Use clean committed source, a running Docker daemon, and the docs Nix environment:
+Use clean committed source, Apple container on an Apple silicon Mac with Rosetta installed, and the docs Nix environment. Start the container service first:
 
 ```bash
+container system start
 nix develop --command just deploy-image
 ```
 
-This installs frozen dependencies, runs the release gate, builds linux/amd64, verifies local HTTP behavior, and saves an archive under `~/.local/state/keiro-docs/intranet/`. Set `KEIRO_DOCS_STATE_DIR` to choose another private directory. A failed check prevents publication. The build skips optional licensed fonts.
+This installs frozen dependencies, runs the release gate, builds linux/amd64 with Apple container, and verifies local HTTP behavior through the container's private IP using Rosetta. It converts the OCI export to the Docker archive required by Nagare with `skopeo` from the dev shell, then saves it under `~/.local/state/keiro-docs/intranet/`. Docker and Colima are not required. Set `KEIRO_DOCS_STATE_DIR` to choose another private directory. A failed check prevents publication. The build skips optional licensed fonts.
 
 ## Publish and deploy
 
-Discover the operator checkout through `mori://tan/tan-ng-labs`. Its `.envrc` pairs the intranet context, kubeconfig, gcloud configuration, and pinned Nagare v0.6.2. Keep credentials and reviews outside this repository. From the docs checkout:
+Discover the operator checkout through `mori://tan/tan-ng-labs`. Its `.envrc` pairs the intranet context, kubeconfig, gcloud configuration, and pinned Nagare v0.6.3. Keep credentials and reviews outside this repository. From the docs checkout:
 
 ```bash
 LABS_REPO=$(mori path mori://tan/tan-ng-labs | tail -n 1)

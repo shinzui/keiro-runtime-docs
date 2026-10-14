@@ -46,6 +46,6 @@ lint-links:
 check:
     bun run check
 
-# Check committed source, build linux/amd64, verify HTTP routes, and save an archive
+# Check committed source, build linux/amd64 with Apple container, verify HTTP, and save an archive
 deploy-image:
     bash scripts/build-docs-image.sh

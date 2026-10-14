@@ -2,6 +2,6 @@
 { ... }:
 {
   perSystem = { pkgs, ... }: {
-    bunProject.extraDevPackages = [ pkgs.nodejs_22 ];
+    bunProject.extraDevPackages = [ pkgs.nodejs_22 pkgs.skopeo ];
   };
 }
