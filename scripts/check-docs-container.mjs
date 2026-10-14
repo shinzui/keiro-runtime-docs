@@ -1,17 +1,34 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { readdirSync } from "node:fs"
+import { createServer } from "node:net"
 
 const [image, commit] = process.argv.slice(2)
 assert.ok(image && /^[a-f0-9]{40}$/.test(commit), "Usage: check-docs-container.mjs IMAGE FULL_SHA")
+// Apple container requires an explicit host port; let macOS select a free one.
+const listener = createServer()
+await new Promise((resolve, reject) => {
+  listener.once("error", reject)
+  listener.listen(0, "127.0.0.1", resolve)
+})
+const port = listener.address().port
+await new Promise((resolve, reject) =>
+  listener.close((error) => (error ? reject(error) : resolve())),
+)
 const appleContainer = (...args) => execFileSync("container", args, { encoding: "utf8" }).trim()
-const container = appleContainer("run", "--platform", "linux/amd64", "--detach", "--rosetta", image)
+const container = appleContainer(
+  "run",
+  "--platform",
+  "linux/amd64",
+  "--detach",
+  "--rosetta",
+  "--publish",
+  `127.0.0.1:${port}:8080`,
+  image,
+)
 
 try {
-  const [details] = JSON.parse(appleContainer("inspect", container))
-  const address = details.status.networks.find((network) => network.ipv4Address)?.ipv4Address
-  assert.ok(address, "Container must have an IPv4 address reachable from macOS")
-  const base = `http://${address.split("/")[0]}:8080`
+  const base = `http://127.0.0.1:${port}`
   // The VM can be reachable before Nginx has finished starting.
   const deadline = Date.now() + 10_000
   const ready = async () => {

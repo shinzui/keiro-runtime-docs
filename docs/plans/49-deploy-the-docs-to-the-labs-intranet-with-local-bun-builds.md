@@ -60,7 +60,7 @@ The 2026-10-13 manual release is complete. On 2026-10-14 the user requested Appl
 ## Surprises & Discoveries
 
 
-Apple container exports OCI archives, while the Nagare reviewed publisher inspects Docker archives. The build uses daemonless `skopeo` conversion after saving the linux/amd64 image. The smoke test runs that image using Rosetta and reaches Nginx through the VM’s private IPv4 address. The 2026-10-14 live preflight reports exact v0.6.3 CLI, cluster, host, context, and payload compatibility with no active transaction or executor claim.
+Apple container exports OCI archives, while the Nagare reviewed publisher inspects Docker archives. The build uses daemonless `skopeo` conversion after saving the linux/amd64 image. The smoke test runs that image using Rosetta and reaches Nginx through a temporary published localhost port. Direct VM IPv4 access refused connections on this Mac, although Nginx started successfully; localhost publication passed all HTTP assertions. Apple container rejects host port zero, so the smoke test asks macOS for an available port before starting the container. The 2026-10-14 live preflight reports exact v0.6.3 CLI, cluster, host, context, and payload compatibility with no active transaction or executor claim.
 
 The previous plan described the retired `labs` context and Nagare v0.3.0. The operator checkout now owns context `intranet`, registry repository `nagare-intranet`, and release v0.6.2. Mori registration metadata lagged these working files; authoritative upstream release metadata and live platform status confirm v0.6.2.
 

@@ -11,7 +11,7 @@ container system start
 nix develop --command just deploy-image
 ```
 
-This installs frozen dependencies, runs the release gate, builds linux/amd64 with Apple container, and verifies local HTTP behavior through the container's private IP using Rosetta. It converts the OCI export to the Docker archive required by Nagare with `skopeo` from the dev shell, then saves it under `~/.local/state/keiro-docs/intranet/`. Docker and Colima are not required. Set `KEIRO_DOCS_STATE_DIR` to choose another private directory. A failed check prevents publication. The build skips optional licensed fonts.
+This installs frozen dependencies, runs the release gate, builds linux/amd64 with Apple container, and verifies local HTTP behavior through a temporary localhost port using Rosetta. It converts the OCI export to the Docker archive required by Nagare with `skopeo` from the dev shell, then saves it under `~/.local/state/keiro-docs/intranet/`. Docker and Colima are not required. Set `KEIRO_DOCS_STATE_DIR` to choose another private directory. A failed check prevents publication. The build skips optional licensed fonts.
 
 ## Publish and deploy
 
