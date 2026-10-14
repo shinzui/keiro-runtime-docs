@@ -25,17 +25,20 @@ source walkthroughs.
 - **Docs reviewed:** upstream `README.md`, `CHANGELOG.md`, and
   `docs/architecture/`.
 
-- **Reviewed release:** core and metrics `0.10.0.0`. Hackage and upstream release tags checked 2026-10-02.
+- **Reviewed release:** core and metrics `0.10.0.1`. Hackage and upstream release tags checked 2026-10-14.
 
 ## Last reviewed commit
 
 ```text
-02cf260604341c1a4e3a22a62fbf67d3c715f81c  (02cf260)
-2026-09-30T16:59:37-07:00
-docs(plan): plan the browser-ready inspection and control surface
+0967f450b659b48d24cb49f199718451a65d2d48  (0967f450)
+2026-10-12T21:09:09-07:00
+fix(telemetry): preserve shutdown cancellation across span callbacks
 ```
 
-> **Current range.** `efbe2a87..02cf2606` (**20 commits**). Published core and metrics 0.10.0.0 replaces the prior candidate boundary. Breaking shapes include `ShutdownConfig.totalShutdownTimeout`, `ProcessorFailure`, expanded metrics/health records, and progress-aware `Processing`. Documented startup ownership, duplicate-ID/concurrency validation, shared shutdown results, retained lifecycle readiness, loopback host configuration, bounded dependency checks and WebSocket selections, terminal frames, and the externally hosted `combinedApp`. Updated supervision/metrics/policy references, operational how-tos, explanations, walkthroughs, health recipe, FAQ and index. Reported late finalization after forced stop and sticky readiness are explicit limitations. Browser inspection/control and correlation/tracing changes remain plans.
+> **Current range.** `02cf2606..0967f450` (**32 commits**). Reviewed published 0.10.0.1 random compatibility plus later committed browser policy, bounded WebSocket output, latency/oldest-in-flight detail, exact acknowledged cursors, atomic intake pause/resume and ingest/shutdown telemetry. Added the pause/resume guide; updated metrics, supervision/policy, telemetry, observability, serving and FAQ guidance. All post-tag additions are explicitly unreleased despite unchanged source Cabal versions. Telemetry removal/restoration was reconciled at the final committed implementation. Further benchmark execution and release certification are excluded.
+> Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
+
+> **Note (prior range).** `efbe2a87..02cf2606` (**20 commits**). Published core and metrics 0.10.0.0 replaces the prior candidate boundary. Breaking shapes include `ShutdownConfig.totalShutdownTimeout`, `ProcessorFailure`, expanded metrics/health records, and progress-aware `Processing`. Documented startup ownership, duplicate-ID/concurrency validation, shared shutdown results, retained lifecycle readiness, loopback host configuration, bounded dependency checks and WebSocket selections, terminal frames, and the externally hosted `combinedApp`. Updated supervision/metrics/policy references, operational how-tos, explanations, walkthroughs, health recipe, FAQ and index. Reported late finalization after forced stop and sticky readiness are explicit limitations. Browser inspection/control and correlation/tracing changes remain plans.
 > No pages added or retired; existing pages were extended. Every commit is classified in [the sync ledger](source-sync-2026-10-02.md). All upstream worktrees were clean.
 
 > **Note (prior range).** `cb3c4a9a..efbe2a87` (**70 commits**). Published 0.9.0.2/0.9.0.3 liveness fixes: no idle linked master loop and no caller-linked supervisor. Updated app-supervision, walkthrough, FAQ and compatibility. Unpublished 0.10 lifecycle ownership, shutdown/error, progress-health and WebSocket contracts are explicitly excluded from released APIs. Dirty upstream worktree changes are excluded; only the frozen committed tree was reviewed.
@@ -120,8 +123,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    SHIBUYA=$(mori registry show shinzui/shibuya --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$SHIBUYA" log --oneline 02cf2606..HEAD
-   git -C "$SHIBUYA" diff --stat 02cf2606..HEAD
+   git -C "$SHIBUYA" log --oneline 0967f450..HEAD
+   git -C "$SHIBUYA" diff --stat 0967f450..HEAD
    ```
 2. Inspect changed modules under `shibuya-core/`, `shibuya-metrics/`, and
    `shibuya-example/`, plus `README.md`, `CHANGELOG.md`, and
@@ -134,6 +137,8 @@ clean at the reviewed SHA.
    range.
 
 ## Previous pointers
+
+- `0967f450b659b48d24cb49f199718451a65d2d48` (2026-09-30T16:59:37-07:00) — baseline before the 2026-10-14 review; `0967f450..0967f450` (32 commits) reconciles shibuya source and retains explicit publication limits.
 
 - `efbe2a87268a759e825f388e238343a83badd6da` (`efbe2a87`, 2026-09-21) — baseline before the October 2 review (20 commits); see [the ledger](source-sync-2026-10-02.md).
 

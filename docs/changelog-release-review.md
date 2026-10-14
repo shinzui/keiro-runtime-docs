@@ -1,7 +1,8 @@
 # Changelog release review
 
 Checked on 2026-10-14. This is a release-history boundary, independent of every
-`docs/*-source-sync.md` API review pointer. No library or pattern pointer advances in this change.
+`docs/*-source-sync.md` API review pointer. The [source sync](source-sync-2026-10-14.md)
+records API and catalog reviews independently of this release evidence.
 
 ## Scope and evidence
 
@@ -134,8 +135,8 @@ pin the actual note files to the verified release commits.
   The earlier compatibility matrix's “release” terminology is corrected to “source”.
 - Keiki SCXML, Shibuya controls/detail/tracing, and PGMQ inspection/disconnect
   work present after the selected tags are not folded into published history.
-- Keiro 0.21 and Kiroku's October releases are newer than this site's completed
-  API reviews. Changelog coverage does not certify their complete API docs.
+- Keiro 0.21 and Kiroku's October APIs are now covered by the independent
+  [source review](source-sync-2026-10-14.md). Package history itself does not certify API coverage.
 
 ## Maintenance
 
@@ -158,3 +159,12 @@ A release-only review never advances the API source pointers or runtime catalog 
   settings are preserved. The bundled generic skill validator rejects the
   pre-existing `argument-hint` and `user-invocable` keys in both the original
   and updated skill; this change preserves those local invocation settings.
+
+## 2026-10-14 source-sync release recheck
+
+Requeried all 33 identities: the latest three versions for each of the 31 published packages
+remain the 93 entries above. All 57 remote/local tag rows match their recorded peeled commits,
+and package changelogs were reread from those immutable trees. No new published version was missing.
+The latest 31 registry Cabal files have no `x-revision` (revision 0), so no bounds revision entry
+is required. Kiroku test support and the archived Message DB adapter again returned confirmed HTTP 404.
+No release tag or publication gap changed. New source-only API guidance preserves its qualification.

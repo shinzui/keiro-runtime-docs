@@ -104,3 +104,23 @@ mkEvent :: Text -> [(Text, Attribute)] -> NewEvent
 
 Use `internalSpanArgs` for custom spans inside handlers. The runner uses `consumerSpanArgs` for the
 message-processing span.
+
+## Unreleased lifecycle and disabled-context contract
+
+Committed source at `0967f450` in `mori://shinzui/shibuya` adds lifecycle tracing after the
+0.10.0.1 release. One Internal `shibuya.ingest` span covers each single/batch source lifetime;
+one Internal `<ProcessorId> shutdown` span covers each adapter shutdown attempt. Both carry
+`shibuya.processor.id`. They supplement the existing Consumer processing/finalization span.
+Source spans normally export when their long-lived operation ends.
+
+Keep the caller's provider alive through asynchronous application completion and stop cleanup.
+Shibuya captures the startup tracer for shutdown without taking ownership of provider initialization
+or shutdown. Cancellation and deadline behavior retain the once-only shutdown leader and cached
+result; span callback behavior cannot swallow the cancellation of the shutdown action.
+
+Disabled `withSpan'` callbacks receive a shared non-recording sentinel with invalid all-zero IDs.
+These represent absent context and cannot serve as correlation IDs or parents. `injectTraceContext`
+returns no headers for invalid context; `currentTraceHeaders` returns `Nothing` for disabled,
+absent, or invalid context. Valid enabled non-recording spans can still propagate normally.
+The disabled tracer/provider is shared, independent of the global provider, with no processors or
+background resources. Branch on `isTracingEnabled` when presence matters.

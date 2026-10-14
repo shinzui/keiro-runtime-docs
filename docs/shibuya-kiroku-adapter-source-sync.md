@@ -22,17 +22,20 @@ mapping, consumer groups, and handler exception behavior.
 - **Docs reviewed:** `docs/user/shibuya-adapter.md`,
   `docs/user/subscriptions.md`, and `docs/user/consumer-groups.md`.
 
-- **Reviewed release:** adapter `0.5.1.5`. Hackage and upstream release tags checked 2026-10-02.
+- **Reviewed release:** adapter `0.6.0.1`. Hackage and upstream release tags checked 2026-10-14.
 
 ## Last reviewed commit
 
 ```text
-36b75510220393b9791d9167ca7817f22fbc848b  (36b7551)
-2026-09-30T16:18:18-07:00
-docs(improvement-requests): cite MasterPlan 13 from IR-9, IR-10, and IR-11
+ad866f925ac11484a2ee758fe235035840c85c0a  (ad866f92)
+2026-10-13T07:33:39-07:00
+docs(improvement-requests): reconcile statuses and plan links
 ```
 
-> **Current range.** `246a27b6..36b75510` (**26 commits**). Shared 26-commit Kiroku review; published adapter 0.5.1.5 requires store 0.9.0.1 and Shibuya 0.10. Updated the integration page, Kiroku how-to/walkthrough, adapter comparison and compatibility. Documented masked acquisition cleanup, cancellation and monitor ownership, the synchronous acknowledgement bridge, and category-scoped group wakeups. Migration 0012 requires stopped old writers before current appenders start. Consumer-group lifetime guarding remains planned.
+> **Current range.** `36b75510..ad866f92` (**82 commits**). Independently reviewed the shared 82-commit Kiroku range for adapter 0.6.0.1. Updated integration, Kiroku how-to/source tours and compatibility for Store 0.11, validated group/batch/buffer values, configurable retryPolicy, advisory handlerStallWarnAfter and typed startup/decode refusal. Acknowledgement and cleanup ownership remain unchanged. Store-only inspection changes are covered by the separate Kiroku pointer. Lifetime-held group ownership is still not supplied.
+> Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
+
+> **Note (prior range).** `246a27b6..36b75510` (**26 commits**). Shared 26-commit Kiroku review; published adapter 0.5.1.5 requires store 0.9.0.1 and Shibuya 0.10. Updated the integration page, Kiroku how-to/walkthrough, adapter comparison and compatibility. Documented masked acquisition cleanup, cancellation and monitor ownership, the synchronous acknowledgement bridge, and category-scoped group wakeups. Migration 0012 requires stopped old writers before current appenders start. Consumer-group lifetime guarding remains planned.
 > No pages added or retired; existing pages were extended. Every commit is classified in [the sync ledger](source-sync-2026-10-02.md). All upstream worktrees were clean.
 
 > **Note (prior range).** `07cd034a..246a27b6` (**7 commits**). Shared Kiroku range: published adapter 0.5.1.2 dependency compatibility and unpublished 0.5.1.3 lifecycle remediation. Updated integration, Kiroku guides and compatibility; candidate acknowledgement/retry behavior is excluded from the released contract.
@@ -95,6 +98,8 @@ The source tree was clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `36b75510220393b9791d9167ca7817f22fbc848b` (2026-09-30T16:18:18-07:00) — baseline before the 2026-10-14 review; `36b75510..ad866f92` (82 commits) reconciles shibuya-kiroku-adapter source and retains explicit publication limits.
+
 - `246a27b6e7ac55fbd7c7a66e8ad84a3b3f46237e` (`246a27b6`, 2026-09-21) — baseline before the October 2 review (26 commits); see [the ledger](source-sync-2026-10-02.md).
 
 - `07cd034aafc0d88b6c55abdf3509e25b9d69e63d` (`07cd034a`, 2026-09-16) — baseline before the 7-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
@@ -118,8 +123,8 @@ The source tree was clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    KIROKU=$(mori registry show shinzui/kiroku --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KIROKU" log --oneline 36b75510..HEAD -- shibuya-kiroku-adapter docs/user
-   git -C "$KIROKU" diff --stat 36b75510..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" log --oneline ad866f92..HEAD -- shibuya-kiroku-adapter docs/user
+   git -C "$KIROKU" diff --stat ad866f92..HEAD -- shibuya-kiroku-adapter docs/user
    ```
 2. Update `content/docs/integrations/shibuya-kiroku-adapter.mdx` and any Kiroku
    pages that repeat adapter-specific behavior.

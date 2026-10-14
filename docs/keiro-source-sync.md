@@ -18,11 +18,11 @@ the affected pages, then bump the pointer below.
   `keiro-ops` (the operational console — library + standalone binary),
   `keiro-test-support` (test fixtures). The in-repository `jitsurei` package remains a legacy source
   anchor and is not current release evidence.
-- **Reviewed release:** all seven published Keiro packages at `0.19.0.0`, including
+- **Reviewed release:** all seven published Keiro packages at `0.21.0.0`, including
   `keiro-test-support`. Verified against Hackage package versions and upstream release tags
-  on 2026-10-02. `Keiro.version` derives from `Paths_keiro`.
-- **Required peers:** `keiki >=0.9 && <0.10`, `kiroku-store >=0.9.0.1 && <0.10`,
-  `kiroku-store-migrations ^>=0.6.0.0`, `shibuya-core ^>=0.10.0.0`, and pg-migrate `^>=1.2.0.0`.
+  on 2026-10-14. `Keiro.version` derives from `Paths_keiro`.
+- **Required peers:** `keiki >=0.9 && <0.10`, `kiroku-store ^>=0.11.0.0`,
+  `kiroku-store-migrations ^>=0.7.1.0`, `shibuya-core ^>=0.10.0.1`, and pg-migrate `^>=1.2.0.0`.
 - **Supported documentation contract:** `keiro-dsl` Language **6** (`syntax-profile/5`,
   `runtime-semantics/5`). The upstream registry still marks Language 5 stable and Language 6
   candidate/unpublished. Package publication does not change that registry state. The public
@@ -31,12 +31,15 @@ the affected pages, then bump the pointer below.
 ## Last reviewed commit
 
 ```text
-945529d46fd2967994270eb94e22c80908df4d14  (945529d4)
-2026-10-02T09:57:59-07:00
-docs(terminology): adopt simplified technical definitions
+e6ef560b0a8db0dc091d0f8d7da1bb08c29155be  (e6ef560b)
+2026-10-14T13:46:15-07:00
+chore(release): 0.21.0.0
 ```
 
-> **Current range.** `c68dbdd7..945529d4` (**39 commits**). Keiro 0.19 requires the released Kiroku retention fix and pg-migrate 1.2. Command verification now has a process-wide capacity limit, skip/failure counters, and failure isolation. Updated `reference/command.mdx`, `reference/snapshot.mdx`, `reference/telemetry.mdx`, `reference/migrations-and-schema.mdx`, deployment and job references, fixture/snapshot how-tos, and the read-side walkthrough. The framework plan has 44 entries (12 Kiroku, 32 Keiro); existing writers must cross the category-index migration boundary. Added operational limits for job long polling and stale outbox finalization. Runtime retention and re-export checks are documented. No DSL source changed; Language 6 is the only supported documentation contract. Source upgrades, version-aware linting, job-polling fixes, and outbox fencing remain unimplemented.
+> **Current range.** `945529d4..e6ef560b` (**91 commits**). Reviewed the published 0.21 cohort: guarded catalog command rollback and callback restrictions; atomic stopped checkpoint/lease resize; registry-aware binding-view schema verification; strict scalar contract lists; declaration-owned mapped initial/write lifts, fold identity and finite cases; whole-name generated helpers; history-backed initial-hole witnesses; own-revision removal reports. Added the guarded-command guide and updated DSL/runtime references, replay guidance, scaling tours, fixture instructions, installation and compatibility. The composed plan has 47 entries (15 Kiroku, 32 Keiro); no Keiro SQL payload changed. Language 6 remains candidate. Planned compatibility retirement, outbox fencing, client-side job polling, parent/child crash recovery and ops message-ID remediation are not asserted implemented.
+> Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
+
+> **Note (prior range).** `c68dbdd7..945529d4` (**39 commits**). Keiro 0.19 requires the released Kiroku retention fix and pg-migrate 1.2. Command verification now has a process-wide capacity limit, skip/failure counters, and failure isolation. Updated `reference/command.mdx`, `reference/snapshot.mdx`, `reference/telemetry.mdx`, `reference/migrations-and-schema.mdx`, deployment and job references, fixture/snapshot how-tos, and the read-side walkthrough. The framework plan has 44 entries (12 Kiroku, 32 Keiro); existing writers must cross the category-index migration boundary. Added operational limits for job long polling and stale outbox finalization. Runtime retention and re-export checks are documented. No DSL source changed; Language 6 is the only supported documentation contract. Source upgrades, version-aware linting, job-polling fixes, and outbox fencing remain unimplemented.
 > No pages added or retired; existing pages were extended. Every commit is classified in [the sync ledger](source-sync-2026-10-02.md). All upstream worktrees were clean.
 
 > **Note (prior range).** `11e0bba4..c68dbdd7` (**46 commits**). Keiro 0.18: checked container, calendar-day, text-set, base16 and explicit UUID-admission mappings; breaking IdDomain field and nominal-equality constructor changes; replay evidence reports and inventory checks. Added reference/replay-compatibility.mdx and how-to/prove-checked-mapping-replay.mdx; updated codec/DSL references, evolution guidance, workflows and fixture setup. Language 5 remains stable; Language 6 remains candidate. Migration 0033 was reverted: 32 migrations remain, with the cutover timeout limitation documented. Safe mapped-register construction remains unshipped. Keiro still requires pg-migrate 1.1 and Kiroku migrations 0.4.
@@ -1197,18 +1200,18 @@ docs(terminology): adopt simplified technical definitions
 1. List what changed since the pointer:
    ```text
    KEIRO=$(mori registry show shinzui/keiro --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIRO" log --oneline 945529d4..HEAD
-   git -C "$KEIRO" diff --stat 945529d4..HEAD
+   git -C "$KEIRO" log --oneline e6ef560b..HEAD
+   git -C "$KEIRO" diff --stat e6ef560b..HEAD
 
    # Do these two FIRST — they are cheap and they SIZE the round either way.
    # They collapsed the f05102b and fc935b7 rounds to "keiro-dsl only, no SQL";
    # they blew the 8d1cd74 round wide open (3 migrations, 2 new exposed modules,
    # a new package). Do not assume the collapsing outcome.
-   git -C "$KEIRO" diff --name-status 945529d4..HEAD -- '*.sql'
-   git -C "$KEIRO" diff --stat 945529d4..HEAD -- keiro/src keiro-core/src keiro-pgmq/src
+   git -C "$KEIRO" diff --name-status e6ef560b..HEAD -- '*.sql'
+   git -C "$KEIRO" diff --stat e6ef560b..HEAD -- keiro/src keiro-core/src keiro-pgmq/src
 
    # And check the cabal files — a new package is invisible to the two above:
-   git -C "$KEIRO" diff 945529d4..HEAD -- '*.cabal' | grep -E '^[-+].*(exposed-modules|other-modules|^\+name:)'
+   git -C "$KEIRO" diff e6ef560b..HEAD -- '*.cabal' | grep -E '^[-+].*(exposed-modules|other-modules|^\+name:)'
    ```
    keiro's own `docs/adr/*` is now the fastest way to read a decision's *rationale and consequences*
    (ADRs 0001–0036 cover pgmq telemetry, live schema verification, codd-ledger guarding, replay-only

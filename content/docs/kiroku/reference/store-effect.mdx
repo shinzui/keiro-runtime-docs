@@ -20,6 +20,11 @@ data Store :: Effect where
   ReadAllBackward     :: GlobalPosition -> Int32 -> Store m (Vector RecordedEvent)
   ReadCategoryForward :: CategoryName -> GlobalPosition -> Int32 -> Store m (Vector RecordedEvent)
   GetStream           :: StreamName -> Store m (Maybe StreamInfo)
+  GetStreamWithHead :: StreamName -> Store m (Maybe (StreamInfo, Maybe GlobalPosition))
+  ListStreams :: Maybe CategoryName -> Maybe Text -> Maybe StreamName -> BrowsePageSize -> Store m (Vector StreamInfo)
+  ListCategories :: Maybe CategoryName -> BrowsePageSize -> Store m (Vector CategoryName)
+  GetEvent :: EventId -> Store m (Maybe RecordedEvent)
+  ListSubscriptionDeadLetters :: SubscriptionDeadLetterQuery -> Store m SubscriptionDeadLetterPage
   LookupStreamId      :: StreamName -> Store m (Maybe StreamId)
   EventExistsInStream :: StreamName -> EventId -> Store m Bool
   LookupStreamNames   :: [StreamId] -> Store m (Map StreamId StreamName)
@@ -382,3 +387,27 @@ The category encoder takes `(startPosition, category, limit)`.
 The group encoder takes `(startPosition, category, member, size, limit)`.
 These exports let custom Hasql statements reuse the store's parameter and result formats.
 The `Store` effect remains the application interface for normal reads and appends.
+
+## Store 0.11 inspection operations
+
+The closed `Store` effect adds `GetStreamWithHead`, `ListStreams`, `ListCategories`, `GetEvent`,
+and `ListSubscriptionDeadLetters`. Extend exhaustive custom interpreters for all five.
+Their public wrappers and cursor rules are documented in
+[read-only inspection](/docs/kiroku/reference/inspection).
+
+`getStreamWithHead` returns `Maybe (StreamInfo, Maybe GlobalPosition)` from one statement.
+The outer `Nothing` means absent; the inner `Nothing` means no surviving originated event.
+Links and `$all` originate no head. Logical truncation and soft deletion preserve it; physical
+retention can remove it. This opt-in read changes neither `StreamInfo` nor ordinary metadata-read cost.
+
+## Typed decode failures
+
+Store 0.10 changes `decodeHook` to `Maybe (RecordedEvent -> IO (Either DecodeFailure RecordedEvent))`.
+`DecodeFailure` carries `decodeFailureEventId :: !EventId` and `decodeFailureReason :: !Text`.
+Ordinary reads return `EventDecodeFailed !DecodeFailure` without partial results; hook exceptions
+remain programming failures. Subscription workers have independent poison dispositions.
+
+Unique-violation attribution now compares exact constraint identities. Both `events_pkey` and
+`stream_events_pkey` produce `DuplicateEvent`; `ux_stream_events_stream_version` produces
+`UnexpectedServerError "23505"` with the original message because it signals an invariant failure.
+Unknown append constraints retain the expected-version fallback.

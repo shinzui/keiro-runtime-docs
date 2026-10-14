@@ -118,14 +118,17 @@ The diagram shows the hash assignment for a group of size 4. The streams have th
 You declare membership on the config:
 
 ```haskell
+Right groupSize <- pure (mkConsumerGroupSize 4)
+Right group <- pure (mkConsumerGroup 0 groupSize)
 let cfg = (defaultSubscriptionConfig (SubscriptionName "orders-projection")
                                      (Category (CategoryName "orders"))
                                      handler)
-            { consumerGroup = Just (ConsumerGroup { member = 0, size = 4 }) }
+            { consumerGroup = Just group }
 ```
 
-`subscribe` checks the invariant `size >= 1` and `0 <= member < size` eagerly, throwing
-`InvalidConsumerGroup` on a bad pair. Checkpoints live in the `subscriptions` table keyed by
+Since Store 0.10, `ConsumerGroupSize` and `ConsumerGroup` have private constructors.
+`mkConsumerGroupSize` and `mkConsumerGroup` validate `size >= 1` and `0 <= member < size`
+before a subscription can be configured. Checkpoints live in the `subscriptions` table keyed by
 `(subscription_name, consumer_group_member)`, so each member resumes independently.
 
 ## What happens when a checkpoint is missing
@@ -178,3 +181,29 @@ all-stream queue subscriber exists. It changes memory retention, not delivery or
 
 The category notification path retains its safety reconciliation poll. Category-specific wakeups
 remove queries caused by unrelated appends; they do not remove the safety poll.
+
+## Persisted topology and target ownership
+
+Store 0.10 persists group size and target binding before delivery. A different configured size
+refuses through `ConsumerGroupSizeMismatch`; a different target refuses through
+`SubscriptionTargetMismatch`. Both are catchable as `SomeSubscriptionStartupFailure` through
+`wait`. `targetBindingPolicy` defaults to `AdoptUnbound` for legacy rows; choose `RequireBound`
+when adoption must be an explicit operator action. Existing progress is never silently reset.
+
+Stop every member before resizing, changing a hash assignment, or rebinding a target. Use the
+[stopped-group procedure](/docs/kiroku/how-to/resize-or-rebind-a-subscription), which rewinds new
+members to the old minimum so changed assignments cannot leave gaps. This deliberately permits
+replay. The optional `consumerGroupGuard` remains a startup probe, not a lifetime ownership lock.
+
+## Decode refusal and advisory stalls
+
+`StoreSettings.decodeHook` now returns `Either DecodeFailure RecordedEvent`. A read fails with
+`EventDecodeFailed` without returning partial results. Subscription workers retain the raw event
+and apply their own disposition independently; one subscriber's poison does not stall the shared
+publisher. Without `undecodableHandler`, bounded one-second retries end in `SubscriptionUndecodable`
+with the checkpoint before the failed event. A callback can explicitly continue, stop, retry, or
+retain `DeadLetterDecodeFailure`. Exceptions thrown by a hook remain programming failures.
+
+A positive `handlerStallWarnAfter` enables advisory warnings while a handler owns an event.
+The default `Nothing` creates no diagnostic cell, watchdog, or timer. A warning never acknowledges,
+retries, cancels, or advances progress. Nonpositive intervals fail startup through `wait`.

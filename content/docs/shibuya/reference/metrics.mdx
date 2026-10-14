@@ -236,7 +236,7 @@ Server messages:
 { "type": "goodbye" }
 ```
 
-Invalid client messages are ignored. A connection beyond `wsMaxConnections` is rejected with "Too
+In the released 0.10.0.1 baseline, invalid client messages are ignored. A connection beyond `wsMaxConnections` is rejected with "Too
 many connections".
 
 ## WebSocket selection and ownership
@@ -284,3 +284,95 @@ The host owns server startup, configuration validation, and shutdown. Create sha
 with `newWebSocketState`; call `shutdownWebSockets` during shutdown so active clients receive
 `goodbye`. The built-in server's configuration validation is not performed by `combinedApp`.
 The application respects the endpoint flags.
+
+## Unreleased browser inspection
+
+The committed review at `0967f450` in `mori://shinzui/shibuya` adds the following surfaces
+**after** the published 0.10.0.1 tag. The earlier declarations describe the released baseline.
+Do not select these features merely because the source Cabal version still says 0.10.0.1.
+
+### Browser policy and bounded delivery
+
+`MetricsServerConfig` adds these fields; prefer updates to `defaultConfig`:
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `enableControl` | `Bool` | `False` |
+| `corsAllowedOrigins` | `[Text]` | `[]` |
+| `wsMaxQueuedFrames` | `Int` | `64` (minimum 2) |
+| `wsMaxQueuedBytes` | `Int` | `1048576` |
+| `wsSendTimeoutUs` | `Int` | `5000000` |
+
+Origins are exact serialized `scheme://host[:port]` values without paths, trailing slashes,
+or wildcards. The policy controls HTTP/preflight and WebSocket upgrades before connection-slot
+acquisition. Enabled responses merge `Vary` correctly and emit no credential permission.
+The server supplies no authentication. Direct `combinedApp` hosts must validate configuration;
+the built-in starter performs that validation.
+
+HTTP errors add a stable `code` beside their existing string `error`. Malformed WebSocket input
+now emits `ServerError` as an in-band `error` frame; it is no longer silently ignored at this
+source boundary. Oversized selections emit an error before policy close. A single writer sends
+all application frames from a queue bounded by frame count and encoded bytes, including required
+frames. Delta loss requires an adjacent error/full-snapshot resynchronization pair. Saturation
+of required frames or a send deadline closes the connection. An unresponsive client cannot be
+guaranteed a terminal or goodbye frame. `MetricsServer` adds `serverShutdown :: IO ()`.
+
+### Detailed metrics and exact cursor progress
+
+```haskell
+data MetricsDetail = MetricsBasic | MetricsDetailed !DetailOptions
+  deriving stock (Eq, Show, Generic)
+
+data DetailOptions = DetailOptions {maxTrackedPartitions :: !Int}
+  deriving stock (Eq, Show, Generic)
+
+data ProgressSnapshot = ProgressSnapshot
+  { latest :: !(Maybe Cursor),
+    partitions :: !(Map Text Cursor),
+    truncated :: !Bool
+  }
+  deriving stock (Eq, Show, Generic)
+```
+
+`AppConfig.metricsDetail` defaults to `MetricsBasic`. `defaultDetailOptions` tracks at most 256
+partitions; zero retains latest-only progress and negative capacity is `InvalidMaxTrackedPartitions`.
+Direct `ProcessorMetrics` construction must supply optional `latency`, `oldestInFlight`, and
+`progress`; direct `MetricsHandle` construction also follows the new detail state.
+
+Detailed timing uses a monotonic clock and includes finalization retries, recording one observation
+per message attempt or emitted batch. Optional camelCase JSON members are omitted when unavailable.
+Prometheus adds `shibuya_message_processing_seconds` and optional
+`shibuya_processor_oldest_in_flight_seconds`. Clients can extrapolate age between state updates.
+Progress is the last successful finalization observation, not proof of a contiguous source prefix
+under concurrent completion. Partition retention is bounded and `truncated` exposes that limit.
+`CursorInt` JSON uses `{"kind":"integer","value":"9007199254740993"}`; text cursors use kind
+`text`. Preserve decimal text; conversion through a floating-point number loses identity.
+
+### Atomic intake control
+
+`GET /control` discovers `enabled` and `pause`/`resume`; the surface follows `enableJSON`.
+`POST /control/processors/<id>/pause` and `/resume` are disabled by default and return
+`403 control_disabled` without mutation. Enabled actions validate any supplied Origin against
+an explicit allowlist, even for simple or same-origin POSTs. Headerless CLI requests remain
+supported. Repeated actions return the transaction's idempotent state and original pause time.
+
+| Refusal code | HTTP status |
+| --- | --- |
+| `origin_not_allowed` | 403 |
+| `processor_not_found` | 404 |
+| `processor_not_controllable` | 409 |
+| `processor_terminal` | 409 |
+| `processor_draining` | 409 |
+| `method_not_allowed` | 405 with `Allow` |
+
+The public runner exports `pauseProcessor`, `resumeProcessor`, their IO variants, and
+`ControlOutcome`. `Paused !InFlightInfo !UTCTime !UTCTime` extends `ProcessorState`; complete
+`ProcessorHealth` and `SupervisedProcessor` construction must also account for pause state.
+Paused health has a `paused` count and Prometheus state value 5. Outstanding stuck work still
+fails readiness because pause preserves the last-progress clock; an empty paused processor does
+not fail solely for being paused.
+
+Pause gates future intake admission. Already admitted pulls, adapter prefetch, inbox items,
+and in-flight handlers can drain. Draining refuses control and resumes intake atomically before
+adapter shutdown. Follow [pause and resume intake](/docs/shibuya/how-to/pause-and-resume-intake)
+when operating a source build that includes these APIs.

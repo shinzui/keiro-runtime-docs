@@ -25,9 +25,9 @@ member**. `KirokuConsumerGroupConfig` describes the **entire** group:
 data KirokuConsumerGroupConfig = KirokuConsumerGroupConfig
   { subscriptionName  :: !SubscriptionName   -- each member checkpoints under (name, member)
   , subscriptionTarget :: !SubscriptionTarget -- same source for every member
-  , groupSize         :: !Int32              -- N members; >= 1
-  , batchSize         :: !Int32
-  , bufferSize        :: !Natural
+  , groupSize         :: !ConsumerGroupSize              -- N members; >= 1
+  , batchSize         :: !Sub.BatchSize
+  , bufferSize        :: !StreamBufferSize
   , memberConcurrency :: !Concurrency        -- must be Serial (validated)
   , eventTypeFilter   :: !EventTypeFilter
   , selector          :: !(Maybe (RecordedEvent -> Bool))
@@ -46,7 +46,7 @@ Rather than invent its own legality check, the adapter reuses shibuya's `validat
 
 ```haskell
 -- src/Shibuya/Adapter/Kiroku.hs
-consumerGroupPolicy :: Concurrency -> Either PolicyError (Ordering, Concurrency)
+consumerGroupPolicy :: Concurrency -> Either PolicyError (OrderingPolicy, Concurrency)
 consumerGroupPolicy conc = do
   -- A member delivers one strictly-ordered stream; only Serial is honest.
   validatePolicy StrictInOrder conc   -- rejects Ahead/Async with a PolicyError
@@ -76,7 +76,7 @@ kirokuConsumerGroupProcessors store cfg handler =
       processors <- mapM
         (\m -> do
             adapter <- kirokuAdapter store KirokuAdapterConfig
-                         { consumerGroup = Just (ConsumerGroup { member = m, size = n }), ... }
+                         { consumerGroup = Just group, ... }
             let pid = ProcessorId (name <> "-member-" <> T.pack (show m))
             -- Built directly (not via mkProcessor, which hardcodes Unordered/Serial)
             -- so the group policy is pinned.
@@ -142,3 +142,11 @@ ordering is guaranteed by construction.
 One more read-side consumer of the same machinery: [07 — Tracing the subscription
 FSM](/docs/kiroku/walkthrough/07-tracing-the-subscription), which turns the worker's `KirokuEvent`
 stream into OpenTelemetry spans and tracks open spans per worker in a striped, lock-free registry.
+
+## Validated member creation
+
+The current helper takes `ConsumerGroupSize`, reads it with `consumerGroupSizeValue`, and builds
+each member with `mkConsumerGroup`. The schematic `group` above is that validated member.
+`retryPolicy` and `handlerStallWarnAfter` are forwarded per member; default construction supplies
+five deliveries and disabled diagnostics. Cleanup ownership and serial per-member policy remain
+unchanged. Persisted topology still requires the stopped-group resize procedure.

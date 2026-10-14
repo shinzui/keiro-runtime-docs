@@ -190,7 +190,8 @@ contract emergency {
 }
 ```
 
-Contract field types are `typeid "prefix"`, `text`, or `int`. Language 6 also lets a field
+Scalar contract field types are `typeid "prefix"`, `text`, or `int`;
+[Language 6 also accepts scalar lists](#candidate-language-6-contract-lists). Language 6 also lets a field
 name a declared `id`:
 
 ```keiro-dsl
@@ -453,3 +454,44 @@ scaffoldProcessForService :: Context -> CheckedService -> ProcessNode -> [Scaffo
 It resolves consumer-owned mapped types through the service graph. Single-service and workspace
 scaffolding call this entry point automatically. The older `scaffoldProcess` has no service graph;
 it does not supply that mapped-type resolution.
+
+## Candidate Language 6 contract lists
+
+Keiro-dsl 0.21 adds `ContractListFieldSyntax` to candidate Language 6. Each contract field may
+be a scalar or `List` of `typeid "prefix"`, a declared ID, `text`, or `int`:
+
+```keiro-dsl
+# Fields inside a contract event with a declared TemplateId:
+templateIds: List TemplateId
+labels: List text
+```
+
+Arrays preserve order and duplicates; `[]` is valid. Every list field is required. Missing, null,
+non-array, invalid-element, and null-element inputs fail the entire payload, with element paths
+such as `$.templateIds[0]`. ID elements enforce their scalar prefix and admission domain.
+Nested containers and Optional/Map/Set applications remain unsupported. Those words can still name
+declared scalar IDs: `values: List Optional` and `values: List List` are valid when those IDs exist.
+Only exact `List` introduces an application; newlines are whitespace and an adjacent field head
+terminates a bare scalar.
+
+List payload fields cannot supply publisher `outboxId` or intake `dedupe` keys
+(`ContractListFieldUsedAsKey`). Canonical envelope identity fields retain precedence over colliding
+payload names. A non-envelope key is refused if any selected event uses it as a list.
+Scalar/list changes, element changes, and prefix/admission widening or narrowing are public breaking
+changes. Literal-to-declared ID changes are build-only only when shape, prefix, and admission agree.
+
+The direct library API is breaking:
+
+```haskell
+data ContractScalarType = CTypeId !Text | CDeclaredId !Name | CText | CInt
+  deriving stock (Eq, Show, Generic)
+
+data ContractType = CScalar !ContractScalarType | CList !ContractScalarType
+  deriving stock (Eq, Show, Generic)
+
+contractScalar :: ContractType -> ContractScalarType
+contractIsList :: ContractType -> Bool
+```
+
+Wrap existing scalar AST construction/matches in `CScalar` and handle lists explicitly.
+No compatibility pattern synonyms are supplied.

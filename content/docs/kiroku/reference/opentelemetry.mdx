@@ -70,7 +70,7 @@ You can call the helpers by hand on each event, or apply them automatically with
 | Hook          | Type                                        | Path                                                   | Use                                          |
 | ------------- | ------------------------------------------- | ------------------------------------------------------ | -------------------------------------------- |
 | `enrichEvent` | `Maybe (EventData -> IO EventData)`         | append (typed `EventData`, before encode)              | inject the current span into outgoing events |
-| `decodeHook`  | `Maybe (RecordedEvent -> IO RecordedEvent)` | read & subscription (`RecordedEvent` before surfacing) | derive metadata, decrypt, redact             |
+| `decodeHook`  | `Maybe (RecordedEvent -> IO (Either DecodeFailure RecordedEvent))` | read & subscription (`RecordedEvent` before surfacing) | derive metadata, decrypt, redact             |
 
 ```haskell
 enrichEvent = Just (pure . injectTraceContext spanCtx)
@@ -162,3 +162,13 @@ them — traces read consistently).
 - [Tracing subscriptions](/docs/kiroku/explanation/tracing-subscriptions) — why the span model is what it is.
 - [Tracing the subscription FSM](/docs/kiroku/walkthrough/07-tracing-the-subscription) — a code walkthrough of the handler that emits these spans.
 - [Causation and correlation](/docs/kiroku/explanation/causation-and-correlation) — the metadata these traces ride alongside.
+
+## Subscription hardening events
+
+Store 0.10 adds typed publisher decode-failure, undecodable-stop, and advisory handler-stall
+lifecycle events. `kiroku-otel 0.2.0.12` handles the released event vocabulary. Target-bound, group-size-mismatch,
+publisher-decode-failed, and handler-stalled observations are explicitly ignored by its span adapter;
+they do not introduce new span names. A decode hook
+returns `Left DecodeFailure` for expected poison and `Right event` for success; an exception
+still terminates the affected programming path. Handler-stall observations do not imply
+checkpoint movement. See [subscription semantics](/docs/kiroku/explanation/subscriptions-and-consumer-groups#decode-refusal-and-advisory-stalls).

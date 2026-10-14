@@ -153,11 +153,11 @@ fetchAndBroadcast = do
       | V.null rawEvents -> pure ()
       | otherwise -> do
           events <- decodeEvents stSettings rawEvents   -- decodeHook ONCE per batch, shared by all subscribers
-          let newPos = globalPosition (V.last events)
+          let newPos = globalPosition (decodedBatchLastEvent events)
           subs <- readTVarIO subsVar                    -- snapshot the registry...
           for_ (IntMap.elems subs) (deliverBatch events) -- ...then deliver, each its own atomic step
           atomically (writeTVar posVar newPos)          -- advance the cursor after attempting all deliveries
-          when (V.length events >= fromIntegral publisherBatchSize) fetchAndBroadcast  -- full batch ⇒ maybe more
+          when (decodedBatchLength events >= fromIntegral publisherBatchSize) fetchAndBroadcast  -- full batch ⇒ maybe more
 ```
 
 Three deliberate choices here:
@@ -264,3 +264,12 @@ broadcasting full event batches. Store 0.9.0.1 forces that position before the T
 Without this evaluation, a chain of deferred updates could keep old Hasql results and large
 objects reachable. Category/group subscriptions still use the position for catch-up; category
 members use category-specific notifications for their live fetches.
+
+## Typed decode batches
+
+Since Store 0.10, `decodeEvents` returns `DecodedBatch`: `UnchangedBatch` retains the original
+vector when no hook exists; `TransformedBatch` retains each decoded or raw undecodable event.
+The publisher can advance and serve healthy subscribers when another subscriber encounters poison.
+Each worker owns its retry/disposition. `Subscriber.subDropped :: TVar Word64` counts discarded
+batches only under `DropOldest`; the inspection tail reports that loss before surviving events.
+Complete `Subscriber` records must now supply this field.

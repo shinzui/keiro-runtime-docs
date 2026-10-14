@@ -1,0 +1,38 @@
+---
+title: Recover an inspection tail
+description: Repair a lossy or disconnected live view from durable history while preserving an exact safe cursor.
+---
+
+Use metrics 0.3 with Store 0.11 and the inspection providers configured. Discover
+available routes through [capabilities](/docs/kiroku/reference/inspection#providers-and-discovery).
+Keep one exact safe global cursor for each selected scope and deduplicate by
+event ID and position.
+
+## Choose the recovery scope
+
+For an all-stream view, page `events`; for a category view, page
+`categories/<name>/events`. Resolve paths relative to the configured base URL so
+a mount prefix survives. Decode positions losslessly, including values above
+2^53. A gap between numbers alone does not prove loss: filters and deletion
+produce legitimate gaps.
+
+## Recover before advancing coverage
+
+When an `event_stream_overflowed` error arrives, save the cursor from **before**
+the notice. Later surviving event frames are hints until recovery finishes.
+Do not adopt a survivor's position as the recovery boundary.
+
+1. Request history with `from=<saved cursor>` and a bounded `limit`.
+2. Apply the returned events idempotently. Echo `next_cursor` as `from` until
+   the chosen frontier is covered.
+3. Resume the tail from that recovered cursor, preserving the same category
+   filter and deduplicating replay/live overlap.
+
+Follow the same procedure after reconnect. For `replay_failed`,
+`category_read_failed`, or `live_decode_failed`, repair the reported cause before
+resubscribing; the current tail has ended even if the socket still answers ping.
+Retained history must still exist for recovery to be complete.
+
+The end state is a view reconstructed from durable reads, with a safe cursor
+that represents ordered coverage of its scope. A successful WebSocket
+reconnection alone does not establish that coverage.

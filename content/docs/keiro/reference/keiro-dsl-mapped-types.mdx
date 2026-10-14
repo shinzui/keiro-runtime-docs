@@ -460,3 +460,50 @@ Bare-container conformance fixtures must cover both absent/present optional valu
 lists or maps. Binding obligations report the bare/refined `value` path. Generated dependency
 planning follows named mappings for `time`, `containers`, `text`, `bytestring` and codec imports;
 reconcile the emitted Cabal fragment instead of guessing dependencies from the root field alone.
+
+## Candidate mapped register construction
+
+Keiro-dsl 0.21 publishes the implementation while Language 6 remains a **candidate**. An opaque
+or structural target may own one unary write lift:
+
+```keiro-dsl
+mapped opaque MaybeTime {
+  haskell package=example module=Example.Domain type=MaybeTime
+  codec = "example.MaybeTime.v1"
+  version = "1"
+  fixtures = "Example.Bindings.maybeTimeCases"
+  initial = "Example.Bindings.noTime"
+  write-lift from Time {
+    function = "Example.Bindings.atTime"
+    version = "1"
+    fixtures = "Example.Bindings.atTimeCases"
+  }
+}
+```
+
+Inside a generated transition, `write dormantSince := initial` selects the mapped target's initial;
+`write dormantSince := mapped(cmd.markedAt)` applies that target's lift. These are complete write
+right-hand sides only. Guards, emitted fields, outcomes, nested construction, predicate inputs,
+and projected inputs (including under arithmetic) are rejected. Source types are direct `Text`,
+`Int`, `Integer`, `Bool`, `Natural`, or `Time` (`UTCTime` alias). Refined targets admit `initial`
+but cannot declare a lift. Direct/consumer-nominal targets reject construction. Use qualified
+`cmd.initial` or `reg.initial` when ordinary roots would shadow bare `initial`.
+
+The consumer owns a pure, total function, nonempty version token, and
+`NonEmpty (Text, source, target)` cases. Conformance checks unique nonblank labels and expected
+results, including unused lifts. Create-once stubs never overwrite existing implementations.
+Finite cases cannot prove arbitrary Haskell purity or totality; Keiki forces written slots and
+runs the function during stored-history replay. Changing the body without its version is an
+undetectable replay contract violation. Generated ownership still controls guards, slots, output,
+and target; `implementation hole` cannot coexist with a declared guard or write.
+
+Only used lifts enter aggregate fold/snapshot identity with target, source, function, and version;
+case symbols are evidence-only. A changed construction-using fold conservatively selects all old
+event types and snapshot streams. Unused lifts and cases-only changes are replay-neutral build
+advisories. Compare retained-history observations before adoption; a version bump is not semantic
+compatibility proof. Schema-1 mapping ledgers remain readable without fabricated lift metadata.
+
+Direct library clients must supply `msWriteLift`/`moWriteLift` and checked `writeLift` fields
+(`Nothing` for prior declarations), and extend `Expr` for `EWriteMapped`/`EWriteInitial`, typed
+scalar nodes for `TypedMappedLift`/`TypedMappedInitial`, and binding obligations for
+`WriteLiftFunction`/`WriteLiftCases`. See [upgrade steps](/docs/keiro/reference/keiro-dsl-cli#keiro-dsl-021-adoption).

@@ -22,17 +22,20 @@ runnable examples.
   `Shibuya.Adapter.Kafka.Internal`.
 - **Examples reviewed:** `shibuya-kafka-adapter-jitsurei/app/`.
 
-- **Reviewed release:** adapter `0.9.1.0`. Hackage and upstream release tags checked 2026-10-02.
+- **Reviewed release:** adapter `0.9.1.0`. Hackage and upstream release tags checked 2026-10-14.
 
 ## Last reviewed commit
 
 ```text
-c04758990927bbda6d0616ae9609c263ec73758b  (c047589)
-2026-09-30T13:43:44-07:00
-docs(kafka): confirm the buffered-retry stall and ordering reports
+a3c9de8033801214c979864554b405ef1f56006f  (a3c9de80)
+2026-10-12T16:37:47-07:00
+docs(plans): point OTel audit reference to consolidated EP-9
 ```
 
-> **Current range.** `74fed7e8..c0475899` (**17 commits**). Reviewed published adapter 0.9.1.0 with Shibuya 0.10. Promoted lifecycle remediation from the prior candidate boundary: unresolved retry barriers, assignment-generation fencing when the rebalance handler is installed, and synchronous typed acknowledgement failure. Updated `content/docs/integrations/shibuya-kafka-adapter.mdx`, the adapter comparison and compatibility matrix. Serial execution remains a caller contract. Reported buffered-retry stalls and ordering failures remain unresolved; do not claim planned remediation or broker-restart improvements are implemented.
+> **Current range.** `c0475899..a3c9de80` (**1 commits**). Doc-neutral plan-only change: canonical OTel audit citation in historical upgrade intent; adapter source and published 0.9.1.0 API unchanged. Reported retry/ordering defects remain unresolved.
+> Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
+
+> **Note (prior range).** `74fed7e8..c0475899` (**17 commits**). Reviewed published adapter 0.9.1.0 with Shibuya 0.10. Promoted lifecycle remediation from the prior candidate boundary: unresolved retry barriers, assignment-generation fencing when the rebalance handler is installed, and synchronous typed acknowledgement failure. Updated `content/docs/integrations/shibuya-kafka-adapter.mdx`, the adapter comparison and compatibility matrix. Serial execution remains a caller contract. Reported buffered-retry stalls and ordering failures remain unresolved; do not claim planned remediation or broker-restart improvements are implemented.
 > No pages added or retired; existing pages were extended. Every commit is classified in [the sync ledger](source-sync-2026-10-02.md). All upstream worktrees were clean.
 
 > **Note (prior range).** `6c0cd3fc..74fed7e8` (**7 commits**). Reviewed lifecycle acknowledgement/remediation candidate and evidence. Published behavior remains 0.9.0.1; candidate 0.9.0.2 is unpublished. Updated integration and compatibility boundaries, without presenting candidate acknowledgements as released behavior.
@@ -91,6 +94,8 @@ the reviewed SHA.
 
 ## Previous pointers
 
+- `c04758990927bbda6d0616ae9609c263ec73758b` (2026-09-30T13:43:44-07:00) — baseline before the 2026-10-14 review; `c0475899..a3c9de80` (1 commits) reconciles shibuya-kafka-adapter source and retains explicit publication limits.
+
 - `74fed7e8df366072b0587c4bdae8d4e92317c8a3` (`74fed7e8`, 2026-09-21) — baseline before the October 2 review (17 commits); see [the ledger](source-sync-2026-10-02.md).
 
 - `6c0cd3fc840c9f5ba48558ca94c7d826a3da6c9f` (`6c0cd3fc`, 2026-09-15) — baseline before the 7-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
@@ -114,8 +119,8 @@ the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    KAFKA=$(mori registry show shinzui/shibuya-kafka-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KAFKA" log --oneline c0475899..HEAD
-   git -C "$KAFKA" diff --stat c0475899..HEAD
+   git -C "$KAFKA" log --oneline a3c9de80..HEAD
+   git -C "$KAFKA" diff --stat a3c9de80..HEAD
    ```
 2. Inspect source modules and `shibuya-kafka-adapter-jitsurei/app/`.
 3. Update `content/docs/integrations/shibuya-kafka-adapter.mdx` and the shared

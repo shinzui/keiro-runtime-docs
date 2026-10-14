@@ -1,0 +1,124 @@
+---
+title: Read-only inspection
+description: Store browsing, originated heads, durable checkpoints, dead letters, discovery, and recoverable event tails.
+---
+
+These APIs ship in Store `0.11.0.0`, metrics `0.3.0.0`, and migrations `0.7.1.0`.
+Apply migration `0015` before browsing. Live metrics describe the answering process;
+durable store reads cover persisted data shared by processes.
+
+## Store reads
+
+The functions below live in `Kiroku.Store.Read`:
+
+```haskell
+getStreamWithHead ::
+    (HasCallStack, Store :> es) =>
+    StreamName ->
+    Eff es (Maybe (StreamInfo, Maybe GlobalPosition))
+
+listStreams :: (HasCallStack, Store :> es) => Maybe CategoryName -> Maybe Text -> Maybe StreamName -> BrowsePageSize -> Eff es (Vector StreamInfo)
+
+listCategories :: (HasCallStack, Store :> es) => Maybe CategoryName -> BrowsePageSize -> Eff es (Vector CategoryName)
+
+getEvent :: (HasCallStack, Store :> es) => EventId -> Eff es (Maybe RecordedEvent)
+
+mkBrowsePageSize :: Int -> Either BrowsePageSizeError BrowsePageSize
+```
+
+`BrowsePageSize` admits 1–1001, allowing an HTTP provider to overfetch one row.
+Streams sort by UTF-8 byte order, with exact category and literal prefix filters;
+`%` and `_` have no wildcard meaning. Use the last name as an exclusive cursor.
+Soft-deleted streams remain visible; hard-deleted streams disappear. Category
+enumeration retains deployment-locale ordering. TypeID order reflects ID
+generation, not event commits. Requests do not share a multi-page snapshot.
+
+`getStreamWithHead` observes metadata and the newest surviving **originated**
+global position in one statement. Outer `Nothing` means absent; inner `Nothing`
+means no originated head. Links and `$all` do not originate a head. Logical
+truncation preserves it; physical retention may remove it. For an origin-only
+stream, a captured version/head pair can identify the projection wait target;
+the caller owns waiting, retention guarantees, and timeout handling.
+
+## Providers and discovery
+
+`ServerProviders` contains `webSocketServer`, `subscriptionStatus`,
+`checkpointInventory`, `storeBrowsing`, `deadLetters`, and `webSocketChannels`.
+Extend `defaultServerProviders` rather than constructing the record positionally.
+`storeServerProviders` wires the store-backed reads and both WebSocket channels.
+`combinedAppWithProviders` supports an externally hosted WAI application;
+`withMetricsServerWithProviders` brackets and supervises the server.
+
+Resolve `capabilities` relative to the configured base URL, preserving any mount
+prefix. `GET` or `HEAD /capabilities` reports compiled package/version, nine route
+flags, CORS enablement, and process-local routes without database reads. It
+reports actual provider wiring rather than health. Legacy starters with opaque
+WebSocket apps conservatively declare no channels.
+
+| Surface | GET/HEAD route |
+| --- | --- |
+| Stream catalog and metadata | `/streams`, `/streams/<name>` |
+| Stream history | `/streams/<name>/events` |
+| Category catalog and history | `/categories`, `/categories/<name>/events` |
+| Global history and event detail | `/events`, `/events/<event_id>` |
+| Durable progress | `/subscription-checkpoints` |
+| Retained subscription failures | `/subscriptions/<name>/dead-letters` |
+
+Pages return `items` and an optional `next_cursor`; echo it as `from`, preserving
+filters and direction. Event positions and versions are exclusive cursors. Zero
+selects the beginning forward and newest backward. Per-stream event
+`globalPosition` is zero, so it cannot serve as a global recovery cursor.
+Encode names as individual URL segments. HEAD preserves status/headers without
+a body; unsupported methods return 405 with `Allow: GET, HEAD`.
+
+New inspection errors use `{"error":{"code":"…","message":"…","details":{…}}}`
+with optional details. Existing metrics, health, and live-registry string errors
+retain their published shapes. Decode Int64 positions losslessly before cursor
+use; parsing through a JavaScript `Number` can already destroy precision.
+
+## Durable progress and dead letters
+
+`/subscription-checkpoints` returns exact member checkpoints and a store position
+from one statement snapshot. The inventory is unpaginated and scales with row
+count. Store position minus checkpoint is a position distance, not an exact
+backlog for filtered or partitioned consumers. `/subscriptions` annotates only
+this process's live workers; absence there does not remove a durable checkpoint.
+
+`subscriptionDeadLetters` uses a `SubscriptionDeadLetterQuery` with optional
+member filter, exclusive cursor, and a validated limit of 1–1000. Pages are
+newest first and return an opaque next cursor. Preserve structured reason JSON
+and unknown reason kinds; do not reconstruct a cursor from position alone.
+Unknown subscription names return an empty page. These reads run no decode hook
+and change neither checkpoints nor retained failures.
+
+## WebSocket channels and browser access
+
+`/ws/metrics` sends complete snapshots. `unsubscribe_metrics` stops periodic
+pushes; `subscribe_metrics` requests a fresh snapshot and resumes them. `ping`
+works in either state. Extend exhaustive Haskell matches for `UnsubscribeMetrics`
+and `CodedError`.
+
+`/ws/events` accepts `subscribe_events` with optional `from_position` and
+`category`, then acknowledges with `event_stream_started`. Event frames add
+`original_stream_name`; a bounded 4096-name FIFO cache resolves names per tail.
+`event_stream_overflowed` precedes surviving batches. Recover from the last safe
+cursor rather than treating survivors as complete history; follow the
+[tail recovery procedure](/docs/kiroku/how-to/recover-an-inspection-tail).
+`replay_failed`, `category_read_failed`, and `live_decode_failed` end the current
+tail while leaving the connection available for ping or resubscription.
+
+`MetricsServerConfig.cors` defaults to `corsDisabled`. `Kiroku.Metrics.Cors`
+provides validated origins, policies, HTTP/preflight middleware, and WebSocket
+Origin refusal before upgrade. CORS controls browser access; it does not provide
+authentication. New umbrella exports may require qualified record updates.
+
+## Standalone inspection
+
+```bash
+DATABASE_URL='postgresql://localhost/kiroku' kiroku-inspect --port 9091 --cors-origin http://localhost:5173
+```
+
+`kiroku-inspect` owns its store, collector, server, and joined signal shutdown.
+It does not migrate or run subscriptions. An empty live registry is expected;
+durable checkpoints, browsing, and dead letters remain useful. Configure the
+database schema explicitly for a migrated tenant schema.

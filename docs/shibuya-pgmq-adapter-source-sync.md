@@ -33,17 +33,20 @@ guides.
   `docs/user/pgmq-advanced.md`, `docs/user/pgmq-dead-letter-queues.md`, and
   `docs/user/pgmq-topic-routing.md`.
 
-- **Reviewed release:** adapter `0.16.1.0`. Hackage and upstream release tags checked 2026-10-02.
+- **Reviewed release:** adapter `0.16.1.0`. Hackage and upstream release tags checked 2026-10-14.
 
 ## Last reviewed commit
 
 ```text
-65af8ed8cd8a0ff7a89682346c3769f088a64732  (65af8ed)
-2026-10-01T20:25:52-07:00
-docs(pgmq): record BUG-4 and document BUG-1 root cause with fix plan
+237575e70c10bb2e53fe19bb2c6efcd9cda6b2c1  (237575e7)
+2026-10-12T16:55:51-07:00
+test: preserve core config defaults in adapter lifecycle fixtures
 ```
 
-> **Current range.** `9c709d76..65af8ed8` (**6 commits**). Reviewed published adapter 0.16.1.0 with Shibuya 0.10 and PGMQ 0.6.1.1. Promoted the prior lifecycle candidate: serialized and cancellation-safe acknowledgement, typed terminal failures, and transactional source-claim-before-DLQ-copy behavior. Updated `content/docs/integrations/shibuya-pgmq-adapter.mdx`, Keiro job/integration operations, comparison and compatibility. Added confirmed shared-pool long-poll starvation and server reads continuing after client cancellation, with StandardPolling/PollEvery controls. Client-side polling and the reported starvation fixes remain unimplemented.
+> **Current range.** `65af8ed8..237575e7` (**4 commits**). Doc-neutral production range: stable PostgreSQL test cleanup, canonical audit link, consumer-context/DLQ telemetry proof and lifecycle default-config fixture repair. Production adapter source and published 0.16.1.0 unchanged; long-poll pool starvation and disconnected server polls remain limitations.
+> Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
+
+> **Note (prior range).** `9c709d76..65af8ed8` (**6 commits**). Reviewed published adapter 0.16.1.0 with Shibuya 0.10 and PGMQ 0.6.1.1. Promoted the prior lifecycle candidate: serialized and cancellation-safe acknowledgement, typed terminal failures, and transactional source-claim-before-DLQ-copy behavior. Updated `content/docs/integrations/shibuya-pgmq-adapter.mdx`, Keiro job/integration operations, comparison and compatibility. Added confirmed shared-pool long-poll starvation and server reads continuing after client cancellation, with StandardPolling/PollEvery controls. Client-side polling and the reported starvation fixes remain unimplemented.
 > No pages added or retired; existing pages were extended. Every commit is classified in [the sync ledger](source-sync-2026-10-02.md). All upstream worktrees were clean.
 
 > **Note (prior range).** `392f7545..9c709d76` (**7 commits**). Reviewed lifecycle recovery candidate and evidence. Published behavior remains 0.16.0.0; candidate 0.16.0.1 is unpublished. Updated integration and compatibility boundaries; candidate recovery behavior is deferred until publication.
@@ -120,6 +123,8 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `65af8ed8cd8a0ff7a89682346c3769f088a64732` (2026-10-01T20:25:52-07:00) — baseline before the 2026-10-14 review; `65af8ed8..237575e7` (4 commits) reconciles shibuya-pgmq-adapter source and retains explicit publication limits.
+
 - `9c709d76b8c1e66a45148888970d5518cc3c0d7e` (`9c709d76`, 2026-09-21) — baseline before the October 2 review (6 commits); see [the ledger](source-sync-2026-10-02.md).
 
 - `392f7545af32ef893c24139fd194d16ec1172f75` (`392f7545`, 2026-09-16) — baseline before the 7-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
@@ -147,8 +152,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    ADAPTER=$(mori registry show shinzui/shibuya-pgmq-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$ADAPTER" log --oneline 65af8ed8..HEAD
-   git -C "$ADAPTER" diff --stat 65af8ed8..HEAD
+   git -C "$ADAPTER" log --oneline 237575e7..HEAD
+   git -C "$ADAPTER" diff --stat 237575e7..HEAD
    ```
    Also inspect `README.md`, `CHANGELOG.md`, `docs/user/`, and the source
    modules listed above. Because the adapter sits on `pgmq-hs`, check

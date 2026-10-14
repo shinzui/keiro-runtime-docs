@@ -1,0 +1,82 @@
+---
+title: "Render: SCXML"
+description: "Descriptive SCXML export options, event labels, metadata, and enumeration errors."
+---
+
+`Keiki.Render.SCXML` exports a finite transducer as a flat SCXML 1.0 chart.
+This API is committed in `mori://shinzui/keiki` at `b6a60c25` but is **unreleased**;
+the published `keiki 0.9.1.0` package does not export it.
+
+## Export functions
+
+```haskell
+toSCXML ::
+  (Eq s, Enum s, Bounded s, Show s) =>
+  SymTransducer (HsPred rs ci) rs s ci co ->
+  Either ScxmlError Text
+
+toSCXMLWith ::
+  (Eq s, Enum s, Bounded s, Show s) =>
+  ScxmlOptions ->
+  SymTransducer (HsPred rs ci) rs s ci co ->
+  Either ScxmlError Text
+```
+
+`toSCXML` uses `defaultScxmlOptions`. Write the returned text with
+`Data.Text.Encoding.encodeUtf8` and `Data.ByteString.writeFile` to match its UTF-8
+declaration. The result is deterministic for the same declaration and options.
+
+The chart contains one state per enumerated control state, including unreachable
+states. Accepting vertices become `final` elements. Product states remain flat;
+the exporter does not reconstruct hierarchy or parallel regions.
+
+## Options
+
+```haskell
+data ScxmlEdgeView = ForwardEdges | AllDeclaredEdges
+  deriving stock (Eq, Show)
+```
+
+`ScxmlOptions` has `edgeView :: ScxmlEdgeView` and `includeBehavior :: Bool`.
+The defaults are `ForwardEdges` and `True`. Forward mode draws only `Live` edges;
+replay-only edges remain metadata comments. `AllDeclaredEdges` also draws replay
+arrows with reserved `keiki_replay_sN_eM` labels.
+
+Set `includeBehavior = False` for a structural export. This omits guards, register
+assignments, and output descriptions without forcing their pretty-printers or
+`Show` instances. Readable mode discloses literal values under the same policy as
+[Mermaid rendering](/docs/keiki/reference/render-mermaid#the-default-is-readable).
+
+## Descriptive semantics and labels
+
+The document declares `datamodel="null"`. Guards, updates, and outputs appear in
+`keiki-scxml-v1` JSON comments; the exporter emits no executable `cond`, `assign`,
+or `send` behavior. Executing this chart in a generic SCXML engine does not
+reproduce Keiki command acceptance, updates, emission, or replay.
+
+A command constructor labels an arrow only when its guard has exactly one safe
+constructor test as a top-level conjunct. Other arrows use reserved synthetic
+labels. Sibling arrows sharing a constructor are all qualified as `Ctor.eN` to
+prevent unconditional transition shadowing in viewers. These labels and the
+enumeration-derived state IDs are display coordinates, not durable identities.
+
+The JSON metadata preserves readable text using Unicode escapes for hyphens and
+XML-forbidden characters. Decode the JSON after parsing the XML; do not apply XML
+entity decoding to comment payloads. Third-party tools may discard comments, so
+editor round trips do not preserve a guaranteed Keiki representation.
+
+## Enumeration errors
+
+Lawful, finite `Eq`, `Enum`, and `Bounded` instances are required. Export validates
+the entire chart before producing text, in this order:
+
+| Constructor | Refusal |
+| --- | --- |
+| `EmptyStateEnumeration` | The enumeration is empty. |
+| `InitialStateNotEnumerated` | The initial state is absent. |
+| `TargetStateNotEnumerated` | An edge target is absent; `sourceStateId :: Text` and `edgeIndex :: Int` identify its local source and index. |
+
+Target validation includes replay-only edges even when they are not drawn.
+The upstream `just scxml-check` gate independently parses the generated XML and
+JSON with Python's standard library. It verifies this export format rather than
+executable SCXML behavior.

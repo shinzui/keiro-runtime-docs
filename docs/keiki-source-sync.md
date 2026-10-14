@@ -25,12 +25,15 @@ reviewed by the documentation.
 ## Last reviewed commit
 
 ```text
-3ed37eb08bde38ab8af8c0855d9e8cca87db7f4e  (3ed37eb0)
-2026-09-19T10:52:40-07:00
-docs: add OKF terminology bundle
+b6a60c25ad5cdaa50c79d7592790a1b073ba7846  (b6a60c25)
+2026-10-04T20:45:30-07:00
+docs(guide): adopt OKF user-documentation profile with DOC-N handles
 ```
 
-> **Current range.** `79337c57..3ed37eb0` (**3 commits**). Tooling, provenance and terminology metadata only; no public API changes. No library pages changed.
+> **Current range.** `3ed37eb0..b6a60c25` (**8 commits**). Added `content/docs/keiki/reference/render-scxml.mdx`, reference navigation, Mermaid cross-link and FAQ. Verified descriptive XML, structural redaction, safe event labels and enumeration refusals against committed source. SCXML remains unreleased after 0.9.1.0. Tooling, Cabal formatting and DOC-N guide metadata add no further API.
+> Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
+
+> **Note (prior range).** `79337c57..3ed37eb0` (**3 commits**). Tooling, provenance and terminology metadata only; no public API changes. No library pages changed.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
 
 > **Note (prior range).** `97d8b07e..79337c57` (**1 commit**). Mori package/dependency metadata only; no package source, release, API, or behavior changed. Compatibility records the reviewed SHA.
@@ -439,6 +442,8 @@ docs: add OKF terminology bundle
 
 ## Previous pointers
 
+- `3ed37eb08bde38ab8af8c0855d9e8cca87db7f4e` (2026-09-19T10:52:40-07:00) — baseline before the 2026-10-14 review; `3ed37eb0..b6a60c25` (8 commits) reconciles keiki source and retains explicit publication limits.
+
 - `79337c57967db09c6ef7e27d68d349fe25e4b92b` (`79337c57`, 2026-09-07) — baseline before the 3-commit September 21 review; see [the ledger](source-sync-2026-09-21.md).
 
 - `97d8b07e87ceb2d9b6e6b2b8a60a7de84e15e2bb` (`97d8b07e`) — baseline before the
@@ -482,8 +487,8 @@ docs: add OKF terminology bundle
 1. Resolve the source with mori and inspect committed drift:
    ```text
    KEIKI=$(mori registry show shinzui/keiki --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KEIKI" log --oneline 3ed37eb0..HEAD
-   git -C "$KEIKI" diff --stat 3ed37eb0..HEAD
+   git -C "$KEIKI" log --oneline b6a60c25..HEAD
+   git -C "$KEIKI" diff --stat b6a60c25..HEAD
    ```
 2. Read changed source, tests, changelogs, and release notes. `docs/foundations/`
    is the highest-value prose here — it states trust boundaries the source only

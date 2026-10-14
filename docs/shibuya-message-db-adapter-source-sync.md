@@ -28,12 +28,15 @@ consumer groups, and runnable examples.
 ## Last reviewed commit
 
 ```text
-1701c0441649dfa49152e0718c5295d554069816  (1701c044)
-2026-09-19T21:27:19-07:00
-chore: mark shibuya-message-db-adapter as archived
+51a36348ee31bd97eea595b34533ca8cfa931f82  (51a36348)
+2026-10-06T11:51:04-07:00
+fix(test): preserve PostgreSQL settings with stable cleanup roots
 ```
 
-> **Current range.** `fa7b9584..1701c044` (**1 commits**). Upstream archived metadata; no runtime change. Updated integration and adapter comparison to identify retained historical documentation and the incompatible Shibuya 0.5 bound.
+> **Current range.** `1701c044..51a36348` (**1 commits**). Doc-neutral production range: test fixtures preserve PostgreSQL settings and use stable cleanup roots. Archived adapter remains on the incompatible Shibuya 0.5 source line; Hackage still returns 404. No release or runtime API inferred.
+> Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
+
+> **Note (prior range).** `fa7b9584..1701c044` (**1 commits**). Upstream archived metadata; no runtime change. Updated integration and adapter comparison to identify retained historical documentation and the incompatible Shibuya 0.5 bound.
 > No pages retired. Every commit is classified in [the sync ledger](source-sync-2026-09-21.md).
 
 > **Note (prior range).** The `4307255..fa7b958` range (**1 commit**) is
@@ -88,8 +91,8 @@ those behaviors.
 1. List what changed since the pointer:
    ```text
    MDB=$(mori registry show shinzui/shibuya-message-db-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$MDB" log --oneline 1701c04..HEAD
-   git -C "$MDB" diff --stat 1701c04..HEAD
+   git -C "$MDB" log --oneline 51a36348..HEAD
+   git -C "$MDB" diff --stat 51a36348..HEAD
    ```
 2. Inspect source modules, `docs/user/`, and
    `shibuya-message-db-adapter-jitsurei/app/`.

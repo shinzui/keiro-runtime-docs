@@ -21,11 +21,7 @@ calls.
 -- src/Kiroku/Store/Subscription.hs (trimmed)
 subscribe :: (MonadIO m) => KirokuStore -> SubscriptionConfig -> m SubscriptionHandle
 subscribe store config = liftIO $ do
-  -- 1. Fail fast on a misconfigured group, before any thread is spawned.
-  for_ (consumerGroup config) $ \(ConsumerGroup m n) ->
-    when (n < 1 || m < 0 || m >= n) $
-      throwIO (InvalidConsumerGroup m n)
-
+  -- 1. Group/member and batch values have already passed their smart constructors.
   -- 2. Allocate the live source. Non-group AllStreams registers a bounded publisher queue;
   --    category and consumer-group workers are DB-driven and register no publisher queue.
   (liveSource, unsubscribe) <- case (consumerGroup config, target config) of
@@ -74,9 +70,9 @@ subscribe store config = liftIO $ do
 
 Six things happen, in order. Read each:
 
-1. **Eager validation.** A bad `(member, size)` is a _programmer_ error, so `subscribe` throws
-   `InvalidConsumerGroup` immediately rather than starting a doomed worker. This is also why
-   `subscribe`'s signature stays non-`Either` — the only failures here are bugs.
+1. **Validated configuration.** Private group/member and batch constructors reject invalid values
+   before this call. Persisted topology, target, and warning-interval refusals surface through `wait`
+   before delivery, under `SomeSubscriptionStartupFailure`.
 2. **Live-source allocation** gives the worker its live source. A non-group `AllStreams`
    subscription registers a bounded publisher queue and a `statusVar` for overflow/backpressure.
    Category subscriptions and consumer-group members register no publisher queue; their live loops

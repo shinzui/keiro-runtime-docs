@@ -1,0 +1,56 @@
+---
+title: Resize or rebind a subscription
+description: Change a stopped consumer group's topology or target without skipping reassigned history.
+---
+
+Use this procedure with Store 0.10 or later after applying migrations `0013` and
+`0014`. Choose resize when member count or hash assignment changes. Choose
+rebind when a subscription name must refer to a different target. A startup
+mismatch is a refusal to reconcile deliberately, not permission to edit rows.
+
+## Stop every member
+
+Stop and join all workers using the subscription name, including workers in
+other processes. Preserve their handler idempotence receipts: equalizing
+checkpoints deliberately replays some successful work. The optional startup
+advisory-lock probe does not prove that no other member remains alive.
+
+For Keiro lease-backed workers, relinquish every recorded owner. Lease expiry
+alone is insufficient for [atomic shard resize](/docs/keiro/reference/subscription-sharding#resize-a-stopped-group).
+
+## Choose the operation
+
+The public functions live in `Kiroku.Store.Subscription.Checkpoint`:
+
+```haskell
+resizeConsumerGroupTx ::
+    SubscriptionName -> ConsumerGroupSize -> Tx.Transaction ConsumerGroupResizeReport
+
+rebindSubscriptionTargetTx ::
+    SubscriptionName -> SubscriptionTarget -> GlobalPosition -> Tx.Transaction SubscriptionTargetRebindReport
+```
+
+Validate a new size with `mkConsumerGroupSize` before opening the transaction.
+Run resize even for a same-size assignment change. It locks the checkpoint set,
+retains target bindings, removes obsolete members, and places every new member
+at the old minimum. A missing group starts at zero. Its report includes distinct
+previous sizes, previous member count, new size, and resume position.
+
+Rebind changes every existing member's target and explicitly resets progress to
+the supplied position. Choose that position from the history the new target
+requires; reusing the old target's cursor can skip data. A missing name fails
+the transaction. Both operations compose with caller SQL and roll back together
+if the transaction fails.
+
+## Verify and restart
+
+Read `subscriptionCheckpointInventory` after commit. Check member count, exact
+positions, and the resize/rebind report. Start workers with the new validated
+configuration. Require successful startup through `wait` and observe delivery
+or catch-up; a returned subscription handle alone does not prove admission.
+
+If `ConsumerGroupSizeMismatch` or `SubscriptionTargetMismatch` persists, stop
+again and compare the configured name, size, target, and legacy adoption policy.
+Do not delete checkpoints to silence the error. The end state is one consistent
+topology and target with every reassigned stream replayable from the selected
+boundary.

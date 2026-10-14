@@ -10,18 +10,18 @@ metrics, and coordinated graceful shutdown — while kiroku still owns durable c
 into shibuya's **pull-based** `Adapter` interface.
 
 <Callout type="info">
-  Uses `shibuya-kiroku-adapter 0.5.1.5` with `kiroku-store 0.9.0.1` and `shibuya-core 0.10`. Assumes you
+  Uses `shibuya-kiroku-adapter 0.6.0.1` with `kiroku-store 0.11.0.0` and `shibuya-core 0.10`. Assumes you
   know shibuya's `Adapter` / `QueueProcessor` model and have a configured Kiroku store. For a single
   in-process subscription, the native [subscription API](/docs/kiroku/tutorials/getting-started) is
   simpler.
 </Callout>
 
 
-Adapter 0.5.1.5 supports Shibuya 0.10 `ApplicationFailure`: it stores Kiroku `DeadLetterOther`
+Adapter 0.6.0.1 supports Shibuya 0.10 `ApplicationFailure`: it stores Kiroku `DeadLetterOther`
 with the canonical `code: detail` summary and a JSON detail object containing both fields.
 Existing framework-owned reason encodings remain unchanged. Query the application code with
 `reason->'detail'->>'code'`; see [the adapter reference](/docs/integrations/shibuya-kiroku-adapter).
-Adapter 0.5.1.5 requires Kiroku Store 0.9.0.1 and schema migration `0012`.
+Adapter 0.6.0.1 requires Kiroku Store 0.11.0.0 and schema migrations through `0015`.
 
 ## Goal
 
@@ -72,10 +72,10 @@ event's processing outcome (`AckDecision`) drives kiroku's checkpoint.
    | ------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------- |
    | `subscriptionName :: SubscriptionName`      | (required)      | Unique identifier — the checkpoint key in the `subscriptions` table.                           |
    | `subscriptionTarget :: SubscriptionTarget`  | (required)      | `AllStreams` or `Category categoryName`.                                                       |
-   | `batchSize :: Int32`                        | `100`           | Events per database fetch during catch-up.                                                     |
-   | `bufferSize :: Natural`                     | `256`           | `TBQueue` capacity — the backpressure threshold.                                               |
+   | `batchSize :: BatchSize`                        | `100`           | Events per database fetch during catch-up.                                                     |
+   | `bufferSize :: StreamBufferSize`                     | `256`           | `TBQueue` capacity — the backpressure threshold.                                               |
    | `queueCapacity :: Natural`                  | `16`            | Publisher-side burst capacity in batches; active only for non-group `AllStreams` adapters.     |
-   | `consumerGroup :: Maybe ConsumerGroup`      | `Nothing`       | `Just (ConsumerGroup {member, size})` makes this adapter one member of a group.                |
+   | `consumerGroup :: Maybe ConsumerGroup`      | `Nothing`       | `Just group` from `mkConsumerGroup` makes this adapter one member of a group.                |
    | `eventTypeFilter :: EventTypeFilter`        | `AllEventTypes` | Deliver only chosen event types (worker-side; checkpoint still advances past filtered events). |
    | `selector :: Maybe (RecordedEvent -> Bool)` | `Nothing`       | Opaque per-event predicate, AND-composed with `eventTypeFilter`.                               |
 
@@ -108,10 +108,11 @@ event's processing outcome (`AckDecision`) drives kiroku's checkpoint.
    ```haskell
    main = withStore settings $ \store ->
      runEff $ runTracingNoop $ do
+       Right groupSize <- pure (mkConsumerGroupSize 4)
        let cfg = defaultConsumerGroupConfig
                    (SubscriptionName "orders-projection")
                    (Category (CategoryName "orders"))
-                   4   -- group size
+                   groupSize
        Right processors <- kirokuConsumerGroupProcessors store cfg handler
        Right appHandle   <- runApp defaultAppConfig processors
        waitApp appHandle
@@ -152,3 +153,6 @@ waiting forever.
 - [Subscriptions and consumer groups](/docs/kiroku/explanation/subscriptions-and-consumer-groups)
   — the semantics the adapter preserves.
 - [The integrations section](/docs/integrations/shibuya-kiroku-adapter) for the cross-library view.
+
+Use validated sizes from the [adapter reference](/docs/integrations/shibuya-kiroku-adapter#validated-configuration-and-retry-policy).
+Stop all members before the [resize procedure](/docs/kiroku/how-to/resize-or-rebind-a-subscription).

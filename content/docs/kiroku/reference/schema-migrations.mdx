@@ -21,7 +21,7 @@ kirokuMigrationPlan
 PGMQ, or application schema should compose those components into one final plan rather than execute
 several partial plans against a shared ledger.
 
-The embedded manifest has **twelve** entries. `0001` through `0007` preserve the exact historical SQL
+The embedded manifest has **fifteen** entries. `0001` through `0007` preserve the exact historical SQL
 payloads; `0008-schema-management-comment` is the first native-only canary. The remaining migrations provide checkpoints, retention, IDs, and category reads:
 
 | Migration | Change |
@@ -31,11 +31,15 @@ payloads; `0008-schema-management-comment` is the first native-only canary. The 
 | `0011.sql` | publishes `kiroku.uuidv7()` where missing and converges the retention lease ID default to that schema-qualified function |
 | `0012.sql` | backfills `category` on `$all` junction rows, adds `ck_stream_events_all_category`, and creates `ix_stream_events_all_by_category` |
 
+| `0013.sql` | derives persisted consumer-group size from existing member rows; stop subscription workers |
+| `0014.sql` | drops unused `stream_name`, adds `target_kind` and `target_category` with target checks; stop subscription workers |
+| `0015.sql` | creates partial `ix_streams_browse_name` on `stream_name COLLATE "C"`, excluding `stream_id = 0`; the transactional index build blocks writes |
+
 The diagram shows the manifest and which entries `up` applies on each kind of database.
 
 <Diagram
   src="kiroku/reference-migration-manifest"
-  alt="Twelve migrations in a row. Entries 0001 to 0007 hold historical payloads, 0008 is the native canary, and 0009 to 0012 add newer features. On a fresh database, up applies all twelve. On an existing Codd database, the import records 0001 to 0007 without DDL, and up applies 0008 and later."
+  alt="Fifteen migrations in a row. Entries 0001 to 0007 hold historical payloads, 0008 is the native canary, and 0009 to 0015 add newer features. On a fresh database, up applies all fifteen. On an existing Codd database, the import records 0001 to 0007 without DDL, and up applies 0008 and later."
   caption="Codd import records the seven historical entries. The native runner applies everything after them."
 />
 
@@ -108,8 +112,8 @@ native component directly; native commands do not discover or interpret Codd his
 
 ## Compatibility
 
-- `kiroku-store`: `0.9.0.1`
-- `kiroku-store-migrations`: `0.6.0.0`
+- `kiroku-store`: `0.11.0.0`
+- `kiroku-store-migrations`: `0.7.1.0`
 - migration runtime: pg-migrate `1.2`
 - component identity: `kiroku/*`
 - owned schema: `kiroku`
@@ -126,7 +130,7 @@ Home and link rows keep `NULL`. The constraint is
 `CHECK (stream_id <> 0 OR category IS NOT NULL)`.
 The partial index is `(category, stream_version) INCLUDE (original_stream_id) WHERE stream_id = 0`.
 
-On a fresh database, apply all twelve migrations before opening the store.
+On a fresh database, apply all fifteen migrations before opening the store.
 For a populated database:
 
 1. Rehearse the migration on a restored copy and measure the backfill time.
@@ -145,3 +149,19 @@ Do not use a rolling deployment of appending processes across this boundary.
 
 Store 0.9 reads categories through `ix_stream_events_all_by_category` from the category and
 checkpoint. It no longer probes every stream in the category. Event ordering and results are unchanged.
+
+## Subscription and inspection cutover
+
+For 0013 and 0014, stop all subscription workers before migration and restart with validated
+sizes, members, batches, and buffers. Migration 0013 derives size as `max(member) + 1`;
+an incomplete historical group can therefore require explicit resize before startup succeeds.
+Migration 0014 defaults legacy rows to `target_kind = 'unbound'` and checks that a category target
+has a non-null category. Choose legacy adoption deliberately, or require a prior binding.
+
+Migration 0015 preserves the existing unique-name and category indexes. Budget a maintenance
+window for its transactional index build on a large database. It also adds ongoing maintenance
+cost for new streams and non-HOT application-stream updates. Published performance acceptance
+is not a promise about a particular deployment's write cost.
+
+Use [resize or rebind a subscription](/docs/kiroku/how-to/resize-or-rebind-a-subscription) for
+supported operations rather than editing checkpoint rows with private SQL.

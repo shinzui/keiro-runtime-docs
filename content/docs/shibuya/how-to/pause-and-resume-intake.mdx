@@ -1,0 +1,53 @@
+---
+title: Pause and resume intake
+description: Gate new processor pulls, observe draining work, and handle typed control refusals.
+---
+
+This procedure requires the committed **unreleased** Shibuya source at
+`0967f450` in `mori://shinzui/shibuya`. Published 0.10.0.1 does not provide
+these controls. Use pause for temporary intake suspension while existing work
+can drain; use application shutdown when the process must terminate.
+
+## Enable and discover control
+
+Extend `defaultConfig` with `enableControl = True` and retain `enableJSON = True`.
+For browser requests, configure the page's exact Origin in `corsAllowedOrigins`,
+including same-origin deployments. The server does not authenticate callers;
+use the host's trusted network or authenticating reverse proxy.
+
+Request `GET /control` relative to the configured service base URL. Confirm
+`enabled: true` and the `pause`/`resume` operations before presenting controls.
+
+## Pause a processor
+
+```bash
+curl -fsS -X POST http://127.0.0.1:9090/control/processors/orders/pause
+```
+
+The successful response reports the state captured by the atomic operation.
+Repeated pause preserves the original timestamp. Observe the processor's
+metrics until outstanding work reaches the intended state. A successful pause
+does not cancel a pull already admitted, adapter prefetch, inbox work, or
+in-flight handlers. Keep handlers idempotent across their ordinary retries.
+
+If outstanding work remains stuck, readiness can still fail: pause does not
+reset its last-progress clock. Do not use pause as evidence that a broker has
+released leases or that every handler has stopped.
+
+## Resolve refusals and resume
+
+`control_disabled` and `origin_not_allowed` require host configuration changes.
+For `processor_not_found`, rediscover the live processor IDs. A terminal,
+uncontrollable, or draining processor returns 409; inspect its lifecycle rather
+than repeatedly sending control. Draining rejects control and resumes intake
+before adapter shutdown.
+
+```bash
+curl -fsS -X POST http://127.0.0.1:9090/control/processors/orders/resume
+```
+
+Verify `state: running` in the operation result, then observe renewed intake
+under normal source availability. Pause and resume are idempotent. WebSocket
+clients receive the ordinary processor metrics updates, without a separate
+mutation frame. The [metrics reference](/docs/shibuya/reference/metrics#atomic-intake-control)
+lists exact refusal codes and status values.

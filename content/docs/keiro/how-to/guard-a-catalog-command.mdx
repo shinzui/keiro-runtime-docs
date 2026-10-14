@@ -1,0 +1,56 @@
+---
+title: Guard a catalog command
+description: Enforce a minimal relational command invariant under the catalog fence and verify refusal rollback.
+---
+
+Use Keiro 0.20 or later when a command needs an atomic relational precondition,
+such as an identity-to-winning-aggregate index. Keep rich query models
+asynchronous. A preliminary SELECT followed by a separate command transaction
+does not establish uniqueness under competing writers.
+
+## Select the synchronous authority
+
+Declare the minimum index and its inline owner in the validated projection
+catalog. Require every creation path to use this authority and the same Kiroku
+store's global append serialization. An asynchronous index or unrelated SQL
+writer cannot participate in this guarantee.
+
+Build the command's `ProjectionSet` from the relevant inline-only subset of the
+catalog definitions when rich async views must remain independently available.
+Group selection otherwise includes async-only owners. Define how the guard
+resolves each supported serving schema from `catalogPreconditionBindings`;
+never fall back to an old or candidate table.
+
+## Supply the callback
+
+Call `runDomainCommandWithCatalogProjectionsGuarded` with a callback of type
+`CatalogPreconditionContext -> Tx.Transaction (Either refusal ())`. Catalog
+admission completes before consumer SQL runs, after tentative append. Use a
+bounded indexed read, return `Left refusal` for a domain-specific relational
+refusal, and `Right ()` to proceed with inline delivery through those same
+protected bindings.
+
+The transaction driver can repeat the callback. Keep it pure apart from
+transaction-local SQL: no network calls, sequences, session locks, recursive
+appends, extra stream/group locks, savepoint/isolation control, or `Tx.condemn`.
+The context does not transfer a lock outside the callback. Its tentative append
+is visible to the transaction but does not prove that this command committed.
+
+## Handle outcomes and prove the boundary
+
+Handle `PreconditionRefused` separately from `CatalogCommandOutcome`. A refusal
+rolls back the event batch and target writes and contains no accepted receipt
+or committed position. Do not issue a projection wait for that tentative work.
+Ordinary catalog admission refusals retain their existing typed outcomes and
+take precedence over the callback; pure silent decisions bypass it.
+
+Test two independent connections against the same migrated database, using
+[the same-database fixture](/docs/keiro/how-to/test-with-the-postgres-fixture#exercise-contention-inside-one-database).
+Confirm that one competing creation commits, a refused command leaves no
+events or index writes, and a fenced group invokes no consumer guard. Repeat
+with async view workers paused and test transaction retry behavior.
+
+The end state is an invariant enforced by committed database outcomes. Measure
+mixed-writer cost: every post-append statement extends the store-wide append
+lock. The [API contract](/docs/keiro/reference/projection#guarded-catalog-commands)
+provides no calibrated throughput guarantee.

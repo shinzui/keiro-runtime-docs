@@ -41,19 +41,21 @@ Each bucket becomes a Kiroku consumer-group member. The important fields are the
 retry policy, and the bridge choice:
 
 ```haskell
+count <- either (const (throwIO (InvalidShardCount (opts ^. #shardCount)))) pure
+  (Sub.mkConsumerGroupSize (fromIntegral (opts ^. #shardCount)))
+group <- either (const (throwIO (InvalidShardCount (opts ^. #shardCount)))) pure
+  (Sub.mkConsumerGroup (fromIntegral bucket) count)
+batch <- either (const (throwIO (InvalidShardBatchSize (opts ^. #batchSize)))) pure
+  (Sub.mkBatchSize (opts ^. #batchSize))
+buffer <- either (const (throwIO (InvalidShardBufferSize (opts ^. #bufferSize)))) pure
+  (mkStreamBufferSize (opts ^. #bufferSize))
 let subConfig =
       (defaultSubscriptionConfig subName target (\_ -> pure Continue))
-        { Sub.batchSize = opts ^. #batchSize
-        , Sub.consumerGroup =
-            Just (ConsumerGroup
-              { member = fromIntegral bucket
-              , size = fromIntegral (opts ^. #shardCount)
-              })
+        { Sub.batchSize = batch
+        , Sub.consumerGroup = Just group
         , Sub.retryPolicy = opts ^. #retryPolicy
         }
-
-(stream, cancelAction) <-
-  subscriptionAckStream store subConfig (opts ^. #bufferSize)
+(stream, cancelAction) <- subscriptionAckStream store subConfig buffer
 ```
 
 `subscriptionAckStream` yields an `AckItem` and waits on its one-shot reply. Keiro presents a smaller
@@ -183,3 +185,10 @@ durable recovery path.
   <Card title="Replay subscription dead letters" href="/docs/keiro/how-to/replay-subscription-dead-letters" />
   <Card title="Subscription sharding reference" href="/docs/keiro/reference/subscription-sharding" />
 </Cards>
+
+## Startup refusal and topology changes
+
+Current readers distinguish `SomeSubscriptionStartupFailure`: relinquish the bucket, then report
+`ShardReaderStartupFailed`. A configured count mismatch refuses before lease insertion. The loop
+validates options before starting. For a topology change, stop workers and use
+[atomic checkpoint/lease resize](/docs/keiro/reference/subscription-sharding#resize-a-stopped-group).

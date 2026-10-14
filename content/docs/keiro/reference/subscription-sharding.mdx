@@ -153,7 +153,7 @@ data ShardedWorkerOptions = ShardedWorkerOptions
 
 `mkShardedWorkerOptions` validates all positive bounds, requires `leaseTtl > renewInterval`, rejects a
 negative handler retry delay, and requires at least one total delivery. Call it during application
-startup; the loop entry points accept the options record directly.
+startup; the loop entry points also validate the supplied options before running.
 
 A synchronous `SomeException` from the handler becomes `ShardAckRetry handlerRetryDelay`.
 `SomeAsyncException` is rethrown so shedding and shutdown do not invent a handler decision. An
@@ -212,3 +212,27 @@ deleted on success.
   <Card title="Scaling the workers" href="/docs/keiro/explanation/scaling-the-workers" />
   <Card title="The scaling walkthrough" href="/docs/keiro/walkthrough/scaling/00-start-here" />
 </Cards>
+
+## Resize a stopped group
+
+Keiro 0.20 adds atomic checkpoint/lease topology changes. Stop every worker and relinquish all
+owners first; an expired lease with a recorded owner still refuses resize.
+
+```haskell
+resizeShardCount :: (Store :> es) => SubscriptionName -> ConsumerGroupSize -> Eff es ShardCountResizeReport
+
+resizeShardCountTx :: SubscriptionName -> ConsumerGroupSize -> Tx.Transaction (Either ShardResizeActiveLeases ShardCountResizeReport)
+```
+
+Construct the size with Kiroku's `mkConsumerGroupSize`. `resizeShardCountTx` returns
+`Left (ShardResizeActiveLeases name buckets)` without writes if any owner remains. Otherwise it
+locks the name and complete lease set, calls public `resizeConsumerGroupTx`, rewinds every member
+to the previous minimum, and replaces lease rows in the same transaction. Same-size reassignment
+also needs equalization. `ShardCountResizeReport` includes `previousShardCounts`,
+`resizedShardCount`, and `checkpointResize`. Subsequent transaction failure rolls back both sides.
+
+`ensureShards` now checks the configured count under the name lock before inserting rows.
+`ShardCountMismatch` is catchable under `SomeSubscriptionStartupFailure`. Reader startup refusals
+relinquish that bucket and report `ShardReaderStartupFailed !Int !Text`; ordinary reader crashes
+remain `ShardReaderDied`. Worker entry validates options, including the Int32 bound on shard count,
+and constructs Kiroku's private batch/member/buffer types through their public validators.

@@ -148,3 +148,52 @@ Dedup maintenance gains per-projection forms, `countAsyncProjectionDedupForBefor
 See [Make an async projection idempotent](/docs/keiro/how-to/make-an-async-projection-idempotent)
 for a complete outcome handler and
 [Rebuild a read model](/docs/keiro/how-to/rebuild-a-read-model) for fenced replay.
+
+## Guarded catalog commands
+
+Keiro 0.20 adds an opt-in transactional precondition. Keiro 0.21 retains the API:
+
+```haskell
+runDomainCommandWithCatalogProjectionsGuarded ::
+  forall phi rs s ci co rejection noOp refusal es.
+  (HasCallStack, IOE :> es, Store :> es, Error StoreError :> es, KirokuStoreResource :> es, BoolAlg phi (RegFile rs, ci), Eq co) =>
+  RunCommandOptions ->
+  DomainCommandHandler phi rs s ci co rejection noOp ->
+  Stream (EventStream phi rs s ci co) ->
+  ci ->
+  ValidatedProjectionCatalog ->
+  ProjectionSet co ->
+  (CatalogPreconditionContext -> Tx.Transaction (Either refusal ())) ->
+  Eff es (Either CommandError (GuardedCatalogOutcome (EventStream phi rs s ci co) co rejection noOp refusal))
+```
+
+```haskell
+data GuardedCatalogOutcome target co rejection noOp refusal
+  = CatalogCommandOutcome !(DomainProjectionCommandOutcome target co rejection noOp)
+  | PreconditionRefused !refusal
+  deriving stock (Generic, Eq, Show)
+
+catalogPreconditionBindings :: CatalogPreconditionContext -> [ProjectionWriteBinding]
+```
+
+Catalog admission locks all required groups and resolves their serving bindings before invoking
+the callback after tentative append. Returning `Left refusal` rolls back append and projection
+writes and returns no accepted receipt; `Right ()` delivers inline handlers using those same
+protected bindings. Fenced/missing/invalid catalog outcomes take precedence over consumer SQL.
+Silent pure-domain decisions invoke neither callback nor catalog transaction. A captured context
+does not retain locks or authorize another transaction.
+
+The guard is trusted, bounded, retryable transaction-local application SQL. Use indexed reads and
+return refusal through `Either`. Do not condemn/control transactions, change isolation, acquire
+new stream/group locks, append recursively, or perform effects that survive rollback. The callback
+sees its own tentative append; that does not identify a committed winner. All creation paths must
+participate in the same Kiroku global append serialization and synchronous authority for an atomic
+identity invariant. Async projections and unrelated external writers do not establish that guarantee.
+
+`ProjectionSet` group selection includes async-only owners. Supply an inline-only subset of the
+full catalog's definitions when a command must remain independent of async-view availability.
+Every post-append guard statement extends the store-wide append lock. `RunCommandOptions` bounds
+OCC retries, not Hasql's transaction retries. Implementation evidence does not establish a calibrated
+throughput or latency guarantee. Rich query models remain asynchronous by default.
+
+Follow [guard a catalog command](/docs/keiro/how-to/guard-a-catalog-command) for authority selection, callback restrictions, and concurrent verification.

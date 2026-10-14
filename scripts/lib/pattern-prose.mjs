@@ -26,6 +26,10 @@ export function patternProse(key, prose, snapshot, presentation, generated) {
     }
   }
   if (!concept && generated.get(key) === prose && key.endsWith("/index.mdx")) {
+    // The owner's watermark notes are quoted evidence, like concept bodies.
+    // Keep the exception behind the same exact-generation check so local
+    // captions and forged provenance remain subject to the normal rules.
+    prose = prose.replace(/<PatternProvenance>[\s\S]*?<\/PatternProvenance>/g, "")
     for (const c of snapshot.concepts) {
       prose = prose.replaceAll(`[${c.metadata.title}]`, "[Source concept]")
       prose = prose.replaceAll(

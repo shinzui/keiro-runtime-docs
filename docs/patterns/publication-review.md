@@ -1,5 +1,7 @@
 # Runtime pattern publication review
 
+Latest completed target: `5957590e4370f6a791ef1f7480c00c3809526f6c`; see the incremental review below.
+
 Selected committed revision: `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00). Normative owner: `mori://shinzui/keiro-runtime-patterns/okf/runtime-patterns`. Ownership authorization: `mori://shinzui/keiro-runtime-patterns/okf/adrs/concepts/ADR-6`.
 
 ## Inventory and validation
@@ -75,3 +77,88 @@ Coupled product review corrected rich-query delivery policy and the truncated-hi
 The completed baseline is recorded in `docs/runtime-patterns-source-sync.md` at the selected full SHA after source, visual, product, browser, and release checks. The owner checkout is clean and its eight library watermarks are unchanged.
 
 Final read-only status reports the patterns publication as `reviewed`, with matching imported/completed-review SHAs, no pending visual issues, zero commits behind, and a clean owner checkout. The complete status command still discovers all 12 boundaries: eight pre-existing library boundaries are behind and four boundaries are current. No ordinary library pointer was advanced. The review browser blocked direct plain-text navigation/reload with `ERR_BLOCKED_BY_CLIENT`; opening the site's offered Markdown link displayed the complete final artifact, and HTTP 200 `text/plain` plus the copy control were independently verified.
+
+## Incremental source review — 2026-10-14
+
+Reviewed committed owner range `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` through
+`5957590e4370f6a791ef1f7480c00c3809526f6c` (committer date 2026-10-14T15:21:59-07:00).
+The owner checkout was clean. No owner files, library watermarks, branch, or release tags were changed.
+
+| Commit in `mori://shinzui/keiro-runtime-patterns` | Action | Outcome |
+| --- | --- | --- |
+| `63d1a9b031785fc72ffee157a197d8f3452a3bd8` | ADD / UPDATE | Two inspection standards; published cohort, mapped construction, strict contract lists, guarded commands, subscription/migration/PGMQ operating rules, scoped logs/indexes and owner source ledger reconciled. |
+| `5957590e4370f6a791ef1f7480c00c3809526f6c` | UPDATE | DSL adoption now routes construct-only mapped transitions to declared initial/lift writes while preserving totality and replay obligations. |
+
+Git inventory and the complete generated diff cover 90 non-reserved concepts, 16 reserved files,
+90 graph nodes and 740 edges. There are two additions, 39 materially updated existing concepts,
+49 semantically unchanged concepts, and no renames or retirements. The 97 existing generated MDX
+pages also receive the new immutable source revision; two new pages bring the projection to 99 MDX
+pages. The captured profile descriptor is unchanged at SHA-256
+`01be974e8b8a72abfc9ddf315a2fc20fb5b81ffce72bfbacb40ee7d86138738f`.
+Changed nearest logs are architecture, config, Keiro, Kiroku, messaging, migrations, and root;
+the unchanged Keiki history is retained. Ownership ADRs/profile were unchanged in this range.
+
+The complete eight-row owner ledger is captured verbatim in `catalog.json`. Its Keiro and Kiroku
+boundaries cover the new published cohorts. Keiki stops at `127d348a`, Shibuya at published
+`de42f07a`, and PGMQ at published `696b6bd2`; their later source work remains explicitly unreleased.
+The separate site API reviews can cover those source-only APIs without advancing these owner pins.
+Candidate Language 6 remains candidate despite package 0.21 publication. Historical assessment
+metadata is retained; no assessment IDs or criteria were invented.
+
+### Incremental visual decisions
+
+Reassessed all 41 changed/new concepts against their material hashes. The two new inspection
+standards are text-only: endpoint/capability and refusal tables, exact cursor rules, process scope,
+and recovery conditions are more precise than an additional topology. Existing checkpoint,
+position, and processing drawings cover the common boundaries. Other changed text-only concepts
+retain their specific syntax, checklist, compatibility, or instrumentation rationale.
+
+Re-read all 20 canonical resources bound to the 13 invalidated figures, including unchanged coupled
+resources, and inspected both light/dark renders. The asset inventory stays at 19 new drawings plus
+two equivalent reused site figures; no new asset or criterion was needed.
+
+| Figure | Source/visual review result |
+| --- | --- |
+| Command and async projections | Minimal synchronous authority remains inside commit; rich views and bounded waits remain after commit. Guarded admission does not change the depicted success boundary. |
+| Outbox/inbox | Scalar contract arrays change payload shape, not local atomic enqueue, stable transport identity, or receipt retention. |
+| Offline projection rebuild | Whole-group fence, bounded replay, source exhaustion and atomic promotion remain accurate. |
+| Retry/checkpoint | AckHalt remains cancellation with no advance; typed decode stops and configurable bounds are qualified in prose. |
+| Log positions/cursors | Sparse exclusive cursors and visible head remain distinct from the append frontier; the new originated head has its own scoped prose. |
+| Checkpoint observation | One-statement durable observation remains separate from explicit resize/rebind mutation. |
+| Dead timer resume | The expiring claim, external execution and park/recovery arrows remain accurate; configurable source retry does not change timer ownership. |
+| Revision generation promotion | Candidate/serving separation and atomic final promotion remain accurate with guarded serving bindings. |
+| Behavior obligations | Initial-hole history witnesses still reconcile into the same nine buckets and distinct completeness/proof-strength gates. |
+| FIFO heads | Absolute group-head blocking remains the released order rule; client polling does not alter that rule. |
+| Connection-fault retry budget | Corrected “planned” to “implemented but unreleased”; retained the released first-disconnect defect, separate budgets, and enqueue identity caveat. |
+| Deployment/crash recovery | The explicitly labeled Keiro 0032 cutover and audited Running repair remain correct; added Kiroku 0012–0015 conditions stay in the owning text. |
+| Reused evolution gates | Own-revision removal reports and used-lift identity still belong to the same distinct evidence boundaries. |
+
+All 13 figures expanded and closed in the live site at desktop width and in a real 390×844 browser
+iframe. The browser viewport override did not change actual window dimensions, so the iframe was
+used and its `innerWidth = 390` verified. Expanded frames retained 660-pixel SVGs (680 for the reused
+evolution figure), with a 305-pixel horizontal scrolling region and `overflow-x: auto`. A narrow
+screenshot confirmed readable native-size content and reachable close control. Both theme renders
+had legible labels, arrows, borders and contrast without clipping. Source/asset hashes and actual
+review times are recorded in `presentation.json` after inspection.
+
+The separate Kiroku migration-manifest drawing now includes 0013, 0014 and 0015 and the 15-entry
+fresh-database boundary; both themes were rendered and inspected. It is not a new pattern asset.
+
+### Coupled product and browser review
+
+Added six product pages: descriptive SCXML reference, guarded-command how-to, Kiroku inspection
+reference, resize/rebind and tail-recovery guides, and unreleased Shibuya pause/resume guide.
+Updated source tours, projection/DSL/replay/migration/telemetry references, configuration/installation,
+adapter composition, and FAQs. Product procedures keep Language 6 and explicit candidate/source-only
+qualifications. Registry-aware schema comparison preserves strict unknown/missing/changed-object
+handling and does not certify runtime view definitions.
+
+Browser review covered both new standards, every new product route, source details with the full
+selected SHA, scoped history, search discovery/open of the Shibuya standard, and the Kiroku standard's
+Copy Markdown and offered View as Markdown. Copied and opened text retains canonical identity,
+revision, qualification and exact protocol vocabulary. Diagram text fallbacks and captions remain
+present. The quoted owner watermark notes exposed a prose-checker gap; the quotation exception now
+covers only byte-identical regenerated provenance, while local prose and forged/edited content
+remain checked by a regression test.
+
+Validation: final complete gate outcome is recorded in [the sync ledger](../source-sync-2026-10-14.md).

@@ -308,6 +308,20 @@ test("quotation exemptions require verified bytes and leave local captions subje
     outputs,
   )
   assert.ok(analyzeMdx(ordinary.prose).some((x) => x.severity === "error"))
+  const indexKey = base + "index.mdx"
+  const quotedIndex = "<PatternProvenance>See the gotchas.</PatternProvenance>\n\nLocal text."
+  const indexOutputs = new Map([[indexKey, quotedIndex]])
+  const quoted = patternProse(indexKey, quotedIndex, s, p, indexOutputs)
+  assert.equal(analyzeMdx(quoted.prose).length, 0)
+  const edited = patternProse(indexKey, quotedIndex + "\nSee the gotchas.", s, p, indexOutputs)
+  assert.ok(analyzeMdx(edited.prose).some((x) => x.severity === "error"))
+  const localIndex = quotedIndex.replace("Local text.", "See the gotchas.")
+  const localOutputs = new Map([[indexKey, localIndex]])
+  assert.ok(
+    analyzeMdx(patternProse(indexKey, localIndex, s, p, localOutputs).prose).some(
+      (x) => x.severity === "error",
+    ),
+  )
   refresh(f.site, s)
   assert.throws(() => check(f.site, { minimumDiagrams: 18 }), /baseline requires/)
 })

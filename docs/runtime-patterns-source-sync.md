@@ -13,12 +13,21 @@ This boundary covers generated publication of the complete canonical runtime pat
 ## Last reviewed commit
 
 ```text
-2102ba1cce26d0f7ccfee775f5fc8bc60fada58e  (2102ba1)
-2026-10-11T16:28:51-07:00
-docs: permit versioned runtime catalog publication
+5957590e4370f6a791ef1f7480c00c3809526f6c  (5957590e)
+2026-10-14T15:21:59-07:00
+docs(keiro): document mapped construction in DSL adoption guide
 ```
 
-> **Current range.** Initial complete-tree publication baseline. Added one generated normative page for each of 88 concepts, seven subject sections, the landing page, and all eight scoped histories from 16 reserved files. The validated graph contains 88 nodes and 707 edges. Captured complete raw Markdown, unknown metadata, the profile descriptor, hashes, and eight independently reviewed library boundaries. The selected owner commit authorizes faithful publication through ADR-6; it changes no implementation standard. The owner checkout is clean and no watermark was advanced.
+> **Current range.** `2102ba1c..5957590e` (**2 commits**). Reviewed two committed catalog changes. Added generated Kiroku and Shibuya inspection standards; updated 39 existing concepts and all affected scoped evidence. The complete committed inventory is 90 concepts, 16 reserved files and graph 90 nodes/740 edges. Reassessed 41 concepts and 13 bound figures, correcting the PGMQ classifier label to implemented/unreleased. All reviewed figures rendered in both themes and passed desktop plus actual 390-pixel iframe expansion checks. Six product pages were added and coupled API/migration/replay guidance reconciled independently. Preserved the owner profile and eight watermarks exactly; importing did not advance owner library reviews. Keiki SCXML, Shibuya post-tag additions and PGMQ post-tag fixes remain outside the owner published boundary.
+> Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
+
+> **Note (prior range).** Initial complete-tree publication baseline. Added one generated normative page for each of 88 concepts, seven subject sections, the landing page, and all eight scoped histories from 16 reserved files. The validated graph contains 88 nodes and 707 edges. Captured complete raw Markdown, unknown metadata, the profile descriptor, hashes, and eight independently reviewed library boundaries. The selected owner commit authorizes faithful publication through ADR-6; it changes no implementation standard. The owner checkout is clean and no watermark was advanced.
+
+## Initial publication evidence (prior range)
+
+The following records the initial publication at `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e`.
+The current incremental review and independently advanced product pointers are recorded in
+[the sync ledger](source-sync-2026-10-14.md).
 
 Every concept has a current visual assessment. Nineteen new diagrams and two explicitly reused figures were checked against their bound concepts and rendered in both themes. Desktop and 390-pixel expansion checks cover all three drawing batches and the additional configuration explanation. Drawings and assessments are bound to material source hashes; figure reviews also record asset hashes.
 
@@ -36,16 +45,20 @@ The complete release gate passed after production search and nested Markdown exp
 - [Deploy ordering](../content/docs/keiro/reference/deploy-ordering.mdx), [evolution and replayability](../content/docs/keiro/explanation/evolution-and-replayability.mdx), and [event-envelope upcasting](../content/docs/keiki/walkthrough/rendering-and-codecs/08-th-derivers.mdx).
 - [Diagram assets](../content/diagrams/runtime-patterns/) and the reused assets recorded in the presentation inventory.
 
+## Previous pointers
+
+- `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e` (2026-10-11T16:28:51-07:00) — baseline before the 2026-10-14 review; `2102ba1c..5957590e` (2 commits) reconciles runtime-patterns source and retains explicit publication limits.
+
 ## Update procedure
 
-Follow [the generated-patterns workflow](../agents/skills/doc-sync/PATTERNS.md). Resolve the owner with Mori, choose one full committed target, and classify its complete Git range from `2102ba1cce26d0f7ccfee775f5fc8bc60fada58e`. Read every changed concept and nearest log, root and section indexes, affected ADRs, graph/profile changes, and watermark changes. A quiet root log does not establish completeness.
+Follow [the generated-patterns workflow](../agents/skills/doc-sync/PATTERNS.md). Resolve the owner with Mori, choose one full committed target, and classify its complete Git range from `5957590e4370f6a791ef1f7480c00c3809526f6c`. Read every changed concept and nearest log, root and section indexes, affected ADRs, graph/profile changes, and watermark changes. A quiet root log does not establish completeness.
 
 The commands below reproduce this completed baseline; a subsequent round must substitute its newly selected full target:
 
 ```bash
 mori registry show shinzui/keiro-runtime-patterns --full
-nix develop -c bun run sync:patterns --ref 2102ba1cce26d0f7ccfee775f5fc8bc60fada58e
-nix develop -c node scripts/runtime-patterns.mjs --check-upstream --ref 2102ba1cce26d0f7ccfee775f5fc8bc60fada58e
+nix develop -c bun run sync:patterns --ref 5957590e4370f6a791ef1f7480c00c3809526f6c
+nix develop -c node scripts/runtime-patterns.mjs --check-upstream --ref 5957590e4370f6a791ef1f7480c00c3809526f6c
 nix develop -c bun run check
 nix develop -c node agents/skills/doc-sync/status.mjs runtime-patterns --json
 ```
