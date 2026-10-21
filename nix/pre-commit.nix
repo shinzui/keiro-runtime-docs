@@ -17,9 +17,9 @@
         oxfmt = {
           enable = true;
           name = "oxfmt";
-          entry = "${tooling.oxfmt}/bin/oxfmt --check";
+          entry = "${tooling.oxfmt}/bin/oxfmt --check .";
           files = "\\.(c|m)?(j|t)sx?$|\\.json$";
-          pass_filenames = true;
+          pass_filenames = false;
         };
       };
     };

@@ -27,6 +27,7 @@ in  Schema.Project::{
       , "shinzui/shibuya-pgmq-adapter"
       , "shinzui/pgmq-hs"
       , "shinzui/pg-migrate"
+      , "shinzui/kansoku-ts"
       ]
     , docs =
       [ Schema.DocRef::{

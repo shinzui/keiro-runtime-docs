@@ -20,6 +20,11 @@ provenance:
       at: 2026-10-21T00:23:21Z
       mode: "update"
       note: "Address review findings: releasable visits with non-doc navigation checks, post-build static configuration, and milestone Progress"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-10-21T00:24:53Z
+      mode: "implement"
+      note: "Implement optional runtime analytics, trusted identity, and browser verification"
   reviews:
     - model: "gpt-6-astra"
       harness: "codex-cli"
@@ -47,18 +52,18 @@ This plan creates the integration and deployment instructions. Publishing a new 
 ## Progress
 
 
-- [ ] Milestone 1: Valid runtime configuration enables the reproducible SDK adapter; disabled and invalid configurations leave it unloaded, with configuration tests and typechecking passing.
+- [x] Milestone 1 (2026-10-21): Valid runtime configuration enables the reproducible SDK adapter; disabled and invalid configurations leave it unloaded, with four configuration/SDK tests (34 assertions) and typechecking passing. Frozen install succeeds; snapshot exports and SHA-256 are recorded in its README.
 - [ ] Milestone 2: Container startup supplies runtime configuration and an explicitly trusted identity endpoint, with both disabled and trusted HTTP smoke checks passing.
 - [ ] Milestone 3: Successful documentation visits carry the correct subject, with navigation, identity, cleanup, deduplication, and redaction behavior verified by lifecycle tests.
 - [ ] Milestone 4: Real-browser batches prove the integration; release and container gates pass, and operator instructions and the integration ADR are complete.
 
-Planning and review are complete; application implementation has not started.
+Implementation is underway. Milestone 1 is verified; deployment and visit lifecycle integration are in progress.
 
 
 ## Surprises & Discoveries
 
 
-(None yet.)
+Discovery (2026-10-21): npm still returns E404 and the upstream advertises no tags. The pinned upstream build succeeds in its own temporary development shell and verifies 14 exports. The resulting bundle SHA-256 is `0319f93a096dee4bec8d5f42a4d65a0371cc95841742de22e5d6fe1455f6548a`. The operator checkout now pins Nagare v0.9.0; its actual DSL retains the required runtime environment API. No platform upgrade is needed.
 
 
 ## Decision Log
