@@ -15,6 +15,17 @@ provenance:
       at: 2026-10-20T23:55:09Z
       mode: "other"
       note: "Create four-milestone optional analytics and protected identity plan grounded in SDK and Nagare source"
+    - model: "gpt-6-astra"
+      harness: "codex-cli"
+      at: 2026-10-21T00:23:21Z
+      mode: "update"
+      note: "Address review findings: releasable visits with non-doc navigation checks, post-build static configuration, and milestone Progress"
+  reviews:
+    - model: "gpt-6-astra"
+      harness: "codex-cli"
+      at: 2026-10-21T00:12:13Z
+      verdict: "changes-requested"
+      note: "Verify source and ADR contracts; define non-doc visit teardown, reconcile enabled static builds with disabled artifact gate, and populate milestone Progress"
 ---
 
 
@@ -35,6 +46,13 @@ This plan creates the integration and deployment instructions. Publishing a new 
 
 ## Progress
 
+
+- [ ] Milestone 1: Valid runtime configuration enables the reproducible SDK adapter; disabled and invalid configurations leave it unloaded, with configuration tests and typechecking passing.
+- [ ] Milestone 2: Container startup supplies runtime configuration and an explicitly trusted identity endpoint, with both disabled and trusted HTTP smoke checks passing.
+- [ ] Milestone 3: Successful documentation visits carry the correct subject, with navigation, identity, cleanup, deduplication, and redaction behavior verified by lifecycle tests.
+- [ ] Milestone 4: Real-browser batches prove the integration; release and container gates pass, and operator instructions and the integration ADR are complete.
+
+Planning and review are complete; application implementation has not started.
 
 
 ## Surprises & Discoveries
@@ -57,6 +75,10 @@ Decision (2026-10-20): Use memory identity storage and no persisted queue initia
 Decision (2026-10-20): Vendor a reproducibly generated ESM bundle and declarations at a full upstream source commit until a published package is verified. The authoritative npm lookup returned E404 for `kansoku-js`, and the upstream remote advertised no tags on 2026-10-20. Do not invent a released version from the source manifest's `0.0.0`, use an unversioned hosted SDK, or add a machine-local dependency path. Recheck registry and tags before implementing dependency acquisition; a verified package release can replace the snapshot with the same adapter contract.
 
 Decision (2026-10-20): Proceed without an Intention ID, as requested by the user. This is a create-only session; no application integration has been implemented.
+
+Decision (2026-10-21): Give each mounted documentation page a releasable visit registration. A genuine departure from documentation clears the current visit and its deduplication state, while synchronous React effect cleanup/setup preserves the same logical visit. Retire the SDK client after a genuine departure so its retained page snapshot cannot include time spent on a non-documentation route. The root controller remains available for a later visit.
+
+Decision (2026-10-21): Keep `public/analytics-config.json` disabled for every build and release check. Static hosts enable analytics by replacing the generated JSON after the build has passed its gates; containers continue to inject configuration at startup. This preserves the reusable disabled artifact and removes the conflicting pre-build configuration path.
 
 
 ## Outcomes & Retrospective
@@ -115,6 +137,10 @@ Implement `src/lib/analytics/controller.ts` with injected configuration, identit
 
 Create `src/components/page-analytics.tsx`, returning no UI. Mount it in `src/routes/docs/$.tsx` inside `clientLoader`'s content component alongside the successful `DocsPage`. Supply the canonical `/docs/...` URL derived from the resolved content visit and its actual `frontmatter.title`, not the root document's generic title. Use a React effect so build-time rendering never emits events. Mount one root analytics owner in `src/routes/__root.tsx` to manage configuration and browser visibility lifecycle; page components submit successful visits to that owner. No event originates in a loader, preload, API request, Markdown download, 404, or redirect.
 
+Have `visit(page)` return an idempotent release function and return that function from the page's React effect. Associate each registration with an opaque ownership token so cleanup from an old component cannot clear a newer page. Releasing the current registration immediately clears the visible page, invalidates its pending asynchronous work, and stops automatic SDK capture. While no page is registered, focus/visibility refresh does nothing and completed configuration, import, or identity requests cannot emit a page event. Finalize the departure in a microtask: if no replacement registration has arrived, clear the consecutive-visit deduplication state, detach the old client, and initiate its shutdown without awaiting delivery. Keep the root controller alive. The pinned SDK's `stop()` retains its page snapshot and `shutdown()` does not synthesize a leave; accept a missing best-effort leave at this boundary instead of allowing a later page to report time spent on home or a 404.
+
+If React synchronously repeats cleanup/setup for the same page before departure finalization, cancel that finalization, retain the logical visit's deduplication state and existing client, and restart any necessary invalidated identity work before resuming capture. If the replacement is a different documentation page, process the new visit normally. An old release or finalizer must never clear that replacement. A later return after a finalized departure creates a new logical visit and resolves identity again, even when the pathname and subject match the previous documentation page.
+
 Deduplicate consecutive reports of the same normalized pathname and subject, including React development effect restarts. Hash and query changes on the same documentation page do not add a read. A committed A → B → A sequence records three visits; a full reload records a new visit. While configuration, SDK import, or identity is pending, keep only the currently visible visit. An asynchronous response for an obsolete visit must not emit it after navigation. Teardown must invalidate pending work, remove app-owned listeners, and avoid duplicate clients/timers during development refresh.
 
 Identity mode `none` sends anonymous events and never calls an identity endpoint. Modes `optional` and `required` fetch the configured same-origin plain-text endpoint with same-origin credentials, `cache:"no-store"`, redirect rejection, and a bounded timeout. Accept only a successful text/plain response containing one nonempty subject of at most 1024 characters and no control characters. Treat 204, 401, 403, 404, redirects/login HTML, other media types, and network errors as no verified identity. Optional mode records anonymously on failure; required mode emits no events for that visit and retries on the next visit or focus. The docs remain usable in either case. Never read login cookies, infer a user from a query string, or use a supplied client-side identity as an authorization fact.
@@ -123,7 +149,7 @@ Revalidate identity on each distinct page visit and when the document becomes vi
 
 Redact outgoing events in one `beforeSend` function. Keep a valid absolute URL with origin and normalized pathname in both top-level `url` and `properties.url`; remove query strings, fragments, referrer, and all UTM fields by default. Preserve `properties.path`, `properties.title`, event/session IDs, `userId`, and SDK envelope fields. Apply this to `page_leave` too. Allow an explicit `includeQuery` switch to retain query parameters; fragments stay excluded. Do not add email/name traits or invent unregistered events or schema properties. Honor configured GPC and DNT preferences, both true by default for this app. A page view means rendered content, and page-leave duration remains best effort.
 
-Acceptance is passing lifecycle tests for delayed initialization, obsolete responses, duplicate effects, A → B → A, anonymous versus required identity failure, user A → user B → missing identity, focus revalidation, URL redaction at both locations, and SDK/network exceptions. Browser verification in the next milestone proves that the real SDK emits the specified wire events.
+Acceptance is passing lifecycle tests for delayed initialization, obsolete responses, duplicate effects, A → B → A, anonymous versus required identity failure, user A → user B → missing identity, focus revalidation, URL redaction at both locations, and SDK/network exceptions. Include docs → home → same docs and docs → 404 → same docs, both after capture and while configuration, SDK import, or identity is pending. Assert no stale view or identity request during the non-doc route, a fresh view after returning, harmless stale release callbacks, and one view across synchronous effect cleanup/setup. Browser verification in the next milestone proves that the real SDK emits the specified wire events.
 
 ### Milestone 4: Browser proof, release gates, and operator instructions
 
@@ -132,7 +158,7 @@ Add `scripts/serve-analytics-fixture.mjs`, a development-only localhost server o
 
 Run a real browser against the fixture and inspect its recorded requests. Visit `/docs/runtime-patterns/messaging/outbox`, then another valid documentation page, use Back, reload, navigate by search, and follow a heading fragment. For required identity mode set the fixture cookie `analytics_test_user=user:alice`, repeat with `user:bob`, then remove it. Confirm correct subjects and no stale identity on both first and subsequent views. The expected batches include `identify`, `session_start`, and `page_view`; page-leave events depend on configuration. Inspect returned `userId`, `sourceService`, `url`, and page properties; tests must not merely assert that an SDK mock was called. Disable tracking and repeat with collector requests blocked to prove independent functionality. Also simulate import rejection, a 401 write key, unavailable collector, and identity timeout; navigation, search, and diagrams continue functioning.
 
-Wire `test:analytics` into `bun run check` and an explicit `.github/workflows/ci.yml` test step, preserving all current gates. Extend `scripts/check-static-output.mjs` to require the disabled config artifact and ensure no fixture identity, real key, or user-specific data is baked into HTML. Keep the fixture and test assertions first-party and type/lint/format checked.
+Wire `test:analytics` into `bun run check` and an explicit `.github/workflows/ci.yml` test step, preserving all current gates. Extend `scripts/check-static-output.mjs` to require the disabled config artifact and ensure no fixture identity, real key, or user-specific data is baked into HTML. This gate checks the reusable build before deployment configuration is applied. Keep `public/analytics-config.json` disabled; static hosts replace only the generated `.output/public/analytics-config.json` after the build and release checks pass. A subsequent build restores the disabled default, so repeat the deployment override after each successful build. Keep the fixture and test assertions first-party and type/lint/format checked.
 
 Create `docs/analytics.md` documenting every configuration field and environment variable, the disabled static-host path, anonymous setup, required protected identity, the private-origin trust prerequisite, public versus private credentials, CORS troubleshooting, URL policy, event-loss limits, approximate read semantics, and rollback. Link it from `README.md` and `docs/deployment.md`. For labs, show the enabled configuration with collector base URL, a separately issued public write key, `sourceService:"keiro-runtime-docs"`, required identity, and the independent server trust flag. Never commit actual keys or subjects. Explain that changing runtime configuration affects new page loads; an already open tab should be reloaded after an operator disables collection.
 
@@ -165,7 +191,7 @@ nix develop -c bun run test:analytics
 nix develop -c bun run typecheck
 ```
 
-Expect verified `createKansoku` exports, a recorded bundle digest, and passing tests. Ordinary subsequent installs/builds use the committed snapshot and do not rerun acquisition. Implement each milestone and update Progress with timestamped checks and any remaining work. The initial create-only Progress section is intentionally empty.
+Expect verified `createKansoku` exports, a recorded bundle digest, and passing tests. Ordinary subsequent installs/builds use the committed snapshot and do not rerun acquisition. Implement each milestone and update its Progress checkbox with timestamped acceptance evidence and any remaining work.
 
 After the fixture exists, run the following in separate terminals:
 
@@ -203,7 +229,7 @@ Expect an array containing a page-view equivalent to this excerpt; generated IDs
 }
 ```
 
-The excerpt is an expected shape, not evidence already collected. Use actual frontmatter title spelling when asserting. Restart the fixture with disabled/anonymous modes for independent cases. Use a delayed identity response to verify that leaving a page before its resolution never records that obsolete page.
+The excerpt is an expected shape, not evidence already collected. Use actual frontmatter title spelling when asserting. Restart the fixture with disabled/anonymous modes for independent cases. Use a delayed identity response and client-side navigation to `/` and to a missing docs path to verify that leaving a page before its resolution never records that obsolete page. While on each non-doc route, trigger a focus/visibility refresh and confirm no new identity request or page view. Return to the original document and confirm one new view. Repeat after the original view has already been captured; existing queued events may finish delivery with their original identity, but must not be mistaken for newly captured visits.
 
 After all milestones:
 
@@ -228,7 +254,7 @@ Do not treat missing Apple container availability as passing container verificat
 
 Disabled behavior is the release baseline: install and build without analytics credentials, start the unmodified static output, and visit deep docs, search, diagrams, and Markdown exports. Browser network inspection shows at most the local configuration fetch and no SDK chunk download, identity request, or collector traffic; storage remains untouched by analytics. An absent or invalid config and an SDK import failure have the same documentation availability.
 
-Anonymous mode emits one `page_view` per successful normalized documentation visit without `userId` and without contacting identity. Required identity mode emits the first and later views with the verified subject, or emits nothing when the subject cannot be obtained. Optional mode explicitly permits anonymous fallback. An A → B → A navigation sequence counts three; preloads, fragments, same-page query changes, search typing, and duplicate React effects do not inflate counts. Separate reloads count separately. Verify first-load titles against MDX frontmatter rather than the root title.
+Anonymous mode emits one `page_view` per successful normalized documentation visit without `userId` and without contacting identity. Required identity mode emits the first and later views with the verified subject, or emits nothing when the subject cannot be obtained. Optional mode explicitly permits anonymous fallback. An A → B → A navigation sequence counts three; preloads, fragments, same-page query changes, search typing, and duplicate React effects do not inflate counts. A captured docs A → home or 404 → docs A sequence counts two documentation views. A pending view abandoned for home or a 404 never emits after its asynchronous work completes; focus refresh on those routes does nothing, and returning to docs starts a fresh visit. Separate reloads count separately. Verify first-load titles against MDX frontmatter rather than the root title.
 
 The Nginx smoke matrix verifies exact routes, disabled header ignoring, enabled plain-text subject serialization, no-store response headers, missing header 204, method rejection, and hostile config text treated as data. A local test supplying the trusted header verifies only the origin adapter. Real authentication validation belongs at the enforcer boundary when labs is activated.
 
@@ -295,10 +321,12 @@ The parser returns disabled for invalid input, optionally supplying a redacted d
 }
 ```
 
-Expose `KEIRO_DOCS_ANALYTICS_CONFIG` for this JSON and `KEIRO_DOCS_TRUST_FORWARDED_USER=1` only on a verified protected origin. Public static deployments can instead replace `public/analytics-config.json` before building or its published counterpart afterward and choose anonymous identity mode.
+Expose `KEIRO_DOCS_ANALYTICS_CONFIG` for this JSON and `KEIRO_DOCS_TRUST_FORWARDED_USER=1` only on a verified protected origin. Public static deployments keep `public/analytics-config.json` disabled, run the build and release checks, then replace `.output/public/analytics-config.json` in the deployment output with their configuration and choose anonymous identity mode. Serve that JSON with no-store caching and reload open tabs after replacement. Validate the deployed behavior with the browser checks above; the disabled-artifact build gate applies before this deployment override. Do not commit deployment-specific configuration. Repeat the override after every build, which restores the disabled default.
 
-Keep the first-party controller independent of React. Export `createAnalyticsController(dependencies)` returning `visit(page)`, `refreshIdentity()`, and `dispose()`; use an `AnalyticsPage` containing normalized absolute URL, pathname, and MDX title. Each visit gets an internal generation number to reject obsolete work. SDK loading, identity lookup, and delivery errors resolve within the controller and never reject into a route. The React component and root owner only connect successful content and visibility effects to this controller.
+Keep the first-party controller independent of React. Export `createAnalyticsController(dependencies)` returning `visit(page): () => void`, `refreshIdentity(): void`, and `dispose(): void`; use an `AnalyticsPage` containing normalized absolute URL, pathname, and MDX title. The function returned by `visit` releases only that registration and is safe to call repeatedly or after a newer registration. Each registration and identity refresh uses a generation number to reject obsolete work. Apply the immediate invalidation and deferred departure semantics in Milestone 3; `refreshIdentity` is a no-op without a current registration, and root `dispose` immediately invalidates registrations and pending finalizers, removes listeners, and initiates client shutdown. SDK loading, identity lookup, and delivery errors resolve within the controller and never reject into a route. The page component returns the release function from its effect; the root owner manages focus/visibility refresh and terminal disposal.
 
 Use only the pinned core SDK's exported interfaces and real methods. `identify(subject, {}, {schemaVersion:1})` establishes the user before page capture; `page({url, path, title})` creates the governed page event; `beforeSend` sanitizes the complete envelope; `start`, `stop`, and `shutdown` own timers/listeners and best-effort flushing. Verify the selected artifact's behavior in tests instead of inventing router hooks or ingest formats. The immutable events returned by the fixture demonstrate the `userId`/page relationship; metrics credentials and reader-report UI remain outside the browser integration.
 
 Revision note (2026-10-20): Created from repository, SDK, Nagare, and labs operator-source research. This plan defines four implementation milestones; application code and deployment remain unchanged in this create-only session.
+
+Revision note (2026-10-21): Addressed review findings by defining visit release and non-doc navigation acceptance, making static-host configuration a post-build deployment step consistent with the disabled artifact gate, and adding the four unfinished milestone outcomes to Progress. Application implementation has not started.
