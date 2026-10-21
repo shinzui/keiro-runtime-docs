@@ -105,3 +105,5 @@ CI verifies pushes and pull requests to `master`.
 The protected Nagare intranet deployment uses `nagare/Config.hs` and a static
 Nginx image. See [the deployment procedure](docs/deployment.md) for building,
 publishing, access grants, verification, and recovery.
+
+Optional [page-read analytics](docs/analytics.md) supports disabled, anonymous, and protected identity deployments through runtime configuration.

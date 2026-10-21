@@ -15,6 +15,7 @@ import {
 import { Suspense } from "react"
 
 import { useMDXComponents } from "@/components/mdx"
+import { PageAnalytics } from "@/components/page-analytics"
 import { baseOptions } from "@/lib/layout.shared"
 import { gitConfig } from "@/lib/shared"
 import { slugsToMarkdownPath, source } from "@/lib/source"
@@ -40,6 +41,7 @@ const loader = createServerFn({
 
     return {
       path: page.path,
+      docsUrl: page.url,
       markdownUrl: slugsToMarkdownPath(page.slugs).url,
       pageTree: await source.serializePageTree(source.getPageTree()),
     }
@@ -50,14 +52,17 @@ const clientLoader = browserCollections.docs.createClientLoader({
     { toc, frontmatter, default: MDX },
     {
       markdownUrl,
+      docsUrl,
       path,
     }: {
+      docsUrl: string
       markdownUrl: string
       path: string
     },
   ) {
     return (
       <DocsPage toc={toc}>
+        <PageAnalytics pathname={docsUrl} title={frontmatter.title} />
         <DocsTitle>{frontmatter.title}</DocsTitle>
         <DocsDescription>{frontmatter.description}</DocsDescription>
         <div className="flex flex-row gap-2 items-center border-b -mt-4 pb-6">
@@ -80,12 +85,12 @@ const clientLoader = browserCollections.docs.createClientLoader({
 })
 
 function Page() {
-  const { pageTree, path, markdownUrl } = useFumadocsLoader(Route.useLoaderData())
+  const { pageTree, path, markdownUrl, docsUrl } = useFumadocsLoader(Route.useLoaderData())
 
   return (
     <DocsLayout {...baseOptions()} tree={pageTree}>
       <Link to={markdownUrl} hidden />
-      <Suspense>{clientLoader.useContent(path, { markdownUrl, path })}</Suspense>
+      <Suspense>{clientLoader.useContent(path, { markdownUrl, path, docsUrl })}</Suspense>
     </DocsLayout>
   )
 }

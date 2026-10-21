@@ -1,3 +1,5 @@
+// These ordered lifecycle, HTTP, or file-copy steps must complete before the next step.
+/* oxlint-disable no-await-in-loop */
 import { createHash } from "node:crypto"
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"

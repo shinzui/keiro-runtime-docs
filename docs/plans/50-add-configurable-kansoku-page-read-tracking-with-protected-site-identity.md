@@ -54,16 +54,22 @@ This plan creates the integration and deployment instructions. Publishing a new 
 
 - [x] Milestone 1 (2026-10-21): Valid runtime configuration enables the reproducible SDK adapter; disabled and invalid configurations leave it unloaded, with four configuration/SDK tests (34 assertions) and typechecking passing. Frozen install succeeds; snapshot exports and SHA-256 are recorded in its README.
 - [ ] Milestone 2: Container startup supplies runtime configuration and an explicitly trusted identity endpoint, with both disabled and trusted HTTP smoke checks passing.
-- [ ] Milestone 3: Successful documentation visits carry the correct subject, with navigation, identity, cleanup, deduplication, and redaction behavior verified by lifecycle tests.
+- [x] Milestone 3 (2026-10-21): Successful documentation visits carry the correct subject, with navigation, identity, cleanup, deduplication, and redaction verified. `nix develop -c bun run test:analytics` passes 25 tests/157 assertions; typechecking passes.
 - [ ] Milestone 4: Real-browser batches prove the integration; release and container gates pass, and operator instructions and the integration ADR are complete.
 
-Implementation is underway. Milestone 1 is verified; deployment and visit lifecycle integration are in progress.
+Milestones 1 and 3 are verified. Runtime deployment configuration, the four-mode Nginx smoke matrix, the browser fixture, operator guide, and ADR are implemented. Real Chromium batches verify navigation/search/reload/fragments, distinct users and identity disappearance, disabled import/storage/network isolation, import/401/network/identity-timeout failures, and pending/captured home/404 departures. Remaining acceptance is the final source-candidate browser run, full release gate, and clean-source Apple container image flow.
 
 
 ## Surprises & Discoveries
 
 
-Discovery (2026-10-21): npm still returns E404 and the upstream advertises no tags. The pinned upstream build succeeds in its own temporary development shell and verifies 14 exports. The resulting bundle SHA-256 is `0319f93a096dee4bec8d5f42a4d65a0371cc95841742de22e5d6fe1455f6548a`. The operator checkout now pins Nagare v0.9.0; its actual DSL retains the required runtime environment API. No platform upgrade is needed.
+Discovery (2026-10-21): npm still returns E404 and the upstream advertises no tags. The pinned upstream build succeeds in its own temporary development shell and verifies 14 exports. The resulting bundle SHA-256 is `0319f93a096dee4bec8d5f42a4d65a0371cc95841742de22e5d6fe1455f6548a`. The operator checkout now pins Nagare v0.9.0; its actual DSL retains the required runtime environment API. No platform upgrade is needed. The SDK snapshot regenerated at the same commit with the same bundle digest.
+
+Discovery (2026-10-21): Even with memory identity and queue persistence off, this SDK creates a sessionStorage adapter and performs its transient capability probe. It persists neither identity nor queued events in this mode. Disabled mode never imports or constructs the SDK and has zero analytics storage writes.
+
+Discovery (2026-10-21): The latest Playwright patch 1.64.1 is rejected by the existing seven-day Bun minimum release age. The browser proof uses exact 1.64.0, verified against npm metadata and its upstream release tag, without overriding the policy.
+
+Discovery (2026-10-21): A direct shell check caught an extra closing brace produced by embedding JSON in a shell parameter default. The startup script now selects its fixed default separately and writes supplied text verbatim. The container matrix checks exact bytes, shell substitution syntax, and missing-config strict 404s.
 
 
 ## Decision Log

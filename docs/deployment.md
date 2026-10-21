@@ -2,6 +2,8 @@
 
 The site runs at <https://keiro-docs.labs.topagentnetwork.net> behind the existing Nagare intranet login and per-host grants. The static output runs in Nginx; no Node server is required. [ADR 4](adr/0004-host-static-docs-behind-the-nagare-intranet-access-policy.md) records why the current Nagare site models cannot express this protection.
 
+Optional [page-read analytics](analytics.md) is disabled by default. Its runtime JSON and independent forwarded-user trust flag are deployment settings; the image smoke check verifies both trust modes before publication.
+
 ## Build and verify
 
 Use clean committed source, Apple container on an Apple silicon Mac with Rosetta installed, and the docs Nix environment. Start the container service first:
@@ -15,7 +17,7 @@ This installs frozen dependencies, runs the release gate, builds linux/amd64 wit
 
 ## Publish and deploy
 
-Discover the operator checkout through `mori://tan/tan-ng-labs`. Its `.envrc` pairs the intranet context, kubeconfig, gcloud configuration, and pinned Nagare v0.6.3. Keep credentials and reviews outside this repository. From the docs checkout:
+Discover the operator checkout through `mori://tan/tan-ng-labs`. Its `.envrc` pairs the intranet context, kubeconfig, gcloud configuration, and pinned Nagare release (currently v0.9.0; verify the operator pin before use). Keep credentials and reviews outside this repository. From the docs checkout:
 
 ```bash
 LABS_REPO=$(mori path mori://tan/tan-ng-labs | tail -n 1)

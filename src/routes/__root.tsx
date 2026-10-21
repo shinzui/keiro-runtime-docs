@@ -1,6 +1,7 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router"
 import { RootProvider } from "fumadocs-ui/provider/tanstack"
 
+import { PageAnalyticsOwner } from "@/components/page-analytics"
 import SearchDialog from "@/components/search"
 
 import appCss from "@/styles/app.css?url"
@@ -25,7 +26,9 @@ function RootComponent() {
       </head>
       <body className="flex flex-col min-h-screen">
         <RootProvider search={{ SearchDialog }}>
-          <Outlet />
+          <PageAnalyticsOwner>
+            <Outlet />
+          </PageAnalyticsOwner>
         </RootProvider>
         <Scripts />
       </body>

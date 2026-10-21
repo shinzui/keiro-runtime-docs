@@ -1,3 +1,5 @@
+// These ordered lifecycle, HTTP, or file-copy steps must complete before the next step.
+/* oxlint-disable no-await-in-loop */
 import { describe, expect, test } from "bun:test"
 
 import { fetchAnalyticsConfig, parseAnalyticsConfig } from "./config"
