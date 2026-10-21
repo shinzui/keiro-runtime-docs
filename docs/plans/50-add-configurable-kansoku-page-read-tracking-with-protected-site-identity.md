@@ -53,17 +53,17 @@ This plan creates the integration and deployment instructions. Publishing a new 
 
 
 - [x] Milestone 1 (2026-10-21): Valid runtime configuration enables the reproducible SDK adapter; disabled and invalid configurations leave it unloaded, with four configuration/SDK tests (34 assertions) and typechecking passing. Frozen install succeeds; snapshot exports and SHA-256 are recorded in its README.
-- [ ] Milestone 2: Container startup supplies runtime configuration and an explicitly trusted identity endpoint, with both disabled and trusted HTTP smoke checks passing.
+- [x] Milestone 2 (2026-10-21): Container startup supplies literal runtime configuration and an explicitly trusted identity endpoint. `nix develop -c just deploy-image` passes disabled, trusted-enabled, trusted-hostile, and invalid-trust/JSON scenarios, including exact bytes, punctuation, no-store, 204/404/405 responses, strict missing config, shell-data isolation, and all previous HTTP/source-receipt checks.
 - [x] Milestone 3 (2026-10-21): Successful documentation visits carry the correct subject, with navigation, identity, cleanup, deduplication, and redaction verified. `nix develop -c bun run test:analytics` passes 25 tests/157 assertions; typechecking passes.
-- [ ] Milestone 4: Real-browser batches prove the integration; release and container gates pass, and operator instructions and the integration ADR are complete.
+- [x] Milestone 4 (2026-10-21): Final Chromium runs verify actual SDK batches and every navigation/identity/failure scenario. The full release gate and clean-source linux/amd64 Rosetta container flow pass at `eecb26bb7dfe31734e7a9fd7ba4a8aa0e0b50fdd`. `docs/analytics.md`, CI/release wiring, disabled artifact checks, and ADR 5 are complete.
 
-Milestones 1 and 3 are verified. Runtime deployment configuration, the four-mode Nginx smoke matrix, the browser fixture, operator guide, and ADR are implemented. Real Chromium batches verify navigation/search/reload/fragments, distinct users and identity disappearance, disabled import/storage/network isolation, import/401/network/identity-timeout failures, and pending/captured home/404 departures. Remaining acceptance is the final source-candidate browser run, full release gate, and clean-source Apple container image flow.
+All four milestones are accepted. The local immutable archive was created for the verified implementation commit; no image publication, live configuration change, credential provisioning, or labs activation was performed. The final documentation-only commit records acceptance and ADR distillation.
 
 
 ## Surprises & Discoveries
 
 
-Discovery (2026-10-21): npm still returns E404 and the upstream advertises no tags. The pinned upstream build succeeds in its own temporary development shell and verifies 14 exports. The resulting bundle SHA-256 is `0319f93a096dee4bec8d5f42a4d65a0371cc95841742de22e5d6fe1455f6548a`. The operator checkout now pins Nagare v0.9.0; its actual DSL retains the required runtime environment API. No platform upgrade is needed. The SDK snapshot regenerated at the same commit with the same bundle digest.
+Discovery (2026-10-21): npm still returns E404 and the upstream advertises no tags. The pinned upstream build succeeds in its own temporary development shell and verifies 14 exports. The resulting bundle SHA-256 is `0319f93a096dee4bec8d5f42a4d65a0371cc95841742de22e5d6fe1455f6548a`. The operator checkout at `mori://tan/tan-ng-labs` now pins Nagare v0.9.0; its actual DSL retains the required runtime environment API. No platform upgrade is needed. The SDK snapshot regenerated at the same commit with the same bundle digest.
 
 Discovery (2026-10-21): Even with memory identity and queue persistence off, this SDK creates a sessionStorage adapter and performs its transient capability probe. It persists neither identity nor queued events in this mode. Disabled mode never imports or constructs the SDK and has zero analytics storage writes.
 
@@ -95,7 +95,15 @@ Decision (2026-10-21): Keep `public/analytics-config.json` disabled for every bu
 ## Outcomes & Retrospective
 
 
-(To be filled during and after implementation.)
+Completed on 2026-10-21. Operators can deploy one reusable disabled artifact, inject validated anonymous or protected configuration at runtime, and expose trusted identity independently. Successful MDX visits use manual capture, memory identity, nonpersisted queues, generation checks, releasable ownership, and URL redaction. Analytics failures leave docs navigation, search, diagrams, and exports usable.
+
+Acceptance evidence: `nix develop -c bun run test:analytics` passes 25 tests with 157 assertions, and typechecking passes. `nix develop -c bun run test:analytics:browser` passes against the final built output using Chromium 156.0.8078.4 and Playwright 1.64.0. It verifies real identify/session/page batches, exact MDX title and source service, Alice/Bob/missing identity, A → B → Back, reload, search, fragments, focus deduplication, anonymous/optional fallback, disabled SDK/network/storage isolation, import rejection, 401, unavailable collector, identity timeout, and pending/captured home/404 departures with fresh returns.
+
+`nix develop -c just deploy-image` completes from clean implementation commit `eecb26bb7dfe31734e7a9fd7ba4a8aa0e0b50fdd`: frozen install, the complete `bun run check` release gate, disabled static artifact verification, linux/amd64 Nginx build, all four Rosetta HTTP matrices, source SHA receipt, and local archive conversion pass. No required local checks were skipped. The archive uses the existing private state directory and immutable `git-<full-SHA>` name; it has not been published. Two independent snapshot generations reproduce SHA-256 `0319f93a096dee4bec8d5f42a4d65a0371cc95841742de22e5d6fe1455f6548a`.
+
+The typed deployment config also compiles and emits the literal runtime environment map with the locally available Nagare DSL 0.8.0; the operator's exact v0.9.0 source in `mori://shinzui/nagare`, project-relative `cli/nagare-dsl/src/Nagare/Dsl/Types.hs` (artifact-level URI pending), at `e6314c408b747befd8af2329c2eebfa46563d76b` was checked for the same environment contract. No Nagare pin changed. A reviewed dry-run with a synthetic image resource stopped at the expected missing accepted-image boundary and performed no deployment.
+
+Durable ownership, trust, persistence, deployment, and SDK snapshot decisions are distilled into [ADR 5](../adr/0005-use-optional-runtime-analytics-with-explicit-identity-trust.md), with the artifact gate and origin adapter reflected in ADRs 3 and 4. The main implementation lessons are to make departure invalidation immediate, defer only final teardown, keep public JSON out of executable interpolation, and verify disabled behavior against actual browser requests. Later labs activation still needs private-origin/enforcer authentication proof, real credential issuance, and operator deployment. Those remain outside this implementation's scope.
 
 
 ## Context and Orientation
@@ -107,7 +115,7 @@ This repository renders MDX files under `content/docs/` using React, Fumadocs, T
 
 `deploy/Dockerfile` packages `.output/public/` in Nginx on port 8080. `deploy/nginx.conf` serves existing API and asset files with strict 404s and other routes with the SPA shell fallback. There is no runtime TanStack server that could read incoming user headers. `nagare/Config.hs` deploys a protected service with `requireLogin`; `docs/deployment.md` explains reviewed publication and deployment.
 
-The relevant local ADRs are [Bun and static-output verification](../adr/0003-use-bun-for-project-installation-and-command-orchestration.md) and [protected static deployment](../adr/0004-host-static-docs-behind-the-nagare-intranet-access-policy.md). Preserve Bun installation, the static artifact checks, the private origin, and protection of search and exports. These ADRs use plain Markdown with Status and Date, and `mori show --full` reports no profiled ADR bundle here. A new integration ADR should follow that existing convention, without incidental OKF migration. No existing local ADR defines analytics.
+The relevant local ADRs are [Bun and static-output verification](../adr/0003-use-bun-for-project-installation-and-command-orchestration.md) and [protected static deployment](../adr/0004-host-static-docs-behind-the-nagare-intranet-access-policy.md). Preserve Bun installation, the static artifact checks, the private origin, and protection of search and exports. These ADRs use plain Markdown with Status and Date, and `mori show --full` reports no profiled ADR bundle here. A new integration ADR should follow that existing convention, without incidental OKF migration. At planning time no local ADR defined analytics. The completed integration is now recorded in [ADR 5](../adr/0005-use-optional-runtime-analytics-with-explicit-identity-trust.md).
 
 Use Mori to find external sources. `mori://shinzui/kansoku-ts/docs/kansoku-js-readme`, `mori://shinzui/kansoku-ts/docs/delivery-and-privacy`, and `mori://shinzui/kansoku-ts/docs/getting-started` explain the SDK. The verified cross-repository decisions are `mori://shinzui/kansoku-ts/okf/adrs/concepts/ADR-3` (identity storage, immutable queued attribution) and `mori://shinzui/kansoku-ts/okf/adrs/concepts/ADR-4` (capture ownership, browser-only lifecycle, URL collection). Source examined at commit `30abb48aadc37378a6e9006e9b1b6c9bcab3030d` confirms `createKansoku`, `page`, `identify`, `start`, `stop`, `shutdown`, `beforeSend`, `storage`, and `persistQueue`. Automatic page capture defaults on and would duplicate manual capture. The source's build script rejects Bun below 1.4.2 because older Bun drops entrypoint re-exports; use the pinned project shell.
 
@@ -341,3 +349,5 @@ Use only the pinned core SDK's exported interfaces and real methods. `identify(s
 Revision note (2026-10-20): Created from repository, SDK, Nagare, and labs operator-source research. This plan defines four implementation milestones; application code and deployment remain unchanged in this create-only session.
 
 Revision note (2026-10-21): Addressed review findings by defining visit release and non-doc navigation acceptance, making static-host configuration a post-build deployment step consistent with the disabled artifact gate, and adding the four unfinished milestone outcomes to Progress. Application implementation has not started.
+
+Implementation note (2026-10-21): All four milestones completed and locally verified. Preserved the disabled build baseline, added repeatable Chromium/collector proof, and distilled the accepted architecture into ADR 5 plus the affected artifact/trust descriptions in ADRs 3 and 4.

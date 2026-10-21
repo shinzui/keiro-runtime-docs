@@ -22,6 +22,6 @@ Use relative directory redirects (`absolute_redirect off`) so Nginx does not exp
 
 ## Consequences
 
-The static runtime needs no Node server or persistent data. All docs, search, exports, and assets pass through the platform access enforcer. Users need separate grants for this host. First-class protected site hosting can replace this packaging when Nagare supports it; making that platform change is separate work.
+The static runtime needs no Node server or persistent data. [ADR 5](0005-use-optional-runtime-analytics-with-explicit-identity-trust.md) adds optional runtime JSON and an explicitly enabled, non-cacheable forwarded-subject endpoint in Nginx. It preserves the private origin and existing login policy; browser configuration cannot enable origin trust. All docs, search, exports, and assets pass through the platform access enforcer. Users need separate grants for this host. First-class protected site hosting can replace this packaging when Nagare supports it; making that platform change is separate work.
 
 Manual deployment is documented in [deployment.md](../deployment.md). Automatic deployment and local runner registration in [ExecPlan 49](../plans/49-deploy-the-docs-to-the-labs-intranet-with-local-bun-builds.md) remain future work.

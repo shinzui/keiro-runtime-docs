@@ -16,7 +16,7 @@ Run font preparation explicitly once in `dev` and `build`. Remove the redundant 
 
 Use the same Bun commands in package scripts, task recipes, CI, contributor guidance, and doc-sync instructions. At the user's explicit request, remove retired-manager references from project-owned archived text and the managed ignore baseline too. Normalize old command examples to current equivalents while labeling historical verification scope; do not reinterpret old runs as Bun verification. Re-hash the adjusted content-addressed ignore baseline and its manifest reference together.
 
-Bundle `tslib` explicitly in Nitro with `noExternals: ["tslib"]`. With the fresh dependency layout, tracing copied `tslib.es6.js` while Node selected the missing `modules/index.js` export. Keep the existing dependency versions. Run `scripts/check-static-output.mjs` after Vite so a successful bundler exit cannot hide failed prerendering: require the SPA shell, docs and deep pattern HTML, usable search JSON, and a plain-text Markdown export.
+Bundle `tslib` explicitly in Nitro with `noExternals: ["tslib"]`. With the fresh dependency layout, tracing copied `tslib.es6.js` while Node selected the missing `modules/index.js` export. Keep the existing dependency versions. Run `scripts/check-static-output.mjs` after Vite so a successful bundler exit cannot hide failed prerendering: require the SPA shell, docs and deep pattern HTML, usable search JSON, and a plain-text Markdown export. Require disabled analytics JSON in the reusable artifact and scan HTML for analytics fixture identities or credentials. Deployment overrides apply only after the build passes; see [ADR 5](0005-use-optional-runtime-analytics-with-explicit-identity-trust.md).
 
 ## Consequences
 
