@@ -22,17 +22,19 @@ runnable examples.
   `Shibuya.Adapter.Kafka.Internal`.
 - **Examples reviewed:** `shibuya-kafka-adapter-jitsurei/app/`.
 
-- **Reviewed release:** adapter `0.9.1.0`. Hackage and upstream release tags checked 2026-10-14.
+- **Reviewed release:** adapter `0.12.0.0`. Hackage and upstream tags checked 2026-10-27.
 
 ## Last reviewed commit
 
 ```text
-a3c9de8033801214c979864554b405ef1f56006f  (a3c9de80)
-2026-10-12T16:37:47-07:00
-docs(plans): point OTel audit reference to consolidated EP-9
+9a1bce84c1a537de5b1ef64d968505b2e8321ea0  (9a1bce8)
+2026-10-26T17:22:33-07:00
+docs: refresh README usage and runtime guidance
 ```
 
-> **Current range.** `c0475899..a3c9de80` (**1 commits**). Doc-neutral plan-only change: canonical OTel audit citation in historical upgrade intent; adapter source and published 0.9.1.0 API unchanged. Reported retry/ordering defects remain unresolved.
+> **Current range.** `a3c9de80..9a1bce84` (**13 commits**). Updated the integration and release history for seek-stamped source gating, retained replay successors, missing-offset abandonment and core delivery admission. Serial single-message buffered retries now preserve handler order and committed progress; already admitted batches and later revocations retain their limits. Exposed internals use gateRecords/Polled. No exactly-once or reconnect guarantee inferred; planned rdkafka source wakeups remain unshipped. See [the commit ledger](source-sync-2026-10-27.md).
+
+> **Note (prior range).** `c0475899..a3c9de80` (**1 commits**). Doc-neutral plan-only change: canonical OTel audit citation in historical upgrade intent; adapter source and published 0.9.1.0 API unchanged. Reported retry/ordering defects remain unresolved.
 > Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
 
 > **Note (prior range).** `74fed7e8..c0475899` (**17 commits**). Reviewed published adapter 0.9.1.0 with Shibuya 0.10. Promoted lifecycle remediation from the prior candidate boundary: unresolved retry barriers, assignment-generation fencing when the rebalance handler is installed, and synchronous typed acknowledgement failure. Updated `content/docs/integrations/shibuya-kafka-adapter.mdx`, the adapter comparison and compatibility matrix. Serial execution remains a caller contract. Reported buffered-retry stalls and ordering failures remain unresolved; do not claim planned remediation or broker-restart improvements are implemented.
@@ -94,6 +96,8 @@ the reviewed SHA.
 
 ## Previous pointers
 
+- `a3c9de8033801214c979864554b405ef1f56006f` (`a3c9de80`, 2026-10-12) — baseline before the 13-commit October 2026 release/inspection round; Updated the integration and release history for seek-stamped source gating, retained replay successors, missing-offset abandonment and core delivery admission. Serial single-message buffered retries now preserve handler order and committed progress; already admitted batches and later revocations retain their limits. Exposed internals use gateRecords/Polled. No exactly-once or reconnect guarantee inferred; planned rdkafka source wakeups remain unshipped.
+
 - `c04758990927bbda6d0616ae9609c263ec73758b` (2026-09-30T13:43:44-07:00) — baseline before the 2026-10-14 review; `c0475899..a3c9de80` (1 commits) reconciles shibuya-kafka-adapter source and retains explicit publication limits.
 
 - `74fed7e8df366072b0587c4bdae8d4e92317c8a3` (`74fed7e8`, 2026-09-21) — baseline before the October 2 review (17 commits); see [the ledger](source-sync-2026-10-02.md).
@@ -119,8 +123,8 @@ the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    KAFKA=$(mori registry show shinzui/shibuya-kafka-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$KAFKA" log --oneline a3c9de80..HEAD
-   git -C "$KAFKA" diff --stat a3c9de80..HEAD
+   git -C "$KAFKA" log --oneline 9a1bce84..HEAD
+   git -C "$KAFKA" diff --stat 9a1bce84..HEAD
    ```
 2. Inspect source modules and `shibuya-kafka-adapter-jitsurei/app/`.
 3. Update `content/docs/integrations/shibuya-kafka-adapter.mdx` and the shared

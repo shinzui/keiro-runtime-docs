@@ -1,12 +1,12 @@
 # Changelog release review
 
-Checked on 2026-10-14. This is a release-history boundary, independent of every
+Checked on 2026-10-27. This is a release-history boundary, independent of every
 `docs/*-source-sync.md` API review pointer. The [source sync](source-sync-2026-10-14.md)
 records API and catalog reviews independently of this release evidence.
 
 ## Scope and evidence
 
-The inventory covers 31 Hackage packages and two unpublished/archived declarations.
+The inventory covers 33 Hackage packages and two unpublished/archived declarations.
 Example applications, benchmarks, and the standalone example app are excluded.
 Bootstrap depth is three published releases per package; future updates retain older entries.
 
@@ -14,7 +14,7 @@ For each package, queried `https://hackage.haskell.org/package/<package>.json`,
 sorted version components numerically, and selected the latest three published versions.
 Compared `git ls-remote --tags origin` with local peeled tag commits, then read
 package changelogs from those exact commits using `git show <commit>:<path>`.
-All 93 selected package releases have matching remote and local tag commits.
+The initial 93 releases have matching remote and local tag commits; the 2026-10-27 recheck below records the expanded inventory and new tags. Older retained entries preserve their prior verification.
 Dates in the site are upstream changelog dates, not inferred upload dates.
 
 Canonical package references below identify the source owner. Changelog files are
@@ -26,39 +26,41 @@ pin the actual note files to the verified release commits.
 
 | Canonical package | Published versions, newest first | Site page |
 | --- | --- | --- |
-| `mori://shinzui/keiro/packages/keiro` | `0.21.0.0`, `0.20.0.0`, `0.19.0.1` | [History](../content/docs/changelog/keiro.mdx) |
-| `mori://shinzui/keiro/packages/keiro-core` | `0.21.0.0`, `0.20.0.0`, `0.19.0.1` | [History](../content/docs/changelog/keiro.mdx) |
-| `mori://shinzui/keiro/packages/keiro-dsl` | `0.21.0.0`, `0.20.0.0`, `0.19.0.1` | [History](../content/docs/changelog/keiro.mdx) |
-| `mori://shinzui/keiro/packages/keiro-migrations` | `0.21.0.0`, `0.20.0.0`, `0.19.0.1` | [History](../content/docs/changelog/keiro.mdx) |
-| `mori://shinzui/keiro/packages/keiro-ops` | `0.21.0.0`, `0.20.0.0`, `0.19.0.1` | [History](../content/docs/changelog/keiro.mdx) |
-| `mori://shinzui/keiro/packages/keiro-pgmq` | `0.21.0.0`, `0.20.0.0`, `0.19.0.1` | [History](../content/docs/changelog/keiro.mdx) |
-| `mori://shinzui/keiro/packages/keiro-test-support` | `0.21.0.0`, `0.20.0.0`, `0.19.0.1` | [History](../content/docs/changelog/keiro.mdx) |
+| `mori://shinzui/keiro/packages/keiro` | `0.22.0.0`, `0.21.0.0`, `0.20.0.0` | [History](../content/docs/changelog/keiro.mdx) |
+| `mori://shinzui/keiro/packages/keiro-core` | `0.22.0.0`, `0.21.0.0`, `0.20.0.0` | [History](../content/docs/changelog/keiro.mdx) |
+| `mori://shinzui/keiro/packages/keiro-dsl` | `0.22.0.0`, `0.21.0.0`, `0.20.0.0` | [History](../content/docs/changelog/keiro.mdx) |
+| `mori://shinzui/keiro/packages/keiro-migrations` | `0.22.0.0`, `0.21.0.0`, `0.20.0.0` | [History](../content/docs/changelog/keiro.mdx) |
+| `mori://shinzui/keiro/packages/keiro-ops` | `0.22.0.0`, `0.21.0.0`, `0.20.0.0` | [History](../content/docs/changelog/keiro.mdx) |
+| `mori://shinzui/keiro/packages/keiro-pgmq` | `0.22.0.0`, `0.21.0.0`, `0.20.0.0` | [History](../content/docs/changelog/keiro.mdx) |
+| `mori://shinzui/keiro/packages/keiro-test-support` | `0.22.0.0`, `0.21.0.0`, `0.20.0.0` | [History](../content/docs/changelog/keiro.mdx) |
 | `mori://shinzui/keiki/packages/keiki` | `0.9.1.0`, `0.9.0.0`, `0.8.0.0` | [History](../content/docs/changelog/keiki.mdx) |
 | `mori://shinzui/keiki/packages/keiki-codec-json` | `0.9.1.0`, `0.9.0.0`, `0.8.0.0` | [History](../content/docs/changelog/keiki.mdx) |
 | `mori://shinzui/keiki/packages/keiki-codec-json-test` | `0.9.1.0`, `0.9.0.0`, `0.8.0.0` | [History](../content/docs/changelog/keiki.mdx) |
-| `mori://shinzui/kiroku/packages/kiroku-store` | `0.11.0.0`, `0.10.0.0`, `0.9.0.1` | [History](../content/docs/changelog/kiroku.mdx) |
-| `mori://shinzui/kiroku/packages/kiroku-store-migrations` | `0.7.1.0`, `0.7.0.0`, `0.6.0.0` | [History](../content/docs/changelog/kiroku.mdx) |
-| `mori://shinzui/kiroku/packages/kiroku-cli` | `0.2.0.10`, `0.2.0.9`, `0.2.0.8` | [History](../content/docs/changelog/kiroku.mdx) |
-| `mori://shinzui/kiroku/packages/kiroku-otel` | `0.2.0.12`, `0.2.0.11`, `0.2.0.10` | [History](../content/docs/changelog/kiroku.mdx) |
-| `mori://shinzui/kiroku/packages/kiroku-metrics` | `0.3.0.0`, `0.2.0.0`, `0.1.0.10` | [History](../content/docs/changelog/kiroku.mdx) |
+| `mori://shinzui/kiroku/packages/kiroku-store` | `0.12.0.0`, `0.11.0.1`, `0.11.0.0` | [History](../content/docs/changelog/kiroku.mdx) |
+| `mori://shinzui/kiroku/packages/kiroku-store-migrations` | `0.7.2.0`, `0.7.1.0`, `0.7.0.0` | [History](../content/docs/changelog/kiroku.mdx) |
+| `mori://shinzui/kiroku/packages/kiroku-cli` | `0.2.0.11`, `0.2.0.10`, `0.2.0.9` | [History](../content/docs/changelog/kiroku.mdx) |
+| `mori://shinzui/kiroku/packages/kiroku-otel` | `0.3.0.0`, `0.2.0.12`, `0.2.0.11` | [History](../content/docs/changelog/kiroku.mdx) |
+| `mori://shinzui/kiroku/packages/kiroku-metrics` | `0.4.0.0`, `0.3.0.1`, `0.3.0.0` | [History](../content/docs/changelog/kiroku.mdx) |
 | `mori://shinzui/kiroku/packages/kiroku-test-support` | Source only, declares `0.1.0.0` | [History](../content/docs/changelog/kiroku.mdx) |
-| `mori://shinzui/shibuya/packages/shibuya-core` | `0.10.0.1`, `0.10.0.0`, `0.9.0.3` | [History](../content/docs/changelog/shibuya.mdx) |
-| `mori://shinzui/shibuya/packages/shibuya-metrics` | `0.10.0.1`, `0.10.0.0`, `0.9.0.3` | [History](../content/docs/changelog/shibuya.mdx) |
-| `mori://shinzui/pgmq-hs/packages/pgmq-core` | `0.6.1.1`, `0.6.1.0`, `0.6.0.0` | [History](../content/docs/changelog/pgmq.mdx) |
-| `mori://shinzui/pgmq-hs/packages/pgmq-hasql` | `0.6.1.1`, `0.6.1.0`, `0.6.0.0` | [History](../content/docs/changelog/pgmq.mdx) |
-| `mori://shinzui/pgmq-hs/packages/pgmq-effectful` | `0.6.1.1`, `0.6.1.0`, `0.6.0.0` | [History](../content/docs/changelog/pgmq.mdx) |
-| `mori://shinzui/pgmq-hs/packages/pgmq-config` | `0.6.1.1`, `0.6.1.0`, `0.6.0.0` | [History](../content/docs/changelog/pgmq.mdx) |
-| `mori://shinzui/pgmq-hs/packages/pgmq-migration` | `0.6.1.1`, `0.6.1.0`, `0.6.0.0` | [History](../content/docs/changelog/pgmq.mdx) |
+| `mori://shinzui/shibuya/packages/shibuya-core` | `0.12.0.0`, `0.11.0.0`, `0.10.0.1` | [History](../content/docs/changelog/shibuya.mdx) |
+| `mori://shinzui/shibuya/packages/shibuya-metrics` | `0.12.0.0`, `0.11.0.0`, `0.10.0.1` | [History](../content/docs/changelog/shibuya.mdx) |
+| `mori://shinzui/pgmq-hs/packages/pgmq-core` | `0.7.0.0`, `0.6.1.1`, `0.6.1.0` | [History](../content/docs/changelog/pgmq.mdx) |
+| `mori://shinzui/pgmq-hs/packages/pgmq-hasql` | `0.7.0.0`, `0.6.1.1`, `0.6.1.0` | [History](../content/docs/changelog/pgmq.mdx) |
+| `mori://shinzui/pgmq-hs/packages/pgmq-effectful` | `0.7.0.0`, `0.6.1.1`, `0.6.1.0` | [History](../content/docs/changelog/pgmq.mdx) |
+| `mori://shinzui/pgmq-hs/packages/pgmq-config` | `0.7.0.0`, `0.6.1.1`, `0.6.1.0` | [History](../content/docs/changelog/pgmq.mdx) |
+| `mori://shinzui/pgmq-hs/packages/pgmq-migration` | `0.7.0.0`, `0.6.1.1`, `0.6.1.0` | [History](../content/docs/changelog/pgmq.mdx) |
 | `mori://shinzui/pg-migrate/packages/pg-migrate` | `1.2.0.0`, `1.1.0.0`, `1.0.0.0` | [History](../content/docs/changelog/pg-migrate.mdx) |
 | `mori://shinzui/pg-migrate/packages/pg-migrate-cli` | `1.2.0.0`, `1.1.0.0`, `1.0.0.0` | [History](../content/docs/changelog/pg-migrate.mdx) |
 | `mori://shinzui/pg-migrate/packages/pg-migrate-embed` | `1.2.0.0`, `1.1.0.0`, `1.0.0.0` | [History](../content/docs/changelog/pg-migrate.mdx) |
 | `mori://shinzui/pg-migrate/packages/pg-migrate-import-codd` | `1.2.0.0`, `1.1.0.0`, `1.0.0.0` | [History](../content/docs/changelog/pg-migrate.mdx) |
 | `mori://shinzui/pg-migrate/packages/pg-migrate-import-hasql-migration` | `1.2.0.0`, `1.1.0.0`, `1.0.0.0` | [History](../content/docs/changelog/pg-migrate.mdx) |
 | `mori://shinzui/pg-migrate/packages/pg-migrate-test-support` | `1.2.0.0`, `1.1.0.0`, `1.0.0.0` | [History](../content/docs/changelog/pg-migrate.mdx) |
-| `mori://shinzui/kiroku/packages/shibuya-kiroku-adapter` | `0.6.0.1`, `0.6.0.0`, `0.5.1.5` | [History](../content/docs/changelog/shibuya-kiroku-adapter.mdx) |
-| `mori://shinzui/shibuya-pgmq-adapter/packages/shibuya-pgmq-adapter` | `0.16.1.0`, `0.16.0.0`, `0.15.0.0` | [History](../content/docs/changelog/shibuya-pgmq-adapter.mdx) |
-| `mori://shinzui/shibuya-kafka-adapter/packages/shibuya-kafka-adapter` | `0.9.1.0`, `0.9.0.1`, `0.9.0.0` | [History](../content/docs/changelog/shibuya-kafka-adapter.mdx) |
+| `mori://shinzui/kiroku/packages/shibuya-kiroku-adapter` | `0.7.0.0`, `0.6.0.1`, `0.6.0.0` | [History](../content/docs/changelog/shibuya-kiroku-adapter.mdx) |
+| `mori://shinzui/shibuya-pgmq-adapter/packages/shibuya-pgmq-adapter` | `0.18.0.0`, `0.16.1.0`, `0.16.0.0` | [History](../content/docs/changelog/shibuya-pgmq-adapter.mdx) |
+| `mori://shinzui/shibuya-kafka-adapter/packages/shibuya-kafka-adapter` | `0.12.0.0`, `0.9.1.0`, `0.9.0.1` | [History](../content/docs/changelog/shibuya-kafka-adapter.mdx) |
 | `mori://shinzui/shibuya-message-db-adapter/packages/shibuya-message-db-adapter` | Archived, declares `0.1.0.0`; no release verified | [History](../content/docs/changelog/shibuya-message-db-adapter.mdx) |
+| `mori://shinzui/keiro/packages/keiro-ops-http` | `0.22.0.0` | [History](../content/docs/changelog/keiro.mdx) |
+| `mori://shinzui/pgmq-hs/packages/pgmq-inspect` | `0.7.0.0` | [History](../content/docs/changelog/pgmq.mdx) |
 
 ## Exact tagged sources
 
@@ -168,3 +170,46 @@ and package changelogs were reread from those immutable trees. No new published 
 The latest 31 registry Cabal files have no `x-revision` (revision 0), so no bounds revision entry
 is required. Kiroku test support and the archived Message DB adapter again returned confirmed HTTP 404.
 No release tag or publication gap changed. New source-only API guidance preserves its qualification.
+
+## 2026-10-27 release recheck
+
+All 35 committed public package declarations were inventoried through Mori plus the committed Cabal files. Hackage package JSON and latest-version Cabal metadata were queried independently for every package. The cohort now has 33 published packages and two confirmed HTTP-404 declarations (Kiroku test support and archived Message DB adapter). All latest Cabal files remain revision 0 (no x-revision). No registry checks remain unresolved.
+
+New inventory members: `mori://shinzui/keiro/packages/keiro-ops-http` (0.22.0.0) and `mori://shinzui/pgmq-hs/packages/pgmq-inspect` (0.7.0.0), each with one published release. Existing histories are retained in full. Published Keiro/PGMQ inspection and Shibuya control/detail work is no longer classified as source-only; Keiki SCXML remains outside its published tag.
+
+Each package's latest three available versions (one for each new package) were compared with remote tag refs and local peeled commits, and package notes were read at those exact trees. The newly added releases are:
+
+| Canonical package | Version | Tag | Peeled commit | Notes within canonical owner |
+| --- | --- | --- | --- | --- |
+| `mori://shinzui/shibuya-kafka-adapter/packages/shibuya-kafka-adapter` | 0.12.0.0 | `v0.12.0.0` | `52a63a1353487da589b5e56468c9193147f448a7` | `shibuya-kafka-adapter/CHANGELOG.md` |
+| `mori://shinzui/keiro/packages/keiro-core` | 0.22.0.0 | `keiro-core-0.22.0.0` | `b28201f2063fa4f6dcb724cbf474959107e36b74` | `keiro-core/CHANGELOG.md` |
+| `mori://shinzui/keiro/packages/keiro-dsl` | 0.22.0.0 | `keiro-dsl-0.22.0.0` | `b28201f2063fa4f6dcb724cbf474959107e36b74` | `keiro-dsl/CHANGELOG.md` |
+| `mori://shinzui/keiro/packages/keiro-migrations` | 0.22.0.0 | `keiro-migrations-0.22.0.0` | `b28201f2063fa4f6dcb724cbf474959107e36b74` | `keiro-migrations/CHANGELOG.md` |
+| `mori://shinzui/keiro/packages/keiro-ops-http` | 0.22.0.0 | `keiro-ops-http-0.22.0.0` | `b28201f2063fa4f6dcb724cbf474959107e36b74` | `keiro-ops-http/CHANGELOG.md` |
+| `mori://shinzui/keiro/packages/keiro-ops` | 0.22.0.0 | `keiro-ops-0.22.0.0` | `b28201f2063fa4f6dcb724cbf474959107e36b74` | `keiro-ops/CHANGELOG.md` |
+| `mori://shinzui/keiro/packages/keiro-pgmq` | 0.22.0.0 | `keiro-pgmq-0.22.0.0` | `b28201f2063fa4f6dcb724cbf474959107e36b74` | `keiro-pgmq/CHANGELOG.md` |
+| `mori://shinzui/keiro/packages/keiro-test-support` | 0.22.0.0 | `keiro-test-support-0.22.0.0` | `b28201f2063fa4f6dcb724cbf474959107e36b74` | `keiro-test-support/CHANGELOG.md` |
+| `mori://shinzui/keiro/packages/keiro` | 0.22.0.0 | `keiro-0.22.0.0` | `b28201f2063fa4f6dcb724cbf474959107e36b74` | `keiro/CHANGELOG.md` |
+| `mori://shinzui/kiroku/packages/kiroku-cli` | 0.2.0.11 | `kiroku-cli-v0.2.0.11` | `22d103e4f424caab06c6a2b76ad92b408c262bc0` | `kiroku-cli/CHANGELOG.md` |
+| `mori://shinzui/kiroku/packages/kiroku-metrics` | 0.4.0.0 | `kiroku-metrics-v0.4.0.0` | `22d103e4f424caab06c6a2b76ad92b408c262bc0` | `kiroku-metrics/CHANGELOG.md` |
+| `mori://shinzui/kiroku/packages/kiroku-metrics` | 0.3.0.1 | `kiroku-metrics-v0.3.0.1` | `084fd8359850342447cdda8e632b7dc456c7fca4` | `kiroku-metrics/CHANGELOG.md` |
+| `mori://shinzui/kiroku/packages/kiroku-otel` | 0.3.0.0 | `kiroku-otel-v0.3.0.0` | `22d103e4f424caab06c6a2b76ad92b408c262bc0` | `kiroku-otel/CHANGELOG.md` |
+| `mori://shinzui/kiroku/packages/kiroku-store-migrations` | 0.7.2.0 | `kiroku-store-migrations-v0.7.2.0` | `22d103e4f424caab06c6a2b76ad92b408c262bc0` | `kiroku-store-migrations/CHANGELOG.md` |
+| `mori://shinzui/kiroku/packages/kiroku-store` | 0.12.0.0 | `kiroku-store-v0.12.0.0` | `22d103e4f424caab06c6a2b76ad92b408c262bc0` | `kiroku-store/CHANGELOG.md` |
+| `mori://shinzui/kiroku/packages/kiroku-store` | 0.11.0.1 | `kiroku-store-v0.11.0.1` | `084fd8359850342447cdda8e632b7dc456c7fca4` | `kiroku-store/CHANGELOG.md` |
+| `mori://shinzui/kiroku/packages/shibuya-kiroku-adapter` | 0.7.0.0 | `shibuya-kiroku-adapter-v0.7.0.0` | `22d103e4f424caab06c6a2b76ad92b408c262bc0` | `shibuya-kiroku-adapter/CHANGELOG.md` |
+| `mori://shinzui/pgmq-hs/packages/pgmq-config` | 0.7.0.0 | `v0.7.0.0` | `88afb93802f790c1ecfbd3ed8bcce196c4430d13` | `pgmq-config/CHANGELOG.md` |
+| `mori://shinzui/pgmq-hs/packages/pgmq-core` | 0.7.0.0 | `v0.7.0.0` | `88afb93802f790c1ecfbd3ed8bcce196c4430d13` | `pgmq-core/CHANGELOG.md` |
+| `mori://shinzui/pgmq-hs/packages/pgmq-effectful` | 0.7.0.0 | `v0.7.0.0` | `88afb93802f790c1ecfbd3ed8bcce196c4430d13` | `pgmq-effectful/CHANGELOG.md` |
+| `mori://shinzui/pgmq-hs/packages/pgmq-hasql` | 0.7.0.0 | `v0.7.0.0` | `88afb93802f790c1ecfbd3ed8bcce196c4430d13` | `pgmq-hasql/CHANGELOG.md` |
+| `mori://shinzui/pgmq-hs/packages/pgmq-inspect` | 0.7.0.0 | `v0.7.0.0` | `88afb93802f790c1ecfbd3ed8bcce196c4430d13` | `pgmq-inspect/CHANGELOG.md` |
+| `mori://shinzui/pgmq-hs/packages/pgmq-migration` | 0.7.0.0 | `v0.7.0.0` | `88afb93802f790c1ecfbd3ed8bcce196c4430d13` | `pgmq-migration/CHANGELOG.md` |
+| `mori://shinzui/shibuya-pgmq-adapter/packages/shibuya-pgmq-adapter` | 0.18.0.0 | `v0.18.0.0` | `e549451978f93f28ccb39912404be9a8a3fea4d7` | `shibuya-pgmq-adapter/CHANGELOG.md` |
+| `mori://shinzui/shibuya/packages/shibuya-core` | 0.12.0.0 | `v0.12.0.0` | `14f35d8995cc3dc3e2671e4d2505abf9bf4f5a9e` | `shibuya-core/CHANGELOG.md` |
+| `mori://shinzui/shibuya/packages/shibuya-core` | 0.11.0.0 | `v0.11.0.0` | `a4b2b8e3e876f550b7fa08fb8d5a94975a0cc9da` | `shibuya-core/CHANGELOG.md` |
+| `mori://shinzui/shibuya/packages/shibuya-metrics` | 0.12.0.0 | `v0.12.0.0` | `14f35d8995cc3dc3e2671e4d2505abf9bf4f5a9e` | `shibuya-metrics/CHANGELOG.md` |
+| `mori://shinzui/shibuya/packages/shibuya-metrics` | 0.11.0.0 | `v0.11.0.0` | `a4b2b8e3e876f550b7fa08fb8d5a94975a0cc9da` | `shibuya-metrics/CHANGELOG.md` |
+
+Project-relative note paths above belong to the canonical package owner in the first column; artifact-level changelog URIs remain pending. Dates on the site follow the exact tagged notes. Source-only release automation after Keiro's publication tag is not presented as a published API change.
+
+The PGMQ adapter 0.18 release explicitly retains two unsuccessful FIFO acknowledgement performance bounds; its publication does not establish performance acceptance. Uncommitted upstream benchmark changes were excluded. Package history does not advance incomplete API reviews or the runtime-pattern publication boundary. See [the current source ledger](source-sync-2026-10-27.md).

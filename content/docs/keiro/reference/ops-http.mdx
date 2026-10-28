@@ -1,0 +1,94 @@
+---
+title: "Operations over HTTP"
+description: "Configuration, request mapping and bounded inspection in keiro-ops-http 0.22."
+---
+
+`mori://shinzui/keiro/packages/keiro-ops-http` publishes an optional WAI transport for the shared [operator command tree](/docs/keiro/reference/keiro-ops-cli). Its first release is 0.22.0.0. It supplies no authentication or TLS; deploy it on a trusted network or behind the host's authenticating proxy.
+
+## Configuration
+
+```haskell
+data MutationPolicy = MutationsDisabled | MutationsEnabled
+  deriving stock (Eq, Show)
+
+data SchemaDriftPolicy = RefuseOnDrift | AllowDrift
+  deriving stock (Eq, Show)
+
+-- | All limits must be positive. Deadlines cover verification, execution, and
+-- encoding. A mutation timeout has an unknown commit outcome and is not retried.
+data InspectionLimits = InspectionLimits
+  { maxConcurrentReads :: !Int,
+    readDeadlineSeconds :: !Int,
+    mutationDeadlineSeconds :: !Int,
+    deliveryDeadlineSeconds :: !Int,
+    statementTimeoutMillis :: !Int,
+    maxResponseBytes :: !Int,
+    maxRequestBytes :: !Int
+  }
+  deriving stock (Eq, Show)
+
+defaultInspectionLimits :: InspectionLimits
+defaultInspectionLimits = InspectionLimits 4 5 30 30 2000 1048576 16384
+
+data OpsHttpConfig = OpsHttpConfig
+  { mutations :: !MutationPolicy,
+    schemaDrift :: !SchemaDriftPolicy,
+    allowedOrigins :: ![Text],
+    inspectionLimits :: !InspectionLimits
+  }
+  deriving stock (Eq, Show)
+
+defaultOpsHttpConfig :: OpsHttpConfig
+defaultOpsHttpConfig = OpsHttpConfig MutationsDisabled RefuseOnDrift [] defaultInspectionLimits
+
+data OpsHttpServerConfig = OpsHttpServerConfig
+  { bindHost :: !Text,
+    port :: !Int,
+    requestTimeoutSeconds :: !Int
+  }
+  deriving stock (Eq, Show)
+
+defaultOpsHttpServerConfig :: OpsHttpServerConfig
+defaultOpsHttpServerConfig = OpsHttpServerConfig "127.0.0.1" 9092 300
+
+```
+
+The positional default limits mean four admitted operations, five seconds per read, 30 seconds per mutation, 30 seconds for delivery, a two-second SQL statement timeout, 1 MiB results and 16 KiB path/query input. All limits must be positive. Confirmation bodies have a separate 1 KiB cap. Saturation refuses immediately without a waiting queue. Cancelled work is joined before its slot is returned.
+
+Use `withOpsInspectionPool` for inspection-owned connections; give every connection a SQL timeout. `opsApplication` allocates the command application without recurring SQL. `withOpsHttpServer` brackets the listener. `withFeedHandle` plus `opsApplicationWithFeeds` adds scoped feeds. Allocate applications once and release the listener before feeds and the store.
+
+## Request mapping
+
+GET paths are command words and positional arguments; snake_case query keys become kebab-case CLI options. Reads return the owning command's JSON. Query keys `json`, `force`, `database_url`, `allow_schema_drift` and `help` are reserved. Invalid UTF-8 and option-like segments refuse before schema work.
+
+Mutations use POST and require `MutationsEnabled`, including previews. An empty body previews. Exactly `{"confirm":"execute"}` confirms execution; extra keys refuse. A nonempty body requires `Content-Type: application/json`, optionally with parameters. `pgmq dlq read` is a mutation: it reserves messages for 30 seconds and increments read counts.
+
+Every admitted operation verifies the current schema. Drift returns 409 `schema_drift`; health returns 503. Explicit `AllowDrift` reports drift in the response header. There is no success TTL. Mutation deadlines report `mutation_outcome_unknown`: inspect durable state before retrying.
+
+| Status | Error |
+| --- | --- |
+| 400 | `invalid_request`, `invalid_confirmation`, `invalid_cursor`, `invalid_page_size` |
+| 403 | `mutations_disabled`, `origin_not_allowed` |
+| 409 | `schema_drift`, `cursor_generation_mismatch` |
+| 413 | `inspection_request_too_large`, `inspection_result_too_large` |
+| 415 | `unsupported_media_type` |
+| 503 | `inspection_busy` |
+| 504 | `inspection_timeout`, `mutation_outcome_unknown` |
+
+Errors use `{error:{code,message,details?}}`. Mutation Origin checks precede body reads and effects. Normalize scheme, host and effective port; opaque, malformed and repeated Origins refuse. Behind TLS termination, allow-list the public HTTPS origin explicitly.
+
+## Inspection catalogs and pages
+
+`AppHooks.aggregates` and `AppHooks.processManagers` mount application-owned catalogs. `emptyAppHooks` leaves them absent. `aggregate types` and `pm types` enumerate descriptors without loading persisted state; HTTP still verifies schema and applies limits. `Just Map.empty` returns empty discovery; absent hooks omit the command. Standalone database-only hosting cannot discover application code.
+
+`aggregate show/list`, `pm show/list`, `timer pending list`, `projection status` and `wf inspect` expose bounded inspection. Modern reaction provenance is unavailable; legacy positional provenance requires explicit `inspectionProvenance` and bounded capture. It is disabled by default.
+
+Default workflow pages use `wf-key2` continuations over `(workflow_id, workflow_name)`; obsolete default tokens refuse. Sparse filters and creation sorting can still scan substantial data. Oversized continuations refuse explicitly. Shard/timer observation times come from the database. Global position distance is not event lag.
+
+## Live first-page views
+
+`/ws` supports `workflows`, `timers` and `projection_groups`. Equivalent subscriptions share drivers and HTTP admission. Each connection owns at most one subscription per feed. Defaults cap distinct views at 32, connections at 256, items at 500, frames at 1 MiB and queued data at 2 MiB/256 frames. Reads and encoding have a five-second deadline; sends are bounded independently.
+
+Snapshots replace client state; deltas update keys and remove items that left the view. Removal does not establish deletion. Recover a sequence gap or `queue_overflow` with a new snapshot or HTTP poll. Every refresh verifies schema. NOTIFY is a hint and polling is authoritative. Timer refreshes have a five-second floor and a measured envelope of 100,000 timer rows; larger automatic refreshes need new evidence.
+
+See [start the server](/docs/keiro/tutorials/inspect-a-deployment), [recover a feed](/docs/keiro/how-to/recover-inspection-feeds), and [compose surfaces](/docs/keiro/cookbook/compose-inspection-surfaces).

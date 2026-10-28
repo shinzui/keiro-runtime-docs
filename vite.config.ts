@@ -26,6 +26,11 @@ export default defineConfig({
           crawlLinks: true,
         },
       },
+      prerender: {
+        // Fragments share an output file with their document. Crawling them
+        // separately lets concurrent writes truncate the same HTML artifact.
+        filter: ({ path }) => !/[?#]/.test(path),
+      },
       pages: [{ path: "/docs" }, { path: "/api/search.json" }],
     }),
     react(),

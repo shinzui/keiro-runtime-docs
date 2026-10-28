@@ -25,16 +25,33 @@ Then it starts the ingester in an async thread and processes from the inbox in t
 thread. `runIngesterWithMetrics` is the bridge:
 
 ```haskell
-runIngesterWithMetrics metricsHandle source inbox = do
-  let mailbox = inboxToMailbox inbox
-  Stream.fold Fold.drain $
-    Stream.mapM
-      ( \msg -> do
-          liftIO $ incrementReceived metricsHandle
-          liftIO $ send msg mailbox
-          pure msg
-      )
-      source
+runIngesterWithMetrics ::
+  (IOE :> es, Tracing :> es) =>
+  ProcessorId ->
+  -- | Metrics handle (for updating received count)
+  MetricsHandle ->
+  PauseHandle ->
+  -- | Source stream from adapter
+  Stream (Eff es) (Ingested es msg) ->
+  -- | Target inbox (bounded for backpressure)
+  Inbox (Ingested es msg) ->
+  Eff es ()
+runIngesterWithMetrics procId metricsHandle pauseHandle source inbox =
+  traceIngestion procId $
+    -- The fold and admission check use IO directly, avoiding an Eff action
+    -- allocation for each step. Safe use of unsafeEff: IOE is required, and
+    -- only this sequential fold calls unEff, on the owning ingester thread.
+    -- The fold neither forks nor exports this environment or callback.
+    unsafeEff $ \environment -> do
+      let mailbox = inboxToMailbox inbox
+      Stream.fold Fold.drain $
+        Stream.mapM
+          ( \msg -> do
+              incrementReceived metricsHandle
+              send msg mailbox
+              pure msg
+          )
+          (Stream.morphInner (\step -> waitWhilePaused pauseHandle >> unEff step environment) source)
 ```
 
 `send` blocks when the bounded mailbox is full. That is shibuya's backpressure point: a fast adapter
@@ -51,3 +68,5 @@ The diagram shows the two threads on each side of the inbox.
 The processor reads the inbox through `inboxToStream`. That function atomically chooses between a
 new message and a completed, empty stream, avoiding a race where the processor could block forever
 after the source ended.
+
+Core 0.11 keeps pause admission on the source-owning thread and isolates tracing SDK callbacks so swallowed cancellation cannot re-enter source effects. Blocking standalone helpers use the unpaused variant because they expose no live pause handle. Serial startup waits for input before allocating processing state; inbox drain tests emptiness and receives within one STM transaction. These scheduling changes retain bounded admission, cancellation and completion wakeups.

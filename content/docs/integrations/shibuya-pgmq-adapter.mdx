@@ -9,8 +9,8 @@ archive table, topic routing tables, FIFO group indexes, and JSONB message
 payload. shibuya owns handler execution, runner policy, ack finalization,
 metrics, tracing, and shutdown.
 
-Current compatibility is `shibuya-pgmq-adapter 0.16.1.0`, the published `pgmq-* 0.6.1.1`
-package family, and `shibuya-core 0.10.0.0`. Version 0.15 moves to pgmq-hs 0.6;
+Current compatibility is `shibuya-pgmq-adapter 0.18.0.0`, the published `pgmq-* 0.7.0.0`
+package family, and `shibuya-core 0.12.0.0`. Version 0.15 moves to pgmq-hs 0.6;
 0.16 adds the `HeadPerGroup` FIFO strategy backed by PGMQ 1.12 grouped-head reads.
 
 <Callout type="warn">
@@ -331,3 +331,23 @@ This is tracked by `mori://shinzui/shibuya-pgmq-adapter/okf/bug-reports/concepts
 ## Release history
 
 Read the [adapter changelog](/docs/changelog/shibuya-pgmq-adapter) for package history and publication status.
+
+## Managed DLQ administration in 0.18
+
+This release requires Shibuya 0.12 and PGMQ 0.7. `Shibuya.Adapter.Pgmq.DeadLetter` exposes explicitly registered browse/fetch and default-disabled transactional redrive. Use a host-owned administrative pool; construction starts no SQL or background work. Authorization of callers belongs to the host; `redriveEnabled` is only a mutation gate.
+
+`registrationFromAdapterConfig` derives one direct-queue mapping. Topic destinations need explicit physical registrations. Pages are moving views with queue-local exclusive IDs, default 50 and maximum 500 rows; a row cap does not bound bytes. Historical/malformed envelopes remain inspectable. Redrive validates the allowed source, atomically claims the physical DLQ row and sends its original payload in one transaction. Retrying an uncertain successful commit cannot duplicate that row's redrive. This does not establish exactly-once business execution after enqueue.
+
+`mkDlqPayloadForQueue` adds `original_queue` independently of metadata mode. The old helper remains compatible. Performance acceptance is explicitly incomplete: two FIFO acknowledgement p95 bounds exceed 1.10; see the [release evidence](/docs/changelog/shibuya-pgmq-adapter).
+
+### Administrative entry points
+
+```haskell
+mkDeadLetterAdmin :: Pool.Pool -> DeadLetterAdminConfig -> Either DlqConfigError DeadLetterAdmin
+registrationFromAdapterConfig :: PgmqAdapterConfig -> Either DlqConfigError DlqRegistration
+browseDeadLetters :: DeadLetterAdmin -> QueueName -> DlqPageRequest -> IO (Either DlqError DeadLetterPage)
+fetchDeadLetter :: DeadLetterAdmin -> QueueName -> MessageId -> IO (Either DlqError DeadLetterItem)
+redriveDeadLetter :: DeadLetterAdmin -> QueueName -> MessageId -> IO (Either DlqError RedriveOutcome)
+```
+
+Use `defaultDeadLetterAdminConfig` to retain disabled redrive, a five-second statement timeout and one-second lock timeout. Registrations reject duplicate DLQs/sources, empty sources and self-mappings before pool acquisition. Topic destinations require explicit physical mappings. Missing redrive rows return `AlreadyAbsent`; successful redrive returns a new message ID and tail position, resetting delivery metadata. Distinct fan-out copies have distinct row claims. Preserved original headers take precedence over current DLQ headers.

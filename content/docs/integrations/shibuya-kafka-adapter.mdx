@@ -9,7 +9,7 @@ headers, and broker delivery. shibuya owns handler execution and ack decisions.
 The adapter maps those ack decisions to local offset bookkeeping and commits
 stored offsets during shutdown.
 
-Current compatibility is `shibuya-kafka-adapter 0.9.1.0` with `shibuya-core 0.10.0.0`.
+Current compatibility is `shibuya-kafka-adapter 0.12.0.0` with `shibuya-core 0.12.0.0`.
 The adapter serializes delivery finalization, preserves the earliest unresolved retry boundary,
 and exposes synchronous acknowledgment failures to supervision. `AckDeadLetter` still writes a
 warning and stores the offset; the adapter has no DLQ producer.
@@ -60,7 +60,7 @@ The adapter therefore maps ack decisions to offset behavior:
 | `AckHalt` | Pause the record's partition and do not store the offset. |
 
 `AckRetry` is a local redelivery mechanism, not a durable retry topic. The
-adapter seeks the partition back and drops stale records above the retry barrier
+adapter seeks the partition back, discards stale original successors and holds fresh replayed successors behind the retry barrier
 that were already buffered. It also serializes poll, seek, store, pause, and
 commit operations behind one consumer lock because librdkafka consumer handles
 are not safe to poll and seek/store concurrently from shibuya's ingester and
@@ -146,7 +146,7 @@ main shapes:
 
 Delivery tokens distinguish an original callback from the replay that can resolve its retry
 barrier. Later buffered or duplicate callbacks cannot replace the earliest unresolved boundary or
-store an offset past it. This fixes seek-barrier overwrite; it does not prove complete retry ordering.
+store an offset past it. The 0.12 source gate retains fresh successors until the retry resolves; the core admission check skips superseded buffered attempts.
 
 Install `kafkaRebalanceHandler state` in the consumer's rebalance callback before creating the
 consumer, and pass that same state to `kafkaAdapterWith`. Assignment generations then fence
@@ -156,12 +156,9 @@ is absent. Keep processing `Serial`; this is a caller contract, not a runtime co
 
 ## Reported recovery limits
 
-Buffered retries can still leave acknowledged successors uncommitted or let buffered successors
-execute before the retried record. A planned buffered-drain repair has not landed. Serial execution
-alone does not establish strict handler order through a retry. Do not describe the adapter as an
-exactly-once processor. The confirmed reports are
-`mori://shinzui/shibuya-kafka-adapter/okf/bug-reports/concepts/BUG-1` and
-`mori://shinzui/shibuya-kafka-adapter/okf/bug-reports/concepts/BUG-2`.
+Release 0.12 repairs buffered retry progress and handler admission for serial single-message processing. Fresh replayed successors are held until resolution, while stale buffered successors are skipped before handler entry. Missing retry offsets resume at the next available record with a warning and fence old callbacks.
+
+Members already admitted together in one batch cannot be undone; subsequent revocation cannot cancel an admitted handler. Concurrent processing remains unsupported. This is not an exactly-once guarantee across restarts. Exposed internals replace `dropStaleRecords` with `gateRecords`, and `kafkaSource` yields seek-stamped `Polled` records.
 
 Upstream also retains reports of consumers ending during broker restart or group rebalance,
 replayed offset order, and slow caught-up finalization. Those reports describe tested schedules;

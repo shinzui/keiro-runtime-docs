@@ -25,17 +25,19 @@ source walkthroughs.
 - **Docs reviewed:** upstream `README.md`, `CHANGELOG.md`, and
   `docs/architecture/`.
 
-- **Reviewed release:** core and metrics `0.10.0.1`. Hackage and upstream release tags checked 2026-10-14.
+- **Reviewed release:** core and metrics `0.12.0.0`. Hackage and upstream tags checked 2026-10-27.
 
 ## Last reviewed commit
 
 ```text
-0967f450b659b48d24cb49f199718451a65d2d48  (0967f450)
-2026-10-12T21:09:09-07:00
-fix(telemetry): preserve shutdown cancellation across span callbacks
+19b9ad54d15a2e942b181c8490b9f517ebf12888  (19b9ad5)
+2026-10-26T17:08:40-07:00
+docs: refresh README for 0.12.0.0
 ```
 
-> **Current range.** `02cf2606..0967f450` (**32 commits**). Reviewed published 0.10.0.1 random compatibility plus later committed browser policy, bounded WebSocket output, latency/oldest-in-flight detail, exact acknowledged cursors, atomic intake pause/resume and ingest/shutdown telemetry. Added the pause/resume guide; updated metrics, supervision/policy, telemetry, observability, serving and FAQ guidance. All post-tag additions are explicitly unreleased despite unchanged source Cabal versions. Telemetry removal/restoration was reconciled at the final committed implementation. Further benchmark execution and release certification are excluded.
+> **Current range.** `0967f450..19b9ad54` (**14 commits**). Published 0.11 browser/control/detail/lifecycle additions and 0.12 delivery admission. Updated reference records and policy, walkthrough ingestion/processing, explanation and pause/metrics guidance. Direct Ingested records require deliveryStatus; superseded attempts skip handler/finalizer without a processing slot. Reconciled source-owner cancellation and serial startup/STM scheduling. No schema changes; benchmark measurements do not establish universal overhead guarantees. See [the commit ledger](source-sync-2026-10-27.md).
+
+> **Note (prior range).** `02cf2606..0967f450` (**32 commits**). Reviewed published 0.10.0.1 random compatibility plus later committed browser policy, bounded WebSocket output, latency/oldest-in-flight detail, exact acknowledged cursors, atomic intake pause/resume and ingest/shutdown telemetry. Added the pause/resume guide; updated metrics, supervision/policy, telemetry, observability, serving and FAQ guidance. All post-tag additions are explicitly unreleased despite unchanged source Cabal versions. Telemetry removal/restoration was reconciled at the final committed implementation. Further benchmark execution and release certification are excluded.
 > Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
 
 > **Note (prior range).** `efbe2a87..02cf2606` (**20 commits**). Published core and metrics 0.10.0.0 replaces the prior candidate boundary. Breaking shapes include `ShutdownConfig.totalShutdownTimeout`, `ProcessorFailure`, expanded metrics/health records, and progress-aware `Processing`. Documented startup ownership, duplicate-ID/concurrency validation, shared shutdown results, retained lifecycle readiness, loopback host configuration, bounded dependency checks and WebSocket selections, terminal frames, and the externally hosted `combinedApp`. Updated supervision/metrics/policy references, operational how-tos, explanations, walkthroughs, health recipe, FAQ and index. Reported late finalization after forced stop and sticky readiness are explicit limitations. Browser inspection/control and correlation/tracing changes remain plans.
@@ -123,8 +125,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    SHIBUYA=$(mori registry show shinzui/shibuya --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$SHIBUYA" log --oneline 0967f450..HEAD
-   git -C "$SHIBUYA" diff --stat 0967f450..HEAD
+   git -C "$SHIBUYA" log --oneline 19b9ad54..HEAD
+   git -C "$SHIBUYA" diff --stat 19b9ad54..HEAD
    ```
 2. Inspect changed modules under `shibuya-core/`, `shibuya-metrics/`, and
    `shibuya-example/`, plus `README.md`, `CHANGELOG.md`, and
@@ -138,7 +140,9 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
-- `0967f450b659b48d24cb49f199718451a65d2d48` (2026-09-30T16:59:37-07:00) — baseline before the 2026-10-14 review; `0967f450..0967f450` (32 commits) reconciles shibuya source and retains explicit publication limits.
+- `19b9ad54d15a2e942b181c8490b9f517ebf12888` (`19b9ad54`, 2026-10-12) — baseline before the 14-commit October 2026 release/inspection round; Published 0.11 browser/control/detail/lifecycle additions and 0.12 delivery admission. Updated reference records and policy, walkthrough ingestion/processing, explanation and pause/metrics guidance. Direct Ingested records require deliveryStatus; superseded attempts skip handler/finalizer without a processing slot. Reconciled source-owner cancellation and serial startup/STM scheduling. No schema changes; benchmark measurements do not establish universal overhead guarantees.
+
+- `19b9ad54d15a2e942b181c8490b9f517ebf12888` (2026-09-30T16:59:37-07:00) — baseline before the 2026-10-14 review; `19b9ad54..19b9ad54` (32 commits) reconciles shibuya source and retains explicit publication limits.
 
 - `efbe2a87268a759e825f388e238343a83badd6da` (`efbe2a87`, 2026-09-21) — baseline before the October 2 review (20 commits); see [the ledger](source-sync-2026-10-02.md).
 

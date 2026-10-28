@@ -1,0 +1,22 @@
+---
+title: "Deploy queue inspection"
+description: "Choose database privileges, capacity and browser access for the inspector."
+---
+
+Use a separate login and pool for inspection. Install schema with the queue owner's connection before starting `pgmq-inspect`; inspection performs no migrations.
+
+## Select privileges and capacity
+
+Grant schema USAGE, SELECT on queue/archive tables and sequences, and only the inspection function whitelist. Metrics read sequence values; grant SELECT without sequence USAGE/UPDATE. Audit PostgreSQL's default PUBLIC function EXECUTE grants before relying on a read-only role. Preserve worker permissions when revoking PUBLIC privileges. Apply default object privileges for every actual future queue/partition creator; defaults are neither retroactive nor inherited from unrelated creators.
+
+The reviewed grant fixture is owned by `mori://shinzui/pgmq-hs`, project-relative `pgmq-inspect/test/fixtures/inspection-role.sql` (artifact-level URI pending). Read it in the matching 0.7.0.0 release before adapting grants to your deployment.
+
+Start with the default two active reads and five-second metrics poll. A larger dedicated pool does not automatically increase admission. Set `--no-listener` when LISTEN is unavailable; polling still converges. Retain polling for partitioned queues.
+
+## Expose and verify
+
+Loopback is the default. Use the host's authentication/TLS proxy for remote access. Add repeated `--cors-origin` values for permitted browser origins; CORS supplies browser response policy, not authentication. Protect socket upgrades through the proxy's origin/authentication policy too.
+
+Verify `/health/ready`, one message page, one archive page and one metrics read using the inspection login. Verify that mutation/consumption calls are denied by database privileges, independently of default transaction read-only settings. Measure worker SLOs with inspection enabled; reduce cadence or switch to on-demand reads if shared CPU/IO exceeds the budget.
+
+See [routes and limits](/docs/pgmq/reference/inspection-server).

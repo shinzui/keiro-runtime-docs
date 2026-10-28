@@ -12,7 +12,7 @@ bites you.
 | Pointer file | mori name | Docs tree | Notes |
 | --- | --- | --- | --- |
 | `docs/runtime-patterns-source-sync.md` | `shinzui/keiro-runtime-patterns` | `content/docs/runtime-patterns/` | Generated committed catalog; use PATTERNS.md. Independent owner library review ledger, 88-concept baseline, content-bound visual reviews. |
-| `docs/keiro-source-sync.md` | `shinzui/keiro` | `content/docs/keiro/` | The largest tree and the fastest-moving upstream. Packages: `keiro`, `keiro-core`, `keiro-migrations`, `keiro-pgmq`, `keiro-dsl`, `keiro-ops`, `keiro-test-support`. Read `docs/adr/*` first. |
+| `docs/keiro-source-sync.md` | `shinzui/keiro` | `content/docs/keiro/` | The largest tree and the fastest-moving upstream. Packages: `keiro`, `keiro-core`, `keiro-migrations`, `keiro-pgmq`, `keiro-dsl`, `keiro-ops`, `keiro-ops-http`, `keiro-test-support`. Read `docs/adr/*` first. |
 | `docs/keiki-source-sync.md` | `shinzui/keiki` | `content/docs/keiki/` | The symbolic transducer core keiro builds on. A keiki edge-semantics change is usually also a keiro evolution-doc change. |
 | `docs/kiroku-source-sync.md` | `shinzui/kiroku` | `content/docs/kiroku/` (+ `write-path/`) | The event store. Owns stream-category and id rules that keiro's `StreamCategory` docs defer to. |
 | `docs/shibuya-source-sync.md` | `shinzui/shibuya` | `content/docs/shibuya/` | Worker/messaging runtime. Packages `shibuya-core`, `shibuya-metrics`, `shibuya-example`. |

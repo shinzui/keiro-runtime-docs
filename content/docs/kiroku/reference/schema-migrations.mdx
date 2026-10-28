@@ -21,7 +21,7 @@ kirokuMigrationPlan
 PGMQ, or application schema should compose those components into one final plan rather than execute
 several partial plans against a shared ledger.
 
-The embedded manifest has **fifteen** entries. `0001` through `0007` preserve the exact historical SQL
+The embedded manifest has **sixteen** entries in migrations 0.7.2. The table below describes the first fifteen; the namespace cutover is listed separately. `0001` through `0007` preserve the exact historical SQL
 payloads; `0008-schema-management-comment` is the first native-only canary. The remaining migrations provide checkpoints, retention, IDs, and category reads:
 
 | Migration | Change |
@@ -130,7 +130,7 @@ Home and link rows keep `NULL`. The constraint is
 `CHECK (stream_id <> 0 OR category IS NOT NULL)`.
 The partial index is `(category, stream_version) INCLUDE (original_stream_id) WHERE stream_id = 0`.
 
-On a fresh database, apply all fifteen migrations before opening the store.
+On a fresh database, apply all sixteen migrations before opening the store.
 For a populated database:
 
 1. Rehearse the migration on a restored copy and measure the backfill time.
@@ -165,3 +165,9 @@ is not a promise about a particular deployment's write cost.
 
 Use [resize or rebind a subscription](/docs/kiroku/how-to/resize-or-rebind-a-subscription) for
 supported operations rather than editing checkpoint rows with private SQL.
+
+## Namespace cutover in Store 0.12
+
+Migration `0016.sql` is the sixteenth entry. It permits `category_namespace` durable bindings in `target_category`; existing all/exact-category bindings remain valid. No append column, event/stream index or trigger is added. Stop affected workers, apply migrations 0.7.2, then restart Store 0.12 binaries before using namespaces. Older binaries must not manage namespace rows; reverting application source alone is not a safe downgrade.
+
+The earlier fifteen-entry diagram describes the pre-namespace baseline. A fresh current install applies all sixteen entries.

@@ -1,0 +1,28 @@
+---
+title: "Confirm an HTTP operator action"
+description: "Preview a mutation, execute it explicitly and resolve an uncertain outcome."
+---
+
+Use a migrated database and an existing stream that you intend to soft-delete. Enable mutations only in a trusted operator deployment. Keep the same explicit public-origin policy in the child application and any composition wrapper.
+
+## Preview and confirm
+
+Start `keiro-ops-http --enable-mutations` with your normal database options. For the example stream `order-1`:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9092/stream/soft-delete/order-1
+```
+
+Review the `outcome:"preview"`, `result` and `cli_reinvocation`. If that is the intended operation, execute:
+
+```bash
+curl -sS -X POST -H 'Content-Type: application/json' \
+  --data '{"confirm":"execute"}' \
+  http://127.0.0.1:9092/stream/soft-delete/order-1
+```
+
+Verify `outcome:"executed"` and inspect the resulting stream state through the owning command. Extra confirmation keys refuse. Nonempty non-JSON bodies return 415. A disallowed Origin returns 403 before body or database effects.
+
+## Recover an uncertain result
+
+A timeout can return `mutation_outcome_unknown`; cancellation does not prove rollback. Inspect durable state before deciding whether another execution is necessary. The transport does not automatically retry mutations. See the [HTTP contract](/docs/keiro/reference/ops-http).

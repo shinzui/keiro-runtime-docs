@@ -33,17 +33,19 @@ guides.
   `docs/user/pgmq-advanced.md`, `docs/user/pgmq-dead-letter-queues.md`, and
   `docs/user/pgmq-topic-routing.md`.
 
-- **Reviewed release:** adapter `0.16.1.0`. Hackage and upstream release tags checked 2026-10-14.
+- **Reviewed release:** adapter `0.18.0.0`. Hackage and upstream tags checked 2026-10-27.
 
 ## Last reviewed commit
 
 ```text
-237575e70c10bb2e53fe19bb2c6efcd9cda6b2c1  (237575e7)
-2026-10-12T16:55:51-07:00
-test: preserve core config defaults in adapter lifecycle fixtures
+e549451978f93f28ccb39912404be9a8a3fea4d7  (e549451)
+2026-10-27T08:10:42-07:00
+chore(release): 0.18.0.0
 ```
 
-> **Current range.** `65af8ed8..237575e7` (**4 commits**). Doc-neutral production range: stable PostgreSQL test cleanup, canonical audit link, consumer-context/DLQ telemetry proof and lifecycle default-config fixture repair. Production adapter source and published 0.16.1.0 unchanged; long-poll pool starvation and disconnected server polls remain limitations.
+> **Current range.** `237575e7..e5494519` (**22 commits**). Updated integration and release history for registered managed-DLQ browse/fetch, default-disabled atomic physical-row redrive, source-bearing envelopes and Shibuya 0.12/PGMQ 0.7 dependencies. Added exact administrative signatures and lifetime/permission/cursor/retry boundaries. The released performance acceptance remains incomplete (two FIFO p95 bounds exceed 1.10); uncommitted benchmark/evidence changes were excluded. No database schema owned by this adapter and no exactly-once business guarantee. See [the commit ledger](source-sync-2026-10-27.md).
+
+> **Note (prior range).** `65af8ed8..237575e7` (**4 commits**). Doc-neutral production range: stable PostgreSQL test cleanup, canonical audit link, consumer-context/DLQ telemetry proof and lifecycle default-config fixture repair. Production adapter source and published 0.16.1.0 unchanged; long-poll pool starvation and disconnected server polls remain limitations.
 > Every commit is classified in [the sync ledger](source-sync-2026-10-14.md). No pages retired. The reviewed committed tree was clean.
 
 > **Note (prior range).** `9c709d76..65af8ed8` (**6 commits**). Reviewed published adapter 0.16.1.0 with Shibuya 0.10 and PGMQ 0.6.1.1. Promoted the prior lifecycle candidate: serialized and cancellation-safe acknowledgement, typed terminal failures, and transactional source-claim-before-DLQ-copy behavior. Updated `content/docs/integrations/shibuya-pgmq-adapter.mdx`, Keiro job/integration operations, comparison and compatibility. Added confirmed shared-pool long-poll starvation and server reads continuing after client cancellation, with StandardPolling/PollEvery controls. Client-side polling and the reported starvation fixes remain unimplemented.
@@ -123,6 +125,8 @@ clean at the reviewed SHA.
 
 ## Previous pointers
 
+- `237575e70c10bb2e53fe19bb2c6efcd9cda6b2c1` (`237575e7`, 2026-10-12) — baseline before the 22-commit October 2026 release/inspection round; Updated integration and release history for registered managed-DLQ browse/fetch, default-disabled atomic physical-row redrive, source-bearing envelopes and Shibuya 0.12/PGMQ 0.7 dependencies. Added exact administrative signatures and lifetime/permission/cursor/retry boundaries. The released performance acceptance remains incomplete (two FIFO p95 bounds exceed 1.10); uncommitted benchmark/evidence changes were excluded. No database schema owned by this adapter and no exactly-once business guarantee.
+
 - `65af8ed8cd8a0ff7a89682346c3769f088a64732` (2026-10-01T20:25:52-07:00) — baseline before the 2026-10-14 review; `65af8ed8..237575e7` (4 commits) reconciles shibuya-pgmq-adapter source and retains explicit publication limits.
 
 - `9c709d76b8c1e66a45148888970d5518cc3c0d7e` (`9c709d76`, 2026-09-21) — baseline before the October 2 review (6 commits); see [the ledger](source-sync-2026-10-02.md).
@@ -152,8 +156,8 @@ clean at the reviewed SHA.
 1. List what changed since the pointer:
    ```text
    ADAPTER=$(mori registry show shinzui/shibuya-pgmq-adapter --full | sed -n 's/.*[Pp]ath: *//p' | head -1)
-   git -C "$ADAPTER" log --oneline 237575e7..HEAD
-   git -C "$ADAPTER" diff --stat 237575e7..HEAD
+   git -C "$ADAPTER" log --oneline e5494519..HEAD
+   git -C "$ADAPTER" diff --stat e5494519..HEAD
    ```
    Also inspect `README.md`, `CHANGELOG.md`, `docs/user/`, and the source
    modules listed above. Because the adapter sits on `pgmq-hs`, check

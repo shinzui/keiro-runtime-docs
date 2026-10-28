@@ -8,7 +8,7 @@ identity, concurrency, terminal-exit publisher, handler, and ingested delivery.
 It extracts the parent trace context, opens a consumer span, and merges framework attributes with
 adapter attributes. Adapter attributes win on duplicate keys.
 
-The handler and finalizer have separate failure boundaries. A synchronous handler exception records
+Core 0.12 first reads `ingested.deliveryStatus`. `DeliverySuperseded` bypasses handler and finalizer and owns no processing-metrics slot. The remaining path describes `DeliveryCurrent`. The handler and finalizer have separate failure boundaries. A synchronous handler exception records
 the exception and selects `AckRetry (RetryDelay 0)`. The runner then calls `finalizeWithRetry`
 for that decision. A finalizer failure does not invoke the handler again.
 
@@ -37,7 +37,9 @@ This flowchart traces one delivery through `processOne`:
 
 ```mermaid
 flowchart TD
-  Handler["call Handler"] --> Result{"result"}
+  Admission{"deliveryStatus"} -->|"current"| Handler["call Handler"]
+  Admission -->|"superseded"| Skip["skip handler and finalizer"]
+  Handler --> Result{"result"}
   Result -->|"returns decision"| Finalize["finalizeWithRetry"]
   Result -->|"throws"| Retry0["AckRetry (RetryDelay 0)"]
   Retry0 --> Finalize

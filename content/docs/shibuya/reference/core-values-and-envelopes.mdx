@@ -64,9 +64,17 @@ backend-specific fields with record update syntax.
 
 ```haskell
 data Ingested es msg = Ingested
-  { envelope :: Envelope msg
-  , ack :: AckHandle es
-  , lease :: Maybe (Lease es)
+  { -- | Message metadata and payload
+    envelope :: !(Envelope msg),
+    -- | Handle for acknowledging the message
+    ack :: !(AckHandle es),
+    -- | Optional lease for visibility timeout extension
+    lease :: !(Maybe (Lease es)),
+    -- | Read once at processing admission (once per member on the batch path).
+    -- Must return promptly, without side effects or synchronous exceptions;
+    -- asynchronous cancellation propagates. Superseded deliveries own no metrics
+    -- slot and receive no handler or finalizer call.
+    deliveryStatus :: !(Eff es DeliveryStatus)
   }
 
 data Message es msg = Message
@@ -95,3 +103,5 @@ may use `leaseExtend` only when the adapter supplied a lease.
 
 `finalize` may be retried with the same `AckDecision` if the adapter throws while applying it.
 Adapter authors must make finalization idempotent or phase-tracked for a single delivery.
+
+In core 0.12, `deliveryStatus` is checked once before processing. `DeliverySuperseded` receives no handler or finalizer. Use `mkIngested` or `pure DeliveryCurrent` to retain existing behavior. See [delivery admission](/docs/shibuya/reference/policy-and-runners#delivery-admission-in-012).

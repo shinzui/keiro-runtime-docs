@@ -1,0 +1,56 @@
+---
+title: "Queue inspection server"
+description: "HTTP routes, wire rules and runtime limits for pgmq-inspect 0.7."
+---
+
+`mori://shinzui/pgmq-hs/packages/pgmq-inspect` first ships at 0.7.0.0 with a standalone executable and mountable WAI application. It supports PGMQ 1.12/1.13 and never leases, removes or migrates messages. The package's upstream guide retains older 0.1 version examples; use the released 0.7 package.
+
+## Embedding API
+
+```haskell
+withInspectApplication :: InspectConfig -> InspectEnv -> (Application -> IO a) -> IO a
+withInspectRuntime :: InspectConfig -> InspectEnv -> (InspectRuntime -> IO a) -> IO a
+withInspectServer :: InspectServerConfig -> InspectEnv -> (RunningInspectServer -> IO a) -> IO a
+runInspectServer :: InspectServerConfig -> InspectEnv -> IO ()
+```
+
+Import `Pgmq.Inspect`. Build `InspectEnv` with `poolEnv` over dedicated inspection connections; `Nothing` listener settings selects polling only. Keep the continuation alive for the mount lifetime. `withInspectRuntime` exposes application, shutdown and drain actions. Arrange shutdown while transport can still attempt goodbye delivery.
+
+## Routes
+
+All HTTP routes use GET; unsupported methods return 405. Paths are relative to the mount root.
+
+| Path | Response |
+| --- | --- |
+| `/` | Descriptor with relative `websocket_path` and `openapi_path` |
+| `/openapi.json` | OpenAPI 3 document, `servers:[{url:"."}]` |
+| `/queues`, `/queues/{queue}` | Queue metadata |
+| `/metrics`, `/queues/{queue}/metrics` | All or one queue's metrics |
+| `/queues/{queue}/messages`, `/queues/{queue}/archive` | Non-destructive pages |
+| `/queues/{queue}/messages/{msg_id}`, `/queues/{queue}/archive/{msg_id}` | One row |
+| `/bindings`, `/queues/{queue}/bindings` | Topic bindings |
+| `/routing/test?routing_key=…` | Routing matches |
+| `/notify/throttles` | Notification configuration |
+| `/health/live`, `/health/ready` | Liveness and dependency readiness |
+
+A message page is `{items:[…],next_cursor:N}`; the last page omits `next_cursor`. Echo its exact integer as exclusive `from`. Default size is 50, capped at 500. IDs/cursors range from 0 through 9223372036854775807; numeric input is at most 128 characters. Invalid input refuses before SQL. Encode a queue name as one complete URL path segment; listed foreign names remain inspectable.
+
+JSON uses snake_case, exact int64 numeric IDs, explicit null optional record fields and arbitrary JSON payloads/headers. Archive records flatten the message fields plus `archived_at`. Use lossless JSON decoding in browsers before converting IDs; `BigInt` cannot recover an already rounded Number. Remove conflicting orphan instances when adopting 0.7 core/metrics/config encodings.
+
+## Capacity and errors
+
+Default shared active reads: 2. Default listener: `127.0.0.1:9092`. The executable configures statement timeout 2000ms, lock timeout 250ms, connection timeout 2s and acquisition timeout 1s on dedicated connections. SQL limits do not establish an end-to-end network or process-exit deadline.
+
+Errors are `{error:{code,message,details?}}`, with sanitized diagnostics. Invalid inputs return 400; missing queue/message returns 404; unsupported methods return 405; plain GET `/ws` returns 426. Capacity, statement cancellation and transient database failures return 503 (`inspection_busy`, `inspection_timeout`, `database_unavailable`); permanent database errors return 500. Readiness retains its own `{ready,checks}` shape even on 503.
+
+## WebSocket protocol
+
+Connect `/ws`, then send `{"type":"subscribe","queue":"demo"}`. A `snapshot` precedes updates. Updates carry `source:"poll"` or `"notify"`; neither is a replay position. Unsubscribe invalidates queued frames from that generation. A `push:true` snapshot means notification interest, not a trigger or healthy/acknowledged listener.
+
+Defaults: five-second polling, 100ms notification debounce, one-second per-queue refresh floor, 100 connections, 100 subscriptions per connection, 100 distinct queues, 256 buffered frames and 16,384-byte frames/messages. Shared scheduling coalesces missed ticks. Overflow drops the oldest frame and reports `overflow`; re-read HTTP or re-subscribe.
+
+The listener refcounts channels and reconnects with backoff. Partitioned/foreign queues and `--no-listener` use polling. Notification acceleration does not replace polling. Metrics can scan queues and partitions; row limits do not bound payload bytes or scanned rows.
+
+See [start inspection](/docs/pgmq/tutorials/inspect-a-queue), [deploy it](/docs/pgmq/how-to/deploy-inspection), and [consume the feed](/docs/pgmq/how-to/recover-inspection-feeds).
+
+Read the [inspection FAQ](/docs/pgmq/faq) for the lease boundary.

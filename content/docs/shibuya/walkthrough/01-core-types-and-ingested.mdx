@@ -32,9 +32,17 @@ provide:
 
 ```haskell
 data Ingested es msg = Ingested
-  { envelope :: Envelope msg
-  , ack :: AckHandle es
-  , lease :: Maybe (Lease es)
+  { -- | Message metadata and payload
+    envelope :: !(Envelope msg),
+    -- | Handle for acknowledging the message
+    ack :: !(AckHandle es),
+    -- | Optional lease for visibility timeout extension
+    lease :: !(Maybe (Lease es)),
+    -- | Read once at processing admission (once per member on the batch path).
+    -- Must return promptly, without side effects or synchronous exceptions;
+    -- asynchronous cancellation propagates. Superseded deliveries own no metrics
+    -- slot and receive no handler or finalizer call.
+    deliveryStatus :: !(Eff es DeliveryStatus)
   }
 
 data Message es msg = Message
@@ -83,3 +91,5 @@ data Lease es = Lease
 ```
 
 Queues with visibility timeouts can expose it. Logs and brokers without this concept leave it out.
+
+In core 0.12, `deliveryStatus` is checked once before processing. `DeliverySuperseded` receives no handler or finalizer. Use `mkIngested` or `pure DeliveryCurrent` to retain existing behavior. See [delivery admission](/docs/shibuya/reference/policy-and-runners#delivery-admission-in-012).

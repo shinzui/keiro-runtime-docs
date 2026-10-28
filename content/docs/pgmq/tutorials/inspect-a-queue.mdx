@@ -1,0 +1,32 @@
+---
+title: "Inspect a queue without leasing it"
+description: "Start pgmq-inspect and page existing queue data."
+---
+
+Install `pgmq-inspect` 0.7.0.0 and use an existing PGMQ 1.12/1.13 database. Prepare a separate inspection login using the [deployment procedure](/docs/pgmq/how-to/deploy-inspection); the inspector does not create schema or queues.
+
+## Start the server
+
+Set `PGMQ_INSPECT_DATABASE_URL` through your secret-management environment, then run:
+
+```bash
+pgmq-inspect --port 9092
+```
+
+In another terminal:
+
+```bash
+curl -fsS http://127.0.0.1:9092/health/ready
+curl -fsS http://127.0.0.1:9092/queues
+curl -fsS http://127.0.0.1:9092/openapi.json
+```
+
+Readiness reports `ready:true`; the schema document identifies `pgmq-inspect`. Select an existing queue from `/queues`. For a queue named `demo`:
+
+```bash
+curl -fsS 'http://127.0.0.1:9092/queues/demo/messages?limit=1'
+```
+
+Echo `next_cursor` as `from` until the field is absent. An empty `items` list is valid. These reads leave leases and read counts unchanged; ordinary workers can continue consuming. Refresh from the first page when you need a current view.
+
+Use the [reference](/docs/pgmq/reference/inspection-server) to preserve exact int64 IDs and the [feed procedure](/docs/pgmq/how-to/recover-inspection-feeds) for shared metrics.

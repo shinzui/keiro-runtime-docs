@@ -169,3 +169,13 @@ The error type interpreters fail with (`runStoreIO` returns `Either StoreError`)
   the decide loop on the former, treat the latter as success for an idempotent append.
   `PoolAcquisitionTimeout` / `ConnectionLost` are generally retryable after a small backoff.
 </Callout>
+
+## Namespace targets in Store 0.12
+
+`SubscriptionTarget` adds `CategoryNamespace Text`. Namespace `orders` matches exact category `orders` and descendants such as `orders:paid`, but not `orders-v2`. Matching is literal, case-sensitive and based on colon boundaries, not SQL wildcards. Future matching categories join automatically.
+
+Workers scan bounded global-position windows, decode only matching payloads and checkpoint completed scans. Empty windows save once every 32 windows and at the captured head. A checkpoint can pass the last delivered matching event. Interrupted handlers or unhandled decode failure do not save the unresolved remainder; checkpoint failures can replay work. Each group member traverses global history independently, so sparse namespaces do not imply cheap historical replay.
+
+Apply migration 0016 with affected workers stopped. Extend exhaustive target/event matches. `KirokuEventSubscriptionTargetMismatch` carries typed refusal detail followed by one crashed stop; invalid stall intervals also emit one crashed stop before `wait` returns. Low-level notifier/FSM extensions require custom drivers to be updated.
+
+Decode retry preserves the initial filter and selector decision. Type-rewriting hooks should retain raw types in the filter when recovery is required; a recovered event can be delivered even when its rewritten type is excluded. An explicit `Stop` checkpoints past the undecodable event; use Retry or DeadLetter when its evidence must remain actionable.
