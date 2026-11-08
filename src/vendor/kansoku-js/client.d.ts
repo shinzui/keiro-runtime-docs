@@ -3,7 +3,7 @@ import type { WebFields } from "./envelope.js";
 import type { DropReason, KansokuClient, KansokuOptions, ResolvedKansokuOptions, TrackOptions } from "./types.js";
 export declare function resolveOptions(options: KansokuOptions): ResolvedKansokuOptions;
 export declare function createInternalClient(options: KansokuOptions, deferStart?: boolean): {
-    config: Readonly<Required<Omit<KansokuOptions, "beforeSend" | "cookieDomain" | "onDrop">> & Pick<KansokuOptions, "beforeSend" | "cookieDomain" | "onDrop">>;
+    config: Readonly<Required<Omit<KansokuOptions, "beforeSend" | "onDrop" | "cookieDomain">> & Pick<KansokuOptions, "beforeSend" | "onDrop" | "cookieDomain">>;
     readonly stats: Readonly<{
         accepted: number;
         bestEffortQueued: number;
@@ -26,7 +26,8 @@ export declare function createInternalClient(options: KansokuOptions, deferStart
         anonymousId?: string;
         userId?: string;
     }) => AnalyticsEvent;
-    enqueueBuilt: (event: AnalyticsEvent) => boolean;
+    enqueueBuilt: (event: AnalyticsEvent, save?: boolean) => boolean;
+    enqueueMany(events: AnalyticsEvent[]): void;
     registerContextProvider(provider: () => JsonObject): () => void;
     onStart: (install: () => (() => void) | void) => void;
     onExit(listener: () => void): () => void;

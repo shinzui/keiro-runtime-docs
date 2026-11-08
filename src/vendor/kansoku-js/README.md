@@ -2,23 +2,14 @@
 
 Source: mori://shinzui/kansoku-ts/packages/kansoku-js
 
-Commit: `30abb48aadc37378a6e9006e9b1b6c9bcab3030d`
+Published npm release: kansoku-js 0.1.1; upstream release tag kansoku-js@0.1.1 at a1ad5586f129589b916604947266656ffc63bbfa.
 
-Bundle SHA-256: `0319f93a096dee4bec8d5f42a4d65a0371cc95841742de22e5d6fe1455f6548a`
+Tarball: https://registry.npmjs.org/kansoku-js/-/kansoku-js-0.1.1.tgz
 
-Compiler versions:
+Integrity: sha512-DYZo1eCRkkxMCzSR880qJG03jxOhldDj49aIhcXscinFGtEaTyXi+4s1yovW+Kiu/HcoX4ZrFpBSIYV6CUv/5A==
 
-```text
-1.4.2
-Version 7.0.2
-```
+Bundle SHA-256: 7cd1cae4c6f5a7fa456c7be615fe30ec2d1c4e73b8905fc05c6a1c0eadea6078
 
-License notice: upstream package declares UNLICENSED; this snapshot is from the project owner's source and grants no additional rights.
+The MIT license, every JavaScript chunk (including lazy Web Vitals), and declarations are retained. Only source-map trailers are removed; source maps are omitted. Per-file SHA-256 values are in snapshot.json. Normal builds need no SDK checkout or network fetch. The app loads the SDK only after enabled configuration and verified identity.
 
-Generated from a detached temporary checkout using the upstream frozen install, development shell, and scripts/build.ts (which verifies exports). All declaration dependencies are included. Only the source-map trailer is removed; no source maps or local paths are shipped. Normal builds never fetch SDK sources. npm still returns E404 and the upstream has no release tags as of 2026-10-21.
-
-Regenerate from this repository:
-
-```bash
-nix develop -c bun scripts/vendor-kansoku.ts --commit 30abb48aadc37378a6e9006e9b1b6c9bcab3030d
-```
+Regenerate with Bun from the repository root: bun scripts/vendor-kansoku.ts.

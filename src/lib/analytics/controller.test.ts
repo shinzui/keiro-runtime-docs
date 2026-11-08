@@ -108,7 +108,7 @@ describe("committed visit lifecycle", () => {
       storage: "memory",
       persistQueue: false,
       storageKeyPrefix: "keiro-docs.docs",
-      autocapture: { pageViews: false },
+      autocapture: { pageViews: false, webVitals: true, clientErrors: true },
       now: h.dependencies.now,
     })
     h.controller.dispose()

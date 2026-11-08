@@ -60,6 +60,32 @@ try {
       assert.ok(
         fixture.events.some((event) => event.eventName === name && event.userId === "user:alice"),
       )
+    await page.evaluate(() =>
+      window.dispatchEvent(
+        new ErrorEvent("error", {
+          error: new Error(
+            "SDK health probe https://private.example/?token=hidden user@example.com",
+          ),
+        }),
+      ),
+    )
+    await expect
+      .poll(() => fixture.events.filter((event) => event.eventName === "client_error").length)
+      .toBe(1)
+    await expect
+      .poll(() => fixture.events.filter((event) => event.eventName === "web_vital").length)
+      .toBeGreaterThan(0)
+    for (const event of fixture.events.filter((candidate) =>
+      ["client_error", "web_vital"].includes(candidate.eventName),
+    )) {
+      assert.equal(event.userId, "user:alice")
+      assert.equal(event.url, first.url)
+      assert.equal(event.properties.stack, undefined)
+      if (event.eventName === "client_error")
+        assert.equal(event.properties.message, "SDK health probe <url> <email>")
+      else assert.ok(Number.isFinite(event.properties.value))
+    }
+    console.log("✓ Automatic sanitized client error and finite Web Vitals retain verified identity")
     await navigate(page, inbox)
     await expect.poll(() => viewEvents(fixture).length).toBe(2)
     await page.goBack()

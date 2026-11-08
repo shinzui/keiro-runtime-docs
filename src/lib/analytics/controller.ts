@@ -107,6 +107,8 @@ export function createAnalyticsController(dependencies: AnalyticsDependencies) {
             pageViews: false,
             sessions: config.capture.sessions,
             pageLeave: config.capture.pageLeave,
+            webVitals: true,
+            clientErrors: true,
           },
           storage: "memory",
           persistQueue: false,
