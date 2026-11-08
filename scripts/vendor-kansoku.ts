@@ -1,3 +1,5 @@
+// Sort only a newly allocated entries array; support this workspace’s ES2022 target.
+/* oxlint-disable unicorn/no-array-sort */
 // Refresh the offline SDK from an integrity-pinned published npm artifact.
 import { createHash } from "node:crypto"
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
@@ -61,7 +63,7 @@ try {
         tarball,
         integrity,
         gitHead,
-        files: Object.fromEntries(Object.entries(files).toSorted(([a], [b]) => a.localeCompare(b))),
+        files: Object.fromEntries(Object.entries(files).sort(([a], [b]) => a.localeCompare(b))),
       },
       null,
       2,
