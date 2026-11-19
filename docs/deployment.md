@@ -17,7 +17,7 @@ This installs frozen dependencies, runs the release gate, builds linux/amd64 wit
 
 ## Publish and deploy
 
-Discover the operator checkout through `mori://tan/tan-ng-labs`. Its `.envrc` pairs the intranet context, kubeconfig, gcloud configuration, and pinned Nagare release (currently v0.11.0; verify the operator pin before use). Keep credentials and reviews outside this repository. From the docs checkout:
+Discover the operator checkout through `mori://tan/tan-ng-labs`. Its `.envrc` pairs the intranet context, kubeconfig, gcloud configuration, and pinned Nagare release. Keep credentials and reviews outside this repository. From the docs checkout:
 
 ```bash
 LABS_REPO=$(mori path mori://tan/tan-ng-labs | tail -n 1)
