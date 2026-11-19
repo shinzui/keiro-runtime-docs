@@ -17,7 +17,7 @@ deployment releaseTag variables = do
   dep <- webService "keiro-docs" "keiro-docs"
   tag <- mkTag releaseTag
   hosts <- mkDomains [("keiro-docs.labs.topagentnetwork.net", True)]
-  health <- httpHealthCheck "/healthz"
+  health <- httpCheck "/healthz"
   scaling <- mkScale 1 3
   runtimeEnv <- traverse (\(name, value) -> do
     key <- mkEnvName name
@@ -26,7 +26,7 @@ deployment releaseTag variables = do
     { build = PrebuiltImage tag
     , domains = hosts
     , access = Just requireLogin
-    , healthCheck = Just health
+    , probes = Just (readinessOnly health)
     , scale = Just scaling
     , env = Map.fromList runtimeEnv
     }
